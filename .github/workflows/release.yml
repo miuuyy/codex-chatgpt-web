@@ -30,7 +30,7 @@ jobs:
       - run: codesign --force --sign - --timestamp=none dist/codex-chatgpt-web
       - run: bun run smoke
       - run: mv dist/codex-chatgpt-web "${{ matrix.asset }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset }}
           path: ${{ matrix.asset }}
