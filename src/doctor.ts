@@ -6,6 +6,9 @@ import { browserLoginStateExists, loginVerificationMarkerPath } from "./browser-
 import { getServiceStatus } from "./service";
 import { tunnelStatus } from "./tunnel";
 import { getTunnelServiceStatus } from "./tunnel-service";
+import { browserName, resolvedBrowserExecutable } from "./browser-engine";
+import { isNgrokTunnel } from "./config";
+import { fetchLoopback } from "./loopback-http";
 
 export type CheckStatus = "ok" | "warning" | "error";
 
@@ -31,7 +34,7 @@ async function proxyCheck(config: AppConfig): Promise<DoctorCheck> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2_000);
   try {
-    const response = await fetch(`http://${config.host}:${config.port}/healthz`, { signal: controller.signal });
+    const response = await fetchLoopback(`http://${config.host}:${config.port}/healthz`, { signal: controller.signal });
     if (!response.ok) return { id: "proxy", status: "error", message: `Responses proxy returned HTTP ${response.status}` };
     const body = await response.json() as Record<string, unknown>;
     if (body.service !== "codex-chatgpt-web" || body.status !== "ok") {
@@ -63,10 +66,12 @@ export async function runDoctor(): Promise<DoctorReport> {
     return { ok: false, checks };
   }
 
-  if (!existsSync(config.chromeExecutablePath)) {
-    checks.push({ id: "chrome", status: "error", message: `Chrome executable is missing: ${config.chromeExecutablePath}` });
+  const name = browserName(config.browserEngine);
+  const browserPath = resolvedBrowserExecutable(config);
+  if (!existsSync(browserPath)) {
+    checks.push({ id: "browser", status: "error", message: `${name} executable is missing: ${browserPath}` });
   } else {
-    checks.push({ id: "chrome", status: "ok", message: `Chrome executable found: ${config.chromeExecutablePath}` });
+    checks.push({ id: "browser", status: "ok", message: `${name} browser is configured: ${browserPath}` });
   }
   if (!browserLoginStateExists(config)) {
     checks.push({ id: "login", status: "error", message: "ChatGPT login state is missing or unverified; run `codex-chatgpt-web login`" });
@@ -91,30 +96,30 @@ export async function runDoctor(): Promise<DoctorReport> {
   if (!service.supported) {
     checks.push({ id: "service", status: "warning", message: "Managed service is unavailable on this OS; keep `serve` running manually" });
   } else if (!service.installed || !service.loaded) {
-    checks.push({ id: "service", status: "error", message: "macOS background service is not installed and loaded" });
+    checks.push({ id: "service", status: "error", message: "Managed background service is not installed and loaded" });
   } else {
-    checks.push({ id: "service", status: "ok", message: "macOS background service is loaded" });
+    checks.push({ id: "service", status: "ok", message: "Managed background service is loaded" });
   }
   checks.push(await proxyCheck(config));
 
   if (config.mode === "full") {
     const settings = config.tunnel!;
     if (!existsSync(settings.binaryPath)) {
-      checks.push({ id: "tunnel-binary", status: "error", message: `tunnel-client is missing: ${settings.binaryPath}` });
+      checks.push({ id: "tunnel-binary", status: "error", message: `${isNgrokTunnel(settings) ? "ngrok" : "tunnel-client"} is missing: ${settings.binaryPath}` });
     } else {
-      checks.push({ id: "tunnel-binary", status: "ok", message: "Pinned openai/tunnel-client binary is installed" });
+      checks.push({ id: "tunnel-binary", status: "ok", message: isNgrokTunnel(settings) ? "ngrok binary is installed" : "Pinned openai/tunnel-client binary is installed" });
     }
-    if (!existsSync(settings.runtimeKeyFile)) {
+    if (!isNgrokTunnel(settings) && !existsSync(settings.runtimeKeyFile)) {
       checks.push({ id: "tunnel-key", status: "error", message: "Tunnel runtime key file is missing" });
-    } else if (!secureFile(settings.runtimeKeyFile)) {
+    } else if (!isNgrokTunnel(settings) && !secureFile(settings.runtimeKeyFile)) {
       checks.push({ id: "tunnel-key", status: "error", message: "Tunnel runtime key file has unsafe permissions" });
-    } else {
+    } else if (!isNgrokTunnel(settings)) {
       checks.push({ id: "tunnel-key", status: "ok", message: "Tunnel runtime key is stored privately" });
     }
     const tunnelService = getTunnelServiceStatus();
     checks.push(tunnelService.installed && tunnelService.loaded && tunnelService.running
-      ? { id: "tunnel-service", status: "ok", message: "macOS tunnel service is installed, loaded, and running" }
-      : { id: "tunnel-service", status: "error", message: "macOS tunnel service is not fully running", detail: JSON.stringify(tunnelService) });
+      ? { id: "tunnel-service", status: "ok", message: "Managed tunnel service is installed, loaded, and running" }
+      : { id: "tunnel-service", status: "error", message: "Managed tunnel service is not fully running", detail: JSON.stringify(tunnelService) });
     const runtime = tunnelStatus(config);
     checks.push(runtime.ok
       ? { id: "tunnel-runtime", status: "ok", message: "Tunnel runtime reports healthy and ready" }

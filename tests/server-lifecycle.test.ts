@@ -45,14 +45,14 @@ test("authenticated lifecycle control cancels orphaned browser turns", async () 
   }));
 
   try {
-    const unauthorized = await fetch(`http://127.0.0.1:${server.port}/admin/cancel-browser-turns`, {
+    const unauthorized = await fetch(`http://localhost:${server.port}/admin/cancel-browser-turns`, {
       method: "POST",
       headers: { authorization: "Bearer invalid" },
     });
     expect(unauthorized.status).toBe(401);
     expect(chatGptTurnSessions.activeCount()).toBe(1);
 
-    const response = await fetch(`http://127.0.0.1:${server.port}/admin/cancel-browser-turns`, {
+    const response = await fetch(`http://localhost:${server.port}/admin/cancel-browser-turns`, {
       method: "POST",
       headers: { authorization: `Bearer ${config.controlToken}` },
     });

@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig } from "../src/config";
-import { createTunnelConfig } from "../src/tunnel";
+import { createNgrokTunnelConfig, createTunnelConfig } from "../src/tunnel";
 import { tunnelServiceDefinition } from "../src/tunnel-service";
 import { existingFullSetupCredentials, tunnelWorkerRuntimeChanged } from "../src/setup";
 
@@ -32,7 +32,7 @@ describe("tunnel launchd ownership", () => {
       tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
     });
 
-    const definition = tunnelServiceDefinition(config);
+    const definition = tunnelServiceDefinition(config, "darwin");
     expect(definition).toContain("<string>run</string>");
     expect(definition).toContain(`<string>${config.tunnel.profileDir}</string>`);
     expect(definition).toContain("<key>RunAtLoad</key>\n  <true/>");
@@ -41,6 +41,20 @@ describe("tunnel launchd ownership", () => {
     expect(definition).not.toContain("/bin/sh");
     expect(definition).not.toContain(config.tunnel.tunnelId);
     expect(definition).not.toContain(key);
+  });
+
+  test("runs ngrok and the HTTP MCP bridge under systemd", () => {
+    const config = defaultConfig("full");
+    config.tunnel = createNgrokTunnelConfig({
+      binaryPath: "/usr/local/bin/ngrok",
+      url: "https://codex.example.ngrok.app",
+      port: 17842,
+    });
+    const definition = tunnelServiceDefinition(config, "linux");
+    expect(definition).toContain("ngrok-tunnel");
+    expect(definition).toContain("https://codex.example.ngrok.app");
+    expect(definition).toContain("Restart=always");
+    expect(definition).not.toContain("/bin/sh");
   });
 
   test("restarts the long-lived MCP worker when the installed release changes", () => {

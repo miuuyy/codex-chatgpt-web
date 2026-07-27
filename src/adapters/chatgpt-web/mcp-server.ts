@@ -121,7 +121,7 @@ function execGatewayProgram(
   ].join("\n");
 }
 
-export async function runChatGptMcpServer(options: { brokerSocketPath: string }): Promise<void> {
+export function createChatGptMcpServer(options: { brokerSocketPath: string }): McpServer {
   const server = new McpServer({ name: "codex-native", version: "3.0.0" });
 
   const environment = async (bindingId: string): Promise<ChatGptTurnEnvironment & { expiresAt: number }> => {
@@ -377,5 +377,9 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
     },
   );
 
-  await server.connect(new StdioServerTransport());
+  return server;
+}
+
+export async function runChatGptMcpServer(options: { brokerSocketPath: string }): Promise<void> {
+  await createChatGptMcpServer(options).connect(new StdioServerTransport());
 }

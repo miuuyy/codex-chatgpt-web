@@ -1,7 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { negotiateDrain } from "../src/service";
+import { serviceDefinition } from "../src/service";
+import { defaultConfig } from "../src/config";
 
 describe("service drain lifecycle", () => {
+  test("defines a restartable systemd user service without a shell", () => {
+    const definition = serviceDefinition(defaultConfig("browser-only"), "linux");
+    expect(definition).toContain("WantedBy=default.target");
+    expect(definition).toContain("Restart=always");
+    expect(definition).not.toContain("/bin/sh");
+  });
+
   test("compensates when a drain may have reached the daemon before the client times out", async () => {
     const actions: string[] = [];
     let acceptingTurns = true;

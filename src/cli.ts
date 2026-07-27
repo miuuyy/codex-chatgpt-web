@@ -15,6 +15,7 @@ import { existingFullSetupCredentials, setup, type SetupOptions } from "./setup"
 import { installRuntimeKeyBytes, managedRuntimeKeyPath, stopTunnel, tunnelStatus, waitForTunnelReady } from "./tunnel";
 import { getTunnelServiceStatus, restartTunnelService, startTunnelService, stopTunnelService, uninstallTunnelService } from "./tunnel-service";
 import { VERSION } from "./version";
+import { runNgrokRuntime } from "./ngrok-runtime";
 
 const HELP = `codex-chatgpt-web ${VERSION}
 
@@ -38,9 +39,14 @@ Setup options:
   --full                       Fixed Instant–Extra High tool models plus read-only Pro
   --port NUMBER                Loopback Responses port (default: 17841)
   --chrome PATH                Google Chrome executable
+  --browser ENGINE             chromium or firefox (default: chromium)
+  --browser-path PATH          Explicit browser executable
   --app-name NAME              ChatGPT connector name (default: Codex Native)
   --tunnel-id ID               Existing OpenAI tunnel id (full mode)
   --runtime-key-file PATH      File containing a Tunnels Read+Use runtime key
+  --tunnel-provider PROVIDER   openai or ngrok (default: openai)
+  --ngrok-path PATH            ngrok executable
+  --ngrok-url URL              Stable HTTPS ngrok endpoint
   --replace-codex-route        Reversibly replace an existing openai_base_url
   --restart-service            Explicitly restart this project's daemon after an update
   --login                      Refresh the stored ChatGPT login even if one exists
@@ -117,7 +123,25 @@ async function setupCommand(args: string[]): Promise<void> {
   const tunnelId = takeOption(args, "--tunnel-id");
   const runtimeKeyFile = takeOption(args, "--runtime-key-file");
   const chrome = takeOption(args, "--chrome");
-  if (chrome) options.chromeExecutablePath = chrome;
+  const browser = takeOption(args, "--browser");
+  const browserPath = takeOption(args, "--browser-path");
+  const tunnelProvider = takeOption(args, "--tunnel-provider");
+  const ngrokPath = takeOption(args, "--ngrok-path");
+  const ngrokUrl = takeOption(args, "--ngrok-url");
+  if (browser && browser !== "chromium" && browser !== "firefox") throw new Error("--browser must be chromium or firefox");
+  if (tunnelProvider && tunnelProvider !== "openai" && tunnelProvider !== "ngrok") {
+    throw new Error("--tunnel-provider must be openai or ngrok");
+  }
+  if (chrome && (browser || browserPath)) throw new Error("--chrome cannot be combined with --browser or --browser-path");
+  if (chrome) {
+    options.browserEngine = "chromium";
+    options.browserExecutablePath = chrome;
+  }
+  if (browser) options.browserEngine = browser as "chromium" | "firefox";
+  if (browserPath) options.browserExecutablePath = browserPath;
+  if (tunnelProvider) options.tunnelProvider = tunnelProvider as "openai" | "ngrok";
+  if (ngrokPath) options.ngrokPath = ngrokPath;
+  if (ngrokUrl) options.ngrokUrl = ngrokUrl;
   if (appName) options.appName = appName;
   if (tunnelId) options.tunnelId = tunnelId;
   if (runtimeKeyFile) options.runtimeKeyFile = runtimeKeyFile;
@@ -144,7 +168,8 @@ async function setupCommand(args: string[]): Promise<void> {
     && !reusableCredentials.runtimeKey
     && !existsSync(managedRuntimeKeyPath());
 
-  if (full && (needsTunnelId || needsRuntimeKey) && stdin.isTTY) {
+  const selectedTunnelProvider = options.tunnelProvider ?? existing?.tunnel?.provider ?? "openai";
+  if (full && selectedTunnelProvider === "openai" && (needsTunnelId || needsRuntimeKey) && stdin.isTTY) {
     stdout.write("Full mode needs an OpenAI tunnel and a runtime key with Tunnels Read + Use.\n");
     stdout.write("Tunnels: https://platform.openai.com/settings/organization/tunnels\n");
     stdout.write("Runtime keys: https://platform.openai.com/settings/organization/api-keys\n");
@@ -159,6 +184,7 @@ async function setupCommand(args: string[]): Promise<void> {
   stdout.write(`Config: ${result.configPath}\n`);
   if (result.connectorSetupRequired) {
     stdout.write("One account-level step remains: attach the tunnel to the ChatGPT connector named in config.\n");
+    if (result.connectorEndpoint) stdout.write(`Connector endpoint: ${result.connectorEndpoint}\n`);
     stdout.write("Open: https://chatgpt.com/#settings/Connectors\n");
   }
   stdout.write("Restart the Codex app once so its native model catalog refreshes through the installed route.\n");
@@ -247,16 +273,17 @@ async function uninstallCommand(args: string[]): Promise<void> {
     throw new Error("Uninstall cancelled");
   }
   const config = existsSync(getConfigPath()) ? loadConfig() : undefined;
-  if (!config && process.platform === "darwin" && getServiceStatus().installed) {
+  const managedPlatform = process.platform === "darwin" || process.platform === "linux";
+  if (!config && managedPlatform && getServiceStatus().installed) {
     throw new Error("Service exists but configuration is missing; refusing an unverifiable uninstall");
   }
-  if (config && process.platform === "darwin") await assertServiceIdle(config);
+  if (config && managedPlatform) await assertServiceIdle(config);
   uninstallCodexIntegration();
   if (config?.mode === "full") {
-    if (process.platform === "darwin") await uninstallTunnelService();
+    if (managedPlatform) await uninstallTunnelService();
     stopTunnel(config);
   }
-  if (config && process.platform === "darwin") await uninstallService(config);
+  if (config && managedPlatform) await uninstallService(config);
   if (!keepData) rmSync(getConfigDir(), { recursive: true, force: true });
   stdout.write(keepData ? "Uninstalled; private application data was preserved.\n" : "Uninstalled and removed private application data.\n");
 }
@@ -285,8 +312,9 @@ async function main(): Promise<void> {
     const action = args.shift();
     assertNoArgs(args);
     if (action !== "check") throw new Error("Browser command must be: browser check");
-    await checkBrowserEngine(loadConfig());
-    stdout.write("Playwright can launch the configured Chrome executable.\n");
+    const config = loadConfig();
+    await checkBrowserEngine(config);
+    stdout.write(`Playwright can launch the configured ${config.browserEngine} browser.\n`);
   } else if (command === "serve") {
     assertNoArgs(args);
     const config = loadConfig();
@@ -294,6 +322,17 @@ async function main(): Promise<void> {
     stdout.write(`codex-chatgpt-web ${VERSION} listening on http://${config.host}:${server.port}/v1 (${config.mode})\n`);
     await new Promise<void>(() => {});
   } else if (command === "mcp") await runChatGptMcpMain(args);
+  else if (command === "ngrok-tunnel") {
+    const binaryPath = takeOption(args, "--ngrok");
+    const brokerSocketPath = takeOption(args, "--broker-socket");
+    const port = Number(takeOption(args, "--port"));
+    const url = takeOption(args, "--url");
+    assertNoArgs(args);
+    if (!binaryPath || !brokerSocketPath || !url || !Number.isInteger(port)) {
+      throw new Error("ngrok-tunnel requires --ngrok, --broker-socket, --port, and --url");
+    }
+    await runNgrokRuntime({ binaryPath, brokerSocketPath, port, url });
+  }
   else if (command === "service") await serviceCommand(args);
   else if (command === "tunnel") await tunnelCommand(args);
   else if (command === "open") await openCommand(args);

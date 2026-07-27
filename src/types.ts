@@ -300,7 +300,11 @@ export interface CodexProviderConfig {
     appName?: string;
     /** Playwright storage-state file created by the explicit browser login. */
     storageStatePath?: string;
-    /** System Chrome executable. The runtime never downloads a browser. */
+    /** Browser engine used by Playwright. */
+    browserEngine?: "chromium" | "firefox";
+    /** Explicit browser executable. Firefox defaults to Playwright's managed build. */
+    browserExecutablePath?: string;
+    /** Legacy Chromium executable setting. */
     chromeExecutablePath?: string;
     /** Unix socket bridging the turn-bound MCP capability into outer Codex tools. */
     brokerSocketPath?: string;

@@ -7,11 +7,11 @@ Codex app / CLI
 codex-chatgpt-web daemon
   ├─ official /models passthrough + fixed ChatGPT Web models
   ├─ native Responses passthrough or ChatGPT Responses/SSE bridge
-  ├─ ChatGPT browser worker (one Chrome process, one turn at a time)
+  ├─ ChatGPT browser worker (one Chromium or Firefox process, one turn at a time)
   ├─ capability broker (full mode only)
-  └─ stdio MCP server
+  └─ MCP server (stdio or Streamable HTTP)
             ▲
-            │ outbound OpenAI Tunnel
+            │ outbound OpenAI Tunnel or ngrok
             ▼
       ChatGPT custom connector
 ```
@@ -31,14 +31,14 @@ codex-chatgpt-web daemon
 
 - Exposes the same fixed models; Instant through Extra High are tool-capable, while Pro remains
   read-only.
-- ChatGPT uses a custom MCP connector backed by `openai/tunnel-client`.
+- ChatGPT uses a custom MCP connector backed by `openai/tunnel-client` or a stable ngrok endpoint.
 - Every connector call is bound to one outer Codex turn capability.
 - Tool calls and results remain in the same ChatGPT response while Codex executes them locally.
 
 ## Browser lifecycle
 
-Playwright CLI is a development/debugging tool and is not part of the runtime. The daemon owns one
-long-lived Chrome process. A Codex turn gets a fresh Temporary Chat page; the preceding page is
+The daemon owns one long-lived Chromium or Firefox process. Firefox uses Playwright's compatible
+managed browser build. A Codex turn gets a fresh Temporary Chat page; the preceding page is
 closed. This prevents transcript leakage without creating a new Chrome window per tool call.
 
 Contexts through 40,000 serialized characters remain an inline JSON envelope. Larger contexts
@@ -58,13 +58,14 @@ rows becomes native Codex commentary.
 
 The release artifact is a versioned runtime bundle containing a pinned Bun executable and the
 bundled application. It contains the Responses bridge, Playwright client code, MCP server, setup,
-doctor, and launchd management; it uses the user's installed Google Chrome and does not download a
-second browser. Full mode separately downloads the official pinned `openai/tunnel-client` release
-and verifies it against that release's published SHA-256 manifest.
+doctor, and launchd/systemd management. Chromium uses the user's configured executable; Firefox is
+installed by Playwright during setup. OpenAI full mode separately downloads the official pinned
+`openai/tunnel-client` release and verifies it against that release's published SHA-256 manifest.
 
-Setup creates a user launchd service for the Responses proxy. Full mode also creates a separate
-launchd service that runs `tunnel-client` directly from its generated profile. Both use `RunAtLoad`
-and `KeepAlive`; no shell, terminal, tmux session, or manual post-login command owns production
+Setup creates a launchd service on macOS or a systemd user service on Linux for the Responses proxy.
+Full mode creates a second managed service. It runs `tunnel-client` directly, or runs an ngrok
+process beside a loopback Streamable HTTP MCP server. No shell, terminal, tmux session, or manual
+post-login command owns production
 lifecycle. Setup keeps Codex's built-in `openai` provider and switches only `openai_base_url` after
 required services report healthy and ready. The daemon forwards the authenticated official model
 catalog and appends only the routed models owned by the `chatgpt-web/` namespace; no static catalog

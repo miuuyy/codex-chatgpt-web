@@ -7,18 +7,23 @@ BIN_DIR="${CODEX_CHATGPT_WEB_BIN_DIR:-$HOME/.local/bin}"
 LIB_DIR="${CODEX_CHATGPT_WEB_LIB_DIR:-$HOME/.local/lib/codex-chatgpt-web}"
 DOC_DIR="${CODEX_CHATGPT_WEB_DOC_DIR:-$HOME/.local/share/doc/codex-chatgpt-web}"
 
-if [ "$(uname -s)" != "Darwin" ]; then
-  echo "codex-chatgpt-web 0.1 supports macOS only" >&2
+case "$(uname -s)" in
+  Darwin) OS="darwin" ;;
+  Linux) OS="linux" ;;
+  *) echo "Unsupported operating system: $(uname -s)" >&2; exit 1 ;;
+esac
+
+case "$(uname -m)" in
+  arm64|aarch64) ARCH="arm64" ;;
+  x86_64) ARCH="amd64" ;;
+  *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+if [ "$OS" = "linux" ] && [ "$ARCH" = "arm64" ]; then
+  echo "Linux arm64 release assets are not published yet" >&2
   exit 1
 fi
 
-case "$(uname -m)" in
-  arm64) ARCH="arm64" ;;
-  x86_64) ARCH="amd64" ;;
-  *) echo "Unsupported macOS architecture: $(uname -m)" >&2; exit 1 ;;
-esac
-
-ASSET="codex-chatgpt-web-darwin-$ARCH.tar.gz"
+ASSET="codex-chatgpt-web-$OS-$ARCH.tar.gz"
 BASE_URL="https://github.com/$REPOSITORY/releases/download/v$VERSION"
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/codex-chatgpt-web.XXXXXX")"
 STAGE_DIR="$LIB_DIR/.stage-$VERSION-$$"
@@ -30,7 +35,11 @@ curl -fsSL "$BASE_URL/$ASSET" -o "$TEMP_DIR/$ASSET"
 curl -fsSL "$BASE_URL/checksums.txt" -o "$TEMP_DIR/checksums.txt"
 
 EXPECTED="$(awk -v asset="$ASSET" '$2 == asset { print $1 }' "$TEMP_DIR/checksums.txt")"
-ACTUAL="$(shasum -a 256 "$TEMP_DIR/$ASSET" | awk '{ print $1 }')"
+if command -v sha256sum >/dev/null 2>&1; then
+  ACTUAL="$(sha256sum "$TEMP_DIR/$ASSET" | awk '{ print $1 }')"
+else
+  ACTUAL="$(shasum -a 256 "$TEMP_DIR/$ASSET" | awk '{ print $1 }')"
+fi
 if [ -z "$EXPECTED" ] || [ "$ACTUAL" != "$EXPECTED" ]; then
   echo "SHA-256 verification failed for $ASSET" >&2
   exit 1
@@ -39,7 +48,11 @@ fi
 for DOC in LICENSE NOTICE.md OpenCodex-MIT.txt Bun-1.3.11.md THIRD_PARTY_NOTICES.txt; do
   curl -fsSL "$BASE_URL/$DOC" -o "$TEMP_DIR/$DOC"
   DOC_EXPECTED="$(awk -v asset="$DOC" '$2 == asset { print $1 }' "$TEMP_DIR/checksums.txt")"
-  DOC_ACTUAL="$(shasum -a 256 "$TEMP_DIR/$DOC" | awk '{ print $1 }')"
+  if command -v sha256sum >/dev/null 2>&1; then
+    DOC_ACTUAL="$(sha256sum "$TEMP_DIR/$DOC" | awk '{ print $1 }')"
+  else
+    DOC_ACTUAL="$(shasum -a 256 "$TEMP_DIR/$DOC" | awk '{ print $1 }')"
+  fi
   if [ -z "$DOC_EXPECTED" ] || [ "$DOC_ACTUAL" != "$DOC_EXPECTED" ]; then
     echo "SHA-256 verification failed for $DOC" >&2
     exit 1

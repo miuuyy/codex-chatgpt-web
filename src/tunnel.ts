@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { unzipSync } from "fflate";
-import type { AppConfig, TunnelConfig } from "./config";
-import { atomicWriteFile, getConfigDir } from "./config";
+import type { AppConfig, NgrokTunnelConfig, OpenAiTunnelConfig } from "./config";
+import { atomicWriteFile, getConfigDir, isNgrokTunnel, isOpenAiTunnel } from "./config";
 import { runCommand, runChecked } from "./process";
 import { getTunnelServiceStatus } from "./tunnel-service";
 
@@ -126,7 +126,7 @@ export function createTunnelConfig(options: {
   runtimeKeyFile: string;
   profileName?: string;
   alias?: string;
-}): TunnelConfig {
+}): OpenAiTunnelConfig {
   if (!/^tunnel_[a-f0-9]{32}$/.test(options.tunnelId)) throw new Error("--tunnel-id must be tunnel_ followed by 32 lowercase hexadecimal characters");
   const profileName = options.profileName ?? "codex-chatgpt-web";
   const alias = options.alias ?? "codex-chatgpt-web";
@@ -134,6 +134,7 @@ export function createTunnelConfig(options: {
     throw new Error("Tunnel profile and alias may contain only letters, digits, dot, underscore, and dash");
   }
   return {
+    provider: "openai",
     binaryPath: options.binaryPath,
     tunnelId: options.tunnelId,
     runtimeKeyFile: options.runtimeKeyFile,
@@ -141,6 +142,35 @@ export function createTunnelConfig(options: {
     profileName,
     alias,
   };
+}
+
+export function createNgrokTunnelConfig(options: {
+  binaryPath: string;
+  url: string;
+  port: number;
+}): NgrokTunnelConfig {
+  const parsed = new URL(options.url);
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash
+    || (parsed.pathname !== "/" && parsed.pathname !== "")) {
+    throw new Error("--ngrok-url must be an HTTPS origin without credentials, path, query, or fragment");
+  }
+  if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65_535) {
+    throw new Error("Ngrok MCP port must be an integer from 1 to 65535");
+  }
+  return {
+    provider: "ngrok",
+    binaryPath: options.binaryPath,
+    url: parsed.origin,
+    port: options.port,
+  };
+}
+
+export function ngrokConnectorUrl(config: NgrokTunnelConfig): string {
+  return `${config.url}/mcp`;
+}
+
+export function ngrokStatusPath(): string {
+  return join(getConfigDir(), "runtime", "ngrok-status.json");
 }
 
 function shellQuote(value: string): string {
@@ -152,8 +182,10 @@ export function mcpCommand(config: AppConfig): string {
   return [...config.runtimeCommand, "mcp", "--broker-socket", config.brokerSocketPath].map(shellQuote).join(" ");
 }
 
-function tunnel(config: AppConfig): TunnelConfig {
-  if (config.mode !== "full" || !config.tunnel) throw new Error("Tunnel commands require full mode");
+function tunnel(config: AppConfig): OpenAiTunnelConfig {
+  if (config.mode !== "full" || !config.tunnel || !isOpenAiTunnel(config.tunnel)) {
+    throw new Error("This command requires the OpenAI tunnel provider");
+  }
   return config.tunnel;
 }
 
@@ -174,6 +206,7 @@ export function connectTunnel(config: AppConfig): void {
 }
 
 export function stopTunnel(config: AppConfig): void {
+  if (config.mode === "full" && config.tunnel && isNgrokTunnel(config.tunnel)) return;
   const settings = tunnel(config);
   const result = runCommand(settings.binaryPath, ["runtimes", "stop", settings.alias, "--json"]);
   if (result.status !== 0 && !/not found|not running|unknown alias/i.test(`${result.stdout}\n${result.stderr}`)) {
@@ -225,7 +258,34 @@ export function parseTunnelStatus(output: string, exitStatus = 0): TunnelRuntime
 }
 
 export function tunnelStatus(config: AppConfig): TunnelRuntimeStatus {
-  const settings = tunnel(config);
+  if (config.mode !== "full" || !config.tunnel) throw new Error("Tunnel commands require full mode");
+  if (isNgrokTunnel(config.tunnel)) {
+    const service = getTunnelServiceStatus();
+    if (!existsSync(config.tunnel.binaryPath)) {
+      return { ok: false, processRunning: false, healthy: false, ready: false, detail: `Missing ${config.tunnel.binaryPath}` };
+    }
+    try {
+      const marker = JSON.parse(readFileSync(ngrokStatusPath(), "utf8")) as Record<string, unknown>;
+      const ready = service.running && marker.ready === true && marker.url === config.tunnel.url;
+      return {
+        ok: ready,
+        processRunning: service.running,
+        healthy: ready,
+        ready,
+        state: ready ? "ready" : "starting",
+        detail: ready ? `endpoint=${ngrokConnectorUrl(config.tunnel)}` : "ngrok endpoint has not reported ready",
+      };
+    } catch {
+      return {
+        ok: false,
+        processRunning: service.running,
+        healthy: false,
+        ready: false,
+        detail: service.running ? "ngrok endpoint is starting" : "ngrok service is not running",
+      };
+    }
+  }
+  const settings = config.tunnel;
   if (!existsSync(settings.binaryPath)) {
     return { ok: false, processRunning: false, healthy: false, ready: false, detail: `Missing ${settings.binaryPath}` };
   }

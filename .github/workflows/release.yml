@@ -17,6 +17,8 @@ jobs:
             asset: codex-chatgpt-web-darwin-arm64.tar.gz
           - runner: macos-15-intel
             asset: codex-chatgpt-web-darwin-amd64.tar.gz
+          - runner: ubuntu-latest
+            asset: codex-chatgpt-web-linux-amd64.tar.gz
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
@@ -27,7 +29,8 @@ jobs:
       - run: bun run typecheck
       - run: bun test
       - run: bun run build
-      - run: codesign --verify --deep --strict dist/runtime/runtime/bun
+      - if: runner.os == 'macOS'
+        run: codesign --verify --deep --strict dist/runtime/runtime/bun
       - run: bun run smoke
       - run: tar -czf "${{ matrix.asset }}" -C dist/runtime .
       - uses: actions/upload-artifact@v4
@@ -62,7 +65,7 @@ jobs:
           cp LICENSES/Bun-1.3.11.md release-assets/Bun-1.3.11.md
           cp dist/THIRD_PARTY_NOTICES.txt release-assets/THIRD_PARTY_NOTICES.txt
           cd release-assets
-          sha256sum codex-chatgpt-web-darwin-*.tar.gz LICENSE NOTICE.md OpenCodex-MIT.txt Bun-1.3.11.md THIRD_PARTY_NOTICES.txt > checksums.txt
+          sha256sum codex-chatgpt-web-*.tar.gz LICENSE NOTICE.md OpenCodex-MIT.txt Bun-1.3.11.md THIRD_PARTY_NOTICES.txt > checksums.txt
       - name: Add installer
         run: cp scripts/install.sh release-assets/install.sh
       - name: Publish GitHub release

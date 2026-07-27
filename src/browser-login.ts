@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { chromium, type BrowserContextOptions } from "playwright-core";
+import type { BrowserContextOptions } from "playwright-core";
 import type { AppConfig } from "./config";
 import { atomicWriteFile } from "./config";
+import { browserName, browserType, ensureBrowserExecutable, type BrowserEngine } from "./browser-engine";
 import {
   assertAuthenticatedChatGptPage,
   assertTemporaryChatPage,
@@ -42,11 +43,14 @@ async function inspectStoredState(
   config: AppConfig,
   storageState: NonNullable<BrowserContextOptions["storageState"]>,
 ): Promise<{ proAvailable: boolean; url: string }> {
-  const verifierBrowser = await chromium.launch({
-    executablePath: config.chromeExecutablePath,
+  const engine = browserType(config.browserEngine);
+  const verifierBrowser = await engine.launch({
+    executablePath: ensureBrowserExecutable(config),
     headless: false,
-    ignoreDefaultArgs: ["--password-store=basic", "--use-mock-keychain"],
-    args: ["--no-first-run", "--no-default-browser-check"],
+    ...(config.browserEngine === "chromium" ? {
+      ignoreDefaultArgs: ["--password-store=basic", "--use-mock-keychain"],
+      args: ["--no-first-run", "--no-default-browser-check"],
+    } : {}),
   });
   try {
     const verifierContext = await verifierBrowser.newContext({ storageState });
@@ -86,36 +90,30 @@ export async function loginToChatGpt(
   config: AppConfig,
   options: { timeoutMs?: number } = {},
 ): Promise<BrowserLoginResult> {
-  if (!existsSync(config.chromeExecutablePath)) {
-    throw new Error(`Google Chrome was not found at ${config.chromeExecutablePath}. Pass --chrome with its executable path.`);
-  }
+  const executable = ensureBrowserExecutable(config);
+  const name = browserName(config.browserEngine);
   const profileDir = join(dirname(config.storageStatePath), "login-profile");
   mkdirSync(profileDir, { recursive: true, mode: 0o700 });
   process.stdout.write(
-    "A normal Chrome window is open. Sign in to ChatGPT, confirm that the composer is visible, then quit this dedicated Chrome instance completely.\n",
+    `A normal ${name} window is open. Sign in to ChatGPT, confirm that the composer is visible, then quit this dedicated ${name} instance completely.\n`,
   );
-  const loginBrowser = spawn(config.chromeExecutablePath, [
-    `--user-data-dir=${profileDir}`,
-    "--new-window",
-    "--disable-background-mode",
-    "--no-first-run",
-    "--no-default-browser-check",
-    CHATGPT_TEMPORARY_CHAT_URL,
-  ], { env: process.env, stdio: "ignore" });
+  const loginBrowser = spawn(executable, browserLoginArguments(config.browserEngine, profileDir), { env: process.env, stdio: "ignore" });
   const loginExit = await new Promise<number>((resolveExit, rejectExit) => {
     loginBrowser.once("error", rejectExit);
     loginBrowser.once("exit", (code, signal) => {
-      if (signal) rejectExit(new Error(`Normal Chrome login window exited from signal ${signal}`));
+      if (signal) rejectExit(new Error(`Normal ${name} login window exited from signal ${signal}`));
       else resolveExit(code ?? 1);
     });
   });
-  if (loginExit !== 0) throw new Error(`Normal Chrome login window exited with status ${loginExit}`);
+  if (loginExit !== 0) throw new Error(`Normal ${name} login window exited with status ${loginExit}`);
 
-  const context = await chromium.launchPersistentContext(profileDir, {
-    executablePath: config.chromeExecutablePath,
+  const context = await browserType(config.browserEngine).launchPersistentContext(profileDir, {
+    executablePath: executable,
     headless: false,
-    ignoreDefaultArgs: ["--password-store=basic", "--use-mock-keychain"],
-    args: ["--no-first-run", "--no-default-browser-check"],
+    ...(config.browserEngine === "chromium" ? {
+      ignoreDefaultArgs: ["--password-store=basic", "--use-mock-keychain"],
+      args: ["--no-first-run", "--no-default-browser-check"],
+    } : {}),
   });
   try {
     const page = context.pages()[0] ?? await context.newPage();
@@ -145,6 +143,19 @@ export async function loginToChatGpt(
   }
 }
 
+export function browserLoginArguments(engine: BrowserEngine, profileDir: string): string[] {
+  return engine === "firefox"
+    ? ["-no-remote", "-profile", profileDir, "-new-window", CHATGPT_TEMPORARY_CHAT_URL]
+    : [
+        `--user-data-dir=${profileDir}`,
+        "--new-window",
+        "--disable-background-mode",
+        "--no-first-run",
+        "--no-default-browser-check",
+        CHATGPT_TEMPORARY_CHAT_URL,
+      ];
+}
+
 export function browserLoginStateExists(config: AppConfig): boolean {
   if (!existsSync(config.storageStatePath)) return false;
   const markerPath = loginVerificationMarkerPath(config.storageStatePath);
@@ -158,11 +169,10 @@ export function browserLoginStateExists(config: AppConfig): boolean {
 }
 
 export async function checkBrowserEngine(config: AppConfig): Promise<void> {
-  if (!existsSync(config.chromeExecutablePath)) throw new Error(`Google Chrome was not found at ${config.chromeExecutablePath}`);
-  const browser = await chromium.launch({
-    executablePath: config.chromeExecutablePath,
+  const browser = await browserType(config.browserEngine).launch({
+    executablePath: ensureBrowserExecutable(config),
     headless: true,
-    args: ["--no-first-run", "--no-default-browser-check"],
+    ...(config.browserEngine === "chromium" ? { args: ["--no-first-run", "--no-default-browser-check"] } : {}),
   });
   try {
     const page = await browser.newPage();

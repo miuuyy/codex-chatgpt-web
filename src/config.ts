@@ -5,16 +5,35 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import type { CodexProviderConfig } from "./types";
 import { VERSION } from "./version";
+import { defaultBrowserExecutable, type BrowserEngine } from "./browser-engine";
 
 export type RuntimeMode = "browser-only" | "full";
 
-export interface TunnelConfig {
+export interface OpenAiTunnelConfig {
+  provider: "openai";
   binaryPath: string;
   tunnelId: string;
   runtimeKeyFile: string;
   profileDir: string;
   profileName: string;
   alias: string;
+}
+
+export interface NgrokTunnelConfig {
+  provider: "ngrok";
+  binaryPath: string;
+  url: string;
+  port: number;
+}
+
+export type TunnelConfig = OpenAiTunnelConfig | NgrokTunnelConfig;
+
+export function isOpenAiTunnel(tunnel: TunnelConfig): tunnel is OpenAiTunnelConfig {
+  return tunnel.provider === "openai";
+}
+
+export function isNgrokTunnel(tunnel: TunnelConfig): tunnel is NgrokTunnelConfig {
+  return tunnel.provider === "ngrok";
 }
 
 export interface AppConfig {
@@ -25,7 +44,8 @@ export interface AppConfig {
   port: number;
   contextWindow: number;
   appName: string;
-  chromeExecutablePath: string;
+  browserEngine: BrowserEngine;
+  browserExecutablePath?: string;
   storageStatePath: string;
   brokerSocketPath: string;
   headed: boolean;
@@ -80,7 +100,8 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     port: 17841,
     contextWindow: 256_000,
     appName: "Codex Native",
-    chromeExecutablePath: defaultChromeExecutable(),
+    browserEngine: "chromium",
+    browserExecutablePath: defaultBrowserExecutable("chromium"),
     storageStatePath: join(home, "browser", "storage-state.json"),
     brokerSocketPath: join(home, "runtime", "turn-broker.sock"),
     headed: true,
@@ -130,16 +151,6 @@ export function assertDurableRuntimeCommand(command: string[]): void {
   if (!existsSync(executable)) throw new Error(`Runtime executable does not exist: ${executable}`);
 }
 
-function defaultChromeExecutable(): string {
-  if (process.platform === "darwin") {
-    return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-  }
-  if (process.platform === "win32") {
-    return join(process.env.PROGRAMFILES || "C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe");
-  }
-  return "/usr/bin/google-chrome";
-}
-
 export function loadConfig(): AppConfig {
   const path = getConfigPath();
   if (!existsSync(path)) throw new Error(`Configuration is missing: ${path}. Run codex-chatgpt-web setup first.`);
@@ -159,20 +170,39 @@ export function loadConfigForSetup(): AppConfig {
 
 function parseConfig(value: unknown, path: string): AppConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid configuration object in ${path}`);
-  const parsed = value as Partial<AppConfig>;
+  const parsed = value as Partial<AppConfig> & { chromeExecutablePath?: unknown };
+  if (parsed.browserEngine === undefined) parsed.browserEngine = "chromium";
+  if (parsed.browserExecutablePath === undefined && typeof parsed.chromeExecutablePath === "string") {
+    parsed.browserExecutablePath = parsed.chromeExecutablePath;
+  }
+  delete parsed.chromeExecutablePath;
   if (parsed.version !== 2) throw new Error(`Unsupported configuration version in ${path}; rerun setup to migrate it`);
   if (typeof parsed.releaseVersion !== "string" || !parsed.releaseVersion.trim()) throw new Error(`Missing releaseVersion in ${path}`);
   if (parsed.mode !== "browser-only" && parsed.mode !== "full") throw new Error(`Invalid runtime mode in ${path}`);
+  if (parsed.browserEngine !== "chromium" && parsed.browserEngine !== "firefox") throw new Error(`Invalid browserEngine in ${path}`);
+  if (parsed.browserExecutablePath !== undefined
+    && (typeof parsed.browserExecutablePath !== "string" || !parsed.browserExecutablePath.trim())) {
+    throw new Error(`Invalid browserExecutablePath in ${path}`);
+  }
+  if (parsed.browserEngine === "chromium" && !parsed.browserExecutablePath) {
+    throw new Error(`Missing browserExecutablePath in ${path}`);
+  }
   if (parsed.host !== "127.0.0.1") throw new Error("The Responses proxy must bind to 127.0.0.1");
   if (!Number.isInteger(parsed.port) || parsed.port! < 1 || parsed.port! > 65_535) throw new Error(`Invalid port in ${path}`);
   const requiredStrings: Array<keyof AppConfig> = [
-    "appName", "chromeExecutablePath", "storageStatePath", "brokerSocketPath", "controlToken",
+    "appName", "storageStatePath", "brokerSocketPath", "controlToken",
   ];
   for (const key of requiredStrings) {
     if (typeof parsed[key] !== "string" || !(parsed[key] as string).trim()) throw new Error(`Missing ${key} in ${path}`);
   }
   if (!/^[A-Za-z0-9_-]{40,}$/.test(parsed.controlToken!)) throw new Error(`Invalid controlToken in ${path}`);
   if (parsed.mode === "full" && !parsed.tunnel) throw new Error("Full mode requires tunnel configuration");
+  if (parsed.tunnel && !(parsed.tunnel as { provider?: string }).provider) {
+    (parsed.tunnel as { provider: string }).provider = "openai";
+  }
+  if (parsed.tunnel && parsed.tunnel.provider !== "openai" && parsed.tunnel.provider !== "ngrok") {
+    throw new Error(`Invalid tunnel provider in ${path}`);
+  }
   if (!Array.isArray(parsed.runtimeCommand) || parsed.runtimeCommand.length === 0
     || parsed.runtimeCommand.some(part => typeof part !== "string" || !part.trim())) {
     throw new Error(`Invalid runtimeCommand in ${path}`);
@@ -205,7 +235,8 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
     chatgptWeb: {
       appName: config.appName,
       storageStatePath: config.storageStatePath,
-      chromeExecutablePath: config.chromeExecutablePath,
+      browserEngine: config.browserEngine,
+      browserExecutablePath: config.browserExecutablePath,
       brokerSocketPath: config.brokerSocketPath,
       threadEnvironmentStatePath: join(getConfigDir(), "runtime", "thread-environments.json"),
       headed: config.headed,

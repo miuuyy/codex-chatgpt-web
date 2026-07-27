@@ -2,7 +2,8 @@ import { existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import type { AppConfig, RuntimeMode } from "./config";
-import { currentRuntimeCommand, defaultConfig, getConfigPath, loadConfigForSetup, saveConfig } from "./config";
+import { currentRuntimeCommand, defaultConfig, getConfigPath, isNgrokTunnel, isOpenAiTunnel, loadConfigForSetup, saveConfig } from "./config";
+import { defaultBrowserExecutable, ensureBrowserExecutable, type BrowserEngine } from "./browser-engine";
 import {
   browserLoginStateExists,
   inspectBrowserLoginCapabilities,
@@ -11,14 +12,16 @@ import {
 } from "./browser-login";
 import { installCodexIntegration } from "./codex-integration";
 import { assertServiceIdle, getServiceStatus, installService, removeLegacyRuntimeArtifacts, restartService } from "./service";
-import { connectTunnel, createTunnelConfig, installRuntimeKey, installRuntimeKeyBytes, installTunnelClient, managedRuntimeKeyPath, stopTunnel, waitForTunnelReady } from "./tunnel";
+import { connectTunnel, createNgrokTunnelConfig, createTunnelConfig, installRuntimeKey, installRuntimeKeyBytes, installTunnelClient, managedRuntimeKeyPath, ngrokConnectorUrl, stopTunnel, waitForTunnelReady } from "./tunnel";
 import { getTunnelServiceStatus, installTunnelService, restartTunnelService, stopTunnelService, tunnelServiceDefinitionMatches, uninstallTunnelService } from "./tunnel-service";
 import { VERSION } from "./version";
+import { fetchLoopback } from "./loopback-http";
 
 export interface SetupOptions {
   mode: RuntimeMode;
   port?: number;
-  chromeExecutablePath?: string;
+  browserEngine?: BrowserEngine;
+  browserExecutablePath?: string;
   appName?: string;
   forceLogin?: boolean;
   autoApproveToolCalls?: boolean;
@@ -28,6 +31,9 @@ export interface SetupOptions {
   tunnelId?: string;
   runtimeKeyFile?: string;
   runtimeKeyValue?: string;
+  tunnelProvider?: "openai" | "ngrok";
+  ngrokPath?: string;
+  ngrokUrl?: string;
 }
 
 export interface SetupResult {
@@ -38,6 +44,7 @@ export interface SetupResult {
   tunnelReady: boolean | null;
   codexRestartRequired: true;
   connectorSetupRequired: boolean;
+  connectorEndpoint?: string;
 }
 
 export interface ExistingFullSetupCredentials {
@@ -46,7 +53,7 @@ export interface ExistingFullSetupCredentials {
 }
 
 export function existingFullSetupCredentials(existing: AppConfig | undefined): ExistingFullSetupCredentials {
-  const tunnel = existing?.mode === "full" ? existing.tunnel : undefined;
+  const tunnel = existing?.mode === "full" && existing.tunnel && isOpenAiTunnel(existing.tunnel) ? existing.tunnel : undefined;
   return {
     tunnelId: Boolean(tunnel?.tunnelId),
     runtimeKey: Boolean(tunnel?.runtimeKeyFile && existsSync(tunnel.runtimeKeyFile)),
@@ -66,7 +73,8 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     port: before.port,
     contextWindow: before.contextWindow,
     appName: before.appName,
-    chromeExecutablePath: before.chromeExecutablePath,
+    browserEngine: before.browserEngine,
+    browserExecutablePath: before.browserExecutablePath,
     storageStatePath: before.storageStatePath,
     brokerSocketPath: before.brokerSocketPath,
     headed: before.headed,
@@ -82,7 +90,8 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     port: after.port,
     contextWindow: after.contextWindow,
     appName: after.appName,
-    chromeExecutablePath: after.chromeExecutablePath,
+    browserEngine: after.browserEngine,
+    browserExecutablePath: after.browserExecutablePath,
     storageStatePath: after.storageStatePath,
     brokerSocketPath: after.brokerSocketPath,
     headed: after.headed,
@@ -115,7 +124,7 @@ async function waitForProxy(config: AppConfig, timeoutMs = 10_000): Promise<void
   let lastError = "not reachable";
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`http://${config.host}:${config.port}/healthz`);
+      const response = await fetchLoopback(`http://${config.host}:${config.port}/healthz`);
       if (response.ok) {
         const body = await response.json() as Record<string, unknown>;
         if (body.service === "codex-chatgpt-web" && body.mode === config.mode && body.version === config.releaseVersion) return;
@@ -140,7 +149,11 @@ function baseConfig(existing: AppConfig | undefined, options: SetupOptions): App
     if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65_535) throw new Error("--port must be an integer from 1 to 65535");
     config.port = options.port;
   }
-  if (options.chromeExecutablePath) config.chromeExecutablePath = options.chromeExecutablePath;
+  if (options.browserEngine && options.browserEngine !== config.browserEngine) {
+    config.browserEngine = options.browserEngine;
+    config.browserExecutablePath = defaultBrowserExecutable(options.browserEngine);
+  }
+  if (options.browserExecutablePath) config.browserExecutablePath = options.browserExecutablePath;
   if (options.appName) config.appName = options.appName;
   if (options.autoApproveToolCalls !== undefined) config.autoApproveToolCalls = options.autoApproveToolCalls;
   if (options.acknowledgedUnofficial) config.acknowledgedUnofficialAt = new Date().toISOString();
@@ -156,11 +169,26 @@ async function configureTunnel(config: AppConfig, existing: AppConfig | undefine
     return;
   }
   const existingTunnel = existing?.mode === "full" ? existing.tunnel : undefined;
-  const tunnelId = options.tunnelId ?? existingTunnel?.tunnelId;
+  const provider = options.tunnelProvider ?? existingTunnel?.provider ?? "openai";
+  if (provider === "ngrok") {
+    const previous = existingTunnel && isNgrokTunnel(existingTunnel) ? existingTunnel : undefined;
+    const binaryPath = options.ngrokPath ?? previous?.binaryPath ?? Bun.which("ngrok");
+    if (!binaryPath || !existsSync(binaryPath)) throw new Error("Ngrok was not found. Install it or pass --ngrok-path.");
+    const url = options.ngrokUrl ?? previous?.url;
+    if (!url) throw new Error("Ngrok full mode requires a stable --ngrok-url, for example https://example.ngrok.app");
+    config.tunnel = createNgrokTunnelConfig({
+      binaryPath,
+      url,
+      port: previous?.port ?? config.port + 1,
+    });
+    return;
+  }
+  const previous = existingTunnel && isOpenAiTunnel(existingTunnel) ? existingTunnel : undefined;
+  const tunnelId = options.tunnelId ?? previous?.tunnelId;
   if (!tunnelId) {
     throw new Error("Full mode requires --tunnel-id. Create it at https://platform.openai.com/settings/organization/tunnels");
   }
-  let runtimeKeyFile = existingTunnel?.runtimeKeyFile;
+  let runtimeKeyFile = previous?.runtimeKeyFile;
   if (!runtimeKeyFile && existsSync(managedRuntimeKeyPath())) runtimeKeyFile = managedRuntimeKeyPath();
   if (options.runtimeKeyFile) runtimeKeyFile = installRuntimeKey(options.runtimeKeyFile);
   if (options.runtimeKeyValue) runtimeKeyFile = installRuntimeKeyBytes(options.runtimeKeyValue);
@@ -172,17 +200,18 @@ async function configureTunnel(config: AppConfig, existing: AppConfig | undefine
     binaryPath: installedBinary,
     tunnelId,
     runtimeKeyFile,
-    profileName: existingTunnel?.profileName,
-    alias: existingTunnel?.alias,
+    profileName: previous?.profileName,
+    alias: previous?.alias,
   });
 }
 
 export async function setup(options: SetupOptions): Promise<SetupResult> {
-  if (process.platform !== "darwin") {
-    throw new Error("The 0.1 release installer currently supports macOS only; no untested service fallback is installed.");
+  if (process.platform !== "darwin" && process.platform !== "linux") {
+    throw new Error("Managed setup currently supports macOS and Linux.");
   }
   const existing = loadExistingConfig();
   const config = baseConfig(existing, options);
+  ensureBrowserExecutable(config);
   const refreshTunnelWorker = tunnelWorkerRuntimeChanged(existing, config);
   if (existing && options.restartService) config.controlToken = randomBytes(32).toString("base64url");
   const beforeService = getServiceStatus();
@@ -243,17 +272,26 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     stopTunnel(existing);
   }
   if (config.mode === "full") {
-    const profilePath = `${config.tunnel!.profileDir}/${config.tunnel!.profileName}.yaml`;
     const tunnelService = getTunnelServiceStatus();
     const needsOwnershipMigration = !tunnelService.installed || !tunnelService.loaded || !tunnelServiceDefinitionMatches(config);
-    const needsProfile = !existsSync(profilePath);
-    if (needsOwnershipMigration || needsProfile) {
+    if (isOpenAiTunnel(config.tunnel!)) {
+      const profilePath = `${config.tunnel.profileDir}/${config.tunnel.profileName}.yaml`;
+      const needsProfile = !existsSync(profilePath);
+      if (needsOwnershipMigration || needsProfile) {
+        await assertServiceIdle(config);
+        if (tunnelService.loaded) await stopTunnelService();
+        connectTunnel(config);
+        const bootstrapStatus = await waitForTunnelReady(config);
+        if (!bootstrapStatus.ok) throw new Error(`Temporary tunnel bootstrap did not become healthy and ready: ${bootstrapStatus.detail}`);
+        stopTunnel(config);
+        installTunnelService(config);
+      } else if (refreshTunnelWorker) {
+        await assertServiceIdle(config);
+        await restartTunnelService();
+      }
+    } else if (needsOwnershipMigration) {
       await assertServiceIdle(config);
       if (tunnelService.loaded) await stopTunnelService();
-      connectTunnel(config);
-      const bootstrapStatus = await waitForTunnelReady(config);
-      if (!bootstrapStatus.ok) throw new Error(`Temporary tunnel bootstrap did not become healthy and ready: ${bootstrapStatus.detail}`);
-      stopTunnel(config);
       installTunnelService(config);
     } else if (refreshTunnelWorker) {
       await assertServiceIdle(config);
@@ -275,5 +313,8 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     tunnelReady,
     codexRestartRequired: true,
     connectorSetupRequired: config.mode === "full",
+    ...(config.mode === "full" && config.tunnel && isNgrokTunnel(config.tunnel)
+      ? { connectorEndpoint: ngrokConnectorUrl(config.tunnel) }
+      : {}),
   };
 }

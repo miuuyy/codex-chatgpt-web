@@ -1,6 +1,7 @@
-import { cpSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { fetchLoopback } from "../src/loopback-http";
 
 const sourceBundle = resolve(process.argv[2] ?? "dist/runtime");
 const sourceRoot = resolve(import.meta.dir, "..");
@@ -13,6 +14,9 @@ renameSync(firstLocation, runtimeRoot);
 const launcher = join(runtimeRoot, "bin", "codex-chatgpt-web");
 const cliBundle = readFileSync(join(runtimeRoot, "app", "cli.js"), "utf8");
 const launcherText = readFileSync(launcher, "utf8");
+if (!existsSync(join(runtimeRoot, "app", "node_modules", "playwright-core", "cli.js"))) {
+  throw new Error("Relocatable runtime is missing the Playwright browser installer");
+}
 for (const forbidden of [sourceRoot, dirname(sourceBundle), "/private/tmp/codex-chatgpt-web-verify", "/tmp/codex-chatgpt-web-verify"]) {
   if (cliBundle.includes(forbidden) || launcherText.includes(forbidden)) {
     throw new Error(`Runtime artifact embeds an ephemeral build path: ${forbidden}`);
@@ -63,7 +67,7 @@ try {
   let health: Response | undefined;
   while (Date.now() < deadline) {
     try {
-      health = await fetch(`http://127.0.0.1:${port}/healthz`);
+      health = await fetchLoopback(`http://127.0.0.1:${port}/healthz`);
       if (health.ok) break;
     } catch {}
     await Bun.sleep(50);
@@ -74,30 +78,30 @@ try {
     throw new Error(`unexpected health payload: ${JSON.stringify(payload)}`);
   }
 
-  const unauthenticatedModels = await fetch(`http://127.0.0.1:${port}/v1/models`);
+  const unauthenticatedModels = await fetchLoopback(`http://127.0.0.1:${port}/v1/models`);
   const unauthenticatedModelsBody = await unauthenticatedModels.json() as { error?: { message?: string } };
   if (unauthenticatedModels.status !== 502
     || !unauthenticatedModelsBody.error?.message?.includes("incoming Bearer authorization")) {
     throw new Error(`native model passthrough did not fail closed without Codex auth: ${JSON.stringify(unauthenticatedModelsBody)}`);
   }
-  const websocketNegotiation = await fetch(`http://127.0.0.1:${port}/v1/responses`);
+  const websocketNegotiation = await fetchLoopback(`http://127.0.0.1:${port}/v1/responses`);
   if (websocketNegotiation.status !== 426) {
     throw new Error(`Responses WebSocket negotiation did not select Codex HTTP/SSE fallback: HTTP ${websocketNegotiation.status}`);
   }
-  const invalid = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+  const invalid = await fetchLoopback(`http://127.0.0.1:${port}/v1/responses`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ model: "chatgpt-web/not-enabled", input: "test", stream: false }),
   });
   if (invalid.status !== 400) throw new Error(`unsupported model did not fail closed: HTTP ${invalid.status}`);
 
-  const unauthorizedDrain = await fetch(`http://127.0.0.1:${port}/admin/drain`, {
+  const unauthorizedDrain = await fetchLoopback(`http://127.0.0.1:${port}/admin/drain`, {
     method: "POST",
     headers: { authorization: "Bearer wrong-release-smoke-token" },
   });
   if (unauthorizedDrain.status !== 401) throw new Error(`lifecycle control accepted an invalid token: HTTP ${unauthorizedDrain.status}`);
 
-  const drain = await fetch(`http://127.0.0.1:${port}/admin/drain`, {
+  const drain = await fetchLoopback(`http://127.0.0.1:${port}/admin/drain`, {
     method: "POST",
     headers: { authorization: `Bearer ${config.controlToken}` },
   });
@@ -106,7 +110,7 @@ try {
     || drainPayload.active_http_turns !== 0 || drainPayload.active_browser_turns !== 0) {
     throw new Error(`daemon did not acknowledge an idle authenticated drain: ${JSON.stringify(drainPayload)}`);
   }
-  const rejectedWhileDraining = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+  const rejectedWhileDraining = await fetchLoopback(`http://127.0.0.1:${port}/v1/responses`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ model: "chatgpt-web/high", reasoning: { effort: "high" }, input: "test", stream: false }),
@@ -114,7 +118,7 @@ try {
   if (rejectedWhileDraining.status !== 503) {
     throw new Error(`daemon accepted a new turn while draining: HTTP ${rejectedWhileDraining.status}`);
   }
-  const resume = await fetch(`http://127.0.0.1:${port}/admin/resume`, {
+  const resume = await fetchLoopback(`http://127.0.0.1:${port}/admin/resume`, {
     method: "POST",
     headers: { authorization: `Bearer ${config.controlToken}` },
   });

@@ -8,7 +8,7 @@
 <p align="center">
   <a href="https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml"><img src="https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
-  <img src="https://img.shields.io/badge/macOS-arm64%20%7C%20Intel-black?logo=apple" alt="macOS arm64 and Intel">
+  <img src="https://img.shields.io/badge/macOS%20%7C%20Linux-supported-black" alt="macOS and Linux">
   <img src="https://img.shields.io/badge/Free_AI-no_API_fees-10a37f" alt="Free AI with no API fees">
   <img src="https://img.shields.io/badge/Windows-coming_soon-0078d4?logo=windows11" alt="Windows support coming soon">
 </p>
@@ -25,7 +25,7 @@ Codex task.
 </p>
 
 ```text
-Codex task ──Responses + SSE──▶ codex-chatgpt-web ──controlled Chrome──▶ ChatGPT
+Codex task ──Responses + SSE──▶ codex-chatgpt-web ──controlled browser──▶ ChatGPT
      ▲                                │                                      │
      └──────── native UI, context, images, tracing, and tool lifecycle ──────┘
 ```
@@ -58,17 +58,24 @@ policies.
 
 ## Quick start
 
-Browser-only mode needs macOS, Google Chrome, and a ChatGPT account. It does not need an API key,
-tunnel, system Node/Bun installation, OpenCodex, or a Playwright browser download.
+Browser-only mode needs macOS or Linux, Chromium or Firefox, and a ChatGPT account. It does not
+need an API key, tunnel, system Node/Bun installation, or OpenCodex. Firefox setup downloads
+Playwright's compatible Firefox build.
 
 ```bash
 curl -fsSL https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install.sh \
   | sh -s -- --browser-only --acknowledge-unofficial
 ```
 
-Sign in through the one Chrome window opened by setup, restart Codex once, and select a
+Sign in through the one browser window opened by setup, restart Codex once, and select a
 **ChatGPT Web — …** model. Pro appears only when it is available on the authenticated account.
-Normal use starts automatically after macOS login and does not require another terminal command.
+Normal use starts automatically after OS login and does not require another terminal command.
+
+Use Firefox with:
+
+```bash
+codex-chatgpt-web setup --browser-only --browser firefox --acknowledge-unofficial
+```
 
 ## Modes
 
@@ -87,9 +94,9 @@ approvals, sandboxing, and tool results remain owned by Codex.
 
 ## Full harness
 
-Full mode connects ChatGPT's tool calls back to the current Codex task through the official
-[OpenAI tunnel-client](https://github.com/openai/tunnel-client). The tunnel is outbound: it does
-not expose a public IP, open an inbound port, or require router forwarding.
+Full mode connects ChatGPT's tool calls back to the current Codex task through either the official
+[OpenAI tunnel-client](https://github.com/openai/tunnel-client) or ngrok. Both are outbound and do
+not require router forwarding. Ngrok exposes a token-gated MCP endpoint at the configured HTTPS URL.
 
 1. Create a tunnel in [Platform tunnel settings](https://platform.openai.com/settings/organization/tunnels).
 2. Create a runtime key with **Tunnels Read + Use** in [Platform API key settings](https://platform.openai.com/settings/organization/api-keys).
@@ -112,6 +119,18 @@ not expose a public IP, open an inbound port, or require router forwarding.
    in [ChatGPT connector settings](https://chatgpt.com/#settings/Connectors), scan its tools, set
    the intended action permissions, and restart Codex once.
 
+For ngrok, configure its authtoken first and use a stable endpoint:
+
+```bash
+ngrok config add-authtoken YOUR_TOKEN
+codex-chatgpt-web setup --full \
+  --tunnel-provider ngrok \
+  --ngrok-url https://your-static-domain.ngrok.app \
+  --acknowledge-unofficial
+```
+
+Attach the printed `/mcp` endpoint directly as the ChatGPT connector URL.
+
 Write/modify actions require a ChatGPT workspace and admin policy that permit them. OpenAI
 currently documents those actions for Business and Enterprise/Edu workspaces; personal Pro is
 limited to read/fetch MCP permissions. See
@@ -130,7 +149,7 @@ codex-chatgpt-web login                # refresh an expired ChatGPT session
 codex-chatgpt-web uninstall --yes
 ```
 
-Setup stores private state under `~/.codex-chatgpt-web`, installs versioned launchd services, and
+Setup stores private state under `~/.codex-chatgpt-web`, installs launchd or systemd user services, and
 journals the previous Codex route so uninstall can restore it. It refuses to replace a different
 route unless `--replace-codex-route` is explicit, and refuses to stop or update while a task is
 still active.
@@ -152,12 +171,12 @@ codex-chatgpt-web service cancel-turns
 - The Responses listener is loopback-only, but another process running as the same local user can
   reach it. Use a trusted single-user workstation.
 - Browser turns are serialized to protect one profile and prevent transcript reuse across tasks.
-- Managed background installation currently supports macOS only.
+- Managed background installation supports macOS launchd and Linux systemd user services.
 - Codex Desktop hardcodes Pro's wire effort as **Ultra** and always shows a **Standard** speed row.
   Those controls do not alter the fixed ChatGPT Web model. Renaming them would require patching the
   signed Codex app.
 - macOS may report that Bun was prevented from modifying apps when Playwright launches installed
-  Chrome. The bridge does not modify Chrome; leaving that App Management permission denied is
+  Chromium. The bridge does not modify the browser; leaving that App Management permission denied is
   expected.
 
 Read the complete [architecture](docs/architecture.md) and
@@ -172,7 +191,7 @@ bun run verify
 ```
 
 `verify` runs dependency auditing, strict TypeScript checks, harness/MCP/config tests, a
-relocatable runtime smoke test, and a real headless launch of system Chrome.
+relocatable runtime smoke test, and platform browser checks.
 
 - [Architecture](docs/architecture.md)
 - [Security model](docs/security-model.md)

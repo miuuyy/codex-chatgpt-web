@@ -2,8 +2,8 @@
 
 ## Trust boundaries
 
-The user trusts the local Codex app, this loopback daemon, the configured Chrome profile, the
-selected ChatGPT workspace, OpenAI's tunnel service, and the exact MCP connector they created.
+The user trusts the local Codex app, this loopback daemon, the configured browser profile, the
+selected ChatGPT workspace, the selected tunnel provider, and the exact MCP connector they created.
 Repository contents, tool output, websites, and prompt text are untrusted data.
 
 ## Full-mode capability flow
@@ -42,6 +42,10 @@ The runtime key needs only Tunnels Read + Use. It is accepted through a hidden p
 from a file, stored with user-only permissions, referenced by file, and never placed in a command
 argument or generated profile. Rotate it after suspected exposure.
 
+Ngrok mode uses ngrok's own user configuration and never copies its authtoken into application
+state. Its public MCP endpoint has no second shared secret; possession of the short-lived random
+turn token is the capability boundary. Use a dedicated stable ngrok URL and do not publish it.
+
 ### Same-user local process
 
 The Responses endpoint is loopback-only, but it has no independent bearer secret because the
@@ -74,9 +78,9 @@ response; the bridge does not fabricate or install a Codex history checkpoint.
 ## Network exposure
 
 - Responses and health listeners bind to `127.0.0.1` only.
-- Full mode uses OpenAI's outbound HTTPS Secure MCP Tunnel; it opens no public listener or inbound
-  firewall rule.
-- Chrome connects to ChatGPT and user-authorized attachment URLs only through its normal browser
+- Full mode uses either OpenAI's outbound HTTPS Secure MCP Tunnel or an outbound ngrok connection.
+  Ngrok publishes the configured HTTPS MCP URL but opens no local inbound firewall rule.
+- The browser connects to ChatGPT and user-authorized attachment URLs only through its normal browser
   networking.
 
 ## Non-goals
