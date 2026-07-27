@@ -107,6 +107,8 @@ test("Ultra explicitly orchestrates three native parallel worker processes", () 
 
   expect(compiled.text).toContain("The user explicitly selected ChatGPT Web Ultra");
   expect(compiled.text).toContain("exact reserved prefix [[CODEX_ULTRA_WORKER]]");
+  expect(compiled.text).toContain("yield_time_ms to 1000");
+  expect(compiled.text).toContain("max_output_tokens to 20000");
   expect(compiled.text).toContain("This is a bridge envelope, not a shell command");
   expect(compiled.text).toContain("Start at most three independent workers before polling");
   expect(compiled.text).toContain("forces read-only sandboxing");
