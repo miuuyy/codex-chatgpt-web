@@ -18,7 +18,7 @@
 </p>
 
 在 Codex 原生模型选择器中选择 **ChatGPT Web — Instant**、**Medium**、**High**、
-**Extra High** 或 **Pro**。桥接程序会把完整的 Codex 任务上下文发送到一个全新的
+**Extra High**、**Ultra** 或 **Pro**。桥接程序会把完整的 Codex 任务上下文发送到一个全新的
 ChatGPT 临时聊天，附加图片，并将可见的推理过程、工具活动和 Markdown 流式传回同一个
 Codex 任务。
 
@@ -27,7 +27,7 @@ Codex 任务。
 </p>
 
 ```text
-Codex task ──Responses + SSE──▶ codex-chatgpt-web ──controlled Chrome──▶ ChatGPT
+Codex task ──Responses + SSE──▶ codex-chatgpt-web ──loopback DevTools──▶ ordinary Chrome ──▶ ChatGPT
      ▲                                │                                      │
      └──────── native UI, context, images, tracing, and tool lifecycle ──────┘
 ```
@@ -40,9 +40,13 @@ Codex task ──Responses + SSE──▶ codex-chatgpt-web ──controlled Chr
 - **本地优先的任务会话。** Codex 仍然是电脑上任务历史的真实来源。每个浏览器轮次都会从一个
   全新的 ChatGPT 临时聊天开始，并接收完整的累计 Codex 上下文，因此浏览器聊天不会在任务之间
   复用，也不会加入普通 ChatGPT 历史记录。
-- **通过 MCP 使用完整 Codex harness。** 在完整模式下，Instant 到 Extra High 可以通过 MCP
+- **通过 MCP 使用完整 Codex harness。** 在完整模式下，Instant 到 Ultra 可以通过 MCP
   使用当前 Codex 任务的文件系统、shell、图片、审批以及已配置的工具和应用。调用及其真实结果
   会留在同一个浏览器响应中，不会被模拟成文本。
+- **真正的并行 Ultra 编排。** 手动选择的 Ultra 路由以 Extra High 作为协调器，并可请求外层
+  Codex harness 派生最多三个继承配置的协作代理。这些代理保留外层 Codex 的模型和服务层级默认值，
+  不会被强制使用 ChatGPT Web 路由。除此之外，桥接程序还可让最多四个 Ultra 浏览器轮次并行运行，
+  每个轮次使用独立的临时聊天页面；普通路由仍然独占浏览器。
 - **Pro 仍然实用。** Pro 是唯一的例外：ChatGPT 当前的 Pro 模式不会暴露此桥接程序所需的自定义
   MCP 连接器。它的原生能力（包括网页搜索和研究）仍然可用。你可以先用 Instant 到 Extra High
   收集本地工作区上下文，再切换到 Pro；Pro 会收到完整的累计 Codex 任务，用于更深入的分析。
@@ -57,7 +61,7 @@ Codex task ──Responses + SSE──▶ codex-chatgpt-web ──controlled Chr
 ## 快速开始
 
 仅浏览器模式需要 macOS、Google Chrome 和 ChatGPT 账户。它不需要 API 密钥、隧道、系统级
-Node/Bun、OpenCodex 或额外下载 Playwright 浏览器。
+Node/Bun、OpenCodex、Playwright 或额外下载自动化浏览器。
 
 ```bash
 curl -fsSL https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install.sh \
@@ -72,12 +76,17 @@ curl -fsSL https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/
 
 | 模式 | 模型 | 本地 Codex 工具 | 额外设置 |
 | --- | --- | --- | --- |
-| **仅浏览器** | Instant 到 Pro | 不可用；Codex 会显示警告 | 无 |
-| **完整 harness** | Instant 到 Pro | Instant–Extra High：可用；Pro：只读 | OpenAI 隧道 + ChatGPT 连接器 |
+| **仅浏览器** | Instant–Extra High、Pro | 不可用；Codex 会显示警告 | 无 |
+| **完整 harness** | Instant–Ultra、Pro | Instant–Ultra：可用；Pro：只读 | OpenAI 隧道 + ChatGPT 连接器 |
 
 模型选择器中的每一项都对应一个固定的 ChatGPT 模式。Codex 仍会显示内置的 Effort 和 Speed
 选项，但更改它们不会在后台静默切换所选的浏览器模型。Pro 会收到 Codex 已经收集的完整上下文，
 但 ChatGPT Pro 无法主动发起本地 MCP/工具调用。
+
+> [!WARNING]
+> **Ultra 是实验性功能，必须由用户明确选择。** 它可能派生三个 Codex 代理，并允许同一账户下
+> 最多四个 ChatGPT Web 轮次同时运行。账户限制、限流、工作区政策以及 OpenAI 条款的合规责任
+> 由用户承担。Ultra 不会轮换账户、更改服务层级，也不会通过重试规避限制。
 
 代理保留 Codex 内置的 `openai` provider 和实时模型目录。它会原样转发官方目录，只附加自己的
 ChatGPT Web 条目，因此原生模型、任务历史、审批、沙箱和工具结果仍由 Codex 管理。
@@ -141,17 +150,19 @@ codex-chatgpt-web service cancel-turns
 
 ## 限制和安全性
 
-- 这是非官方浏览器自动化，并非 OpenAI API。ChatGPT UI 变更可能破坏选择器；发生变化时会明确
+- 这是非官方浏览器控制，并非 OpenAI API。ChatGPT UI 变更可能破坏选择器；发生变化时会明确
   失败，而不是静默切换模型或传输方式。
-- 浏览器状态是敏感的登录凭据。切勿共享或提交 `~/.codex-chatgpt-web/browser`。
+- 专用普通 Chrome profile 是敏感的登录凭据。Cookie 只保存在
+  `~/.codex-chatgpt-web/chrome-profile` 内，不会被导出；切勿共享或提交该目录。
+- 专用 profile 打开时，Chrome DevTools 会监听固定的 loopback 端口。同一本地用户下运行的任何
+  进程都可以控制该 profile，因此不要用它进行无关浏览。
 - Responses 监听器只绑定到 loopback，但以同一本地用户身份运行的其他进程仍可访问它。
   请仅在可信的单用户工作站上使用。
-- 浏览器轮次会串行执行，以保护单一 profile 并防止任务之间复用对话内容。
+- 普通浏览器轮次会串行执行。最多四个独立路由的 Ultra 轮次可在隔离页面中并行运行；
+  ChatGPT 账户限制仍可能对并发工作进行限流。
 - 托管后台安装目前仅支持 macOS。
 - Codex Desktop 会将 Pro 的 wire effort 固定显示为 **Ultra**，并始终显示 **Standard** speed。
   这些控件不会改变固定的 ChatGPT Web 模型；重命名它们需要修改已签名的 Codex 应用。
-- Playwright 启动已安装的 Chrome 时，macOS 可能提示 Bun 被阻止修改应用。桥接程序不会修改
-  Chrome；保持拒绝该 App Management 权限是正常且符合预期的。
 
 启用完整模式前，请阅读完整的[架构说明](docs/architecture.md)和
 [安全模型](docs/security-model.md)。安全漏洞请通过 [SECURITY.md](SECURITY.md) 报告。
@@ -163,8 +174,9 @@ bun install --frozen-lockfile
 bun run verify
 ```
 
-`verify` 会运行依赖审计、严格 TypeScript 检查、harness/MCP/配置测试、可重定位运行时冒烟测试，
-以及一次真实的系统 Chrome 无头启动。
+`verify` 会运行依赖审计、严格 TypeScript 检查、harness/MCP/配置测试以及可重定位运行时冒烟测试。
+浏览器传输使用一个带固定 loopback DevTools 端口的可见专用普通 Chrome profile，且不会启用
+WebDriver 模式。
 
 - [架构说明](docs/architecture.md)
 - [安全模型](docs/security-model.md)
