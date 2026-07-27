@@ -12,6 +12,12 @@ export function ngrokStartedUrl(line: string): string | undefined {
   }
 }
 
+export function ngrokEnvironment(environment: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const next = { ...environment };
+  for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]) delete next[key];
+  return next;
+}
+
 export async function runNgrokRuntime(options: {
   binaryPath: string;
   brokerSocketPath: string;
@@ -34,11 +40,16 @@ export async function runNgrokRuntime(options: {
     "--log-format",
     "json",
   ], {
+    env: ngrokEnvironment(),
     stdout: "pipe",
     stderr: "inherit",
   });
 
-  const stopChild = () => child.kill("SIGTERM");
+  let stopping = false;
+  const stopChild = () => {
+    stopping = true;
+    child.kill("SIGTERM");
+  };
   process.on("SIGINT", stopChild);
   process.on("SIGTERM", stopChild);
   let buffered = "";
@@ -69,7 +80,7 @@ export async function runNgrokRuntime(options: {
 
   try {
     const [, exitCode] = await Promise.all([pumpLogs(), child.exited]);
-    if (exitCode !== 0) throw new Error(`ngrok exited with status ${exitCode}`);
+    if (exitCode !== 0 && !stopping) throw new Error(`ngrok exited with status ${exitCode}`);
   } finally {
     process.off("SIGINT", stopChild);
     process.off("SIGTERM", stopChild);

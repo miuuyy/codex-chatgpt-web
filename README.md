@@ -130,6 +130,8 @@ codex-chatgpt-web setup --full \
 ```
 
 Attach the printed `/mcp` endpoint directly as the ChatGPT connector URL.
+The managed ngrok process does not inherit generic `HTTP_PROXY`/`HTTPS_PROXY` variables; configure
+a paid ngrok agent proxy explicitly in ngrok's own configuration when needed.
 
 Write/modify actions require a ChatGPT workspace and admin policy that permit them. OpenAI
 currently documents those actions for Business and Enterprise/Edu workspaces; personal Pro is
