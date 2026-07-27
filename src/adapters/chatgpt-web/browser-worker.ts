@@ -30,7 +30,7 @@ const browserStageTimeouts = {
 } as const;
 
 export function chatGptComposerTextMatchesPrompt(observed: string, prompt: string): boolean {
-  const canonical = (text: string): string => text.replace(/\r\n?/g, "\n").replaceAll("\n", " ");
+  const canonical = (text: string): string => text.replaceAll("\n", " ");
   return canonical(observed) === canonical(prompt);
 }
 

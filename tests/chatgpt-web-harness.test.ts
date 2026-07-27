@@ -105,6 +105,8 @@ describe("ChatGPT outer-native harness v3", () => {
     expect(chatGptComposerTextMatchesPrompt("first second", "first\nsecond")).toBe(true);
     expect(chatGptComposerTextMatchesPrompt("first  second", "first\n\nsecond")).toBe(true);
     expect(chatGptComposerTextMatchesPrompt("first changed", "first\nsecond")).toBe(false);
+    expect(chatGptComposerTextMatchesPrompt("first second", "first\r\nsecond")).toBe(false);
+    expect(chatGptComposerTextMatchesPrompt("first second", "first\rsecond")).toBe(false);
   });
 
   test("extracts authoritative environment, tool registry, and turn identity from the Codex wire envelope", () => {
