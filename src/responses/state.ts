@@ -218,7 +218,7 @@ export function previousResponseReplayPrefixLength(body: unknown): number {
 export function rememberResponseState(
   requestBody: unknown,
   response: { id?: unknown; output?: unknown; status?: unknown; incomplete_details?: unknown },
-  opts?: { force?: boolean },
+  opts?: { force?: boolean; persist?: boolean },
 ): void {
   if (!requestBody || typeof requestBody !== "object" || Array.isArray(requestBody)) return;
   const request = requestBody as Record<string, unknown>;
@@ -240,7 +240,7 @@ export function rememberResponseState(
     items: [...inputItems(request.input), ...response.output],
   });
   pruneResponses();
-  schedulePersist();
+  if (opts?.persist !== false) schedulePersist();
 }
 
 /** Memory-only reset (simulates a process restart: the snapshot file survives). */

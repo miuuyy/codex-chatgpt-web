@@ -21,6 +21,158 @@ import { expandPreviousResponseInput, flushResponseState, rememberResponseState 
 import { namespacedToolName, type AdapterEvent, type CodexParsedRequest } from "./types";
 import { VERSION } from "./version";
 
+interface ResponsesWebSocketData {
+  headers: [string, string][];
+  chain: Promise<void>;
+  abort?: AbortController;
+  closed: boolean;
+}
+
+interface ResponsesWebSocket {
+  data: ResponsesWebSocketData;
+  send(data: string): unknown;
+}
+
+function sendWebSocketError(
+  socket: ResponsesWebSocket,
+  message: string,
+  code = "server_error",
+  status = 500,
+): void {
+  try {
+    socket.send(JSON.stringify({
+      type: "error",
+      status,
+      error: { type: code, code, message },
+    }));
+  } catch {
+    // The peer may have disconnected while the turn was failing.
+  }
+}
+
+function forwardSseEvent(socket: ResponsesWebSocket, block: string): void {
+  const data = block
+    .split(/\r?\n/)
+    .filter(line => line.startsWith("data:"))
+    .map(line => line.slice(5).replace(/^ /, ""))
+    .join("\n");
+  if (data && data !== "[DONE]") socket.send(data);
+}
+
+async function forwardResponseToWebSocket(socket: ResponsesWebSocket, response: Response): Promise<void> {
+  if (!response.ok) {
+    let message = `Responses request failed with HTTP ${response.status}`;
+    let code = "server_error";
+    try {
+      const body = await response.json() as { error?: { message?: unknown; type?: unknown } };
+      if (typeof body.error?.message === "string") message = body.error.message;
+      if (typeof body.error?.type === "string") code = body.error.type;
+    } catch {
+      // Keep the status-derived fallback for non-JSON errors.
+    }
+    sendWebSocketError(socket, message, code, response.status);
+    return;
+  }
+  if (!response.body) {
+    sendWebSocketError(socket, "Responses request returned no event stream");
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) {
+      buffered += decoder.decode();
+      break;
+    }
+    buffered += decoder.decode(chunk.value, { stream: true });
+    while (true) {
+      const boundary = /\r?\n\r?\n/.exec(buffered);
+      if (!boundary || boundary.index === undefined) break;
+      forwardSseEvent(socket, buffered.slice(0, boundary.index));
+      buffered = buffered.slice(boundary.index + boundary[0].length);
+    }
+  }
+  if (buffered.trim()) forwardSseEvent(socket, buffered);
+}
+
+async function handleResponsesWebSocketMessage(
+  socket: ResponsesWebSocket,
+  message: string | Uint8Array,
+  config: AppConfig,
+  draining: () => boolean,
+): Promise<void> {
+  if (socket.data.closed) return;
+  let envelope: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(typeof message === "string" ? message : new TextDecoder().decode(message));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("message must be an object");
+    envelope = parsed as Record<string, unknown>;
+  } catch (error) {
+    sendWebSocketError(
+      socket,
+      error instanceof Error ? `Invalid WebSocket message: ${error.message}` : "Invalid WebSocket message",
+      "invalid_request_error",
+      400,
+    );
+    return;
+  }
+  if (envelope.type !== "response.create") {
+    sendWebSocketError(socket, "WebSocket messages must use type response.create", "invalid_request_error", 400);
+    return;
+  }
+  if (draining()) {
+    sendWebSocketError(socket, "codex-chatgpt-web is draining for a requested service operation", "server_error", 503);
+    return;
+  }
+
+  const generate = envelope.generate;
+  delete envelope.type;
+  delete envelope.generate;
+  envelope.stream = true;
+
+  if (generate === false) {
+    if (typeof envelope.model !== "string" || !envelope.model) {
+      sendWebSocketError(socket, "Responses prewarm requires a model", "invalid_request_error", 400);
+      return;
+    }
+    try {
+      parseRequest(envelope);
+      if (isChatGptWebModelSlug(envelope.model)) requireChatGptWebModelRoute(envelope.model, config.proAvailable);
+    } catch (error) {
+      sendWebSocketError(
+        socket,
+        error instanceof Error ? error.message : String(error),
+        "invalid_request_error",
+        400,
+      );
+      return;
+    }
+    const response = buildResponseJSON([], envelope.model);
+    rememberResponseState(envelope, response, { force: true, persist: false });
+    socket.send(JSON.stringify({ type: "response.completed", sequence_number: 0, response }));
+    return;
+  }
+
+  const abort = new AbortController();
+  socket.data.abort = abort;
+  try {
+    const headers = new Headers(socket.data.headers);
+    headers.set("content-type", "application/json");
+    const request = new Request("http://127.0.0.1/v1/responses", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(envelope),
+      signal: abort.signal,
+    });
+    await forwardResponseToWebSocket(socket, await responseRequest(request, config));
+  } finally {
+    if (socket.data.abort === abort) socket.data.abort = undefined;
+  }
+}
+
 export class HttpTurnCounter {
   private active = 0;
 
@@ -274,11 +426,11 @@ export function startServer(config: AppConfig): ReturnType<typeof Bun.serve> {
     const actual = Buffer.from(header);
     return actual.length === expected.length && timingSafeEqual(actual, expected);
   };
-  const server = Bun.serve({
+  const server = Bun.serve<ResponsesWebSocketData>({
     hostname: config.host,
     port: config.port,
     idleTimeout: 0,
-    fetch(req) {
+    fetch(req, bunServer) {
       const url = new URL(req.url);
       if (req.method === "GET" && url.pathname === "/healthz") {
         return Response.json({
@@ -307,6 +459,19 @@ export function startServer(config: AppConfig): ReturnType<typeof Bun.serve> {
         return modelsRequest(req, config, undefined, readCodexModelContextOverride);
       }
       if (req.method === "GET" && url.pathname === "/v1/responses") {
+        if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+          if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
+          if (bunServer.upgrade(req, {
+            data: {
+              headers: Array.from(req.headers.entries()).filter(([name]) =>
+                name !== "connection" && name !== "upgrade" && !name.startsWith("sec-websocket-")
+              ),
+              chain: Promise.resolve(),
+              closed: false,
+            },
+          })) return;
+          return new Response("WebSocket upgrade failed", { status: 500 });
+        }
         return new Response("Responses WebSocket transport is not enabled on this local route", {
           status: 426,
           headers: { "content-type": "text/plain; charset=utf-8" },
@@ -321,6 +486,21 @@ export function startServer(config: AppConfig): ReturnType<typeof Bun.serve> {
         return httpTurns.track(() => compactRequest(req, config));
       }
       return new Response("Not found", { status: 404 });
+    },
+    websocket: {
+      message(socket, message) {
+        socket.data.chain = socket.data.chain
+          .then(() => {
+            if (!socket.data.closed) return handleResponsesWebSocketMessage(socket, message, config, () => draining);
+          })
+          .catch(error => {
+            sendWebSocketError(socket, error instanceof Error ? error.message : String(error));
+          });
+      },
+      close(socket) {
+        socket.data.closed = true;
+        socket.data.abort?.abort();
+      },
     },
   });
   const shutdown = () => {

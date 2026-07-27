@@ -49,7 +49,7 @@ export function buildChatGptWebModel(
     input_modalities: ["text", "image"],
     visibility: "list",
     supported_in_api: false,
-    prefer_websockets: false,
+    prefer_websockets: true,
     tool_mode: config.mode === "full" && !route.requiresPro ? template.tool_mode : null,
     upgrade: null,
     default_reasoning_level: route.codexEffort,
