@@ -17,6 +17,7 @@ async function fakeCodex(lines: string[]): Promise<{ root: string; executable: s
   const body = [
     "#!/bin/sh",
     'printf "%s\\n" "$@" > worker-args.txt',
+    'printf "%s\\n" "${CODEX_HOME:-}" > worker-codex-home.txt',
     ...lines.map(line => `printf '%s\\n' ${JSON.stringify(line)}`),
   ].join("\n");
   await writeFile(executable, body, "utf8");
@@ -28,8 +29,9 @@ async function runWorker(
   executable: string,
   cwd: string,
   task = "Inspect the catalog's state",
+  workerCodexHome?: string,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  const process = Bun.spawn(["/bin/zsh", "-lc", ultraWorkerCommand("gpt-5.6-sol", task)], {
+  const process = Bun.spawn(["/bin/zsh", "-lc", ultraWorkerCommand("gpt-5.6-sol", task, workerCodexHome)], {
     cwd,
     env: { ...Bun.env, CODEX_CHATGPT_WEB_CODEX_BIN: executable },
     stdout: "pipe",
@@ -85,5 +87,23 @@ describe("Ultra native worker wrapper", () => {
       exit_code: 0,
       final_report: null,
     });
+  });
+
+  test("can isolate native worker authentication in a dedicated Codex home", async () => {
+    const fake = await fakeCodex([
+      JSON.stringify({ type: "thread.started", thread_id: "worker_task_789" }),
+      JSON.stringify({
+        type: "item.completed",
+        item: { type: "agent_message", text: "Isolated worker report" },
+      }),
+    ]);
+    const workerCodexHome = join(fake.root, "worker-home");
+
+    const result = await runWorker(fake.executable, fake.root, "Inspect safely", workerCodexHome);
+
+    expect(result.exitCode).toBe(0);
+    expect(await Bun.file(join(fake.root, "worker-codex-home.txt")).text()).toBe(`${workerCodexHome}\n`);
+    expect(() => ultraWorkerCommand("gpt-5.6-sol", "Inspect safely", "relative/home"))
+      .toThrow("must be an absolute path");
   });
 });

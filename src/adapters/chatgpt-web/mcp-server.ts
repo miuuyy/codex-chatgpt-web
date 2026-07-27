@@ -130,8 +130,18 @@ if (status === 0 && (!workerTaskId || !finalReport)) process.exitCode = 91;
 
 export const ULTRA_WORKER_COMMAND_PREFIX = "[[CODEX_ULTRA_WORKER]]\n";
 
-export function ultraWorkerCommand(model: string, task: string): string {
+export function ultraWorkerCommand(
+  model: string,
+  task: string,
+  workerCodexHome = process.env.CODEX_CHATGPT_WEB_WORKER_CODEX_HOME?.trim(),
+): string {
+  if (workerCodexHome && !isAbsolute(workerCodexHome)) {
+    throw new Error("CODEX_CHATGPT_WEB_WORKER_CODEX_HOME must be an absolute path");
+  }
   const appCodex = "/Applications/ChatGPT.app/Contents/Resources/codex";
+  const workerEnvironment = workerCodexHome
+    ? `CODEX_HOME=${shellQuote(workerCodexHome)} `
+    : "";
   return [
     "set -u",
     'codex_bin=""',
@@ -141,7 +151,7 @@ export function ultraWorkerCommand(model: string, task: string): string {
     'if [ -z "$codex_bin" ]; then printf "native Codex executable not found\\n" >&2; exit 127; fi',
     'events_file="$(mktemp -t codex-ultra-worker-events.XXXXXX)"',
     'stderr_file="$(mktemp -t codex-ultra-worker-stderr.XXXXXX)"',
-    '"$codex_bin" -s read-only -c model_reasoning_effort=low exec --json'
+    `${workerEnvironment}"$codex_bin" -s read-only -c model_reasoning_effort=low exec --json`
       + ` -m ${shellQuote(model)} ${shellQuote(task)} >"$events_file" 2>"$stderr_file"`,
     "worker_status=$?",
     `${shellQuote(process.execPath)} -e ${shellQuote(workerResultFilter)} "$events_file" "$stderr_file" "$worker_status"`,
