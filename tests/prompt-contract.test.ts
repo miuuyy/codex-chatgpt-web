@@ -96,7 +96,7 @@ test("keeps large contexts intact in the inline text envelope", () => {
   expect(compiled.text).not.toContain("SHA-256");
 });
 
-test("Ultra explicitly orchestrates three native parallel subagents", () => {
+test("Ultra explicitly orchestrates three native parallel worker processes", () => {
   const ultra = request("high");
   ultra._chatGptWebUltra = true;
   const compiled = compileChatGptWebPrompt(
@@ -106,8 +106,9 @@ test("Ultra explicitly orchestrates three native parallel subagents", () => {
   );
 
   expect(compiled.text).toContain("The user explicitly selected ChatGPT Web Ultra");
-  expect(compiled.text).toContain("Spawn at most three independent subagents before waiting");
-  expect(compiled.text).toContain("bridge pins spawn_agent to the native Codex model");
-  expect(compiled.text).toContain("Do not request a model or service_tier override");
-  expect(compiled.text).toContain("Inspect the final agent states before claiming success");
+  expect(compiled.text).toContain("Use codex_spawn_worker directly");
+  expect(compiled.text).toContain("Start at most three independent workers before polling");
+  expect(compiled.text).toContain("forces read-only sandboxing");
+  expect(compiled.text).toContain("both worker_task_id and a non-empty final_report");
+  expect(compiled.text).toContain("never present process start as completed work");
 });

@@ -24,14 +24,14 @@ function brokerEnvironmentForTurn(
   provider: CodexProviderConfig,
 ): ReturnType<typeof extractChatGptTurnEnvironment> {
   if (parsed._chatGptWebUltra !== true) return environment;
-  const collaborationAgentModel = [
+  const ultraWorkerModel = [
     provider.defaultModel,
     ...(provider.models ?? []),
   ].find(model => typeof model === "string" && model.trim() && !model.startsWith("chatgpt-web/"))?.trim();
-  if (!collaborationAgentModel) {
-    throw new Error("ChatGPT Web Ultra requires one configured native Codex model for collaboration agents");
+  if (!ultraWorkerModel) {
+    throw new Error("ChatGPT Web Ultra requires one configured native Codex model for worker processes");
   }
-  return { ...environment, collaborationAgentModel };
+  return { ...environment, ultraWorkerModel };
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: Error) => void } {

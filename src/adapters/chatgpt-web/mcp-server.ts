@@ -67,26 +67,16 @@ function wireName(tool: CodexTool): string {
   return namespacedToolName(tool.namespace, tool.name);
 }
 
-function record(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
-}
-
-function ultraSpawnArguments(
+function rejectUnsupportedUltraSpawn(
   environment: ChatGptTurnEnvironment,
   tool: CodexTool,
-  args: Record<string, unknown>,
-): Record<string, unknown> {
-  const model = environment.collaborationAgentModel;
-  if (!model || !/(?:^|__)spawn_agent$/.test(wireName(tool))) return args;
-  const properties = record(record(tool.parameters)?.properties);
-  if (!properties || !("model" in properties)) {
-    throw new Error("ChatGPT Web Ultra cannot pin this collaboration tool to a native Codex model");
+): void {
+  if (environment.ultraWorkerModel && /(?:^|__)spawn_agent$/.test(wireName(tool))) {
+    throw new Error(
+      "Direct collaboration spawn_agent is incompatible with the ChatGPT Web bridge; "
+      + "use codex_spawn_worker so native Codex creates the worker task",
+    );
   }
-  const normalized: Record<string, unknown> = { ...args, model };
-  delete normalized.service_tier;
-  return normalized;
 }
 
 function containsPath(root: string, path: string): boolean {
@@ -96,6 +86,67 @@ function containsPath(root: string, path: string): boolean {
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\"'\"'`)}'`;
+}
+
+const workerResultFilter = String.raw`
+const [eventsPath, stderrPath, rawStatus] = process.argv.slice(1);
+const status = Number(rawStatus);
+const lines = (await Bun.file(eventsPath).text()).split(/\r?\n/);
+let workerTaskId;
+let finalReport;
+const errors = [];
+for (const line of lines) {
+  if (!line.trim()) continue;
+  let event;
+  try { event = JSON.parse(line); } catch { continue; }
+  if (event?.type === "thread.started" && typeof event.thread_id === "string") {
+    workerTaskId = event.thread_id;
+  }
+  if (event?.type === "item.completed"
+      && event.item?.type === "agent_message"
+      && typeof event.item.text === "string") {
+    finalReport = event.item.text;
+  }
+  if (event?.type === "error") {
+    errors.push(typeof event.message === "string" ? event.message : JSON.stringify(event));
+  }
+}
+const maxReportChars = 60_000;
+const reportTruncated = typeof finalReport === "string" && finalReport.length > maxReportChars;
+if (reportTruncated) finalReport = finalReport.slice(0, maxReportChars);
+const stderr = status === 0 ? "" : (await Bun.file(stderrPath).text()).trim().slice(-4_000);
+console.log(JSON.stringify({
+  worker_task_id: workerTaskId ?? null,
+  exit_code: status,
+  final_report: finalReport ?? null,
+  final_report_truncated: reportTruncated,
+  errors: errors.slice(-3),
+  ...(stderr ? { stderr_tail: stderr } : {}),
+}));
+if (status === 0 && (!workerTaskId || !finalReport)) process.exitCode = 91;
+`.trim();
+
+export function ultraWorkerCommand(model: string, task: string): string {
+  const appCodex = "/Applications/ChatGPT.app/Contents/Resources/codex";
+  return [
+    "set -u",
+    'codex_bin=""',
+    'if [ -n "${CODEX_CHATGPT_WEB_CODEX_BIN:-}" ] && [ -x "$CODEX_CHATGPT_WEB_CODEX_BIN" ]; then codex_bin="$CODEX_CHATGPT_WEB_CODEX_BIN"; '
+      + `elif [ -x ${shellQuote(appCodex)} ]; then codex_bin=${shellQuote(appCodex)}; `
+      + 'else codex_bin="$(command -v codex 2>/dev/null || true)"; fi',
+    'if [ -z "$codex_bin" ]; then printf "native Codex executable not found\\n" >&2; exit 127; fi',
+    'events_file="$(mktemp -t codex-ultra-worker-events.XXXXXX)"',
+    'stderr_file="$(mktemp -t codex-ultra-worker-stderr.XXXXXX)"',
+    'cleanup() { rm -f "$events_file" "$stderr_file"; }',
+    "trap cleanup EXIT INT TERM",
+    '"$codex_bin" -s read-only -c model_reasoning_effort=low exec --json'
+      + ` -m ${shellQuote(model)} ${shellQuote(task)} >"$events_file" 2>"$stderr_file"`,
+    "worker_status=$?",
+    `${shellQuote(process.execPath)} -e ${shellQuote(workerResultFilter)} "$events_file" "$stderr_file" "$worker_status"`,
+    "filter_status=$?",
+    'if [ "$worker_status" -ne 0 ]; then exit "$worker_status"; fi',
+    'exit "$filter_status"',
+  ].join("\n");
 }
 
 function exactTool(environment: ChatGptTurnEnvironment, name: string): CodexTool | undefined {
@@ -272,7 +323,7 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
         tool_count: claimed.environment.tools.length,
         command_tool: commandTool ? wireName(commandTool) : gateway ? "exec_command" : null,
         outer_tool_gateway: gateway ? wireName(gateway) : null,
-        collaboration_agent_model: claimed.environment.collaborationAgentModel ?? null,
+        ultra_worker_model: claimed.environment.ultraWorkerModel ?? null,
         capabilities: [
           "native_tool_loop",
           "session_history",
@@ -280,7 +331,7 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
           "apply_patch",
           "images",
           "tool_registry",
-          ...(claimed.environment.collaborationAgentModel ? ["ultra_native_collaboration"] : []),
+          ...(claimed.environment.ultraWorkerModel ? ["ultra_process_workers"] : []),
         ],
       });
     },
@@ -318,6 +369,45 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
             command: cmd,
             ...(workdir ? { workdir } : {}),
             ...(yield_time_ms !== undefined ? { timeout_ms: yield_time_ms } : {}),
+          };
+      return tool
+        ? invokeNative(binding_id, bound, tool, { arguments: args })
+        : invokeNestedNative(binding_id, bound, commandName, false, { arguments: args });
+    },
+  );
+
+  server.registerTool(
+    "codex_spawn_worker",
+    {
+      title: "Start a native Codex worker",
+      description: "Start one isolated read-only native Codex worker for ChatGPT Web Ultra. The configured native model is enforced, verbose JSONL is suppressed, and a long-running worker returns a session_id to poll with codex_write_stdin.",
+      inputSchema: {
+        binding_id: bindingSchema,
+        task: z.string().min(1).max(100_000),
+        workdir: z.string().max(16_384).optional(),
+        yield_time_ms: z.number().int().min(250).max(30_000).default(1_000),
+        max_output_tokens: z.number().int().min(1).max(100_000).default(20_000),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    async ({ binding_id, task, workdir, yield_time_ms, max_output_tokens }) => {
+      const bound = await environment(binding_id);
+      const model = bound.ultraWorkerModel;
+      if (!model) throw new Error("codex_spawn_worker is available only for ChatGPT Web Ultra");
+      const tool = exactTool(bound, "exec_command") ?? exactTool(bound, "shell_command");
+      const commandName = tool?.name ?? "exec_command";
+      const cmd = ultraWorkerCommand(model, task);
+      const args = commandName === "exec_command"
+        ? {
+            cmd,
+            workdir: workdir ?? bound.cwd,
+            yield_time_ms,
+            max_output_tokens,
+          }
+        : {
+            command: cmd,
+            workdir: workdir ?? bound.cwd,
+            timeout_ms: yield_time_ms,
           };
       return tool
         ? invokeNative(binding_id, bound, tool, { arguments: args })
@@ -496,8 +586,9 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
         return invokeNative(binding_id, bound, tool, { input });
       }
       if (input !== undefined) throw new Error(`Function Codex tool ${wire_name} does not accept freeform input`);
+      rejectUnsupportedUltraSpawn(bound, tool);
       return invokeNative(binding_id, bound, tool, {
-        arguments: ultraSpawnArguments(bound, tool, args ?? {}),
+        arguments: args ?? {},
       });
     },
   );

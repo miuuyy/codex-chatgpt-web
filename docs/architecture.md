@@ -34,10 +34,11 @@ codex-chatgpt-web daemon
 - ChatGPT uses a custom MCP connector backed by `openai/tunnel-client`.
 - Every connector call is bound to one outer Codex turn capability.
 - Tool calls and results remain in the same ChatGPT response while Codex executes them locally.
-- Ultra uses Extra High as the coordinator and may ask the outer Codex harness to fan out to at most
-  three collaboration agents. The broker pins every Ultra `spawn_agent` call to the configured
-  native Codex model so a child cannot recursively inherit Ultra. It removes any service-tier
-  override, leaving the user's default tier in effect.
+- Ultra uses Extra High as the coordinator and may ask the outer Codex harness to start at most
+  three native Codex worker processes. `codex_spawn_worker` pins each worker to the configured
+  native model, forces a read-only sandbox, and filters its JSONL stream down to the task ID and
+  final report. Direct `spawn_agent` calls fail closed because their encrypted collaboration payload
+  cannot be produced by the browser bridge. No service-tier override is supplied.
 
 ## Browser lifecycle
 
@@ -46,7 +47,7 @@ DevTools port and never enables WebDriver mode. Every Codex turn gets a fresh Te
 that is closed when the turn settles. Normal routes take an exclusive scheduler lane. Independently
 routed Ultra turns may occupy up to four page-scoped lanes while preserving separate CDP sessions,
 connector capabilities, prompts, response DOM, and cleanup. This browser concurrency is separate
-from Ultra's outer-Codex collaboration-agent orchestration.
+from Ultra's outer-Codex worker-process orchestration.
 
 Contexts through 40,000 serialized characters remain an inline JSON envelope. Larger contexts
 become one in-memory JSONL attachment with a manifest, ordered system/message records, and image

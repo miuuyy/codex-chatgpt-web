@@ -135,12 +135,12 @@ export function compileChatGptWebPrompt(
     ];
   const orchestrationContract = parsed._chatGptWebUltra === true && mode.localTools
     ? [
-      "The user explicitly selected ChatGPT Web Ultra. For every non-trivial task with independent workstreams, this selection authorizes collaboration subagents without another confirmation.",
-      "After binding, discover the outer Codex tool_search capability with codex_tool_inventory, use it to load collaboration or multi-agent tools, then invoke their exact returned wire names through codex_tool_call.",
-      "Spawn at most three independent subagents before waiting. Give each a concrete non-overlapping assignment and retain every returned agent id. The bridge pins spawn_agent to the native Codex model reported by codex_bind_turn and leaves service tier at the user's default.",
-      "Do not request a model or service_tier override for spawned agents. Continue the coordinator's critical-path work immediately, then make a bounded wait covering every spawned id and synthesize only completed results.",
-      "Inspect the final agent states before claiming success. If an agent errors or a wait times out, report that exact failure and finish the missing work in the coordinator; never present a spawn acknowledgement as completed agent work.",
-      "Do not spawn agents for trivial requests, duplicate the same assignment, or delegate the coordinator's immediate blocking step.",
+      "The user explicitly selected ChatGPT Web Ultra. For every non-trivial task with independent workstreams, this selection authorizes native worker processes without another confirmation.",
+      "Use codex_spawn_worker directly; do not discover or call spawn_agent or another collaboration tool. Direct collaboration payloads are incompatible with this browser bridge and fail closed.",
+      "Start at most three independent workers before polling any of them. Give each a concrete non-overlapping task and retain every returned command session_id. The bridge pins each worker to the native Codex model reported by codex_bind_turn, forces read-only sandboxing, and leaves service tier at the user's default.",
+      "After all workers have started, poll every session_id with codex_write_stdin until the process exits. A worker counts only when exit_code is zero and its filtered result contains both worker_task_id and a non-empty final_report.",
+      "Continue only non-duplicating coordinator work while workers run, then synthesize every completed report. If a worker errors, times out, lacks its task id, or lacks a final report, state that exact failure; never present process start as completed work.",
+      "Do not start workers for trivial requests, duplicate the same assignment, or delegate the coordinator's immediate blocking step.",
     ]
     : [];
   const transportResume = mode.localTools

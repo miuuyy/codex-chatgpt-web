@@ -69,14 +69,16 @@ transport, or returns a fabricated success.
 Normal browser turns are serialized. Up to four independently routed Ultra turns may run
 concurrently, but every outer Codex turn owns a distinct Temporary Chat target, CDP session,
 capability binding, prompt, and response DOM. Its page closes in a `finally` path when the turn
-settles. Ultra may separately ask the outer Codex harness for up to three collaboration agents;
-the broker pins those agents to the configured native Codex model to prevent recursive Ultra
-fan-out and removes any requested service-tier override. Tool calls for a browser turn remain in
-that same ChatGPT response. The bounded local continuation cache is private, expires, and exists
+settles. Ultra may separately ask the outer Codex harness for up to three read-only native Codex
+worker processes. The broker pins their configured native model, supplies no service-tier
+override, and filters verbose child JSONL before returning the task ID and final report. Direct
+collaboration `spawn_agent` calls fail closed because the browser bridge cannot produce their
+encrypted payload. Tool calls for a browser turn remain in that same ChatGPT response. The bounded
+local continuation cache is private, expires, and exists
 only to implement Codex `previous_response_id` replay. ChatGPT Web context compaction remains inside
 the active browser response; the bridge does not fabricate or install a Codex history checkpoint.
 
-Ultra is experimental and explicitly opt-in. It can increase both collaboration-agent work and
+Ultra is experimental and explicitly opt-in. It can increase both native worker work and
 request concurrency against one authenticated ChatGPT account. The user is responsible for account
 limits, throttling, workspace policy, and compliance with OpenAI terms. The pool is bounded; it does
 not retry to evade product limits, rotate accounts, change service tier, or bypass workspace

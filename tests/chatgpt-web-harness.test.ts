@@ -663,7 +663,7 @@ describe("ChatGPT outer-native harness v3", () => {
     }
   });
 
-  test("pins an Ultra coordinator's spawned agents to the configured native model", async () => {
+  test("exposes the configured native model to an Ultra worker coordinator", async () => {
     const socketPath = join(tmpdir(), `cgw-h3-ultra-native-${process.pid}-${Date.now()}.sock`);
     const provider: CodexProviderConfig = {
       adapter: "chatgpt-web",
@@ -685,9 +685,9 @@ describe("ChatGPT outer-native harness v3", () => {
         const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
         if (!token) throw new Error("turn token missing from compiled prompt");
         const claimed = await callTurnBroker<{
-          environment: { collaborationAgentModel?: string };
+          environment: { ultraWorkerModel?: string };
         }>(socketPath, { method: "claim", token });
-        expect(claimed.environment.collaborationAgentModel).toBe("gpt-5.6-sol");
+        expect(claimed.environment.ultraWorkerModel).toBe("gpt-5.6-sol");
         turn.onTextDelta("Ultra native-agent boundary verified.");
         return "Ultra native-agent boundary verified.";
       } finally {
@@ -833,7 +833,7 @@ describe("ChatGPT outer-native harness v3", () => {
       },
       loadedFromToolSearch: true,
     });
-    gatewayOnlyEnvironment.collaborationAgentModel = "gpt-5.6-sol";
+    gatewayOnlyEnvironment.ultraWorkerModel = "gpt-5.6-sol";
     const token = await broker.register(gatewayOnlyEnvironment, 60_000);
     const transport = new StdioClientTransport({
       command: process.execPath,
@@ -852,6 +852,7 @@ describe("ChatGPT outer-native harness v3", () => {
         "codex_bind_turn",
         "codex_exec",
         "codex_read_text_file",
+        "codex_spawn_worker",
         "codex_tool_call",
         "codex_tool_inventory",
         "codex_view_image",
@@ -864,6 +865,7 @@ describe("ChatGPT outer-native harness v3", () => {
       expect((bound.structuredContent as { execution: string }).execution).toBe("outer_codex_native");
       expect((bound.structuredContent as { outer_tool_gateway: string }).outer_tool_gateway).toBe("exec");
       expect((bound.structuredContent as { command_tool: string }).command_tool).toBe("exec_command");
+      expect((bound.structuredContent as { ultra_worker_model: string }).ultra_worker_model).toBe("gpt-5.6-sol");
 
       const inventory = await call("codex_tool_inventory", { binding_id: bindingId, query: "docs" });
       const discovered = (inventory.structuredContent as { tools: Array<{ wire_name: string }> }).tools;
@@ -875,6 +877,29 @@ describe("ChatGPT outer-native harness v3", () => {
       expect(execRequest?.input).toContain(`tools["exec_command"](${JSON.stringify({ cmd: "pwd", workdir: tempRoot })})`);
       broker.completeTool(token, execRequest!.callId, toolResult({ output: tempRoot, exit_code: 0 }));
       expect((await execPromise).structuredContent).toEqual({ output: tempRoot, exit_code: 0 });
+
+      const workerPromise = call("codex_spawn_worker", {
+        binding_id: bindingId,
+        task: "Inspect the catalog's quoted value: don't edit it",
+        workdir: tempRoot,
+        yield_time_ms: 1_000,
+      });
+      const [workerRequest] = await broker.nextToolBatch(token);
+      expect(workerRequest).toMatchObject({ wireName: "exec", freeform: true });
+      expect(workerRequest?.input).toContain('tools["exec_command"]');
+      expect(workerRequest?.input).toContain("-s read-only");
+      expect(workerRequest?.input).toContain("exec --json");
+      expect(workerRequest?.input).toContain("-m 'gpt-5.6-sol'");
+      expect(workerRequest?.input).toContain(`"workdir":${JSON.stringify(tempRoot)}`);
+      expect(workerRequest?.input).toContain('"yield_time_ms":1000');
+      expect(workerRequest?.input).toContain("quoted value: don");
+      expect(workerRequest?.input).toContain("t edit it");
+      expect(workerRequest?.input).not.toContain("service_tier");
+      broker.completeTool(token, workerRequest!.callId, toolResult({
+        output: "",
+        session_id: 4242,
+      }));
+      expect((await workerPromise).structuredContent).toEqual({ output: "", session_id: 4242 });
 
       const patchText = "*** Begin Patch\n*** Add File: test.txt\n+ok\n*** End Patch";
       const patchPromise = call("codex_apply_patch", { binding_id: bindingId, patch: patchText });
@@ -895,7 +920,7 @@ describe("ChatGPT outer-native harness v3", () => {
       broker.completeTool(token, docsRequest!.callId, toolResult({ hits: 3 }));
       expect((await docsPromise).structuredContent).toEqual({ hits: 3 });
 
-      const spawnPromise = call("codex_tool_call", {
+      const blockedSpawn = await call("codex_tool_call", {
         binding_id: bindingId,
         wire_name: "collaboration__spawn_agent",
         arguments: {
@@ -904,19 +929,13 @@ describe("ChatGPT outer-native harness v3", () => {
           service_tier: "priority",
         },
       });
-      const [spawnRequest] = await broker.nextToolBatch(token);
-      expect(spawnRequest).toMatchObject({
-        wireName: "collaboration__spawn_agent",
-        freeform: false,
-        arguments: {
-          message: "Inspect one isolated concern",
-          model: "gpt-5.6-sol",
-        },
-      });
-      expect(spawnRequest?.arguments).not.toHaveProperty("service_tier");
-      expect(spawnRequest?.input).toBeUndefined();
-      broker.completeTool(token, spawnRequest!.callId, toolResult({ status: "spawned" }));
-      expect((await spawnPromise).structuredContent).toEqual({ status: "spawned" });
+      expect(blockedSpawn.isError).toBe(true);
+      expect(blockedSpawn.content).toEqual([
+        expect.objectContaining({
+          type: "text",
+          text: expect.stringContaining("use codex_spawn_worker"),
+        }),
+      ]);
 
       const readPromise = call("codex_read_text_file", {
         binding_id: bindingId,
