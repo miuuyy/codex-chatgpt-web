@@ -5,7 +5,13 @@ import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildResponseJSON } from "../src/bridge";
-import { ChatGptCompletionTracker, chatGptImageFilePayloads, chatGptPromptFilePayloads, chatGptTurnIsComplete } from "../src/adapters/chatgpt-web/browser-worker";
+import {
+  ChatGptCompletionTracker,
+  chatGptComposerTextMatchesPrompt,
+  chatGptImageFilePayloads,
+  chatGptPromptFilePayloads,
+  chatGptTurnIsComplete,
+} from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "../src/adapters/chatgpt-web/environment";
 import { createChatGptWebAdapter } from "../src/adapters/chatgpt-web/index";
@@ -94,6 +100,13 @@ function toolResult(value: Record<string, unknown>): BrokerToolResult {
 }
 
 describe("ChatGPT outer-native harness v3", () => {
+  test("accepts only the composer's newline-to-space canonicalization", () => {
+    expect(chatGptComposerTextMatchesPrompt("first\nsecond", "first\nsecond")).toBe(true);
+    expect(chatGptComposerTextMatchesPrompt("first second", "first\nsecond")).toBe(true);
+    expect(chatGptComposerTextMatchesPrompt("first  second", "first\n\nsecond")).toBe(true);
+    expect(chatGptComposerTextMatchesPrompt("first changed", "first\nsecond")).toBe(false);
+  });
+
   test("extracts authoritative environment, tool registry, and turn identity from the Codex wire envelope", () => {
     const request = rawWireRequest(environmentXml);
     expect(extractChatGptTurnEnvironment(request)).toEqual({

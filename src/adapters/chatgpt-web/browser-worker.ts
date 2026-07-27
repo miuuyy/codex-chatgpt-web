@@ -29,6 +29,11 @@ const browserStageTimeouts = {
   send: 20_000,
 } as const;
 
+export function chatGptComposerTextMatchesPrompt(observed: string, prompt: string): boolean {
+  const canonical = (text: string): string => text.replace(/\r\n?/g, "\n").replaceAll("\n", " ");
+  return canonical(observed) === canonical(prompt);
+}
+
 export interface BrowserTurn {
   traceId: string;
   modelId: string;
@@ -454,7 +459,7 @@ export class ChatGptBrowserWorker {
     let observed = "";
     while (Date.now() < deadline) {
       observed = await this.attachedPromptText(page);
-      if (observed === prompt) return;
+      if (chatGptComposerTextMatchesPrompt(observed, prompt)) return;
       await new Promise(resolveSleep => setTimeout(resolveSleep, 50));
     }
     let commonPrefix = 0;
