@@ -10,6 +10,7 @@ import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "../src/adapters/chatgpt-web/environment";
 import { createChatGptWebAdapter } from "../src/adapters/chatgpt-web/index";
 import { chatGptHtmlToMarkdown, ChatGptMarkdownStream } from "../src/adapters/chatgpt-web/markdown";
+import { ULTRA_WORKER_COMMAND_PREFIX } from "../src/adapters/chatgpt-web/mcp-server";
 import { CHATGPT_WEB_MODEL_ID, resolveChatGptWebModelMode } from "../src/adapters/chatgpt-web/model";
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
 import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSessions, chatGptTurnExecutionKey } from "../src/adapters/chatgpt-web/turn-execution";
@@ -852,7 +853,6 @@ describe("ChatGPT outer-native harness v3", () => {
         "codex_bind_turn",
         "codex_exec",
         "codex_read_text_file",
-        "codex_spawn_worker",
         "codex_tool_call",
         "codex_tool_inventory",
         "codex_view_image",
@@ -878,9 +878,9 @@ describe("ChatGPT outer-native harness v3", () => {
       broker.completeTool(token, execRequest!.callId, toolResult({ output: tempRoot, exit_code: 0 }));
       expect((await execPromise).structuredContent).toEqual({ output: tempRoot, exit_code: 0 });
 
-      const workerPromise = call("codex_spawn_worker", {
+      const workerPromise = call("codex_exec", {
         binding_id: bindingId,
-        task: "Inspect the catalog's quoted value: don't edit it",
+        cmd: `${ULTRA_WORKER_COMMAND_PREFIX}Inspect the catalog's quoted value: don't edit it`,
         workdir: tempRoot,
         yield_time_ms: 1_000,
       });
@@ -933,7 +933,7 @@ describe("ChatGPT outer-native harness v3", () => {
       expect(blockedSpawn.content).toEqual([
         expect.objectContaining({
           type: "text",
-          text: expect.stringContaining("use codex_spawn_worker"),
+          text: expect.stringContaining("reserved Ultra worker envelope"),
         }),
       ]);
 

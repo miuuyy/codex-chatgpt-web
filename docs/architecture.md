@@ -35,10 +35,12 @@ codex-chatgpt-web daemon
 - Every connector call is bound to one outer Codex turn capability.
 - Tool calls and results remain in the same ChatGPT response while Codex executes them locally.
 - Ultra uses Extra High as the coordinator and may ask the outer Codex harness to start at most
-  three native Codex worker processes. `codex_spawn_worker` pins each worker to the configured
-  native model, forces a read-only sandbox, and filters its JSONL stream down to the task ID and
-  final report. Direct `spawn_agent` calls fail closed because their encrypted collaboration payload
-  cannot be produced by the browser bridge. No service-tier override is supplied.
+  three native Codex worker processes. A reserved Ultra envelope inside the existing `codex_exec`
+  tool is intercepted by the bridge, which pins each worker to the configured native model, forces
+  a read-only sandbox, and filters its JSONL stream down to the task ID and final report. Reusing
+  the existing tool keeps upgraded installations compatible with the connector's cached schema.
+  Direct `spawn_agent` calls fail closed because their encrypted collaboration payload cannot be
+  produced by the browser bridge. No service-tier override is supplied.
 
 ## Browser lifecycle
 

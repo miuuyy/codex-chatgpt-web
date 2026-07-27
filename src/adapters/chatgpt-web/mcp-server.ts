@@ -74,7 +74,7 @@ function rejectUnsupportedUltraSpawn(
   if (environment.ultraWorkerModel && /(?:^|__)spawn_agent$/.test(wireName(tool))) {
     throw new Error(
       "Direct collaboration spawn_agent is incompatible with the ChatGPT Web bridge; "
-      + "use codex_spawn_worker so native Codex creates the worker task",
+      + "use the reserved Ultra worker envelope through codex_exec",
     );
   }
 }
@@ -125,6 +125,8 @@ console.log(JSON.stringify({
 }));
 if (status === 0 && (!workerTaskId || !finalReport)) process.exitCode = 91;
 `.trim();
+
+export const ULTRA_WORKER_COMMAND_PREFIX = "[[CODEX_ULTRA_WORKER]]\n";
 
 export function ultraWorkerCommand(model: string, task: string): string {
   const appCodex = "/Applications/ChatGPT.app/Contents/Resources/codex";
@@ -355,59 +357,32 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
     async ({ binding_id, cmd, workdir, yield_time_ms, max_output_tokens, tty }, extra) => {
       console.error(`[chatgpt-web-mcp] codex_exec scope=${requestScopeSummary(extra)}`);
       const bound = await environment(binding_id);
+      const workerTask = cmd.startsWith(ULTRA_WORKER_COMMAND_PREFIX)
+        ? cmd.slice(ULTRA_WORKER_COMMAND_PREFIX.length).trim()
+        : undefined;
+      if (workerTask !== undefined && !workerTask) {
+        throw new Error("The reserved Ultra worker envelope requires a non-empty task");
+      }
+      if (workerTask !== undefined && !bound.ultraWorkerModel) {
+        throw new Error("The reserved Ultra worker envelope is available only for ChatGPT Web Ultra");
+      }
+      const effectiveCommand = workerTask === undefined
+        ? cmd
+        : ultraWorkerCommand(bound.ultraWorkerModel!, workerTask);
       const tool = exactTool(bound, "exec_command") ?? exactTool(bound, "shell_command");
       const commandName = tool?.name ?? "exec_command";
       const args = commandName === "exec_command"
         ? {
-            cmd,
+            cmd: effectiveCommand,
             ...(workdir ? { workdir } : {}),
             ...(yield_time_ms !== undefined ? { yield_time_ms } : {}),
             ...(max_output_tokens !== undefined ? { max_output_tokens } : {}),
             ...(tty !== undefined ? { tty } : {}),
           }
         : {
-            command: cmd,
+            command: effectiveCommand,
             ...(workdir ? { workdir } : {}),
             ...(yield_time_ms !== undefined ? { timeout_ms: yield_time_ms } : {}),
-          };
-      return tool
-        ? invokeNative(binding_id, bound, tool, { arguments: args })
-        : invokeNestedNative(binding_id, bound, commandName, false, { arguments: args });
-    },
-  );
-
-  server.registerTool(
-    "codex_spawn_worker",
-    {
-      title: "Start a native Codex worker",
-      description: "Start one isolated read-only native Codex worker for ChatGPT Web Ultra. The configured native model is enforced, verbose JSONL is suppressed, and a long-running worker returns a session_id to poll with codex_write_stdin.",
-      inputSchema: {
-        binding_id: bindingSchema,
-        task: z.string().min(1).max(100_000),
-        workdir: z.string().max(16_384).optional(),
-        yield_time_ms: z.number().int().min(250).max(30_000).default(1_000),
-        max_output_tokens: z.number().int().min(1).max(100_000).default(20_000),
-      },
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-    },
-    async ({ binding_id, task, workdir, yield_time_ms, max_output_tokens }) => {
-      const bound = await environment(binding_id);
-      const model = bound.ultraWorkerModel;
-      if (!model) throw new Error("codex_spawn_worker is available only for ChatGPT Web Ultra");
-      const tool = exactTool(bound, "exec_command") ?? exactTool(bound, "shell_command");
-      const commandName = tool?.name ?? "exec_command";
-      const cmd = ultraWorkerCommand(model, task);
-      const args = commandName === "exec_command"
-        ? {
-            cmd,
-            workdir: workdir ?? bound.cwd,
-            yield_time_ms,
-            max_output_tokens,
-          }
-        : {
-            command: cmd,
-            workdir: workdir ?? bound.cwd,
-            timeout_ms: yield_time_ms,
           };
       return tool
         ? invokeNative(binding_id, bound, tool, { arguments: args })
