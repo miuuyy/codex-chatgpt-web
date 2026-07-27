@@ -165,8 +165,10 @@ export function createNgrokTunnelConfig(options: {
   };
 }
 
-export function ngrokConnectorUrl(config: NgrokTunnelConfig): string {
-  return `${config.url}/mcp`;
+export function ngrokConnectorUrl(config: NgrokTunnelConfig, accessToken?: string): string {
+  const endpoint = new URL(`${config.url.replace(/\/$/, "")}/mcp`);
+  if (accessToken) endpoint.searchParams.set("access_token", accessToken);
+  return endpoint.toString();
 }
 
 export function ngrokStatusPath(): string {
@@ -273,7 +275,7 @@ export function tunnelStatus(config: AppConfig): TunnelRuntimeStatus {
         healthy: ready,
         ready,
         state: ready ? "ready" : "starting",
-        detail: ready ? `endpoint=${ngrokConnectorUrl(config.tunnel)}` : "ngrok endpoint has not reported ready",
+        detail: ready ? `endpoint=${ngrokConnectorUrl(config.tunnel)} (authentication required)` : "ngrok endpoint has not reported ready",
       };
     } catch {
       return {

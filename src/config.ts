@@ -52,6 +52,7 @@ export interface AppConfig {
   proAvailable: boolean;
   autoApproveToolCalls: boolean;
   controlToken: string;
+  mcpAccessToken: string;
   runtimeCommand: string[];
   acknowledgedUnofficialAt?: string;
   tunnel?: TunnelConfig;
@@ -108,6 +109,7 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     proAvailable: false,
     autoApproveToolCalls: false,
     controlToken: randomBytes(32).toString("base64url"),
+    mcpAccessToken: randomBytes(32).toString("base64url"),
     runtimeCommand: currentRuntimeCommand(),
   };
 }
@@ -165,6 +167,9 @@ export function loadConfigForSetup(): AppConfig {
     raw.version = 2;
     raw.mode = "browser-only";
   }
+  if (raw.version === 2 && typeof raw.mcpAccessToken !== "string") {
+    raw.mcpAccessToken = randomBytes(32).toString("base64url");
+  }
   return parseConfig(raw, path);
 }
 
@@ -190,12 +195,13 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (parsed.host !== "127.0.0.1") throw new Error("The Responses proxy must bind to 127.0.0.1");
   if (!Number.isInteger(parsed.port) || parsed.port! < 1 || parsed.port! > 65_535) throw new Error(`Invalid port in ${path}`);
   const requiredStrings: Array<keyof AppConfig> = [
-    "appName", "storageStatePath", "brokerSocketPath", "controlToken",
+    "appName", "storageStatePath", "brokerSocketPath", "controlToken", "mcpAccessToken",
   ];
   for (const key of requiredStrings) {
     if (typeof parsed[key] !== "string" || !(parsed[key] as string).trim()) throw new Error(`Missing ${key} in ${path}`);
   }
   if (!/^[A-Za-z0-9_-]{40,}$/.test(parsed.controlToken!)) throw new Error(`Invalid controlToken in ${path}`);
+  if (!/^[A-Za-z0-9_-]{40,}$/.test(parsed.mcpAccessToken!)) throw new Error(`Invalid mcpAccessToken in ${path}`);
   if (parsed.mode === "full" && !parsed.tunnel) throw new Error("Full mode requires tunnel configuration");
   if (parsed.tunnel && !(parsed.tunnel as { provider?: string }).provider) {
     (parsed.tunnel as { provider: string }).provider = "openai";

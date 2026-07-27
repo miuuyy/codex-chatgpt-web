@@ -23,11 +23,13 @@ export async function runNgrokRuntime(options: {
   brokerSocketPath: string;
   port: number;
   url: string;
+  accessToken: string;
 }): Promise<void> {
   rmSync(ngrokStatusPath(), { force: true });
   const server = startChatGptMcpHttpServer({
     brokerSocketPath: options.brokerSocketPath,
     port: options.port,
+    accessToken: options.accessToken,
   });
   const child = Bun.spawn([
     options.binaryPath,

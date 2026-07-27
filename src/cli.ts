@@ -47,6 +47,7 @@ Setup options:
   --tunnel-provider PROVIDER   openai or ngrok (default: openai)
   --ngrok-path PATH            ngrok executable
   --ngrok-url URL              Stable HTTPS ngrok endpoint
+  --rotate-mcp-token           Replace the MCP connector access token
   --replace-codex-route        Reversibly replace an existing openai_base_url
   --restart-service            Explicitly restart this project's daemon after an update
   --login                      Refresh the stored ChatGPT login even if one exists
@@ -143,6 +144,7 @@ async function setupCommand(args: string[]): Promise<void> {
   if (ngrokPath) options.ngrokPath = ngrokPath;
   if (ngrokUrl) options.ngrokUrl = ngrokUrl;
   if (appName) options.appName = appName;
+  options.rotateMcpAccessToken = takeFlag(args, "--rotate-mcp-token");
   if (tunnelId) options.tunnelId = tunnelId;
   if (runtimeKeyFile) options.runtimeKeyFile = runtimeKeyFile;
   options.forceLogin = takeFlag(args, "--login");
@@ -331,7 +333,13 @@ async function main(): Promise<void> {
     if (!binaryPath || !brokerSocketPath || !url || !Number.isInteger(port)) {
       throw new Error("ngrok-tunnel requires --ngrok, --broker-socket, --port, and --url");
     }
-    await runNgrokRuntime({ binaryPath, brokerSocketPath, port, url });
+    await runNgrokRuntime({
+      binaryPath,
+      brokerSocketPath,
+      port,
+      url,
+      accessToken: loadConfig().mcpAccessToken,
+    });
   }
   else if (command === "service") await serviceCommand(args);
   else if (command === "tunnel") await tunnelCommand(args);

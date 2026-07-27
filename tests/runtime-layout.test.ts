@@ -41,8 +41,10 @@ test("setup explicitly migrates v1 pro-only config to v2 browser-only", () => {
   })}\n`);
 
   expect(() => loadConfig()).toThrow("rerun setup to migrate");
-  expect(loadConfigForSetup()).toMatchObject({ version: 2, mode: "browser-only" });
-  expect(loadConfigForSetup()).toMatchObject({
+  const migrated = loadConfigForSetup();
+  expect(migrated).toMatchObject({ version: 2, mode: "browser-only" });
+  expect(migrated.mcpAccessToken).toMatch(/^[A-Za-z0-9_-]{40,}$/);
+  expect(migrated).toMatchObject({
     browserEngine: "chromium",
     browserExecutablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   });

@@ -34,6 +34,7 @@ export interface SetupOptions {
   tunnelProvider?: "openai" | "ngrok";
   ngrokPath?: string;
   ngrokUrl?: string;
+  rotateMcpAccessToken?: boolean;
 }
 
 export interface SetupResult {
@@ -81,6 +82,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     proAvailable: before.proAvailable,
     autoApproveToolCalls: before.autoApproveToolCalls,
     controlToken: before.controlToken,
+    mcpAccessToken: before.mcpAccessToken,
     runtimeCommand: before.runtimeCommand,
     tunnel: before.tunnel,
   }) !== JSON.stringify({
@@ -98,6 +100,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     proAvailable: after.proAvailable,
     autoApproveToolCalls: after.autoApproveToolCalls,
     controlToken: after.controlToken,
+    mcpAccessToken: after.mcpAccessToken,
     runtimeCommand: after.runtimeCommand,
     tunnel: after.tunnel,
   });
@@ -107,7 +110,8 @@ export function tunnelWorkerRuntimeChanged(before: AppConfig | undefined, after:
   if (!before || before.mode !== "full" || after.mode !== "full") return false;
   return before.releaseVersion !== after.releaseVersion
     || JSON.stringify(before.runtimeCommand) !== JSON.stringify(after.runtimeCommand)
-    || before.brokerSocketPath !== after.brokerSocketPath;
+    || before.brokerSocketPath !== after.brokerSocketPath
+    || before.mcpAccessToken !== after.mcpAccessToken;
 }
 
 async function assertPortAvailable(host: string, port: number): Promise<void> {
@@ -155,6 +159,7 @@ function baseConfig(existing: AppConfig | undefined, options: SetupOptions): App
   }
   if (options.browserExecutablePath) config.browserExecutablePath = options.browserExecutablePath;
   if (options.appName) config.appName = options.appName;
+  if (options.rotateMcpAccessToken) config.mcpAccessToken = randomBytes(32).toString("base64url");
   if (options.autoApproveToolCalls !== undefined) config.autoApproveToolCalls = options.autoApproveToolCalls;
   if (options.acknowledgedUnofficial) config.acknowledgedUnofficialAt = new Date().toISOString();
   if (!config.acknowledgedUnofficialAt) {
@@ -314,7 +319,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     codexRestartRequired: true,
     connectorSetupRequired: config.mode === "full",
     ...(config.mode === "full" && config.tunnel && isNgrokTunnel(config.tunnel)
-      ? { connectorEndpoint: ngrokConnectorUrl(config.tunnel) }
+      ? { connectorEndpoint: ngrokConnectorUrl(config.tunnel, config.mcpAccessToken) }
       : {}),
   };
 }
