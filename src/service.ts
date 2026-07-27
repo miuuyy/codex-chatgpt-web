@@ -103,10 +103,13 @@ ${args.map(arg => `    <string>${xml(arg)}</string>`).join("\n")}
 
 function systemdUnit(config: AppConfig): string {
   const args = [...config.runtimeCommand, "serve"];
+  const graphicalSession = config.headed
+    ? "After=network-online.target graphical-session.target\nWants=network-online.target\nPartOf=graphical-session.target"
+    : "After=network-online.target\nWants=network-online.target";
+  const installTarget = config.headed ? "graphical-session.target" : "default.target";
   return `[Unit]
 Description=Codex ChatGPT Web daemon
-After=network-online.target
-Wants=network-online.target
+${graphicalSession}
 
 [Service]
 Type=simple
@@ -116,7 +119,7 @@ Restart=always
 RestartSec=10
 
 [Install]
-WantedBy=default.target
+WantedBy=${installTarget}
 `;
 }
 
@@ -166,7 +169,7 @@ export function installService(config: AppConfig): ServiceStatus {
     const next = systemdUnit(config);
     if (!existsSync(path) || readFileSync(path, "utf8") !== next) atomicWriteFile(path, next);
     runChecked("systemctl", ["--user", "daemon-reload"]);
-    runChecked("systemctl", ["--user", "enable", "--now", SYSTEMD_UNIT]);
+    runChecked("systemctl", ["--user", "reenable", "--now", SYSTEMD_UNIT]);
     return getServiceStatus();
   }
   const path = plistPath();
