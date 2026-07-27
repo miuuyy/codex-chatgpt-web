@@ -652,6 +652,9 @@ export class ChatGptBrowserWorker {
           && rect.width > 0
           && rect.height > 0;
       };
+      const elementText = candidate => (
+        typeof candidate.innerText === "string" ? candidate.innerText : candidate.textContent || ""
+      ).trim();
 
       const rendered = [...root.querySelectorAll(".markdown")].at(-1);
       const renderedChildren = rendered ? [...rendered.children] : [];
@@ -676,14 +679,14 @@ export class ChatGptBrowserWorker {
         .sort(([left], [right]) => left === right
           ? 0
           : left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1)
-        .map(([candidate, kind]) => ({ kind, text: candidate.innerText.trim() }))
+        .map(([candidate, kind]) => ({ kind, text: elementText(candidate) }))
         .filter(block => block.text.length > 0)
         .filter((block, index, blocks) => (
           blocks.findIndex(other => other.kind === block.kind && other.text === block.text) === index
         ));
       return {
         responsePresent: true,
-        visibleText: rendered?.innerText.trim() ?? "",
+        visibleText: rendered ? elementText(rendered) : "",
         fullHtml: rendered?.innerHTML ?? "",
         stableHtml: renderedChildren.slice(0, -1).map(child => child.outerHTML).join(""),
         completionActionVisible: completionAction !== undefined,
@@ -698,6 +701,9 @@ export class ChatGptBrowserWorker {
     const diagnostic = await page.evaluate<{ response: unknown; overlays: unknown }>(`(() => {
       const root = document.querySelectorAll('section[data-testid^="conversation-turn-"][data-turn="assistant"]')
         .item(${responseIndex});
+      const elementText = candidate => (
+        typeof candidate.innerText === "string" ? candidate.innerText : candidate.textContent || ""
+      ).trim();
       const response = root instanceof HTMLElement
         ? (() => {
         const descriptors = [...root.querySelectorAll("[role], [data-testid], button, [aria-label]")]
@@ -712,10 +718,10 @@ export class ChatGptBrowserWorker {
             testId: candidate.getAttribute("data-testid"),
             ariaLabel: candidate.getAttribute("aria-label"),
             title: candidate.getAttribute("title"),
-            text: candidate.innerText.trim().slice(0, 500),
+            text: elementText(candidate).slice(0, 500),
           }));
         return {
-          text: root.innerText.trim().slice(0, 2_000),
+          text: elementText(root).slice(0, 2_000),
           descriptors,
         };
       })()
@@ -733,7 +739,7 @@ export class ChatGptBrowserWorker {
             role: candidate.getAttribute("role"),
             testId: candidate.getAttribute("data-testid"),
             ariaLabel: candidate.getAttribute("aria-label"),
-            text: candidate.innerText.trim().slice(0, 1_000),
+            text: elementText(candidate).slice(0, 1_000),
           };
         });
       return { response, overlays };
