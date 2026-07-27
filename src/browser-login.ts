@@ -91,13 +91,14 @@ export async function loginToChatGpt(
   options: { timeoutMs?: number } = {},
 ): Promise<BrowserLoginResult> {
   const executable = ensureBrowserExecutable(config);
+  const loginExecutable = normalLoginBrowserExecutable(config.browserEngine, executable);
   const name = browserName(config.browserEngine);
   const profileDir = join(dirname(config.storageStatePath), "login-profile");
   mkdirSync(profileDir, { recursive: true, mode: 0o700 });
   process.stdout.write(
     `A normal ${name} window is open. Sign in to ChatGPT, confirm that the composer is visible, then quit this dedicated ${name} instance completely.\n`,
   );
-  const loginBrowser = spawn(executable, browserLoginArguments(config.browserEngine, profileDir), { env: process.env, stdio: "ignore" });
+  const loginBrowser = spawn(loginExecutable, browserLoginArguments(config.browserEngine, profileDir), { env: process.env, stdio: "ignore" });
   const loginExit = await new Promise<number>((resolveExit, rejectExit) => {
     loginBrowser.once("error", rejectExit);
     loginBrowser.once("exit", (code, signal) => {
@@ -141,6 +142,16 @@ export async function loginToChatGpt(
     await context.close();
     if (browserLoginStateExists(config)) rmSync(profileDir, { recursive: true, force: true });
   }
+}
+
+export function normalLoginBrowserExecutable(
+  engine: BrowserEngine,
+  automationExecutable: string,
+  platform = process.platform,
+  linuxFirefoxPath = "/usr/bin/firefox",
+): string {
+  if (engine === "firefox" && platform === "linux" && existsSync(linuxFirefoxPath)) return linuxFirefoxPath;
+  return automationExecutable;
 }
 
 export function browserLoginArguments(engine: BrowserEngine, profileDir: string): string[] {

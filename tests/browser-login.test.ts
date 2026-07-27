@@ -2,7 +2,13 @@ import { expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { browserLoginArguments, browserLoginStateExists, loginToChatGpt, loginVerificationMarkerPath } from "../src/browser-login";
+import {
+  browserLoginArguments,
+  browserLoginStateExists,
+  loginToChatGpt,
+  loginVerificationMarkerPath,
+  normalLoginBrowserExecutable,
+} from "../src/browser-login";
 import { CHATGPT_TEMPORARY_CHAT_URL } from "../src/chatgpt-session";
 import { defaultConfig } from "../src/config";
 
@@ -43,6 +49,18 @@ test("Firefox login uses a dedicated profile without Chromium flags", () => {
     "-new-window",
     CHATGPT_TEMPORARY_CHAT_URL,
   ]);
+});
+
+test("Linux Firefox login uses the system browser instead of the automation build", () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-system-firefox-"));
+  try {
+    const systemFirefox = join(root, "firefox");
+    writeFileSync(systemFirefox, "");
+    expect(normalLoginBrowserExecutable("firefox", "/playwright/firefox", "linux", systemFirefox)).toBe(systemFirefox);
+    expect(normalLoginBrowserExecutable("chromium", "/playwright/chromium", "linux", systemFirefox)).toBe("/playwright/chromium");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("a storage-state file is not trusted without a verification marker", () => {
