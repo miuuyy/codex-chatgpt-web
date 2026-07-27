@@ -80,6 +80,33 @@ describe("trusted current Codex environment envelope", () => {
     expect(() => extractChatGptTurnEnvironment(currentWire({ includeIds: false })))
       .toThrow("missing cwd");
   });
+
+  test("accepts the Codex 0.145 split permissions instructions", () => {
+    const parsed = currentWire({ sandbox: "read-only", includeIds: false });
+    parsed.context.messages.unshift(
+      {
+        role: "developer",
+        content: "<permissions instructions>\nFilesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The sandbox only permits reading files.\n</permissions instructions>",
+        timestamp: 0,
+      },
+      {
+        role: "developer",
+        content: `<environment_context>
+  <cwd>${root}</cwd>
+  <filesystem><workspace_roots><root>${root}</root></workspace_roots><permission_profile type="managed"><file_system type="restricted"><entry access="read"><special>:root</special></entry></file_system></permission_profile></filesystem>
+</environment_context>`,
+        timestamp: 0,
+      },
+    );
+
+    expect(extractChatGptTurnEnvironment(parsed)).toEqual({
+      cwd: root,
+      roots: [root],
+      writableRoots: [],
+      sandboxPolicy: { type: "readOnly", networkAccess: false },
+      tools: [],
+    });
+  });
 });
 
 describe("trusted Codex task environment continuity", () => {

@@ -78,9 +78,12 @@ function environmentBeforeUser(input: unknown[], userIndex: number, expectedTurn
 
 function sandboxTypeFromEnvironment(text: string): ChatGptSandboxPolicy["type"] | undefined {
   const unrestricted = /<permission_profile\s+type=["']disabled["'][^>]*>[\s\S]*?<file_system\s+type=["']unrestricted["'][^>]*\/?\s*>/i.test(text)
-    || /<sandbox_mode>danger-full-access<\/sandbox_mode>/i.test(text);
-  const workspaceWrite = /<sandbox_mode>workspace-write<\/sandbox_mode>/i.test(text);
-  const readOnly = /<sandbox_mode>read-only<\/sandbox_mode>/i.test(text);
+    || /<sandbox_mode>danger-full-access<\/sandbox_mode>/i.test(text)
+    || /`sandbox_mode`\s+is\s+`danger-full-access`/i.test(text);
+  const workspaceWrite = /<sandbox_mode>workspace-write<\/sandbox_mode>/i.test(text)
+    || /`sandbox_mode`\s+is\s+`workspace-write`/i.test(text);
+  const readOnly = /<sandbox_mode>read-only<\/sandbox_mode>/i.test(text)
+    || /`sandbox_mode`\s+is\s+`read-only`/i.test(text);
   if (Number(unrestricted) + Number(workspaceWrite) + Number(readOnly) !== 1) return undefined;
   return unrestricted ? "dangerFullAccess" : workspaceWrite ? "workspaceWrite" : "readOnly";
 }
@@ -194,12 +197,11 @@ function rawEnvironmentText(parsed: CodexParsedRequest): string | undefined {
 
 function trustedEnvironmentText(parsed: CodexParsedRequest): string {
   const raw = rawEnvironmentText(parsed);
-  if (raw) return raw;
   const system = parsed.context.systemPrompt ?? [];
   const developer = parsed.context.messages
     .filter(message => message.role === "developer")
     .map(message => contentText(message.content));
-  return [...system, ...developer].join("\n");
+  return [raw, ...system, ...developer].filter((value): value is string => typeof value === "string").join("\n");
 }
 
 function decodeXmlText(value: string): string {

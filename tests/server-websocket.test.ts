@@ -21,6 +21,23 @@ function nextJson(socket: WebSocket): Promise<Record<string, unknown>> {
   });
 }
 
+function nextJsonOfType(socket: WebSocket, type: string): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const onMessage = (event: MessageEvent) => {
+      try {
+        const payload = JSON.parse(String(event.data)) as Record<string, unknown>;
+        if (payload.type !== type) return;
+        socket.removeEventListener("message", onMessage);
+        resolve(payload);
+      } catch (error) {
+        socket.removeEventListener("message", onMessage);
+        reject(error);
+      }
+    };
+    socket.addEventListener("message", onMessage);
+  });
+}
+
 test("Responses WebSocket accepts reusable response.create prewarms", async () => {
   const config = { ...defaultConfig("browser-only"), port: 0 };
   const server = startServer(config);
@@ -74,6 +91,23 @@ test("Responses WebSocket accepts reusable response.create prewarms", async () =
     const second = await secondMessage;
     expect(second.type).toBe("response.completed");
     expect((second.response as { id: string }).id).not.toBe(firstId);
+
+    const failedMessage = nextJsonOfType(socket, "error");
+    socket.send(JSON.stringify({
+      type: "response.create",
+      model: "chatgpt-web/high",
+      instructions: "",
+      input: [{ role: "user", content: [{ type: "input_text", text: "missing trusted environment" }] }],
+      tools: [],
+      tool_choice: "auto",
+      parallel_tool_calls: true,
+      store: false,
+      stream: true,
+    }));
+    expect(await failedMessage).toMatchObject({
+      type: "error",
+      status: 500,
+    });
   } finally {
     socket.close();
     await server.stop(true);

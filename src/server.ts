@@ -56,7 +56,30 @@ function forwardSseEvent(socket: ResponsesWebSocket, block: string): void {
     .filter(line => line.startsWith("data:"))
     .map(line => line.slice(5).replace(/^ /, ""))
     .join("\n");
-  if (data && data !== "[DONE]") socket.send(data);
+  if (!data || data === "[DONE]") return;
+  try {
+    const event = JSON.parse(data) as {
+      type?: unknown;
+      response?: { error?: { code?: unknown; type?: unknown; message?: unknown } };
+    };
+    if (event.type === "response.failed") {
+      const error = event.response?.error;
+      const status = typeof error?.code === "number" && error.code >= 400 && error.code <= 599
+        ? error.code
+        : 500;
+      const code = typeof error?.type === "string"
+        ? error.type
+        : typeof error?.code === "string"
+          ? error.code
+          : "server_error";
+      const message = typeof error?.message === "string" ? error.message : "Responses request failed";
+      sendWebSocketError(socket, message, code, status);
+      return;
+    }
+  } catch {
+    // The Codex client will ignore an unknown non-JSON event just as it does for HTTP SSE.
+  }
+  socket.send(data);
 }
 
 async function forwardResponseToWebSocket(socket: ResponsesWebSocket, response: Response): Promise<void> {
