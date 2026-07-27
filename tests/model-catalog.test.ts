@@ -82,7 +82,9 @@ describe("native /models augmentation", () => {
     const models = second.models as Array<Record<string, unknown>>;
     const web = models.filter(model => String(model.slug).startsWith("chatgpt-web/"));
     expect(web.map(model => model.slug)).toEqual(
-      CHATGPT_WEB_MODEL_ROUTES.filter(route => !route.requiresPro).map(route => route.slug),
+      CHATGPT_WEB_MODEL_ROUTES
+        .filter(route => !route.requiresPro && !route.requiresFullHarness)
+        .map(route => route.slug),
     );
     expect(web.every(model => model.tool_mode === null)).toBe(true);
     expect(web.every(model => (model.supported_reasoning_levels as unknown[]).length === 1)).toBe(true);

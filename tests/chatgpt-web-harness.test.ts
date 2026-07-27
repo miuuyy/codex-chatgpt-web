@@ -774,6 +774,16 @@ describe("ChatGPT outer-native harness v3", () => {
     gatewayOnlyEnvironment.tools = gatewayOnlyEnvironment.tools.filter(tool => (
       tool.name === "exec" || tool.name === "search_openai_docs"
     ));
+    gatewayOnlyEnvironment.tools.push({
+      name: "collaboration__spawn_agent",
+      description: "Spawn one collaboration subagent",
+      parameters: {
+        type: "object",
+        properties: { message: { type: "string" } },
+        required: ["message"],
+      },
+      loadedFromToolSearch: true,
+    });
     const token = await broker.register(gatewayOnlyEnvironment, 60_000);
     const transport = new StdioClientTransport({
       command: process.execPath,
@@ -791,6 +801,7 @@ describe("ChatGPT outer-native harness v3", () => {
         "codex_apply_patch",
         "codex_bind_turn",
         "codex_exec",
+        "codex_read_text_file",
         "codex_tool_call",
         "codex_tool_inventory",
         "codex_view_image",
@@ -833,6 +844,49 @@ describe("ChatGPT outer-native harness v3", () => {
       expect(docsRequest?.input).toContain('tools["mcp__openaiDeveloperDocs__search_openai_docs"]({"query":"Responses API"})');
       broker.completeTool(token, docsRequest!.callId, toolResult({ hits: 3 }));
       expect((await docsPromise).structuredContent).toEqual({ hits: 3 });
+
+      const spawnPromise = call("codex_tool_call", {
+        binding_id: bindingId,
+        wire_name: "collaboration__spawn_agent",
+        arguments: { message: "Inspect one isolated concern" },
+      });
+      const [spawnRequest] = await broker.nextToolBatch(token);
+      expect(spawnRequest).toMatchObject({
+        wireName: "collaboration__spawn_agent",
+        freeform: false,
+        arguments: { message: "Inspect one isolated concern" },
+      });
+      expect(spawnRequest?.input).toBeUndefined();
+      broker.completeTool(token, spawnRequest!.callId, toolResult({ status: "spawned" }));
+      expect((await spawnPromise).structuredContent).toEqual({ status: "spawned" });
+
+      const readPromise = call("codex_read_text_file", {
+        binding_id: bindingId,
+        path: join(tempRoot, "notes.txt"),
+        max_bytes: 1_024,
+      });
+      const [readRequest] = await broker.nextToolBatch(token);
+      expect(readRequest).toMatchObject({ wireName: "exec", freeform: true });
+      expect(readRequest?.input).toContain('tools["exec_command"]');
+      expect(readRequest?.input).toContain("/usr/bin/head -c 1024");
+      broker.completeTool(token, readRequest!.callId, {
+        content: [
+          { type: "text", text: "Script completed\nWall time 0.1 seconds\nOutput:\n" },
+          { type: "text", text: JSON.stringify({ output: "hello\n", exit_code: 0 }) },
+        ],
+      });
+      const readResult = await readPromise;
+      expect(readResult.structuredContent).toEqual({ text: "hello\n" });
+      expect(readResult.content).toEqual([{ type: "text", text: "hello\n" }]);
+
+      const textAsImage = await call("codex_view_image", {
+        binding_id: bindingId,
+        path: join(tempRoot, "notes.txt"),
+      });
+      expect(textAsImage.isError).toBe(true);
+      expect(textAsImage.structuredContent).toMatchObject({
+        suggested_tool: "codex_read_text_file",
+      });
     } finally {
       await client.close().catch(() => {});
       broker.revoke(token);

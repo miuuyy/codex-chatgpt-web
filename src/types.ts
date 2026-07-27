@@ -36,6 +36,8 @@ export interface CodexParsedRequest {
    * provider-private continuation caches again on every later turn.
    */
   _contextCompactionBoundary?: boolean;
+  /** True only for the explicit full-harness ChatGPT Web Ultra route. */
+  _chatGptWebUltra?: boolean;
 }
 
 export interface CodexContext {
@@ -298,10 +300,14 @@ export interface CodexProviderConfig {
   chatgptWeb?: {
     /** ChatGPT custom connector attached to tool-capable temporary chats. */
     appName?: string;
-    /** Playwright storage-state file created by the explicit browser login. */
+    /** Private verification record for the dedicated Chrome profile. It contains no cookies. */
     storageStatePath?: string;
-    /** System Chrome executable. The runtime never downloads a browser. */
+    /** System Google Chrome executable. The runtime never downloads a browser. */
     chromeExecutablePath?: string;
+    /** Dedicated ordinary-Chrome profile controlled through the loopback DevTools endpoint. */
+    chromeProfilePath?: string;
+    /** Fixed loopback Chrome DevTools port. */
+    chromeDebugPort?: number;
     /** Unix socket bridging the turn-bound MCP capability into outer Codex tools. */
     brokerSocketPath?: string;
     /** Persisted, trusted Codex task authority used for follow-up turns that omit the envelope. */

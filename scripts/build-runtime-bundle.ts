@@ -17,7 +17,6 @@ const build = await Bun.build({
   entrypoints: [join(root, "src", "cli.ts")],
   target: "bun",
   minify: true,
-  external: ["playwright-core"],
   packages: "external",
   outdir: appDir,
   naming: "cli.js",
@@ -64,16 +63,15 @@ chmodSync(join(binDir, "codex-chatgpt-web"), 0o755);
 
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version?: string };
 if (packageJson.version !== VERSION) throw new Error("package.json and runtime version are out of sync");
-const playwrightPackage = join(appDir, "node_modules", "playwright-core", "package.json");
 writeFileSync(join(output, "manifest.json"), `${JSON.stringify({
   schemaVersion: 1,
   appVersion: VERSION,
   bunVersion: Bun.version,
   platform: process.platform,
   arch: process.arch,
+  browserTransport: "chrome-devtools",
   launcher: "bin/codex-chatgpt-web",
   entrypoint: "app/cli.js",
-  playwright: JSON.parse(readFileSync(playwrightPackage, "utf8")).version,
 }, null, 2)}\n`);
 
 process.stdout.write(`${output}\n`);

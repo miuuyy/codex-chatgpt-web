@@ -32,9 +32,10 @@ default.
 
 ### Browser session theft
 
-`storage-state.json` can authorize ChatGPT access. It is stored with user-only permissions. Never
-sync, upload, attach, or commit the application home. On suspected exposure, sign out/revoke the
-ChatGPT session and run `login` again.
+The dedicated `chrome-profile` can authorize ChatGPT access. It is stored with user-only
+permissions, and cookies are never exported to the bridge. Never sync, upload, attach, or commit
+the application home. On suspected exposure, sign out/revoke the ChatGPT session and run `login`
+again.
 
 ### Tunnel credential theft
 
@@ -65,11 +66,21 @@ transport, or returns a fabricated success.
 
 ### Cross-turn data leakage
 
-Browser turns are serialized. Every outer Codex turn navigates to a fresh Temporary Chat page and
-closes the prior page. Tool calls for that turn remain in the same ChatGPT response. The bounded
+Normal browser turns are serialized. Up to four independently routed Ultra turns may run
+concurrently, but every outer Codex turn owns a distinct Temporary Chat target, CDP session,
+capability binding, prompt, and response DOM. Its page closes in a `finally` path when the turn
+settles. Ultra may separately ask the outer Codex harness for up to three collaboration agents;
+those agents inherit the outer model and service-tier defaults and are not forced onto the
+ChatGPT Web route. Tool calls for a browser turn remain in that same ChatGPT response. The bounded
 local continuation cache is private, expires, and exists only to implement Codex
 `previous_response_id` replay. ChatGPT Web context compaction remains inside the active browser
 response; the bridge does not fabricate or install a Codex history checkpoint.
+
+Ultra is experimental and explicitly opt-in. It can increase both collaboration-agent work and
+request concurrency against one authenticated ChatGPT account. The user is responsible for account
+limits, throttling, workspace policy, and compliance with OpenAI terms. The pool is bounded; it does
+not retry to evade product limits, rotate accounts, change service tier, or bypass workspace
+controls. ChatGPT may still throttle or reject concurrent turns.
 
 ## Network exposure
 

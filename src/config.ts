@@ -26,6 +26,8 @@ export interface AppConfig {
   contextWindow: number;
   appName: string;
   chromeExecutablePath: string;
+  chromeProfilePath: string;
+  chromeDebugPort: number;
   storageStatePath: string;
   brokerSocketPath: string;
   headed: boolean;
@@ -81,7 +83,9 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     contextWindow: 256_000,
     appName: "Codex Native",
     chromeExecutablePath: defaultChromeExecutable(),
-    storageStatePath: join(home, "browser", "storage-state.json"),
+    chromeProfilePath: join(home, "chrome-profile"),
+    chromeDebugPort: 17842,
+    storageStatePath: join(home, "browser", "session.json"),
     brokerSocketPath: join(home, "runtime", "turn-broker.sock"),
     headed: true,
     proAvailable: false,
@@ -161,17 +165,23 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid configuration object in ${path}`);
   const parsed = value as Partial<AppConfig>;
   if (parsed.version !== 2) throw new Error(`Unsupported configuration version in ${path}; rerun setup to migrate it`);
+  parsed.chromeProfilePath ??= join(getConfigDir(), "chrome-profile");
+  parsed.chromeDebugPort ??= parsed.port === 17842 ? 17843 : 17842;
   if (typeof parsed.releaseVersion !== "string" || !parsed.releaseVersion.trim()) throw new Error(`Missing releaseVersion in ${path}`);
   if (parsed.mode !== "browser-only" && parsed.mode !== "full") throw new Error(`Invalid runtime mode in ${path}`);
   if (parsed.host !== "127.0.0.1") throw new Error("The Responses proxy must bind to 127.0.0.1");
   if (!Number.isInteger(parsed.port) || parsed.port! < 1 || parsed.port! > 65_535) throw new Error(`Invalid port in ${path}`);
   const requiredStrings: Array<keyof AppConfig> = [
-    "appName", "chromeExecutablePath", "storageStatePath", "brokerSocketPath", "controlToken",
+    "appName", "chromeExecutablePath", "chromeProfilePath", "storageStatePath", "brokerSocketPath", "controlToken",
   ];
   for (const key of requiredStrings) {
     if (typeof parsed[key] !== "string" || !(parsed[key] as string).trim()) throw new Error(`Missing ${key} in ${path}`);
   }
   if (!/^[A-Za-z0-9_-]{40,}$/.test(parsed.controlToken!)) throw new Error(`Invalid controlToken in ${path}`);
+  if (!Number.isInteger(parsed.chromeDebugPort) || parsed.chromeDebugPort! < 1 || parsed.chromeDebugPort! > 65_535) {
+    throw new Error(`Invalid chromeDebugPort in ${path}`);
+  }
+  if (parsed.chromeDebugPort === parsed.port) throw new Error("chromeDebugPort must differ from the Responses proxy port");
   if (parsed.mode === "full" && !parsed.tunnel) throw new Error("Full mode requires tunnel configuration");
   if (!Array.isArray(parsed.runtimeCommand) || parsed.runtimeCommand.length === 0
     || parsed.runtimeCommand.some(part => typeof part !== "string" || !part.trim())) {
@@ -206,6 +216,8 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       appName: config.appName,
       storageStatePath: config.storageStatePath,
       chromeExecutablePath: config.chromeExecutablePath,
+      chromeProfilePath: config.chromeProfilePath,
+      chromeDebugPort: config.chromeDebugPort,
       brokerSocketPath: config.brokerSocketPath,
       threadEnvironmentStatePath: join(getConfigDir(), "runtime", "thread-environments.json"),
       headed: config.headed,

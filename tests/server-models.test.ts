@@ -33,6 +33,7 @@ test("proxies official /models auth and query, then appends the fixed ChatGPT We
     "chatgpt-web/medium",
     "chatgpt-web/high",
     "chatgpt-web/extra-high",
+    "chatgpt-web/ultra",
     "chatgpt-web/pro",
   ]);
   expect(body.models[0]!.max_context_window).toBe(371_851);

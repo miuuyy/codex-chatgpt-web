@@ -1,15 +1,15 @@
-import { existsSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright-core";
-import { atomicWriteFile, expandUserPath, getConfigDir } from "../../config";
+import { ChromeCdpBrowser, type CdpPage } from "../../chrome-cdp";
+import { expandUserPath, getConfigDir } from "../../config";
 import type { CodexProviderConfig } from "../../types";
 import { parseDataUrl } from "../image";
 import { ChatGptMarkdownStream } from "./markdown";
 import { resolveChatGptWebModelMode, type ChatGptWebCapabilities, type ChatGptWebModelMode } from "./model";
 import { CHATGPT_INTERNAL_COMPACTION_MARKER, containsChatGptCompactionMarker, stripChatGptTransportMarkers, type CompiledChatGptWebPrompt, type ChatGptWebPromptImage } from "./prompt";
 import { estimateCompiledChatGptWebInputTokens } from "./usage";
+import { ChatGptBrowserTurnPool } from "./browser-turn-pool";
 import { assertAuthenticatedChatGptPage, assertTemporaryChatPage, CHATGPT_TEMPORARY_CHAT_URL } from "../../chatgpt-session";
-import { loginVerificationMarkerPath } from "../../browser-login";
 
 const workers = new Map<string, ChatGptBrowserWorker>();
 
@@ -32,6 +32,7 @@ export interface BrowserTurn {
   traceId: string;
   modelId: string;
   reasoning?: string;
+  parallel: boolean;
   capabilities: ChatGptWebCapabilities;
   prepare: () => Promise<CompiledChatGptWebPrompt & { release: () => void }>;
   abortSignal?: AbortSignal;
@@ -48,8 +49,9 @@ interface ResolvedBrowserConfig {
   appName: string;
   storageStatePath: string;
   chromeExecutablePath: string;
+  chromeProfilePath: string;
+  chromeDebugPort: number;
   turnTimeoutMs: number;
-  headed: boolean;
   autoApproveToolCalls: boolean;
 }
 
@@ -239,10 +241,11 @@ function resolveBrowserConfig(provider: CodexProviderConfig): ResolvedBrowserCon
   const configured = provider.chatgptWeb ?? {};
   return {
     appName: configured.appName?.trim() || "Codex Native",
-    storageStatePath: resolve(expandUserPath(configured.storageStatePath?.trim() || join(getConfigDir(), "browser", "storage-state.json"))),
+    storageStatePath: resolve(expandUserPath(configured.storageStatePath?.trim() || join(getConfigDir(), "browser", "session.json"))),
     chromeExecutablePath: resolve(expandUserPath(configured.chromeExecutablePath?.trim() || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")),
+    chromeProfilePath: resolve(expandUserPath(configured.chromeProfilePath?.trim() || join(getConfigDir(), "chrome-profile"))),
+    chromeDebugPort: configured.chromeDebugPort ?? 17842,
     turnTimeoutMs: configured.turnTimeoutMs ?? DEFAULT_CHATGPT_TURN_TIMEOUT_MS,
-    headed: configured.headed !== false,
     autoApproveToolCalls: configured.autoApproveToolCalls === true,
   };
 }
@@ -292,34 +295,30 @@ export class ChatGptBrowserWorker {
     return worker;
   }
 
-  private browser?: Browser;
-  private context?: BrowserContext;
-  private page?: Page;
-  private tail: Promise<void> = Promise.resolve();
+  private browser?: ChromeCdpBrowser;
+  private readonly pool = new ChatGptBrowserTurnPool(4);
 
   private constructor(private readonly config: ResolvedBrowserConfig) {}
 
   run(turn: BrowserTurn): Promise<string> {
-    const run = this.tail.then(() => this.runExclusive(turn));
-    this.tail = run.then(() => undefined, () => undefined);
-    return run;
+    return this.pool.run(
+      turn.parallel ? "ultra" : "exclusive",
+      () => this.runIsolated(turn),
+      turn.abortSignal,
+    );
   }
 
   async close(): Promise<void> {
-    await this.tail;
+    await this.pool.waitForIdle();
     const browser = this.browser;
     this.browser = undefined;
-    this.context = undefined;
-    this.page = undefined;
-    if (browser) await browser.close();
+    browser?.close();
   }
 
   private discardBrowser(): void {
     const browser = this.browser;
     this.browser = undefined;
-    this.context = undefined;
-    this.page = undefined;
-    if (browser) void browser.close().catch(() => {});
+    browser?.close();
   }
 
   private async runStage<T>(traceId: string, stage: string, timeoutMs: number, action: () => Promise<T>): Promise<T> {
@@ -339,28 +338,20 @@ export class ChatGptBrowserWorker {
       return value;
     } catch (error) {
       console.error(`[chatgpt-web] browser turn ${traceId} stage=${stage} failed durationMs=${Math.round(performance.now() - startedAt)}: ${error instanceof Error ? error.message : String(error)}`);
-      if (timedOut) this.discardBrowser();
+      if (timedOut && this.pool.state().active <= 1) this.discardBrowser();
       throw error;
     } finally {
       if (timer) clearTimeout(timer);
     }
   }
 
-  private async ensurePage(): Promise<Page> {
-    if (this.page && !this.page.isClosed()) return this.page;
-    if (!existsSync(this.config.storageStatePath) || !existsSync(loginVerificationMarkerPath(this.config.storageStatePath))) {
-      throw new Error(`ChatGPT web login state is missing: ${this.config.storageStatePath}`);
-    }
-    if (!existsSync(this.config.chromeExecutablePath)) {
-      throw new Error(`Configured Chrome executable does not exist: ${this.config.chromeExecutablePath}`);
-    }
-    this.browser = await chromium.launch({
+  private ensureBrowser(): ChromeCdpBrowser {
+    this.browser ??= new ChromeCdpBrowser({
       executablePath: this.config.chromeExecutablePath,
-      headless: !this.config.headed,
+      profilePath: this.config.chromeProfilePath,
+      debugPort: this.config.chromeDebugPort,
     });
-    this.context = await this.browser.newContext({ storageState: this.config.storageStatePath });
-    this.page = await this.context.newPage();
-    return this.page;
+    return this.browser;
   }
 
   /**
@@ -368,82 +359,126 @@ export class ChatGptBrowserWorker {
    * ChatGPT SPA page can retain the previous transcript and autocomplete DOM,
    * so an @app lookup may select stale UI from the preceding turn.
    */
-  private async pageForNewTurn(): Promise<Page> {
-    const previous = await this.ensurePage();
-    if (previous.url() === "about:blank") return previous;
-    const context = this.context;
-    if (!context) throw new Error("ChatGPT web browser context is unavailable");
-    const page = await context.newPage();
-    this.page = page;
-    await previous.close().catch(() => {});
+  private async pageForNewTurn(): Promise<CdpPage> {
+    const page = await this.ensureBrowser().newPage();
+    await page.activate();
     return page;
   }
 
   private async selectModelAndEffort(
-    page: Page,
+    page: CdpPage,
     modelId: string,
     reasoning: string | undefined,
     capabilities: ChatGptWebCapabilities,
   ): Promise<ChatGptWebModelMode> {
     const mode = resolveChatGptWebModelMode(modelId, reasoning, capabilities);
-    const currentEffort = page.getByRole("button", {
-      name: /^(?:Instant(?:\s+5\.5)?|Medium|High|Extra High|Pro)$/,
-    }).last();
-    try {
-      await currentEffort.waitFor({ state: "visible", timeout: 70_000 });
-    } catch {
-      throw new Error("ChatGPT rendered the composer but its model/effort control did not become ready");
+    const effortLabel = async () => page.evaluate<string>(`(() => {
+      const visible = element => {
+        if (!(element instanceof HTMLElement)) return false;
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+      };
+      return [...document.querySelectorAll("button")]
+        .filter(visible)
+        .map(button => button.innerText.replace(/\\s+/g, " ").trim())
+        .filter(text => /^(?:Instant(?: 5\\.5)?|Medium|High|Extra High|Pro)$/.test(text))
+        .at(-1) || "";
+    })()`);
+
+    const readyDeadline = Date.now() + 70_000;
+    let current = "";
+    while (Date.now() < readyDeadline) {
+      current = await effortLabel();
+      if (current) break;
+      await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
     }
-    if (chatGptEffortLabelsMatch(await currentEffort.innerText(), mode.uiEffortLabel)) return mode;
-    await currentEffort.click();
-    const effortChoice = page.getByRole("menuitem", { name: mode.uiEffortLabel, exact: true }).or(
-      page.getByRole("menuitemradio", { name: mode.uiEffortLabel, exact: true }),
-    ).last();
-    try {
-      await effortChoice.waitFor({ state: "visible", timeout: 20_000 });
-    } catch {
-      const choices = (await page.locator('[role="menuitem"], [role="menuitemradio"]').allInnerTexts().catch(() => []))
-        .map(value => value.replace(/\s+/g, " ").trim())
-        .filter(value => /^(?:Instant(?: 5\.5)?|Medium|High|Extra High|Pro)$/.test(value));
+    if (!current) throw new Error("ChatGPT rendered the composer but its model/effort control did not become ready");
+    if (chatGptEffortLabelsMatch(current, mode.uiEffortLabel)) return mode;
+
+    await page.clickElement(`[...document.querySelectorAll("button")]
+      .filter(element => /^(?:Instant(?:\\s+5\\.5)?|Medium|High|Extra High|Pro)$/.test(element.innerText.trim()))
+      .at(-1)`);
+
+    const choiceDeadline = Date.now() + 20_000;
+    let choices: string[] = [];
+    let selected = false;
+    while (Date.now() < choiceDeadline) {
+      const result = await page.evaluate<{ available: boolean; choices: string[] }>(`(() => {
+        const desired = ${JSON.stringify(mode.uiEffortLabel)};
+        const visible = element => {
+          if (!(element instanceof HTMLElement)) return false;
+          const style = getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+        };
+        const items = [...document.querySelectorAll('[role="menuitem"], [role="menuitemradio"]')]
+          .filter(visible);
+        const choices = items
+          .map(element => element.textContent?.replace(/\\s+/g, " ").trim() || "")
+          .filter(text => /^(?:Instant(?: ?5\\.5)?|Medium|High|Extra High|Pro)$/.test(text));
+        const normalize = text => /^Instant(?: ?5\\.5)?$/.test(text) ? "Instant 5.5" : text;
+        const choice = items.find(element => normalize(
+          element.textContent?.replace(/\\s+/g, " ").trim() || ""
+        ) === normalize(desired));
+        return { available: choice instanceof HTMLElement, choices };
+      })()`);
+      choices = result.choices;
+      if (result.available) {
+        await page.clickElement(`[...document.querySelectorAll('[role="menuitem"], [role="menuitemradio"]')]
+          .find(element => {
+            const text = element.textContent?.replace(/\\s+/g, " ").trim() || "";
+            const normalize = value => /^Instant(?: ?5\\.5)?$/.test(value) ? "Instant 5.5" : value;
+            return normalize(text) === normalize(${JSON.stringify(mode.uiEffortLabel)});
+          })`);
+        selected = true;
+        break;
+      }
+      await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
+    }
+    if (!selected) {
       throw new Error(
         `ChatGPT effort ${JSON.stringify(mode.uiEffortLabel)} is unavailable in the authenticated account UI`
         + (choices.length > 0 ? `; available: ${choices.join(", ")}` : ""),
       );
     }
-    await effortChoice.click();
-    try {
-      const deadline = Date.now() + 40_000;
-      while (Date.now() < deadline) {
-        const visibleLabel = await currentEffort.innerText().catch(() => "");
-        if (chatGptEffortLabelsMatch(visibleLabel, mode.uiEffortLabel)) return mode;
-        await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
-      }
-      throw new Error("effort control did not render the selected label");
-    } catch {
-      const visible = await page.getByRole("button", {
-        name: /^(?:Instant(?:\s+5\.5)?|Medium|High|Extra High|Pro)$/,
-      }).allInnerTexts().catch(() => []);
-      throw new Error(
-        `ChatGPT did not confirm effort ${JSON.stringify(mode.uiEffortLabel)}`
-        + (visible.length > 0 ? `; visible effort control: ${visible.at(-1)!.replace(/\s+/g, " ").trim()}` : ""),
-      );
+
+    const confirmationDeadline = Date.now() + 40_000;
+    while (Date.now() < confirmationDeadline) {
+      const visibleLabel = await effortLabel();
+      if (chatGptEffortLabelsMatch(visibleLabel, mode.uiEffortLabel)) return mode;
+      await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
     }
+    throw new Error(`ChatGPT did not confirm effort ${JSON.stringify(mode.uiEffortLabel)}`);
   }
 
-  private async attachedPromptText(page: Page): Promise<string> {
-    const composer = page.getByRole("textbox", { name: "Chat with ChatGPT" });
-    return composer.evaluate(element => {
-      const clone = element.cloneNode(true) as HTMLElement;
+  private async attachedPromptText(page: CdpPage): Promise<string> {
+    return page.evaluate<string>(`(() => {
+      const visible = element => {
+        if (!(element instanceof HTMLElement)) return false;
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+      };
+      const element = [
+        ...document.querySelectorAll(
+          '[data-testid="prompt-textarea"], #prompt-textarea, [role="textbox"][contenteditable="true"], [contenteditable="true"][data-lexical-editor="true"]'
+        )
+      ].find(visible);
+      if (!(element instanceof HTMLElement)) return "";
+      const clone = element.cloneNode(true);
+      if (!(clone instanceof HTMLElement)) return "";
       clone.querySelectorAll("[data-inline-selection-pill], [data-inline-selection-pill-cursor-target]")
         .forEach(part => part.remove());
-      return [...clone.children]
-        .map(child => child.textContent ?? "")
-        .join("\n")
-        .trimStart();
-    }, undefined, { timeout: 20_000 });
+      const children = [...clone.children];
+      return (children.length > 0
+        ? children.map(child => child.textContent || "").join("\\n")
+        : clone.textContent || ""
+      ).trimStart();
+    })()`, 20_000);
   }
 
-  private async assertPromptAttached(page: Page, prompt: string): Promise<void> {
+  private async assertPromptAttached(page: CdpPage, prompt: string): Promise<void> {
     const deadline = Date.now() + 10_000;
     let observed = "";
     while (Date.now() < deadline) {
@@ -458,71 +493,157 @@ export class ChatGptBrowserWorker {
     );
   }
 
-  private async attachPrompt(page: Page, prompt: string, localTools: boolean): Promise<void> {
-    const composer = page.getByRole("textbox", { name: "Chat with ChatGPT" });
+  private async attachPrompt(page: CdpPage, prompt: string, localTools: boolean): Promise<void> {
+    const composerSelector = [
+      '[data-testid="prompt-textarea"]',
+      "#prompt-textarea",
+      '[role="textbox"][contenteditable="true"]',
+      '[contenteditable="true"][data-lexical-editor="true"]',
+    ].join(", ");
     if (!localTools) {
-      await composer.fill(prompt);
+      await page.insertText(composerSelector, prompt);
       await this.assertPromptAttached(page, prompt);
       return;
     }
-    await composer.fill(`@${this.config.appName}`);
-    const appResult = page.getByRole("group").filter({ hasText: this.config.appName }).last();
-    await appResult.waitFor({ state: "visible", timeout: 20_000 });
-    await appResult.click();
-    const selectedPlugin = composer.getByRole("link", { name: this.config.appName, exact: true });
-    await selectedPlugin.waitFor({ state: "visible", timeout: 10_000 });
-    await composer.focus();
-    await page.keyboard.press("End");
-    await page.keyboard.insertText(` ${prompt}`);
+
+    await page.insertText(composerSelector, `@${this.config.appName}`);
+    const appDeadline = Date.now() + 20_000;
+    let appVisible = false;
+    while (Date.now() < appDeadline) {
+      appVisible = await page.evaluate<boolean>(`(() => {
+        const expected = ${JSON.stringify(this.config.appName)};
+        const visible = element => {
+          if (!(element instanceof HTMLElement)) return false;
+          const style = getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+        };
+        return [...document.querySelectorAll('[role="group"], [role="option"], [role="menuitem"]')]
+          .filter(visible)
+          .some(element => (element.textContent || "").replace(/\\s+/g, " ").trim().includes(expected));
+      })()`);
+      if (appVisible) break;
+      await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
+    }
+    if (!appVisible) throw new Error(`ChatGPT connector ${JSON.stringify(this.config.appName)} did not appear`);
+
+    await page.clickElement(`(() => {
+      const expected = ${JSON.stringify(this.config.appName)};
+      const visible = element => {
+        if (!(element instanceof HTMLElement)) return false;
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+      };
+      return [...document.querySelectorAll('[role="group"], [role="option"], [role="menuitem"]')]
+        .filter(visible)
+        .filter(element => (element.textContent || "").replace(/\\s+/g, " ").trim().includes(expected))
+        .at(-1);
+    })()`);
+
+    const selectionDeadline = Date.now() + 10_000;
+    let selected = false;
+    while (Date.now() < selectionDeadline) {
+      selected = await page.evaluate<boolean>(`(() => {
+        const expected = ${JSON.stringify(this.config.appName)};
+        const visible = element => {
+          if (!(element instanceof HTMLElement)) return false;
+          const style = getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+        };
+        const labelMatches = element => {
+          const normalize = value => (value || "").replace(/\\s+/g, " ").trim();
+          if (normalize(element.textContent) === expected) return true;
+          return [...element.querySelectorAll("*")]
+            .some(child => child.children.length === 0 && normalize(child.textContent) === expected);
+        };
+        const composer = [...document.querySelectorAll(${JSON.stringify(composerSelector)})]
+          .find(visible);
+        if (!(composer instanceof HTMLElement)) return false;
+        return [...composer.querySelectorAll('a, [data-inline-selection-pill]')]
+          .some(labelMatches);
+      })()`);
+      if (selected) break;
+      await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
+    }
+    if (!selected) throw new Error(`ChatGPT did not attach connector ${JSON.stringify(this.config.appName)}`);
+
+    await page.appendText(composerSelector, ` ${prompt}`);
     await this.assertPromptAttached(page, prompt);
   }
 
-  private async attachFiles(page: Page, prompt: CompiledChatGptWebPrompt): Promise<void> {
+  private async attachFiles(page: CdpPage, prompt: CompiledChatGptWebPrompt): Promise<void> {
     const files = chatGptPromptFilePayloads(prompt);
     if (files.length === 0) return;
-    const removeButtons = page.locator('button[aria-label^="Remove file "]');
-    const existing = await removeButtons.count();
-    const input = page.locator('input[data-testid="upload-photos-input"]');
-    await input.waitFor({ state: "attached", timeout: 20_000 });
-    await input.setInputFiles(files);
+    const uploadDir = join(getConfigDir(), "runtime", "uploads", crypto.randomUUID());
+    mkdirSync(uploadDir, { recursive: true, mode: 0o700 });
     try {
-      await removeButtons.nth(existing + files.length - 1).waitFor({ state: "visible", timeout: 60_000 });
-    } catch {
-      const alerts = (await page.locator('[role="alert"]').allInnerTexts().catch(() => []))
-        .map(text => text.replace(/\s+/g, " ").trim())
-        .filter(Boolean);
+      const paths = files.map(file => {
+        const path = join(uploadDir, file.name);
+        writeFileSync(path, file.buffer, { mode: 0o600 });
+        return path;
+      });
+      const existing = await page.evaluate<number>(
+        `document.querySelectorAll('button[aria-label^="Remove file "]').length`,
+      );
+      await page.setInputFiles('input[data-testid="upload-photos-input"]', paths);
+      const deadline = Date.now() + 60_000;
+      let alerts: string[] = [];
+      while (Date.now() < deadline) {
+        const state = await page.evaluate<{ accepted: number; sendEnabled: boolean; alerts: string[] }>(`(() => {
+          const visible = element => {
+            if (!(element instanceof HTMLElement)) return false;
+            const style = getComputedStyle(element);
+            return style.display !== "none" && style.visibility !== "hidden";
+          };
+          const send = document.querySelector('[data-testid="send-button"]');
+          return {
+            accepted: [...document.querySelectorAll('button[aria-label^="Remove file "]')].filter(visible).length,
+            sendEnabled: send instanceof HTMLButtonElement && !send.disabled,
+            alerts: [...document.querySelectorAll('[role="alert"]')]
+              .filter(visible)
+              .map(element => element.textContent?.replace(/\\s+/g, " ").trim() || "")
+              .filter(Boolean)
+          };
+        })()`);
+        alerts = state.alerts;
+        if (state.accepted >= existing + files.length && state.sendEnabled) return;
+        await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
+      }
       throw new Error(
-        `ChatGPT did not accept all prompt attachments`
+        "ChatGPT did not accept all prompt attachments"
         + (alerts.length > 0 ? `: ${alerts.join(" | ")}` : ""),
       );
+    } finally {
+      rmSync(uploadDir, { recursive: true, force: true });
     }
-    const send = page.getByTestId("send-button");
-    const deadline = Date.now() + 60_000;
-    while (Date.now() < deadline) {
-      if (await send.isEnabled().catch(() => false)) return;
-      await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
-    }
-    throw new Error("ChatGPT accepted the prompt attachments but did not make the message ready to send");
   }
 
-  private async handleToolConfirmation(page: Page): Promise<boolean> {
-    const heading = page.getByText(`Allow ChatGPT to use ${this.config.appName}?`, { exact: true }).last();
-    if (!await heading.isVisible().catch(() => false)) return false;
+  private async handleToolConfirmation(page: CdpPage): Promise<boolean> {
+    const waiting = await page.evaluate<boolean>(`(() => {
+      const expected = ${JSON.stringify(`Allow ChatGPT to use ${this.config.appName}?`)};
+      return [...document.querySelectorAll("body *")].some(element =>
+        element.children.length === 0 && element.textContent?.trim() === expected
+      );
+    })()`);
+    if (!waiting) return false;
     if (!this.config.autoApproveToolCalls) {
       throw new Error(
         `ChatGPT is waiting for confirmation to use ${this.config.appName}; set chatgptWeb.autoApproveToolCalls=true to authorize per-call "Allow once" clicks`,
       );
     }
-    const allowOnce = page.getByRole("button", { name: "Allow once", exact: true }).last();
-    await allowOnce.waitFor({ state: "visible", timeout: 10_000 });
-    await allowOnce.click();
+    await page.clickElement(`[...document.querySelectorAll("button")]
+      .find(element => element.innerText.trim() === "Allow once")`);
     return true;
   }
 
-  private async responseDomSnapshot(responseTurn: Locator): Promise<ChatGptResponseDomSnapshot> {
-    const snapshot = await responseTurn.evaluate(element => {
-      const root = element as HTMLElement;
-      const visible = (candidate: HTMLElement): boolean => {
+  private async responseDomSnapshot(page: CdpPage, responseIndex: number): Promise<ChatGptResponseDomSnapshot> {
+    const snapshot = await page.evaluate<ChatGptResponseDomSnapshot>(`(() => {
+      const root = document.querySelectorAll('section[data-testid^="conversation-turn-"][data-turn="assistant"]')
+        .item(${responseIndex});
+      if (!(root instanceof HTMLElement)) return ${JSON.stringify(absentResponseDomSnapshot())};
+      const visible = candidate => {
         const style = getComputedStyle(candidate);
         const rect = candidate.getBoundingClientRect();
         return style.display !== "none"
@@ -532,20 +653,20 @@ export class ChatGptBrowserWorker {
           && rect.height > 0;
       };
 
-      const rendered = [...root.querySelectorAll<HTMLElement>(".markdown")].at(-1);
+      const rendered = [...root.querySelectorAll(".markdown")].at(-1);
       const renderedChildren = rendered ? [...rendered.children] : [];
-      const completionAction = [...root.querySelectorAll<HTMLElement>('button[aria-label="Copy response"]')]
+      const completionAction = [...root.querySelectorAll('button[aria-label="Copy response"]')]
         .find(visible);
-      const candidates = new Map<HTMLElement, "markdown" | "status">();
-      root.querySelectorAll<HTMLElement>(".markdown").forEach(candidate => candidates.set(candidate, "markdown"));
-      root.querySelectorAll<HTMLElement>(
+      const candidates = new Map();
+      root.querySelectorAll(".markdown").forEach(candidate => candidates.set(candidate, "markdown"));
+      root.querySelectorAll(
         'button, [role="status"], [aria-busy="true"], [data-testid*="cot"], [data-testid*="reason"], [data-testid*="thought"]',
       ).forEach(candidate => {
         if (candidate.closest('[aria-label="Response actions"]')) return;
-        const semantic = candidate.closest<HTMLElement>("button") ?? candidate;
+        const semantic = candidate.closest("button") ?? candidate;
         if (!candidates.has(semantic)) candidates.set(semantic, "status");
       });
-      root.querySelectorAll<HTMLElement>("[data-streaming-response-status]").forEach(container => {
+      root.querySelectorAll("[data-streaming-response-status]").forEach(container => {
         if (![...candidates.keys()].some(candidate => container.contains(candidate))) {
           candidates.set(container, "status");
         }
@@ -568,16 +689,18 @@ export class ChatGptBrowserWorker {
         completionActionVisible: completionAction !== undefined,
         traceBlocks,
       };
-    }, undefined, { timeout: 2_000 }).catch(() => absentResponseDomSnapshot());
+    })()`, 2_000).catch(() => absentResponseDomSnapshot());
     snapshot.traceBlocks = snapshot.traceBlocks.filter(block => !isChatGptTraceControl(block));
     return snapshot;
   }
 
-  private async stalledTurnDiagnostic(page: Page, responseTurn: Locator): Promise<string> {
-    const responseState = await responseTurn.count()
-      ? await responseTurn.evaluate(element => {
-        const root = element as HTMLElement;
-        const descriptors = [...root.querySelectorAll<HTMLElement>("[role], [data-testid], button, [aria-label]")]
+  private async stalledTurnDiagnostic(page: CdpPage, responseIndex: number): Promise<string> {
+    const diagnostic = await page.evaluate<{ response: unknown; overlays: unknown }>(`(() => {
+      const root = document.querySelectorAll('section[data-testid^="conversation-turn-"][data-turn="assistant"]')
+        .item(${responseIndex});
+      const response = root instanceof HTMLElement
+        ? (() => {
+        const descriptors = [...root.querySelectorAll("[role], [data-testid], button, [aria-label]")]
           .filter(candidate => {
             const style = getComputedStyle(candidate);
             return style.visibility !== "hidden" && style.display !== "none";
@@ -595,48 +718,70 @@ export class ChatGptBrowserWorker {
           text: root.innerText.trim().slice(0, 2_000),
           descriptors,
         };
-      })
-      : { text: "", descriptors: [] };
-    const overlays = await page.locator('[role="dialog"], [role="alert"], [role="status"]').evaluateAll(elements => (
-      elements
+      })()
+        : { text: "", descriptors: [] };
+      const overlays = [...document.querySelectorAll('[role="dialog"], [role="alert"], [role="status"]')]
         .filter(element => {
-          const candidate = element as HTMLElement;
+          const candidate = element;
           const style = getComputedStyle(candidate);
           return style.visibility !== "hidden" && style.display !== "none";
         })
         .slice(-30)
         .map(element => {
-          const candidate = element as HTMLElement;
+          const candidate = element;
           return {
             role: candidate.getAttribute("role"),
             testId: candidate.getAttribute("data-testid"),
             ariaLabel: candidate.getAttribute("aria-label"),
             text: candidate.innerText.trim().slice(0, 1_000),
           };
-        })
-    )).catch(() => [] as Array<Record<string, string | null>>);
-    return redactChatGptUiDiagnostic(JSON.stringify({ response: responseState, overlays }));
+        });
+      return { response, overlays };
+    })()`).catch(error => ({
+      response: { diagnosticError: error instanceof Error ? error.message : String(error) },
+      overlays: [],
+    }));
+    return redactChatGptUiDiagnostic(JSON.stringify(diagnostic));
   }
 
-  private async runExclusive(turn: BrowserTurn): Promise<string> {
+  private async runIsolated(turn: BrowserTurn): Promise<string> {
     if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
-    const prepared = await turn.prepare();
+    let preparedToRelease: Awaited<ReturnType<BrowserTurn["prepare"]>> | undefined;
+    let pageToClose: CdpPage | undefined;
     try {
+      const prepared = await turn.prepare();
+      preparedToRelease = prepared;
       if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
       const estimatedInputTokens = estimateCompiledChatGptWebInputTokens(prepared, turn.modelId);
       const deadline = Date.now() + this.config.turnTimeoutMs;
       const page = await this.runStage(turn.traceId, "browser_page", browserStageTimeouts.browserPage, () => this.pageForNewTurn());
+      pageToClose = page;
       console.info(
-        `[chatgpt-web] browser turn ${turn.traceId} opened (transport=inline, promptChars=${prepared.text.length}, estimatedInputTokens=${estimatedInputTokens}, images=${prepared.images.length})`,
+        `[chatgpt-web] browser turn ${turn.traceId} opened (transport=chrome-devtools, promptChars=${prepared.text.length}, estimatedInputTokens=${estimatedInputTokens}, images=${prepared.images.length})`,
       );
       await this.runStage(turn.traceId, "temporary_chat_navigation", browserStageTimeouts.navigation, () => (
-        page.goto(CHATGPT_TEMPORARY_CHAT_URL, { waitUntil: "domcontentloaded", timeout: 60_000 }).then(() => undefined)
+        page.navigate(CHATGPT_TEMPORARY_CHAT_URL, 60_000)
       ));
-      const composer = page.getByRole("textbox", { name: "Chat with ChatGPT" });
       try {
-        await this.runStage(turn.traceId, "composer_ready", browserStageTimeouts.composerReady, () => (
-          composer.waitFor({ state: "visible", timeout: 30_000 })
-        ));
+        await this.runStage(turn.traceId, "composer_ready", browserStageTimeouts.composerReady, async () => {
+          const deadline = Date.now() + 30_000;
+          while (Date.now() < deadline) {
+            const visible = await page.evaluate<boolean>(`(() => {
+              const shown = element => {
+                if (!(element instanceof HTMLElement)) return false;
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+              };
+              return [...document.querySelectorAll(
+                '[data-testid="prompt-textarea"], #prompt-textarea, [role="textbox"][contenteditable="true"], [contenteditable="true"][data-lexical-editor="true"]'
+              )].some(shown);
+            })()`).catch(() => false);
+            if (visible) return;
+            await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
+          }
+          throw new Error("composer did not become visible");
+        });
       } catch {
         throw new Error("ChatGPT web login is expired or the Temporary Chat surface is unavailable");
       }
@@ -653,10 +798,22 @@ export class ChatGptBrowserWorker {
       await this.runStage(turn.traceId, "file_attachment", browserStageTimeouts.fileAttachment, () => (
         this.attachFiles(page, prepared)
       ));
-      const responseTurns = page.locator('section[data-testid^="conversation-turn-"][data-turn="assistant"]');
-      const initialResponseTurnCount = await responseTurns.count();
-      const responseTurn = responseTurns.nth(initialResponseTurnCount);
-      await this.runStage(turn.traceId, "send", browserStageTimeouts.send, () => page.getByTestId("send-button").click());
+      const initialResponseTurnCount = await page.evaluate<number>(
+        `document.querySelectorAll('section[data-testid^="conversation-turn-"][data-turn="assistant"]').length`,
+      );
+      await this.runStage(turn.traceId, "send", browserStageTimeouts.send, async () => {
+        const sendEnabled = await page.evaluate<boolean>(`(() => {
+          const button = document.querySelector('[data-testid="send-button"]');
+          return button instanceof HTMLButtonElement && !button.disabled;
+        })()`);
+        if (!sendEnabled) throw new Error("ChatGPT send button is unavailable");
+        await page.pressEnter([
+          '[data-testid="prompt-textarea"]',
+          "#prompt-textarea",
+          '[role="textbox"][contenteditable="true"]',
+          '[contenteditable="true"][data-lexical-editor="true"]',
+        ].join(", "));
+      });
 
       let lastHeartbeat = 0;
       let finalText = "";
@@ -669,8 +826,9 @@ export class ChatGptBrowserWorker {
       const domHealthTracker = new ChatGptTurnDomHealthTracker();
       for (;;) {
         if (turn.abortSignal?.aborted) {
-          const stop = page.getByRole("button", { name: "Stop answering" });
-          if (await stop.isVisible().catch(() => false)) await stop.click().catch(() => {});
+          await page.clickElement(`[...document.querySelectorAll("button")]
+            .find(element => element.getAttribute("aria-label") === "Stop answering"
+              || element.innerText.trim() === "Stop answering")`).catch(() => {});
           throw new DOMException("ChatGPT web turn aborted", "AbortError");
         }
         if (Date.now() >= deadline) throw new Error("ChatGPT web turn timed out");
@@ -684,9 +842,21 @@ export class ChatGptBrowserWorker {
           continue;
         }
 
-        const snapshot = await this.responseDomSnapshot(responseTurn);
-        const stop = page.getByRole("button", { name: "Stop answering" });
-        const running = await stop.isVisible().catch(() => false);
+        const snapshot = await this.responseDomSnapshot(page, initialResponseTurnCount);
+        const running = await page.evaluate<boolean>(`(() => {
+          const visible = element => {
+            if (!(element instanceof HTMLElement)) return false;
+            const style = getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+          };
+          return [...document.querySelectorAll("button")].some(element =>
+            visible(element) && (
+              element.getAttribute("aria-label") === "Stop answering"
+              || element.innerText.trim() === "Stop answering"
+            )
+          );
+        })()`).catch(() => false);
         if (running) sawRunning = true;
         if (snapshot.responsePresent) {
           for (const trace of visibleTrace.observe(snapshot.traceBlocks, snapshot.completionActionVisible)) {
@@ -725,7 +895,7 @@ export class ChatGptBrowserWorker {
           }
           if (!loggedCompletionWait && Date.now() - sentAt >= 30_000) {
             loggedCompletionWait = true;
-            const diagnostic = await this.stalledTurnDiagnostic(page, responseTurn).catch(error => JSON.stringify({
+            const diagnostic = await this.stalledTurnDiagnostic(page, initialResponseTurnCount).catch(error => JSON.stringify({
               diagnosticError: error instanceof Error ? error.message : String(error),
             }));
             console.warn(
@@ -744,14 +914,11 @@ export class ChatGptBrowserWorker {
         await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
       }
 
-      if (this.context) {
-        const state = await this.context.storageState();
-        atomicWriteFile(this.config.storageStatePath, `${JSON.stringify(state)}\n`);
-      }
       console.info(`[chatgpt-web] browser turn ${turn.traceId} completed (markdownChars=${finalText.length})`);
       return finalText;
     } finally {
-      prepared.release();
+      await pageToClose?.close();
+      preparedToRelease?.release();
     }
   }
 }

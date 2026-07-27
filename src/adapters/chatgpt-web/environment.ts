@@ -77,17 +77,61 @@ function environmentBeforeUser(input: unknown[], userIndex: number, expectedTurn
 }
 
 function sandboxTypeFromEnvironment(text: string): ChatGptSandboxPolicy["type"] | undefined {
+  const restrictedFileSystem = managedRestrictedFileSystem(text);
+  const restrictedHasWrite = restrictedFileSystem !== undefined
+    && /<entry\s+[^>]*access=["']write["'][^>]*>/i.test(restrictedFileSystem);
   const unrestricted = /<permission_profile\s+type=["']disabled["'][^>]*>[\s\S]*?<file_system\s+type=["']unrestricted["'][^>]*\/?\s*>/i.test(text)
     || /<sandbox_mode>danger-full-access<\/sandbox_mode>/i.test(text);
-  const workspaceWrite = /<sandbox_mode>workspace-write<\/sandbox_mode>/i.test(text);
-  const readOnly = /<sandbox_mode>read-only<\/sandbox_mode>/i.test(text);
+  const workspaceWrite = /<sandbox_mode>workspace-write<\/sandbox_mode>/i.test(text)
+    || /<file_system\s+type=["']workspace-write["'][^>]*\/?\s*>/i.test(text)
+    || restrictedHasWrite;
+  const readOnly = /<sandbox_mode>read-only<\/sandbox_mode>/i.test(text)
+    || /<file_system\s+type=["']read-only["'][^>]*\/?\s*>/i.test(text)
+    || (restrictedFileSystem !== undefined && !restrictedHasWrite);
   if (Number(unrestricted) + Number(workspaceWrite) + Number(readOnly) !== 1) return undefined;
   return unrestricted ? "dangerFullAccess" : workspaceWrite ? "workspaceWrite" : "readOnly";
 }
 
+function managedRestrictedFileSystem(text: string): string | undefined {
+  const profiles = [...text.matchAll(
+    /<permission_profile\s+type=["']managed["'][^>]*>([\s\S]*?)<\/permission_profile>/gi,
+  )];
+  const fileSystems = profiles.flatMap(profile => [...profile[1]!.matchAll(
+    /<file_system\s+type=["']restricted["'][^>]*>([\s\S]*?)<\/file_system>/gi,
+  )].map(match => match[1] ?? ""));
+  return fileSystems.length === 1 ? fileSystems[0] : undefined;
+}
+
+function restrictedWritableRoots(text: string, roots: string[]): string[] | undefined {
+  const fileSystem = managedRestrictedFileSystem(text);
+  if (fileSystem === undefined) return undefined;
+
+  const writableEntries = [...fileSystem.matchAll(
+    /<entry\s+[^>]*access=["']write["'][^>]*>([\s\S]*?)<\/entry>/gi,
+  )].map(match => match[1] ?? "");
+  const writesRoot = writableEntries.some(entry => /<special>\s*:root\s*<\/special>/i.test(entry));
+  const paths = writableEntries
+    .flatMap(entry => [...entry.matchAll(/<path>([^<]+)<\/path>/gi)].map(match => decodeXmlText(match[1]!.trim())))
+    .filter(isAbsolute)
+    .map(path => resolve(path));
+  const writableRoots = writesRoot ? [...roots] : [];
+  for (const path of paths) {
+    for (const root of roots) {
+      if (matchesPath(path, root)) writableRoots.push(root);
+      else if (matchesPath(root, path)) writableRoots.push(path);
+    }
+  }
+  return [...new Set(writableRoots)];
+}
+
 function sandboxTypeFromMetadata(value: unknown): ChatGptSandboxPolicy["type"] | undefined {
-  if (typeof value !== "string") return undefined;
-  switch (value.trim().toLowerCase().replaceAll("_", "-")) {
+  const candidate = typeof value === "string" ? value : record(value)?.type;
+  if (typeof candidate !== "string") return undefined;
+  const normalized = candidate.trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+    .toLowerCase()
+    .replaceAll("_", "-");
+  switch (normalized) {
     case "none":
     case "unrestricted":
     case "danger-full-access":
@@ -248,11 +292,12 @@ export function extractChatGptTurnEnvironment(parsed: CodexParsedRequest): ChatG
     return { cwd, roots, writableRoots: roots, sandboxPolicy: { type: "dangerFullAccess" }, tools: parsed.context.tools ?? [] };
   }
   if (sandboxType === "workspaceWrite") {
+    const writableRoots = restrictedWritableRoots(text, roots) ?? roots;
     return {
       cwd,
       roots,
-      writableRoots: roots,
-      sandboxPolicy: { type: "workspaceWrite", writableRoots: roots, networkAccess },
+      writableRoots,
+      sandboxPolicy: { type: "workspaceWrite", writableRoots, networkAccess },
       tools: parsed.context.tools ?? [],
     };
   }

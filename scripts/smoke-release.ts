@@ -20,7 +20,7 @@ for (const forbidden of [sourceRoot, dirname(sourceBundle), "/private/tmp/codex-
 }
 
 const manifest = JSON.parse(readFileSync(join(runtimeRoot, "manifest.json"), "utf8")) as Record<string, unknown>;
-if (manifest.schemaVersion !== 1 || manifest.appVersion !== "0.1.16" || manifest.playwright !== "1.62.0") {
+if (manifest.schemaVersion !== 1 || manifest.appVersion !== "0.1.16" || manifest.browserTransport !== "chrome-devtools") {
   throw new Error(`Unexpected runtime manifest: ${JSON.stringify(manifest)}`);
 }
 const version = Bun.spawnSync([launcher, "--version"], { stdout: "pipe", stderr: "pipe" });
@@ -44,7 +44,9 @@ const config = {
   contextWindow: 256_000,
   appName: "Codex Native",
   chromeExecutablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-  storageStatePath: join(appHome, "browser", "storage-state.json"),
+  chromeProfilePath: join(appHome, "chrome-profile"),
+  chromeDebugPort: port === 17842 ? 17843 : 17842,
+  storageStatePath: join(appHome, "browser", "session.json"),
   brokerSocketPath: join(appHome, "runtime", "turn-broker.sock"),
   headed: true,
   proAvailable: true,
@@ -123,10 +125,6 @@ try {
     throw new Error(`daemon did not resume after the drain smoke: ${JSON.stringify(resumePayload)}`);
   }
 
-  if (process.platform === "darwin") {
-    const browser = Bun.spawnSync([launcher, "browser", "check"], { env, stdout: "pipe", stderr: "pipe" });
-    if (browser.exitCode !== 0) throw new Error(`relocated Playwright smoke failed: ${browser.stderr.toString()}`);
-  }
   process.stdout.write("RELOCATABLE_RUNTIME_SMOKE_OK\n");
 } finally {
   child.kill("SIGTERM");

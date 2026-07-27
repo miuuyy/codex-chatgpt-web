@@ -27,6 +27,7 @@ describe("fixed ChatGPT Web model routes", () => {
       ["chatgpt-web/medium", "medium", "medium"],
       ["chatgpt-web/high", "high", "high"],
       ["chatgpt-web/extra-high", "xhigh", "xhigh"],
+      ["chatgpt-web/ultra", "xhigh", "xhigh"],
       ["chatgpt-web/pro", "ultra", "max"],
     ]);
     expect(CHATGPT_WEB_MODEL_ROUTES[0]?.displayName).toBe("ChatGPT Web — Instant");
@@ -47,6 +48,18 @@ describe("fixed ChatGPT Web model routes", () => {
     expect(request.modelId).toBe(CHATGPT_WEB_BACKEND_MODEL);
     expect(request.options.reasoning).toBe("high");
     expect(request._rawBody).toEqual(rawSnapshot);
+  });
+
+  test("enables Ultra only with the full harness and marks the parsed turn", () => {
+    const request = parsed("chatgpt-web/ultra", "low");
+    const route = routeChatGptWebRequest(request, defaultConfig("full"));
+    expect(route.ultraOrchestration).toBe(true);
+    expect(request._chatGptWebUltra).toBe(true);
+    expect(request.options.reasoning).toBe("xhigh");
+    expect(() => requireChatGptWebModelRoute("chatgpt-web/ultra", true, false))
+      .toThrow("requires the full Codex Native harness");
+    expect(availableChatGptWebModelRoutes(true, false).map(candidate => candidate.slug))
+      .not.toContain("chatgpt-web/ultra");
   });
 
   test("binds the Pro model to the browser Pro effort and fails closed for unknown routes", () => {

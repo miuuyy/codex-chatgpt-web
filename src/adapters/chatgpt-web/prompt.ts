@@ -121,6 +121,7 @@ export function compileChatGptWebPrompt(
       `After emitting ${CHATGPT_INTERNAL_COMPACTION_MARKER}, call codex_bind_turn again with the same turn_token before any other action; claiming the same active turn again is intentional and idempotent.`,
       "Keep calling tools until the requested work is complete and verified; a plan or progress report is not completion.",
       "Use codex_apply_patch for targeted edits, codex_exec for commands, and codex_write_stdin for sessions returned by codex_exec.",
+      "Use codex_read_text_file for text, source, config, log, JSON, and other non-image files. Use codex_view_image only for actual image files.",
       "Use codex_tool_inventory and codex_tool_call for any other tool advertised by the current Codex harness, including configured MCP/apps.",
       "Codex Native synchronously bridges each plugin action into the same outer Codex turn; wait for its real result before continuing.",
       "Never serialize a proposed tool call as assistant text. Make the actual MCP call and use its real result.",
@@ -132,6 +133,15 @@ export function compileChatGptWebPrompt(
       "Do not claim a new local inspection, command, edit, or verification unless it actually appears in the task history. If the latest request requires fresh local-computer access or a local mutation, state only that exact limitation instead of inventing success.",
       "Otherwise perform the full requested research, analysis, or synthesis with every capability actually available to you; do not stop at a plan or progress report.",
     ];
+  const orchestrationContract = parsed._chatGptWebUltra === true && mode.localTools
+    ? [
+      "The user explicitly selected ChatGPT Web Ultra. For every non-trivial task with independent workstreams, this selection authorizes collaboration subagents without another confirmation.",
+      "After binding, discover the outer Codex tool_search capability with codex_tool_inventory, use it to load collaboration or multi-agent tools, then invoke their exact returned wire names through codex_tool_call.",
+      "Spawn at most three independent subagents before waiting. Give each a concrete non-overlapping assignment, continue the coordinator's critical-path work immediately, then wait once and synthesize their verified results.",
+      "Do not set model, reasoning_effort, or service_tier on spawned agents: they must inherit the outer Codex collaboration defaults and the user's default service tier.",
+      "Do not spawn agents for trivial requests, duplicate the same assignment, or delegate the coordinator's immediate blocking step.",
+    ]
+    : [];
   const transportResume = mode.localTools
     ? [
       "<codex_transport_resume>",
@@ -152,6 +162,7 @@ export function compileChatGptWebPrompt(
   const text = [
     ...sharedContract,
     ...transportContract,
+    ...orchestrationContract,
     "Return only the answer that the outer Codex task should receive.",
     ...contextTransport,
     ...transportResume,

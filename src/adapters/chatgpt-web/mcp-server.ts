@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { extname, isAbsolute, relative, resolve } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod/v4";
@@ -17,6 +18,12 @@ interface ResolvedTurn {
 
 const bindingSchema = z.string().min(20).max(256).describe("Opaque binding_id returned by codex_bind_turn.");
 const jsonArgumentsSchema = z.record(z.string(), z.unknown()).default({});
+const obviousTextExtensions = new Set([
+  ".c", ".cc", ".conf", ".cpp", ".css", ".csv", ".env", ".go", ".h", ".hpp",
+  ".html", ".ini", ".java", ".js", ".json", ".jsx", ".log", ".md", ".mjs",
+  ".php", ".py", ".rb", ".rs", ".sh", ".sql", ".swift", ".toml", ".ts", ".tsx",
+  ".tsv", ".txt", ".xml", ".yaml", ".yml", ".zsh",
+]);
 
 function scopeHash(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);
@@ -60,6 +67,15 @@ function wireName(tool: CodexTool): string {
   return namespacedToolName(tool.namespace, tool.name);
 }
 
+function containsPath(root: string, path: string): boolean {
+  const rel = relative(root, path);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\"'\"'`)}'`;
+}
+
 function exactTool(environment: ChatGptTurnEnvironment, name: string): CodexTool | undefined {
   return environment.tools.find(tool => !tool.namespace && tool.name === name);
 }
@@ -84,6 +100,38 @@ function asMcpResult(value: BrokerToolResult) {
     ...(value._meta !== undefined && value._meta !== null && typeof value._meta === "object"
       ? { _meta: value._meta as Record<string, unknown> }
       : {}),
+  };
+}
+
+function textFileMcpResult(value: ReturnType<typeof asMcpResult>) {
+  const structured = value.structuredContent as Record<string, unknown> | undefined;
+  let output = typeof structured?.output === "string" ? structured.output : undefined;
+  const content = value.content as unknown as Array<{ type?: unknown; text?: unknown }>;
+  if (output === undefined) {
+    for (const part of content) {
+      if (part?.type !== "text" || typeof part.text !== "string") continue;
+      const candidates = [part.text];
+      const outputMarker = part.text.lastIndexOf("\nOutput:\n");
+      if (outputMarker >= 0) candidates.unshift(part.text.slice(outputMarker + "\nOutput:\n".length));
+      for (const candidate of candidates) {
+        try {
+          const parsed = JSON.parse(candidate) as Record<string, unknown>;
+          if (typeof parsed.output === "string") {
+            output = parsed.output;
+            break;
+          }
+        } catch {
+          // The next content block can contain the structured command output.
+        }
+      }
+      if (output !== undefined) break;
+    }
+  }
+  if (output === undefined) return value;
+  return {
+    content: [{ type: "text" as const, text: output }],
+    structuredContent: { text: output },
+    ...(value.isError ? { isError: true } : {}),
   };
 }
 
@@ -153,6 +201,9 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
     payload: { arguments?: Record<string, unknown>; input?: string },
   ) => {
     const gateway = execGateway(bound);
+    if (tool.toolSearch || tool.loadedFromToolSearch) {
+      return invoke(bindingId, bound, tool, payload);
+    }
     return gateway && gateway !== tool
       ? invoke(bindingId, bound, gateway, { input: execGatewayProgram(wireName(tool), tool.freeform === true, payload) })
       : invoke(bindingId, bound, tool, payload);
@@ -291,10 +342,44 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
   );
 
   server.registerTool(
+    "codex_read_text_file",
+    {
+      title: "Read a text file through native Codex",
+      description: "Read a text, source, config, log, JSON, or other non-image file through the outer Codex read-only sandbox. Use codex_view_image only for actual images.",
+      inputSchema: {
+        binding_id: bindingSchema,
+        path: z.string().min(1).max(16_384),
+        max_bytes: z.number().int().min(1).max(5_000_000).default(1_000_000),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ binding_id, path, max_bytes }) => {
+      const bound = await environment(binding_id);
+      if (!isAbsolute(path) || path.includes("\0")) {
+        return result({ error: "Text file path must be an absolute local path." }, true);
+      }
+      const normalizedPath = resolve(path);
+      if (!bound.roots.some(root => containsPath(root, normalizedPath))) {
+        return result({ error: "Text file path is outside the active Codex workspace roots." }, true);
+      }
+      const tool = exactTool(bound, "exec_command") ?? exactTool(bound, "shell_command");
+      const commandName = tool?.name ?? "exec_command";
+      const cmd = `/usr/bin/head -c ${max_bytes} -- ${shellQuote(normalizedPath)}`;
+      const args = commandName === "exec_command"
+        ? { cmd, workdir: bound.cwd, max_output_tokens: 1_000_000 }
+        : { command: cmd, workdir: bound.cwd };
+      const response = tool
+        ? await invokeNative(binding_id, bound, tool, { arguments: args })
+        : await invokeNestedNative(binding_id, bound, commandName, false, { arguments: args });
+      return textFileMcpResult(response);
+    },
+  );
+
+  server.registerTool(
     "codex_view_image",
     {
       title: "View an image through native Codex",
-      description: "Invoke the outer Codex view_image tool and return its multimodal result to this same ChatGPT response.",
+      description: "Inspect an actual image file through native Codex. Never use this for text, source, config, log, JSON, or other non-image files; use codex_read_text_file for those.",
       inputSchema: {
         binding_id: bindingSchema,
         path: z.string().min(1).max(16_384),
@@ -303,6 +388,13 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ binding_id, path, detail }) => {
+      if (obviousTextExtensions.has(extname(path).toLowerCase())) {
+        return result({
+          error: "The requested path is a text or source file, not an image.",
+          suggested_tool: "codex_read_text_file",
+          guidance: "Use codex_read_text_file for text and source files.",
+        }, true);
+      }
       const bound = await environment(binding_id);
       const tool = exactTool(bound, "view_image");
       const payload = { arguments: { path, ...(detail ? { detail } : {}) } };

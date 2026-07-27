@@ -11,6 +11,8 @@ export interface ChatGptWebModelRoute {
   codexEffort: ChatGptWebCodexEffort;
   adapterEffort: ChatGptWebAdapterEffort;
   requiresPro: boolean;
+  requiresFullHarness?: boolean;
+  ultraOrchestration?: boolean;
 }
 
 /**
@@ -53,6 +55,16 @@ export const CHATGPT_WEB_MODEL_ROUTES: readonly ChatGptWebModelRoute[] = [
     requiresPro: false,
   },
   {
+    slug: "chatgpt-web/ultra",
+    displayName: "ChatGPT Web — Ultra",
+    description: "Extra High coordinator that may fan out to three inherited Codex agents. Uses the default service tier.",
+    codexEffort: "xhigh",
+    adapterEffort: "xhigh",
+    requiresPro: false,
+    requiresFullHarness: true,
+    ultraOrchestration: true,
+  },
+  {
     slug: "chatgpt-web/pro",
     displayName: "ChatGPT Web — Pro",
     description: "Account-gated ChatGPT Pro through the native Codex harness. Local tool calls are unavailable in this mode.",
@@ -68,17 +80,28 @@ export function isChatGptWebModelSlug(modelId: string): boolean {
   return modelId.startsWith(CHATGPT_WEB_MODEL_PREFIX);
 }
 
-export function availableChatGptWebModelRoutes(proAvailable: boolean): readonly ChatGptWebModelRoute[] {
-  return proAvailable
-    ? CHATGPT_WEB_MODEL_ROUTES
-    : CHATGPT_WEB_MODEL_ROUTES.filter(route => !route.requiresPro);
+export function availableChatGptWebModelRoutes(
+  proAvailable: boolean,
+  fullHarness = true,
+): readonly ChatGptWebModelRoute[] {
+  return CHATGPT_WEB_MODEL_ROUTES.filter(route =>
+    (proAvailable || !route.requiresPro)
+    && (fullHarness || !route.requiresFullHarness)
+  );
 }
 
-export function requireChatGptWebModelRoute(modelId: string, proAvailable: boolean): ChatGptWebModelRoute {
+export function requireChatGptWebModelRoute(
+  modelId: string,
+  proAvailable: boolean,
+  fullHarness = true,
+): ChatGptWebModelRoute {
   const route = routesBySlug.get(modelId);
   if (!route) throw new Error(`ChatGPT web model is not enabled: ${modelId}`);
   if (route.requiresPro && !proAvailable) {
     throw new Error("ChatGPT Web Pro is not available for this account");
+  }
+  if (route.requiresFullHarness && !fullHarness) {
+    throw new Error("ChatGPT Web Ultra requires the full Codex Native harness");
   }
   return route;
 }

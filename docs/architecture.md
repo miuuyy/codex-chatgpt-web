@@ -7,7 +7,7 @@ Codex app / CLI
 codex-chatgpt-web daemon
   ├─ official /models passthrough + fixed ChatGPT Web models
   ├─ native Responses passthrough or ChatGPT Responses/SSE bridge
-  ├─ ChatGPT browser worker (one Chrome process, one turn at a time)
+  ├─ ChatGPT browser worker (one Chrome process, isolated bounded page pool)
   ├─ capability broker (full mode only)
   └─ stdio MCP server
             ▲
@@ -20,26 +20,32 @@ codex-chatgpt-web daemon
 
 ### `browser-only`
 
-- Exposes Instant (`chatgpt-web/light`), Medium, High, and Extra High; each model advertises exactly one
-  immutable Codex effort matching its ChatGPT browser mode. `chatgpt-web/pro` is appended only when
-  the authenticated account exposes Pro.
+- Exposes Instant (`chatgpt-web/light`), Medium, High, and Extra High; each model advertises exactly
+  one immutable Codex effort matching its ChatGPT browser mode. `chatgpt-web/pro` is appended only
+  when the authenticated account exposes Pro. Ultra is not exposed without the full harness.
 - Sends the complete Codex context and image attachments to a fresh ChatGPT Temporary Chat.
 - Never starts the broker, tunnel, or MCP server.
 - Emits a nonfatal Codex commentary warning that local tools are unavailable for the selected model.
 
 ### `full`
 
-- Exposes the same fixed models; Instant through Extra High are tool-capable, while Pro remains
-  read-only.
+- Adds the manually selected `chatgpt-web/ultra` route. Instant through Ultra are tool-capable,
+  while Pro remains read-only.
 - ChatGPT uses a custom MCP connector backed by `openai/tunnel-client`.
 - Every connector call is bound to one outer Codex turn capability.
 - Tool calls and results remain in the same ChatGPT response while Codex executes them locally.
+- Ultra uses Extra High as the coordinator and may ask the outer Codex harness to fan out to at most
+  three inherited collaboration agents. It does not override their model or service tier, and those
+  agents are not forced onto the ChatGPT Web route.
 
 ## Browser lifecycle
 
-Playwright CLI is a development/debugging tool and is not part of the runtime. The daemon owns one
-long-lived Chrome process. A Codex turn gets a fresh Temporary Chat page; the preceding page is
-closed. This prevents transcript leakage without creating a new Chrome window per tool call.
+The daemon controls one dedicated visible ordinary-Chrome profile through a fixed loopback
+DevTools port and never enables WebDriver mode. Every Codex turn gets a fresh Temporary Chat page
+that is closed when the turn settles. Normal routes take an exclusive scheduler lane. Independently
+routed Ultra turns may occupy up to four page-scoped lanes while preserving separate CDP sessions,
+connector capabilities, prompts, response DOM, and cleanup. This browser concurrency is separate
+from Ultra's outer-Codex collaboration-agent orchestration.
 
 Contexts through 40,000 serialized characters remain an inline JSON envelope. Larger contexts
 become one in-memory JSONL attachment with a manifest, ordered system/message records, and image
@@ -57,7 +63,7 @@ rows becomes native Codex commentary.
 ## Installation and service lifecycle
 
 The release artifact is a versioned runtime bundle containing a pinned Bun executable and the
-bundled application. It contains the Responses bridge, Playwright client code, MCP server, setup,
+bundled application. It contains the Responses bridge, direct Chrome DevTools client, MCP server, setup,
 doctor, and launchd management; it uses the user's installed Google Chrome and does not download a
 second browser. Full mode separately downloads the official pinned `openai/tunnel-client` release
 and verifies it against that release's published SHA-256 manifest.
@@ -90,8 +96,9 @@ malformed, or non-idle, the operation fails closed and resumes the old daemon wh
 - Store browser state and tunnel credentials under the application home with mode `0600`.
 - Protect lifecycle control endpoints with a random application-owned bearer token.
 - Never place secret values in command-line arguments, logs, generated profiles, or Git.
-- Serialize browser turns and reject unsupported models explicitly. The selected routed model fixes
-  the adapter effort; a conflicting request effort cannot change it.
+- Serialize normal browser turns, bound Ultra concurrency to four isolated pages, and reject
+  unsupported models explicitly. The selected routed model fixes the adapter effort; a conflicting
+  request effort cannot change it.
 - Do not retry or switch modes to evade product usage limits.
 
 See the complete [security model](security-model.md).

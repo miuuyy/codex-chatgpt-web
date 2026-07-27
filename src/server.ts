@@ -80,9 +80,10 @@ export class HttpTurnCounter {
 }
 
 export function routeChatGptWebRequest(parsed: CodexParsedRequest, config: AppConfig): ChatGptWebModelRoute {
-  const route = requireChatGptWebModelRoute(parsed.modelId, config.proAvailable);
+  const route = requireChatGptWebModelRoute(parsed.modelId, config.proAvailable, config.mode === "full");
   parsed.modelId = CHATGPT_WEB_BACKEND_MODEL;
   parsed.options.reasoning = route.adapterEffort;
+  parsed._chatGptWebUltra = route.ultraOrchestration === true;
   return route;
 }
 
@@ -249,7 +250,7 @@ export async function compactRequest(req: Request, _config: AppConfig): Promise<
     }
   }
   try {
-    requireChatGptWebModelRoute(raw.model, _config.proAvailable);
+    requireChatGptWebModelRoute(raw.model, _config.proAvailable, _config.mode === "full");
   } catch (error) {
     return formatErrorResponse(400, "invalid_request_error", error instanceof Error ? error.message : String(error));
   }

@@ -184,6 +184,7 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
         traceId,
         modelId: parsed.modelId,
         reasoning: parsed.options.reasoning,
+        parallel: parsed._chatGptWebUltra === true,
         capabilities,
         prepare: async () => ({ ...compileChatGptWebPrompt(parsed, capabilities), release: () => {} }),
         abortSignal: browserAbort.signal,
@@ -207,6 +208,7 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
       traceId,
       modelId: parsed.modelId,
       reasoning: parsed.options.reasoning,
+      parallel: parsed._chatGptWebUltra === true,
       capabilities,
       prepare: async () => {
         const turnToken = await broker.register(environment, timeoutMs + 60_000, traceId);

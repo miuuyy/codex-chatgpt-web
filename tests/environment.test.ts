@@ -55,6 +55,35 @@ function currentWire(options: { workspace?: string; sandbox?: string; includeIds
   };
 }
 
+function currentSeatbeltWire(mode: "readOnly" | "workspaceWrite"): CodexParsedRequest {
+  const wire = currentWire({ sandbox: "seatbelt" });
+  const body = wire._rawBody as {
+    client_metadata: { "x-codex-turn-metadata": string };
+    input: Array<{
+      internal_chat_message_metadata_passthrough?: { turn_id: string };
+      content: Array<{ text: string }>;
+    }>;
+  };
+  body.client_metadata["x-codex-turn-metadata"] = JSON.stringify({
+    thread_id: "thread_current",
+    turn_id: "turn_current",
+    sandbox: "seatbelt",
+  });
+  for (const item of body.input) {
+    item.internal_chat_message_metadata_passthrough = { turn_id: "turn_current" };
+  }
+  const entries = mode === "readOnly"
+    ? '<entry access="read"><special>:root</special></entry>'
+    : `<entry access="read"><special>:root</special></entry>
+      <entry access="write"><path>${root}</path></entry>
+      <entry access="write"><special>:tmpdir</special></entry>`;
+  body.input[0]!.content[1]!.text = `<environment_context>
+    <cwd>${root}</cwd>
+    <filesystem><workspace_roots><root>${root}</root></workspace_roots><permission_profile type="managed"><file_system type="restricted">${entries}</file_system></permission_profile></filesystem>
+  </environment_context>`;
+  return wire;
+}
+
 describe("trusted current Codex environment envelope", () => {
   test("accepts the v0.146 split envelope when workspace and sandbox metadata agree", () => {
     expect(extractChatGptTurnEnvironment(currentWire())).toEqual({
@@ -62,6 +91,39 @@ describe("trusted current Codex environment envelope", () => {
       roots: [root],
       writableRoots: [root],
       sandboxPolicy: { type: "dangerFullAccess" },
+      tools: [],
+    });
+  });
+
+  test("accepts current file_system and camelCase read-only metadata when they agree", () => {
+    const wire = currentWire({ sandbox: "readOnly" });
+    const input = (wire._rawBody as { input: Array<{ content: Array<{ text: string }> }> }).input;
+    input[0]!.content[1]!.text = environmentXml.replace('type="unrestricted"', 'type="read-only"');
+    expect(extractChatGptTurnEnvironment(wire)).toEqual({
+      cwd: root,
+      roots: [root],
+      writableRoots: [],
+      sandboxPolicy: { type: "readOnly", networkAccess: false },
+      tools: [],
+    });
+  });
+
+  test("accepts the current macOS Seatbelt read-only envelope", () => {
+    expect(extractChatGptTurnEnvironment(currentSeatbeltWire("readOnly"))).toEqual({
+      cwd: root,
+      roots: [root],
+      writableRoots: [],
+      sandboxPolicy: { type: "readOnly", networkAccess: false },
+      tools: [],
+    });
+  });
+
+  test("derives writable roots from the current macOS Seatbelt envelope", () => {
+    expect(extractChatGptTurnEnvironment(currentSeatbeltWire("workspaceWrite"))).toEqual({
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "workspaceWrite", writableRoots: [root], networkAccess: false },
       tools: [],
     });
   });

@@ -38,6 +38,8 @@ test("tool-capable prompts resume the mandatory bind contract after the complete
   expect(compiled.text.slice(resume)).toContain("first action now must be the actual Codex Native codex_bind_turn call");
   expect(compiled.text).toContain(CHATGPT_INTERNAL_COMPACTION_MARKER);
   expect(compiled.text).toContain("call codex_bind_turn again with the same turn_token");
+  expect(compiled.text).toContain("Use codex_read_text_file for text, source, config, log, JSON");
+  expect(compiled.text).toContain("Use codex_view_image only for actual image files");
 });
 
 test("read-only prompts resume without exposing a bind capability", () => {
@@ -92,4 +94,19 @@ test("keeps large contexts intact in the inline text envelope", () => {
   expect(compiled.text).not.toContain(`<codex_context_attachment>`);
   expect(compiled.text).not.toContain("sha256");
   expect(compiled.text).not.toContain("SHA-256");
+});
+
+test("Ultra explicitly orchestrates three inherited parallel subagents", () => {
+  const ultra = request("high");
+  ultra._chatGptWebUltra = true;
+  const compiled = compileChatGptWebPrompt(
+    ultra,
+    { localToolsEnabled: true, proAvailable: true },
+    "turn_12345678901234567890123456789012",
+  );
+
+  expect(compiled.text).toContain("The user explicitly selected ChatGPT Web Ultra");
+  expect(compiled.text).toContain("Spawn at most three independent subagents before waiting");
+  expect(compiled.text).toContain("Do not set model, reasoning_effort, or service_tier");
+  expect(compiled.text).toContain("inherit the outer Codex collaboration defaults");
 });

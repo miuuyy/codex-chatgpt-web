@@ -1,5 +1,5 @@
 /**
- * Parse a `data:<media-type>;base64,<data>` URL into the file payload Playwright attaches to the
+ * Parse a `data:<media-type>;base64,<data>` URL into the file payload Chrome attaches to the
  * ChatGPT composer. Returns null for remote URLs; the browser bridge refuses those explicitly.
  */
 export function parseDataUrl(url: string): { mediaType: string; base64: string } | null {

@@ -45,7 +45,7 @@ Setup options:
   --restart-service            Explicitly restart this project's daemon after an update
   --login                      Refresh the stored ChatGPT login even if one exists
   --auto-approve-tool-calls    Opt in to per-call browser clicks on "Allow once" prompts
-  --acknowledge-unofficial     Accept the one-time unofficial-browser-automation notice
+  --acknowledge-unofficial     Accept the one-time unofficial browser-control notice
 
 Global:
   --home PATH                  Override ~/.codex-chatgpt-web
@@ -129,7 +129,7 @@ async function setupCommand(args: string[]): Promise<void> {
 
   if (!acknowledged) {
     stdout.write(
-      "This is independent, unofficial software. It automates your ChatGPT web session, can break when the UI changes, "
+      "This is independent, unofficial software. It controls a dedicated ordinary Chrome profile over loopback DevTools, can break when the UI changes, "
       + "and must not be used to evade usage limits or access controls.\n",
     );
     acknowledged = await confirm("Continue and store this acknowledgement?");
@@ -286,7 +286,7 @@ async function main(): Promise<void> {
     assertNoArgs(args);
     if (action !== "check") throw new Error("Browser command must be: browser check");
     await checkBrowserEngine(loadConfig());
-    stdout.write("Playwright can launch the configured Chrome executable.\n");
+    stdout.write("Ordinary Chrome is reachable through the private loopback DevTools profile without WebDriver mode.\n");
   } else if (command === "serve") {
     assertNoArgs(args);
     const config = loadConfig();

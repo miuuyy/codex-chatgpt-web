@@ -17,17 +17,17 @@
   <img src="https://img.shields.io/badge/Windows-coming_soon-0078d4?logo=windows11" alt="Windows support coming soon">
 </p>
 
-Pick **ChatGPT Web — Instant**, **Medium**, **High**, **Extra High**, or **Pro** in Codex's native
-model picker. The bridge sends the complete Codex task context to a fresh ChatGPT Temporary Chat,
-attaches images, and streams visible reasoning, tool activity, and Markdown back into the same
-Codex task.
+Pick **ChatGPT Web — Instant**, **Medium**, **High**, **Extra High**, **Ultra**, or **Pro** in
+Codex's native model picker. The bridge sends the complete Codex task context to a fresh ChatGPT
+Temporary Chat, attaches images, and streams visible reasoning, tool activity, and Markdown back
+into the same Codex task.
 
 <p align="center">
   <img src="assets/demo.gif" alt="ChatGPT Web running inside the native Codex harness" width="960">
 </p>
 
 ```text
-Codex task ──Responses + SSE──▶ codex-chatgpt-web ──controlled Chrome──▶ ChatGPT
+Codex task ──Responses + SSE──▶ codex-chatgpt-web ──loopback DevTools──▶ ordinary Chrome ──▶ ChatGPT
      ▲                                │                                      │
      └──────── native UI, context, images, tracing, and tool lifecycle ──────┘
 ```
@@ -41,9 +41,14 @@ Codex task ──Responses + SSE──▶ codex-chatgpt-web ──controlled Chr
   computer. Every browser turn starts in a fresh ChatGPT Temporary Chat and receives the complete
   accumulated Codex context, so browser chats are not reused across tasks or added to normal
   ChatGPT history.
-- **The full Codex harness over MCP.** In full mode, Instant through Extra High can use the active
+- **The full Codex harness over MCP.** In full mode, Instant through Ultra can use the active
   Codex task's filesystem, shell, images, approvals, and configured tools/apps through MCP. Calls
   and real results stay inside the same browser response—nothing is simulated as text.
+- **Real parallel Ultra orchestration.** The manually selected Ultra route uses Extra High as its
+  coordinator and may ask the outer Codex harness to fan out to three inherited collaboration
+  agents. Those agents keep the outer Codex model and service-tier defaults; they are not forced
+  onto the ChatGPT Web route. Separately, the bridge can overlap up to four Ultra browser turns,
+  each in its own Temporary Chat page. Normal routes stay exclusive.
 - **Pro stays useful.** Pro is the one exception: ChatGPT's current Pro mode does not expose the
   custom MCP connector this bridge needs. Its native capabilities, including web search and
   research, remain available. Gather local workspace context with Instant through Extra High,
@@ -61,7 +66,7 @@ policies.
 ## Quick start
 
 Browser-only mode needs macOS, Google Chrome, and a ChatGPT account. It does not need an API key,
-tunnel, system Node/Bun installation, OpenCodex, or a Playwright browser download.
+tunnel, system Node/Bun installation, OpenCodex, Playwright, or a downloaded automation browser.
 
 ```bash
 curl -fsSL https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install.sh \
@@ -76,12 +81,18 @@ Normal use starts automatically after macOS login and does not require another t
 
 | Mode | Models | Local Codex tools | Extra setup |
 | --- | --- | --- | --- |
-| **Browser-only** | Instant through Pro | No; Codex shows a warning | None |
-| **Full harness** | Instant through Pro | Instant–Extra High: yes; Pro: read-only | OpenAI tunnel + ChatGPT connector |
+| **Browser-only** | Instant–Extra High, Pro | No; Codex shows a warning | None |
+| **Full harness** | Instant–Ultra, Pro | Instant–Ultra: yes; Pro: read-only | OpenAI tunnel + ChatGPT connector |
 
 Every picker entry has one fixed ChatGPT mode. Codex still displays its built-in Effort and Speed
 rows, but changing them cannot silently change the selected browser model. Pro receives the full
 context already collected by Codex, but ChatGPT Pro cannot initiate local MCP/tool calls.
+
+> [!WARNING]
+> **Ultra is experimental and explicitly opt-in.** It may fan out to three Codex agents and permit
+> up to four simultaneous ChatGPT Web turns against one account. You are responsible for account
+> limits, throttling, workspace policy, and compliance with OpenAI terms. Ultra does not rotate
+> accounts, change service tiers, or retry to evade limits.
 
 The proxy keeps Codex's built-in `openai` provider and live model catalog. It forwards the official
 catalog unchanged and appends only its ChatGPT Web entries, so native models, task history,
@@ -147,20 +158,21 @@ codex-chatgpt-web service cancel-turns
 
 ## Limitations and security
 
-- This is unofficial browser automation, not an OpenAI API. ChatGPT UI changes can break selectors;
+- This is unofficial browser control, not an OpenAI API. ChatGPT UI changes can break selectors;
   drift fails explicitly instead of silently switching model or transport.
-- Browser state is a sensitive login artifact. Never share or commit
-  `~/.codex-chatgpt-web/browser`.
+- The dedicated ordinary-Chrome profile is a sensitive login artifact. Cookies remain inside
+  `~/.codex-chatgpt-web/chrome-profile` and are never exported; never share or commit that directory.
+- Chrome DevTools listens on a fixed loopback-only port while this profile is open. Any process
+  running as the same local user can control that dedicated profile, so do not use it for unrelated
+  browsing.
 - The Responses listener is loopback-only, but another process running as the same local user can
   reach it. Use a trusted single-user workstation.
-- Browser turns are serialized to protect one profile and prevent transcript reuse across tasks.
+- Normal browser turns are serialized. Up to four independently routed Ultra turns may use isolated
+  pages concurrently. ChatGPT account limits can still throttle concurrent work.
 - Managed background installation currently supports macOS only.
 - Codex Desktop hardcodes Pro's wire effort as **Ultra** and always shows a **Standard** speed row.
   Those controls do not alter the fixed ChatGPT Web model. Renaming them would require patching the
   signed Codex app.
-- macOS may report that Bun was prevented from modifying apps when Playwright launches installed
-  Chrome. The bridge does not modify Chrome; leaving that App Management permission denied is
-  expected.
 
 Read the complete [architecture](docs/architecture.md) and
 [security model](docs/security-model.md) before enabling full mode. Report vulnerabilities through
@@ -173,8 +185,9 @@ bun install --frozen-lockfile
 bun run verify
 ```
 
-`verify` runs dependency auditing, strict TypeScript checks, harness/MCP/config tests, a
-relocatable runtime smoke test, and a real headless launch of system Chrome.
+`verify` runs dependency auditing, strict TypeScript checks, harness/MCP/config tests, and a
+relocatable runtime smoke test. The browser transport uses a dedicated visible ordinary-Chrome
+profile with a fixed loopback DevTools port and never enables WebDriver mode.
 
 - [Architecture](docs/architecture.md)
 - [Security model](docs/security-model.md)
