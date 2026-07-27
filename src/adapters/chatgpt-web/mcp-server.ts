@@ -115,6 +115,8 @@ const maxReportChars = 60_000;
 const reportTruncated = typeof finalReport === "string" && finalReport.length > maxReportChars;
 if (reportTruncated) finalReport = finalReport.slice(0, maxReportChars);
 const stderr = status === 0 ? "" : (await Bun.file(stderrPath).text()).trim().slice(-4_000);
+const { unlink } = await import("node:fs/promises");
+await Promise.allSettled([unlink(eventsPath), unlink(stderrPath)]);
 console.log(JSON.stringify({
   worker_task_id: workerTaskId ?? null,
   exit_code: status,
@@ -139,8 +141,6 @@ export function ultraWorkerCommand(model: string, task: string): string {
     'if [ -z "$codex_bin" ]; then printf "native Codex executable not found\\n" >&2; exit 127; fi',
     'events_file="$(mktemp -t codex-ultra-worker-events.XXXXXX)"',
     'stderr_file="$(mktemp -t codex-ultra-worker-stderr.XXXXXX)"',
-    'cleanup() { rm -f "$events_file" "$stderr_file"; }',
-    "trap cleanup EXIT INT TERM",
     '"$codex_bin" -s read-only -c model_reasoning_effort=low exec --json'
       + ` -m ${shellQuote(model)} ${shellQuote(task)} >"$events_file" 2>"$stderr_file"`,
     "worker_status=$?",
