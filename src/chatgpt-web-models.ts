@@ -57,7 +57,7 @@ export const CHATGPT_WEB_MODEL_ROUTES: readonly ChatGptWebModelRoute[] = [
   {
     slug: "chatgpt-web/ultra",
     displayName: "ChatGPT Web — Ultra",
-    description: "Extra High coordinator that may fan out to three inherited Codex agents. Uses the default service tier.",
+    description: "Extra High coordinator that may fan out to three native Codex agents. Uses the default service tier.",
     codexEffort: "xhigh",
     adapterEffort: "xhigh",
     requiresPro: false,

@@ -137,8 +137,9 @@ export function compileChatGptWebPrompt(
     ? [
       "The user explicitly selected ChatGPT Web Ultra. For every non-trivial task with independent workstreams, this selection authorizes collaboration subagents without another confirmation.",
       "After binding, discover the outer Codex tool_search capability with codex_tool_inventory, use it to load collaboration or multi-agent tools, then invoke their exact returned wire names through codex_tool_call.",
-      "Spawn at most three independent subagents before waiting. Give each a concrete non-overlapping assignment, continue the coordinator's critical-path work immediately, then wait once and synthesize their verified results.",
-      "Do not set model, reasoning_effort, or service_tier on spawned agents: they must inherit the outer Codex collaboration defaults and the user's default service tier.",
+      "Spawn at most three independent subagents before waiting. Give each a concrete non-overlapping assignment and retain every returned agent id. The bridge pins spawn_agent to the native Codex model reported by codex_bind_turn and leaves service tier at the user's default.",
+      "Do not request a model or service_tier override for spawned agents. Continue the coordinator's critical-path work immediately, then make a bounded wait covering every spawned id and synthesize only completed results.",
+      "Inspect the final agent states before claiming success. If an agent errors or a wait times out, report that exact failure and finish the missing work in the coordinator; never present a spawn acknowledgement as completed agent work.",
       "Do not spawn agents for trivial requests, duplicate the same assignment, or delegate the coordinator's immediate blocking step.",
     ]
     : [];

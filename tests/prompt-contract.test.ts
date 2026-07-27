@@ -96,7 +96,7 @@ test("keeps large contexts intact in the inline text envelope", () => {
   expect(compiled.text).not.toContain("SHA-256");
 });
 
-test("Ultra explicitly orchestrates three inherited parallel subagents", () => {
+test("Ultra explicitly orchestrates three native parallel subagents", () => {
   const ultra = request("high");
   ultra._chatGptWebUltra = true;
   const compiled = compileChatGptWebPrompt(
@@ -107,6 +107,7 @@ test("Ultra explicitly orchestrates three inherited parallel subagents", () => {
 
   expect(compiled.text).toContain("The user explicitly selected ChatGPT Web Ultra");
   expect(compiled.text).toContain("Spawn at most three independent subagents before waiting");
-  expect(compiled.text).toContain("Do not set model, reasoning_effort, or service_tier");
-  expect(compiled.text).toContain("inherit the outer Codex collaboration defaults");
+  expect(compiled.text).toContain("bridge pins spawn_agent to the native Codex model");
+  expect(compiled.text).toContain("Do not request a model or service_tier override");
+  expect(compiled.text).toContain("Inspect the final agent states before claiming success");
 });

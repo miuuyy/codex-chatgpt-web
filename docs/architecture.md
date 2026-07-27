@@ -35,8 +35,9 @@ codex-chatgpt-web daemon
 - Every connector call is bound to one outer Codex turn capability.
 - Tool calls and results remain in the same ChatGPT response while Codex executes them locally.
 - Ultra uses Extra High as the coordinator and may ask the outer Codex harness to fan out to at most
-  three inherited collaboration agents. It does not override their model or service tier, and those
-  agents are not forced onto the ChatGPT Web route.
+  three collaboration agents. The broker pins every Ultra `spawn_agent` call to the configured
+  native Codex model so a child cannot recursively inherit Ultra. It removes any service-tier
+  override, leaving the user's default tier in effect.
 
 ## Browser lifecycle
 

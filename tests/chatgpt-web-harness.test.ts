@@ -663,6 +663,51 @@ describe("ChatGPT outer-native harness v3", () => {
     }
   });
 
+  test("pins an Ultra coordinator's spawned agents to the configured native model", async () => {
+    const socketPath = join(tmpdir(), `cgw-h3-ultra-native-${process.pid}-${Date.now()}.sock`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: "browser://chatgpt-ultra-native-test",
+      defaultModel: "gpt-5.6-sol",
+      models: ["gpt-5.6-sol"],
+      chatgptWeb: {
+        brokerSocketPath: socketPath,
+        turnTimeoutMs: 30_000,
+        localToolsEnabled: true,
+        proAvailable: true,
+      },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+      const prepared = await turn.prepare();
+      try {
+        const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
+        if (!token) throw new Error("turn token missing from compiled prompt");
+        const claimed = await callTurnBroker<{
+          environment: { collaborationAgentModel?: string };
+        }>(socketPath, { method: "claim", token });
+        expect(claimed.environment.collaborationAgentModel).toBe("gpt-5.6-sol");
+        turn.onTextDelta("Ultra native-agent boundary verified.");
+        return "Ultra native-agent boundary verified.";
+      } finally {
+        prepared.release();
+      }
+    };
+
+    const request = rawWireRequest(environmentXml);
+    request._chatGptWebUltra = true;
+    const events: AdapterEvent[] = [];
+    try {
+      const adapter = createChatGptWebAdapter(provider);
+      await adapter.runTurn!(request, { headers: new Headers() }, event => events.push(event));
+      expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
+
   test("runs Pro as one context-complete read-only browser turn with native warning, tracing, and exact replay", async () => {
     const socketPath = join(tmpdir(), `cgw-h3-pro-${process.pid}-${Date.now()}.sock`);
     const provider: CodexProviderConfig = {
@@ -779,11 +824,16 @@ describe("ChatGPT outer-native harness v3", () => {
       description: "Spawn one collaboration subagent",
       parameters: {
         type: "object",
-        properties: { message: { type: "string" } },
+        properties: {
+          message: { type: "string" },
+          model: { type: "string" },
+          service_tier: { type: "string" },
+        },
         required: ["message"],
       },
       loadedFromToolSearch: true,
     });
+    gatewayOnlyEnvironment.collaborationAgentModel = "gpt-5.6-sol";
     const token = await broker.register(gatewayOnlyEnvironment, 60_000);
     const transport = new StdioClientTransport({
       command: process.execPath,
@@ -848,14 +898,22 @@ describe("ChatGPT outer-native harness v3", () => {
       const spawnPromise = call("codex_tool_call", {
         binding_id: bindingId,
         wire_name: "collaboration__spawn_agent",
-        arguments: { message: "Inspect one isolated concern" },
+        arguments: {
+          message: "Inspect one isolated concern",
+          model: "chatgpt-web/ultra",
+          service_tier: "priority",
+        },
       });
       const [spawnRequest] = await broker.nextToolBatch(token);
       expect(spawnRequest).toMatchObject({
         wireName: "collaboration__spawn_agent",
         freeform: false,
-        arguments: { message: "Inspect one isolated concern" },
+        arguments: {
+          message: "Inspect one isolated concern",
+          model: "gpt-5.6-sol",
+        },
       });
+      expect(spawnRequest?.arguments).not.toHaveProperty("service_tier");
       expect(spawnRequest?.input).toBeUndefined();
       broker.completeTool(token, spawnRequest!.callId, toolResult({ status: "spawned" }));
       expect((await spawnPromise).structuredContent).toEqual({ status: "spawned" });

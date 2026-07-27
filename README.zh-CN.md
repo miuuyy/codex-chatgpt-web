@@ -44,9 +44,9 @@ Codex task ──Responses + SSE──▶ codex-chatgpt-web ──loopback DevTo
   使用当前 Codex 任务的文件系统、shell、图片、审批以及已配置的工具和应用。调用及其真实结果
   会留在同一个浏览器响应中，不会被模拟成文本。
 - **真正的并行 Ultra 编排。** 手动选择的 Ultra 路由以 Extra High 作为协调器，并可请求外层
-  Codex harness 派生最多三个继承配置的协作代理。这些代理保留外层 Codex 的模型和服务层级默认值，
-  不会被强制使用 ChatGPT Web 路由。除此之外，桥接程序还可让最多四个 Ultra 浏览器轮次并行运行，
-  每个轮次使用独立的临时聊天页面；普通路由仍然独占浏览器。
+  Codex harness 派生最多三个原生协作代理。桥接程序会将这些代理固定到已配置的原生 Codex 模型，
+  防止它们递归继承 Ultra，同时保持用户默认的服务层级。除此之外，桥接程序还可让最多四个 Ultra
+  浏览器轮次并行运行，每个轮次使用独立的临时聊天页面；普通路由仍然独占浏览器。
 - **Pro 仍然实用。** Pro 是唯一的例外：ChatGPT 当前的 Pro 模式不会暴露此桥接程序所需的自定义
   MCP 连接器。它的原生能力（包括网页搜索和研究）仍然可用。你可以先用 Instant 到 Extra High
   收集本地工作区上下文，再切换到 Pro；Pro 会收到完整的累计 Codex 任务，用于更深入的分析。
@@ -84,7 +84,7 @@ curl -fsSL https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/
 但 ChatGPT Pro 无法主动发起本地 MCP/工具调用。
 
 > [!WARNING]
-> **Ultra 是实验性功能，必须由用户明确选择。** 它可能派生三个 Codex 代理，并允许同一账户下
+> **Ultra 是实验性功能，必须由用户明确选择。** 它可能派生三个原生 Codex 代理，并允许同一账户下
 > 最多四个 ChatGPT Web 轮次同时运行。账户限制、限流、工作区政策以及 OpenAI 条款的合规责任
 > 由用户承担。Ultra 不会轮换账户、更改服务层级，也不会通过重试规避限制。
 

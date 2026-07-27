@@ -67,6 +67,28 @@ function wireName(tool: CodexTool): string {
   return namespacedToolName(tool.namespace, tool.name);
 }
 
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function ultraSpawnArguments(
+  environment: ChatGptTurnEnvironment,
+  tool: CodexTool,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  const model = environment.collaborationAgentModel;
+  if (!model || !/(?:^|__)spawn_agent$/.test(wireName(tool))) return args;
+  const properties = record(record(tool.parameters)?.properties);
+  if (!properties || !("model" in properties)) {
+    throw new Error("ChatGPT Web Ultra cannot pin this collaboration tool to a native Codex model");
+  }
+  const normalized: Record<string, unknown> = { ...args, model };
+  delete normalized.service_tier;
+  return normalized;
+}
+
 function containsPath(root: string, path: string): boolean {
   const rel = relative(root, path);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
@@ -250,7 +272,16 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
         tool_count: claimed.environment.tools.length,
         command_tool: commandTool ? wireName(commandTool) : gateway ? "exec_command" : null,
         outer_tool_gateway: gateway ? wireName(gateway) : null,
-        capabilities: ["native_tool_loop", "session_history", "exec", "apply_patch", "images", "tool_registry"],
+        collaboration_agent_model: claimed.environment.collaborationAgentModel ?? null,
+        capabilities: [
+          "native_tool_loop",
+          "session_history",
+          "exec",
+          "apply_patch",
+          "images",
+          "tool_registry",
+          ...(claimed.environment.collaborationAgentModel ? ["ultra_native_collaboration"] : []),
+        ],
       });
     },
   );
@@ -465,7 +496,9 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
         return invokeNative(binding_id, bound, tool, { input });
       }
       if (input !== undefined) throw new Error(`Function Codex tool ${wire_name} does not accept freeform input`);
-      return invokeNative(binding_id, bound, tool, { arguments: args ?? {} });
+      return invokeNative(binding_id, bound, tool, {
+        arguments: ultraSpawnArguments(bound, tool, args ?? {}),
+      });
     },
   );
 

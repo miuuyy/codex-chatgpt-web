@@ -18,6 +18,22 @@ function brokerSocketPath(provider: CodexProviderConfig): string {
   return resolve(expandUserPath(configured || `${getConfigDir()}/runtime/turn-broker.sock`));
 }
 
+function brokerEnvironmentForTurn(
+  parsed: CodexParsedRequest,
+  environment: ReturnType<typeof extractChatGptTurnEnvironment>,
+  provider: CodexProviderConfig,
+): ReturnType<typeof extractChatGptTurnEnvironment> {
+  if (parsed._chatGptWebUltra !== true) return environment;
+  const collaborationAgentModel = [
+    provider.defaultModel,
+    ...(provider.models ?? []),
+  ].find(model => typeof model === "string" && model.trim() && !model.startsWith("chatgpt-web/"))?.trim();
+  if (!collaborationAgentModel) {
+    throw new Error("ChatGPT Web Ultra requires one configured native Codex model for collaboration agents");
+  }
+  return { ...environment, collaborationAgentModel };
+}
+
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: Error) => void } {
   let resolvePromise!: (value: T) => void;
   let rejectPromise!: (error: Error) => void;
@@ -254,7 +270,7 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
       let environment: ReturnType<typeof extractChatGptTurnEnvironment> | undefined;
       if (mode.localTools) {
         try {
-          environment = environmentStore.resolve(parsed);
+          environment = brokerEnvironmentForTurn(parsed, environmentStore.resolve(parsed), provider);
         } catch (error) {
           const identity = extractChatGptTurnIdentity(parsed);
           console.warn(

@@ -80,6 +80,7 @@ function environmentIdentity(environment: ChatGptTurnEnvironment): string {
     roots: environment.roots,
     writableRoots: environment.writableRoots,
     sandboxPolicy: environment.sandboxPolicy,
+    collaborationAgentModel: environment.collaborationAgentModel,
   });
 }
 

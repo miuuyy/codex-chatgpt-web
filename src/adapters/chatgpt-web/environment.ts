@@ -12,6 +12,8 @@ export interface ChatGptTurnEnvironment {
   writableRoots: string[];
   sandboxPolicy: ChatGptSandboxPolicy;
   tools: CodexTool[];
+  /** Native Codex model enforced for collaboration agents spawned by an Ultra coordinator. */
+  collaborationAgentModel?: string;
 }
 
 export interface ChatGptTurnIdentity {

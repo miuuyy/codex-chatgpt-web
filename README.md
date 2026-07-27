@@ -45,10 +45,11 @@ Codex task ──Responses + SSE──▶ codex-chatgpt-web ──loopback DevTo
   Codex task's filesystem, shell, images, approvals, and configured tools/apps through MCP. Calls
   and real results stay inside the same browser response—nothing is simulated as text.
 - **Real parallel Ultra orchestration.** The manually selected Ultra route uses Extra High as its
-  coordinator and may ask the outer Codex harness to fan out to three inherited collaboration
-  agents. Those agents keep the outer Codex model and service-tier defaults; they are not forced
-  onto the ChatGPT Web route. Separately, the bridge can overlap up to four Ultra browser turns,
-  each in its own Temporary Chat page. Normal routes stay exclusive.
+  coordinator and may ask the outer Codex harness to fan out to three native collaboration agents.
+  The bridge pins those agents to its configured native Codex model so they cannot recursively
+  inherit Ultra, while leaving the service tier at the user's default. Separately, the bridge can
+  overlap up to four Ultra browser turns, each in its own Temporary Chat page. Normal routes stay
+  exclusive.
 - **Pro stays useful.** Pro is the one exception: ChatGPT's current Pro mode does not expose the
   custom MCP connector this bridge needs. Its native capabilities, including web search and
   research, remain available. Gather local workspace context with Instant through Extra High,
@@ -89,10 +90,10 @@ rows, but changing them cannot silently change the selected browser model. Pro r
 context already collected by Codex, but ChatGPT Pro cannot initiate local MCP/tool calls.
 
 > [!WARNING]
-> **Ultra is experimental and explicitly opt-in.** It may fan out to three Codex agents and permit
-> up to four simultaneous ChatGPT Web turns against one account. You are responsible for account
-> limits, throttling, workspace policy, and compliance with OpenAI terms. Ultra does not rotate
-> accounts, change service tiers, or retry to evade limits.
+> **Ultra is experimental and explicitly opt-in.** It may fan out to three native Codex agents and
+> permit up to four simultaneous ChatGPT Web turns against one account. You are responsible for
+> account limits, throttling, workspace policy, and compliance with OpenAI terms. Ultra does not
+> rotate accounts, change service tiers, or retry to evade limits.
 
 The proxy keeps Codex's built-in `openai` provider and live model catalog. It forwards the official
 catalog unchanged and appends only its ChatGPT Web entries, so native models, task history,
