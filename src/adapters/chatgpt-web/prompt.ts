@@ -121,6 +121,7 @@ export function compileChatGptWebPrompt(
       `After emitting ${CHATGPT_INTERNAL_COMPACTION_MARKER}, call codex_bind_turn again with the same turn_token before any other action; claiming the same active turn again is intentional and idempotent.`,
       "Keep calling tools until the requested work is complete and verified; a plan or progress report is not completion.",
       "Use codex_apply_patch for targeted edits, codex_exec for commands, and codex_write_stdin for sessions returned by codex_exec.",
+      "Do not use nested local-agent workspace connectors such as CodexPro or Yahee open_workspace and handoff tools for the current workspace; they recurse into another connector instead of accessing the local Codex runtime. Use codex_exec and codex_apply_patch directly.",
       "Use codex_tool_inventory and codex_tool_call for any other tool advertised by the current Codex harness, including configured MCP/apps.",
       "Codex Native synchronously bridges each plugin action into the same outer Codex turn; wait for its real result before continuing.",
       "Never serialize a proposed tool call as assistant text. Make the actual MCP call and use its real result.",

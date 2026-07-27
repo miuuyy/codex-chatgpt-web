@@ -55,6 +55,7 @@ describe("native /models augmentation", () => {
       expect(model).toMatchObject({
         slug: route.slug,
         display_name: route.displayName,
+        prefer_websockets: false,
         tool_mode: route.requiresPro ? null : "code_mode_only",
         default_reasoning_level: route.codexEffort,
         supported_reasoning_levels: [{ effort: route.codexEffort, description: route.displayName }],
