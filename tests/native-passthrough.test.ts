@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { forwardNativeCodexRequest } from "../src/native-passthrough";
+import { readJsonRequestBody } from "../src/http-body";
 
 test("forwards native Codex requests verbatim to the official backend", async () => {
   const originalBody = Bun.zstdCompressSync(Buffer.from('{"model":"gpt-5.6-sol","stream":true}'));
@@ -64,6 +65,64 @@ test("forwards native Codex compaction requests to the official compact endpoint
   expect(Buffer.from(await upstreamRequest!.arrayBuffer())).toEqual(Buffer.from(originalBody));
   expect(response.status).toBe(200);
   expect(await response.json()).toEqual({ output: [] });
+});
+
+test("removes local input item ids when store is false before native passthrough", async () => {
+  const body = {
+    model: "gpt-5.6-sol",
+    store: false,
+    input: [
+      {
+        type: "reasoning",
+        id: "rs_local_browser_item",
+        summary: [{ type: "summary_text", text: "Thinking" }],
+      },
+      {
+        type: "function_call",
+        id: "fc_local_browser_item",
+        call_id: "call_pairing_must_survive",
+        name: "shell_command",
+        arguments: "{}",
+      },
+    ],
+  };
+  const compressed = Bun.zstdCompressSync(Buffer.from(JSON.stringify(body)));
+  const encoded = new ArrayBuffer(compressed.byteLength);
+  new Uint8Array(encoded).set(compressed);
+  const request = new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer codex-oauth-token",
+      "content-type": "application/json",
+      "content-encoding": "zstd",
+    },
+    body: encoded,
+  });
+  let upstreamBody: unknown;
+
+  await forwardNativeCodexRequest(request, "responses", async input => {
+    upstreamBody = await readJsonRequestBody(input.clone());
+    return new Response("data: native\n\n", {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  });
+
+  expect(upstreamBody).toEqual({
+    ...body,
+    input: [
+      {
+        type: "reasoning",
+        summary: [{ type: "summary_text", text: "Thinking" }],
+      },
+      {
+        type: "function_call",
+        call_id: "call_pairing_must_survive",
+        name: "shell_command",
+        arguments: "{}",
+      },
+    ],
+  });
 });
 
 test("native passthrough fails closed without Codex bearer authentication", async () => {

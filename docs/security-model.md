@@ -2,21 +2,26 @@
 
 ## Trust boundaries
 
-The user trusts the local Codex app, this loopback daemon, the configured Chrome profile, the
-selected ChatGPT workspace, OpenAI's tunnel service, and the exact MCP connector they created.
-Repository contents, tool output, websites, and prompt text are untrusted data.
+The user trusts the local Codex app, this loopback daemon, the dedicated browser login profile,
+the selected ChatGPT workspace, and—only in full mode—OpenAI's tunnel service and the exact MCP
+connector they created. Repository contents, tool output, websites, and prompt text are untrusted
+data.
 
-## Full-mode capability flow
+## Tool capability flows
 
 1. The daemon accepts a Codex Responses turn on `127.0.0.1`.
 2. It extracts `cwd`, workspace roots, sandbox policy, and the tool registry only from the native
    Codex wire envelope with matching turn metadata. A user-authored `<environment_context>` is not
    accepted as authority.
-3. It creates a random, expiring turn token and embeds it in that one ChatGPT browser prompt.
-4. The connector exchanges the token once for an opaque binding. Claims are idempotent for retry
-   safety; the capability is revoked when the turn completes, aborts, or expires.
-5. MCP can request only a tool advertised by the active outer Codex turn. Codex remains responsible
-   for its sandbox, approval, UI, command sessions, and tool result.
+3. In `plus-tools` mode, the bridge creates a random per-turn nonce. ChatGPT may request only tools
+   in the prompt's exact catalog using a terminal, nonce-bound JSON block. The parser validates the
+   nonce, tool name, argument shape, and framing before Codex executes anything.
+4. In `full` mode, the bridge instead creates a random, expiring turn token. The connector exchanges
+   it once for an opaque binding; claims are idempotent for retry safety.
+5. Either transport can request only a tool advertised by the active outer Codex turn. Codex
+   remains responsible for its sandbox, approval, UI, command sessions, and tool results.
+6. The capability or nonce is revoked when the turn completes, aborts, or expires. Pro remains
+   read-only in every mode.
 
 The bridge transports decisions; it does not add a second planner, semantic router, or fallback
 model. Unsupported model/effort/tool combinations fail explicitly.
@@ -25,16 +30,17 @@ model. Unsupported model/effort/tool combinations fail explicitly.
 
 ### Prompt injection and destructive tool use
 
-ChatGPT sees repository content and tool results that may contain hostile instructions. Full mode
-can invoke write and command tools. Use a trusted workspace, keep Codex sandbox/approval settings
-appropriate, and grant only intended connector actions. Automatic per-call approval is off by
-default.
+ChatGPT sees repository content and tool results that may contain hostile instructions.
+`plus-tools` and `full` can invoke write and command tools. Use a trusted workspace and keep Codex
+sandbox and approval settings appropriate. Automatic connector approval is off by default.
 
 ### Browser session theft
 
-`storage-state.json` can authorize ChatGPT access. It is stored with user-only permissions. Never
-sync, upload, attach, or commit the application home. On suspected exposure, sign out/revoke the
-ChatGPT session and run `login` again.
+`storage-state.json` can authorize ChatGPT access. It is stored with user-only permissions. Windows
+login uses a dedicated Chrome or Firefox profile and copies only `chatgpt.com` and `openai.com`
+cookies into the automation state; the dedicated login profile is then removed. Never sync,
+upload, attach, or commit the application home. On suspected exposure, sign out/revoke the ChatGPT
+session and run `login` again.
 
 ### Tunnel credential theft
 
@@ -76,11 +82,11 @@ response; the bridge does not fabricate or install a Codex history checkpoint.
 - Responses and health listeners bind to `127.0.0.1` only.
 - Full mode uses OpenAI's outbound HTTPS Secure MCP Tunnel; it opens no public listener or inbound
   firewall rule.
-- Chrome connects to ChatGPT and user-authorized attachment URLs only through its normal browser
-  networking.
+- The selected controlled browser connects to ChatGPT and user-authorized attachment URLs only
+  through its normal browser networking.
 
 ## Non-goals
 
-- Defending against a compromised local OS user or compromised Codex/Chrome binary.
+- Defending against a compromised local OS user or compromised Codex/browser binary.
 - Bypassing ChatGPT plan, workspace, usage, action-control, or model restrictions.
 - Making consumer browser automation equivalent to a supported OpenAI API contract.

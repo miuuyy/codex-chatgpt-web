@@ -133,4 +133,17 @@ describe("reversible native Codex route integration", () => {
     expect(() => uninstallCodexIntegration()).toThrow("changed after setup");
     expect(readFileSync(configPath, "utf8")).toBe(changed);
   });
+
+  test("accepts the managed route marker after Windows rewrites config with CRLF", () => {
+    const { codexHome } = fixture();
+    const configPath = join(codexHome, "config.toml");
+    const original = 'model = "gpt-5.6-sol"\r\n';
+    writeFileSync(configPath, original);
+    installCodexIntegration(defaultConfig("browser-only"));
+    const windowsText = readFileSync(configPath, "utf8").replace(/\r?\n/g, "\r\n");
+    writeFileSync(configPath, windowsText);
+
+    expect(uninstallCodexIntegration()).toEqual({ changed: true });
+    expect(readFileSync(configPath, "utf8")).toBe(original);
+  });
 });

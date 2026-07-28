@@ -6,6 +6,7 @@ import { assertDurableRuntimeCommand, atomicWriteFile, getConfigDir } from "./co
 import { runCommand, runChecked } from "./process";
 
 const LABEL = "io.github.codex-chatgpt-web.daemon";
+const WINDOWS_TASK = "CodexChatGPTWebBridge";
 
 export interface ServiceStatus {
   supported: boolean;
@@ -26,6 +27,44 @@ function xml(value: string): string {
 
 function plistPath(): string {
   return join(homedir(), "Library", "LaunchAgents", `${LABEL}.plist`);
+}
+
+function windowsWrapperPath(): string {
+  return join(getConfigDir(), "service", "run-daemon.cmd");
+}
+
+function batchQuote(value: string): string {
+  if (/[\r\n]/.test(value)) throw new Error("Windows service arguments must not contain newlines");
+  return `"${value.replaceAll("%", "%%").replaceAll('"', '""')}"`;
+}
+
+function windowsWrapper(config: AppConfig): string {
+  const logDir = join(getConfigDir(), "logs");
+  const command = [...config.runtimeCommand, "serve"].map(batchQuote).join(" ");
+  return [
+    "@echo off",
+    "setlocal",
+    `set "CODEX_CHATGPT_WEB_HOME=${getConfigDir().replaceAll("%", "%%")}"`,
+    `${command} 1>>${batchQuote(join(logDir, "daemon.stdout.log"))} 2>>${batchQuote(join(logDir, "daemon.stderr.log"))}`,
+    "",
+  ].join("\r\n");
+}
+
+function windowsTaskState(): string | undefined {
+  const command = `(Get-ScheduledTask -TaskName '${WINDOWS_TASK}' -ErrorAction SilentlyContinue).State`;
+  const result = runCommand("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command]);
+  const state = result.stdout.trim();
+  return result.status === 0 && state ? state : undefined;
+}
+
+async function waitForWindowsTaskStopped(timeoutMs = 20_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (windowsTaskState() === "Running" && Date.now() < deadline) {
+    await new Promise(resolveWait => setTimeout(resolveWait, 50));
+  }
+  if (windowsTaskState() === "Running") {
+    throw new Error(`Scheduled Task did not stop within ${timeoutMs}ms: ${WINDOWS_TASK}`);
+  }
 }
 
 function launchDomain(): string {
@@ -91,13 +130,23 @@ ${args.map(arg => `    <string>${xml(arg)}</string>`).join("\n")}
 `;
 }
 
-function assertMacOs(): void {
-  if (process.platform !== "darwin") {
-    throw new Error("Version 0.1 supports managed background services on macOS only; run `codex-chatgpt-web serve` manually on this platform.");
+function assertSupportedPlatform(): void {
+  if (process.platform !== "darwin" && process.platform !== "win32") {
+    throw new Error("Managed background services are supported on macOS and Windows only.");
   }
 }
 
 export function getServiceStatus(): ServiceStatus {
+  if (process.platform === "win32") {
+    const state = windowsTaskState();
+    return {
+      supported: true,
+      installed: state !== undefined,
+      loaded: state === "Running",
+      label: WINDOWS_TASK,
+      definitionPath: windowsWrapperPath(),
+    };
+  }
   if (process.platform !== "darwin") return { supported: false, installed: false, loaded: false, label: LABEL };
   const path = plistPath();
   const result = runCommand("launchctl", ["print", serviceTarget()]);
@@ -111,8 +160,20 @@ export function getServiceStatus(): ServiceStatus {
 }
 
 export function installService(config: AppConfig): ServiceStatus {
-  assertMacOs();
+  assertSupportedPlatform();
   assertDurableRuntimeCommand(config.runtimeCommand);
+  if (process.platform === "win32") {
+    const path = windowsWrapperPath();
+    mkdirSync(dirname(path), { recursive: true });
+    mkdirSync(join(getConfigDir(), "logs"), { recursive: true });
+    atomicWriteFile(path, windowsWrapper(config));
+    runChecked("schtasks.exe", [
+      "/Create", "/TN", WINDOWS_TASK, "/SC", "ONLOGON",
+      "/TR", path, "/RL", "LIMITED", "/IT", "/F",
+    ]);
+    runChecked("schtasks.exe", ["/Run", "/TN", WINDOWS_TASK]);
+    return getServiceStatus();
+  }
   const path = plistPath();
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   mkdirSync(join(getConfigDir(), "logs"), { recursive: true, mode: 0o700 });
@@ -124,7 +185,12 @@ export function installService(config: AppConfig): ServiceStatus {
 }
 
 export function startService(): ServiceStatus {
-  assertMacOs();
+  assertSupportedPlatform();
+  if (process.platform === "win32") {
+    if (!getServiceStatus().installed) throw new Error(`Service is not installed: ${WINDOWS_TASK}`);
+    if (!getServiceStatus().loaded) runChecked("schtasks.exe", ["/Run", "/TN", WINDOWS_TASK]);
+    return getServiceStatus();
+  }
   const path = plistPath();
   if (!existsSync(path)) throw new Error(`Service is not installed: ${path}`);
   const status = getServiceStatus();
@@ -208,10 +274,16 @@ export async function assertServiceIdle(config: AppConfig): Promise<void> {
 }
 
 export async function restartService(config: AppConfig): Promise<ServiceStatus> {
-  assertMacOs();
+  assertSupportedPlatform();
   if (!getServiceStatus().loaded) return startService();
   const lease = await acquireDrain(config);
   try {
+    if (process.platform === "win32") {
+      runChecked("schtasks.exe", ["/End", "/TN", WINDOWS_TASK]);
+      await waitForWindowsTaskStopped();
+      runChecked("schtasks.exe", ["/Run", "/TN", WINDOWS_TASK]);
+      return getServiceStatus();
+    }
     runChecked("launchctl", ["bootout", serviceTarget()]);
     await waitForServiceUnloaded();
     await bootstrapService(plistPath());
@@ -233,12 +305,17 @@ export function removeLegacyRuntimeArtifacts(config: AppConfig): void {
 }
 
 export async function stopService(config: AppConfig): Promise<ServiceStatus> {
-  assertMacOs();
+  assertSupportedPlatform();
   if (getServiceStatus().loaded) {
     const lease = await acquireDrain(config);
     try {
-      runChecked("launchctl", ["bootout", serviceTarget()]);
-      await waitForServiceUnloaded();
+      if (process.platform === "win32") {
+        runChecked("schtasks.exe", ["/End", "/TN", WINDOWS_TASK]);
+        await waitForWindowsTaskStopped();
+      } else {
+        runChecked("launchctl", ["bootout", serviceTarget()]);
+        await waitForServiceUnloaded();
+      }
     } catch (error) {
       await lease.release().catch(() => {});
       throw error;
@@ -248,17 +325,13 @@ export async function stopService(config: AppConfig): Promise<ServiceStatus> {
 }
 
 export async function uninstallService(config: AppConfig): Promise<ServiceStatus> {
-  assertMacOs();
-  if (getServiceStatus().loaded) {
-    const lease = await acquireDrain(config);
-    try {
-      runChecked("launchctl", ["bootout", serviceTarget()]);
-      await waitForServiceUnloaded();
-    } catch (error) {
-      await lease.release().catch(() => {});
-      throw error;
-    }
+  assertSupportedPlatform();
+  await stopService(config);
+  if (process.platform === "win32") {
+    if (getServiceStatus().installed) runChecked("schtasks.exe", ["/Delete", "/TN", WINDOWS_TASK, "/F"]);
+    rmSync(windowsWrapperPath(), { force: true });
+  } else {
+    rmSync(plistPath(), { force: true });
   }
-  rmSync(plistPath(), { force: true });
   return getServiceStatus();
 }

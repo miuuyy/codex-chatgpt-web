@@ -300,7 +300,9 @@ export interface CodexProviderConfig {
     appName?: string;
     /** Playwright storage-state file created by the explicit browser login. */
     storageStatePath?: string;
-    /** System Chrome executable. The runtime never downloads a browser. */
+    browserEngine?: "chromium" | "firefox";
+    browserExecutablePath?: string;
+    /** Legacy Chromium executable field. */
     chromeExecutablePath?: string;
     /** Unix socket bridging the turn-bound MCP capability into outer Codex tools. */
     brokerSocketPath?: string;
@@ -312,6 +314,8 @@ export interface CodexProviderConfig {
     headed?: boolean;
     /** Attach the turn-bound Codex MCP capability for non-Pro efforts. */
     localToolsEnabled?: boolean;
+    /** How ChatGPT Web requests Codex tools: an account MCP connector or the Plus-compatible prompt relay. */
+    toolTransport?: "none" | "mcp" | "prompt-relay";
     /** Account capability proven by the authenticated browser probe. */
     proAvailable?: boolean;
     /** Authorize per-call "Allow once" confirmation clicks for this connector. */

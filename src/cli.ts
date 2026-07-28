@@ -22,6 +22,7 @@ Focused ChatGPT web-backed models for the native Codex harness.
 
 Usage:
   codex-chatgpt-web setup --browser-only [options]
+  codex-chatgpt-web setup --plus-tools [options]
   codex-chatgpt-web setup --full --tunnel-id ID --runtime-key-file PATH [options]
   codex-chatgpt-web login
   codex-chatgpt-web doctor [--json]
@@ -35,9 +36,12 @@ Usage:
 
 Setup options:
   --browser-only               Fixed Instant–Pro models, full context/images, no local tools or tunnel
+  --plus-tools                 Instant–Extra High with local Codex tools through the Plus-compatible prompt relay
   --full                       Fixed Instant–Extra High tool models plus read-only Pro
   --port NUMBER                Loopback Responses port (default: 17841)
-  --chrome PATH                Google Chrome executable
+  --chrome PATH                Legacy alias for --browser chromium --browser-path PATH
+  --browser ENGINE             chromium or firefox (default: chromium)
+  --browser-path PATH          Explicit browser automation executable
   --app-name NAME              ChatGPT connector name (default: Codex Native)
   --tunnel-id ID               Existing OpenAI tunnel id (full mode)
   --runtime-key-file PATH      File containing a Tunnels Read+Use runtime key
@@ -105,19 +109,41 @@ function assertNoArgs(args: string[]): void {
 
 async function setupCommand(args: string[]): Promise<void> {
   const browserOnly = takeFlag(args, "--browser-only");
+  const plusTools = takeFlag(args, "--plus-tools");
   const full = takeFlag(args, "--full");
-  if (browserOnly === full) throw new Error("Choose exactly one setup mode: --browser-only or --full");
+  if ([browserOnly, plusTools, full].filter(Boolean).length !== 1) {
+    throw new Error("Choose exactly one setup mode: --browser-only, --plus-tools, or --full");
+  }
   const portRaw = takeOption(args, "--port");
+  if (portRaw !== undefined) {
+    const port = Number(portRaw);
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+      throw new Error("--port must be an integer from 1 to 65535");
+    }
+  }
   let acknowledged = takeFlag(args, "--acknowledge-unofficial");
   const options: SetupOptions = {
-    mode: full ? "full" : "browser-only",
+    mode: full ? "full" : plusTools ? "plus-tools" : "browser-only",
     ...(portRaw ? { port: Number(portRaw) } : {}),
   };
   const appName = takeOption(args, "--app-name");
   const tunnelId = takeOption(args, "--tunnel-id");
   const runtimeKeyFile = takeOption(args, "--runtime-key-file");
   const chrome = takeOption(args, "--chrome");
-  if (chrome) options.chromeExecutablePath = chrome;
+  const browser = takeOption(args, "--browser");
+  const browserPath = takeOption(args, "--browser-path");
+  if (browser && browser !== "chromium" && browser !== "firefox") {
+    throw new Error("--browser must be chromium or firefox");
+  }
+  if (chrome && (browser || browserPath)) {
+    throw new Error("--chrome cannot be combined with --browser or --browser-path");
+  }
+  if (chrome) {
+    options.browserEngine = "chromium";
+    options.browserExecutablePath = chrome;
+  }
+  if (browser) options.browserEngine = browser as "chromium" | "firefox";
+  if (browserPath) options.browserExecutablePath = browserPath;
   if (appName) options.appName = appName;
   if (tunnelId) options.tunnelId = tunnelId;
   if (runtimeKeyFile) options.runtimeKeyFile = runtimeKeyFile;
@@ -247,16 +273,16 @@ async function uninstallCommand(args: string[]): Promise<void> {
     throw new Error("Uninstall cancelled");
   }
   const config = existsSync(getConfigPath()) ? loadConfig() : undefined;
-  if (!config && process.platform === "darwin" && getServiceStatus().installed) {
+  if (!config && (process.platform === "darwin" || process.platform === "win32") && getServiceStatus().installed) {
     throw new Error("Service exists but configuration is missing; refusing an unverifiable uninstall");
   }
-  if (config && process.platform === "darwin") await assertServiceIdle(config);
+  if (config && (process.platform === "darwin" || process.platform === "win32")) await assertServiceIdle(config);
   uninstallCodexIntegration();
   if (config?.mode === "full") {
     if (process.platform === "darwin") await uninstallTunnelService();
     stopTunnel(config);
   }
-  if (config && process.platform === "darwin") await uninstallService(config);
+  if (config && (process.platform === "darwin" || process.platform === "win32")) await uninstallService(config);
   if (!keepData) rmSync(getConfigDir(), { recursive: true, force: true });
   stdout.write(keepData ? "Uninstalled; private application data was preserved.\n" : "Uninstalled and removed private application data.\n");
 }
@@ -285,8 +311,9 @@ async function main(): Promise<void> {
     const action = args.shift();
     assertNoArgs(args);
     if (action !== "check") throw new Error("Browser command must be: browser check");
-    await checkBrowserEngine(loadConfig());
-    stdout.write("Playwright can launch the configured Chrome executable.\n");
+    const config = loadConfig();
+    await checkBrowserEngine(config);
+    stdout.write(`Playwright can launch the configured ${config.browserEngine} browser.\n`);
   } else if (command === "serve") {
     assertNoArgs(args);
     const config = loadConfig();

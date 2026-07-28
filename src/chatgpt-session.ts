@@ -12,13 +12,22 @@ async function anyVisible(locator: Locator): Promise<boolean> {
 
 export async function assertAuthenticatedChatGptPage(page: Page): Promise<void> {
   const loginButtons = page.getByRole("button", { name: "Log in", exact: true });
+  const deadline = Date.now() + 15_000;
+  while (await anyVisible(loginButtons) && Date.now() < deadline) {
+    await page.waitForTimeout(250);
+  }
   if (await anyVisible(loginButtons)) {
     throw new Error("ChatGPT is signed out: a visible Log in button is present");
   }
   const accountControl = page.getByRole("button", { name: /(?:profile|account) menu/i }).or(
     page.locator('[data-testid="profile-button"], button[aria-label*="account" i]'),
   );
-  if (!await anyVisible(accountControl)) {
+  const cookies = await page.context().cookies("https://chatgpt.com");
+  const authenticatedCookie = cookies.some(cookie =>
+    cookie.name.startsWith("__Secure-next-auth.session-token")
+    || cookie.name === "oai-client-auth-session"
+  );
+  if (!await anyVisible(accountControl) && !authenticatedCookie) {
     throw new Error("ChatGPT authentication could not be verified: no visible account control is present");
   }
 }

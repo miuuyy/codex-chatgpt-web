@@ -77,10 +77,18 @@ function environmentBeforeUser(input: unknown[], userIndex: number, expectedTurn
 }
 
 function sandboxTypeFromEnvironment(text: string): ChatGptSandboxPolicy["type"] | undefined {
+  const managedRestricted = /<permission_profile\s+type=["']managed["'][^>]*>[\s\S]*?<file_system\s+type=["']restricted["'][^>]*>[\s\S]*?<\/file_system>[\s\S]*?<\/permission_profile>/i.test(text);
+  const managedWrite = managedRestricted
+    && /<entry\s+access=["']write["'][^>]*>[\s\S]*?<path>[^<]+<\/path>[\s\S]*?<\/entry>/i.test(text);
   const unrestricted = /<permission_profile\s+type=["']disabled["'][^>]*>[\s\S]*?<file_system\s+type=["']unrestricted["'][^>]*\/?\s*>/i.test(text)
-    || /<sandbox_mode>danger-full-access<\/sandbox_mode>/i.test(text);
-  const workspaceWrite = /<sandbox_mode>workspace-write<\/sandbox_mode>/i.test(text);
-  const readOnly = /<sandbox_mode>read-only<\/sandbox_mode>/i.test(text);
+    || /<sandbox_mode>danger-full-access<\/sandbox_mode>/i.test(text)
+    || /[`"']sandbox_mode[`"']\s+is\s+[`"']danger-full-access[`"']/i.test(text);
+  const workspaceWrite = /<sandbox_mode>workspace-write<\/sandbox_mode>/i.test(text)
+    || /[`"']sandbox_mode[`"']\s+is\s+[`"']workspace-write[`"']/i.test(text)
+    || managedWrite;
+  const readOnly = /<sandbox_mode>read-only<\/sandbox_mode>/i.test(text)
+    || /[`"']sandbox_mode[`"']\s+is\s+[`"']read-only[`"']/i.test(text)
+    || (managedRestricted && !managedWrite);
   if (Number(unrestricted) + Number(workspaceWrite) + Number(readOnly) !== 1) return undefined;
   return unrestricted ? "dangerFullAccess" : workspaceWrite ? "workspaceWrite" : "readOnly";
 }
@@ -248,11 +256,20 @@ export function extractChatGptTurnEnvironment(parsed: CodexParsedRequest): ChatG
     return { cwd, roots, writableRoots: roots, sandboxPolicy: { type: "dangerFullAccess" }, tools: parsed.context.tools ?? [] };
   }
   if (sandboxType === "workspaceWrite") {
+    const managedWriteMatches = [...text.matchAll(
+      /<entry\s+access=["']write["'][^>]*>[\s\S]*?<path>([^<]+)<\/path>[\s\S]*?<\/entry>/gi,
+    )].map(match => match[1] ?? "");
+    const writableRoots = managedWriteMatches.length > 0
+      ? uniqueAbsolutePaths(managedWriteMatches, "writable roots")
+      : roots;
+    if (writableRoots.some(path => !roots.some(root => matchesPath(root, path)))) {
+      throw new Error("ChatGPT web writable roots are outside the trusted Codex workspace roots");
+    }
     return {
       cwd,
       roots,
-      writableRoots: roots,
-      sandboxPolicy: { type: "workspaceWrite", writableRoots: roots, networkAccess },
+      writableRoots,
+      sandboxPolicy: { type: "workspaceWrite", writableRoots, networkAccess },
       tools: parsed.context.tools ?? [],
     };
   }

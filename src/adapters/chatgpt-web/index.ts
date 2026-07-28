@@ -15,7 +15,8 @@ import { ChatGptThreadEnvironmentStore } from "./thread-environment";
 
 function brokerSocketPath(provider: CodexProviderConfig): string {
   const configured = provider.chatgptWeb?.brokerSocketPath?.trim();
-  return resolve(expandUserPath(configured || `${getConfigDir()}/runtime/turn-broker.sock`));
+  const value = expandUserPath(configured || `${getConfigDir()}/runtime/turn-broker.sock`);
+  return value.startsWith("\\\\.\\pipe\\") ? value : resolve(value);
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: Error) => void } {
@@ -159,6 +160,8 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
   const capabilities: ChatGptWebCapabilities = {
     localToolsEnabled: provider.chatgptWeb?.localToolsEnabled === true,
     proAvailable: provider.chatgptWeb?.proAvailable === true,
+    toolTransport: provider.chatgptWeb?.toolTransport
+      ?? (provider.chatgptWeb?.localToolsEnabled === true ? "mcp" : "none"),
   };
   const executionNamespace = createHash("sha256").update(JSON.stringify({
     baseUrl: provider.baseUrl,
@@ -225,6 +228,15 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
       onReasoningSummary: text => trace.push({ kind: "reasoning", text }),
       onCommentary: (text, continuation) => trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) }),
       onTextDelta: delta => text.push(delta),
+      ...(capabilities.toolTransport === "prompt-relay" ? {
+        onPromptToolCalls: async (calls) => {
+          const turnToken = activeToken;
+          if (!turnToken) throw new Error("Prompt relay attempted a tool call before the turn broker was ready");
+          const pending = broker.invokeFromPrompt(turnToken, calls);
+          const results = await pending.results;
+          return pending.requests.map((request, index) => ({ request, result: results[index]! }));
+        },
+      } : {}),
     });
     void browser.catch(error => {
       if (!tokenSettled) {

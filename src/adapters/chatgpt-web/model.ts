@@ -3,6 +3,7 @@ export const CHATGPT_WEB_MODEL_ID = "gpt-5.6-sol";
 export interface ChatGptWebCapabilities {
   localToolsEnabled: boolean;
   proAvailable: boolean;
+  toolTransport?: "none" | "mcp" | "prompt-relay";
 }
 
 export interface ChatGptWebModelMode {

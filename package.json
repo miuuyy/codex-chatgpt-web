@@ -19,6 +19,8 @@
   "files": [
     "dist",
     "README.md",
+    "WINDOWS-RECOVERY.md",
+    "scripts/windows-route.ps1",
     "LICENSE",
     "LICENSES"
   ],
@@ -34,6 +36,7 @@
     "clean": "bun run scripts/clean.ts",
     "build": "bun run scripts/build-runtime-bundle.ts",
     "smoke": "bun run scripts/smoke-release.ts dist/runtime",
+    "smoke:windows-service": "bun run scripts/smoke-windows-service.ts",
     "smoke:codex": "bun run scripts/smoke-codex-catalog.ts",
     "verify": "bun run scripts/verify.ts"
   },

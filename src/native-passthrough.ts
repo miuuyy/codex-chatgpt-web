@@ -1,3 +1,5 @@
+import { encodeJsonRequestBody, readJsonRequestBody } from "./http-body";
+
 const CODEX_BACKEND = "https://chatgpt.com/backend-api/codex";
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
@@ -23,6 +25,23 @@ function endToEndHeaders(source: Headers): Headers {
   return headers;
 }
 
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stripInputItemIdsWhenUnstored(value: unknown): unknown {
+  if (!isObject(value) || value.store !== false || !Array.isArray(value.input)) return value;
+  let changed = false;
+  const input = value.input.map(item => {
+    if (!isObject(item) || !Object.hasOwn(item, "id")) return item;
+    changed = true;
+    const next = { ...item };
+    delete next.id;
+    return next;
+  });
+  return changed ? { ...value, input } : value;
+}
+
 export async function forwardNativeCodexRequest(
   request: Request,
   endpoint: NativeCodexEndpoint,
@@ -37,7 +56,21 @@ export async function forwardNativeCodexRequest(
   const headers = endToEndHeaders(request.headers);
   if (endpoint === "models") headers.delete("if-none-match");
   const method = endpoint === "models" ? "GET" : "POST";
-  const body = method === "POST" ? await request.arrayBuffer() : undefined;
+  let body: ArrayBuffer | undefined;
+  if (method === "POST") {
+    const inspectionRequest = endpoint === "responses" ? request.clone() : undefined;
+    body = await request.arrayBuffer();
+    if (inspectionRequest) {
+      const parsed = await readJsonRequestBody(inspectionRequest);
+      const sanitized = stripInputItemIdsWhenUnstored(parsed);
+      if (sanitized !== parsed) {
+        body = await encodeJsonRequestBody(
+          sanitized,
+          request.headers.get("content-encoding") ?? "identity",
+        );
+      }
+    }
+  }
   const upstreamRequest = new Request(`${CODEX_BACKEND}/${endpoint}${incomingUrl.search}`, {
     method,
     headers,

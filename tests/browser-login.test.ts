@@ -2,11 +2,58 @@ import { expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { browserLoginStateExists, loginToChatGpt, loginVerificationMarkerPath } from "../src/browser-login";
+import {
+  browserLoginArguments,
+  browserLoginStateExists,
+  isChatGptCookieDomain,
+  loginChromeArguments,
+  loginToChatGpt,
+  loginVerificationMarkerPath,
+  normalLoginBrowserExecutable,
+} from "../src/browser-login";
 import { CHATGPT_TEMPORARY_CHAT_URL } from "../src/chatgpt-session";
 import { defaultConfig } from "../src/config";
 
-test("login starts with normal Chrome and captures state in a headed Keychain-aware context", async () => {
+test("login uses a dedicated normal Chrome profile and opens Temporary Chat", () => {
+  const args = loginChromeArguments("C:\\dedicated-login-profile", "linux");
+  expect(args).toContain("--new-window");
+  expect(args).toContain("--user-data-dir=C:\\dedicated-login-profile");
+  expect(args).toContain(CHATGPT_TEMPORARY_CHAT_URL);
+  expect(args).not.toContain("--remote-debugging-pipe");
+  expect(args).not.toContain("--headless");
+});
+
+test("Windows login exposes only the dedicated profile through a local CDP port", () => {
+  const args = loginChromeArguments("C:\\dedicated-login-profile", "win32");
+  expect(args).toContain("--user-data-dir=C:\\dedicated-login-profile");
+  expect(args).toContain("--remote-debugging-port=0");
+  expect(args).toContain("--remote-allow-origins=*");
+  expect(args).not.toContain("--remote-debugging-pipe");
+});
+
+test("Firefox login uses a dedicated profile without Chromium flags", () => {
+  expect(browserLoginArguments("firefox", "C:\\dedicated-login-profile", "win32")).toEqual([
+    "-no-remote",
+    "-profile",
+    "C:\\dedicated-login-profile",
+    "-new-window",
+    CHATGPT_TEMPORARY_CHAT_URL,
+  ]);
+});
+
+test("Windows Firefox login prefers the installed system browser", () => {
+  expect(normalLoginBrowserExecutable("firefox", "C:\\playwright\\firefox", "win32"))
+    .toBe("C:\\Program Files\\Mozilla Firefox\\firefox.exe");
+});
+
+test("captured browser state is restricted to ChatGPT and OpenAI cookie domains", () => {
+  expect(isChatGptCookieDomain(".chatgpt.com")).toBe(true);
+  expect(isChatGptCookieDomain("auth.openai.com")).toBe(true);
+  expect(isChatGptCookieDomain(".google.com")).toBe(false);
+  expect(isChatGptCookieDomain("notopenai.com")).toBe(false);
+});
+
+test.skipIf(process.platform === "win32")("login starts the prepared Chrome command on POSIX", async () => {
   const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-login-"));
   const executable = join(root, "fake-chrome");
   const argsLog = join(root, "args.log");
@@ -16,7 +63,7 @@ test("login starts with normal Chrome and captures state in a headed Keychain-aw
   process.env.CODEX_LOGIN_ARG_LOG = argsLog;
   try {
     const config = defaultConfig("browser-only");
-    config.chromeExecutablePath = executable;
+    config.browserExecutablePath = executable;
     config.storageStatePath = join(root, "browser", "storage-state.json");
     await loginToChatGpt(config, { timeoutMs: 100 }).catch(() => {});
 

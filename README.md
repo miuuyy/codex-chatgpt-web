@@ -14,7 +14,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/macOS-arm64%20%7C%20Intel-black?logo=apple" alt="macOS arm64 and Intel">
   <img src="https://img.shields.io/badge/Free_AI-no_API_fees-10a37f" alt="Free AI with no API fees">
-  <img src="https://img.shields.io/badge/Windows-coming_soon-0078d4?logo=windows11" alt="Windows support coming soon">
+  <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4?logo=windows11" alt="Windows 10 and 11">
 </p>
 
 Pick **ChatGPT Web — Instant**, **Medium**, **High**, **Extra High**, or **Pro** in Codex's native
@@ -27,7 +27,7 @@ Codex task.
 </p>
 
 ```text
-Codex task ──Responses + SSE──▶ codex-chatgpt-web ──controlled Chrome──▶ ChatGPT
+Codex task ──Responses + SSE──▶ codex-chatgpt-web ──controlled browser──▶ ChatGPT
      ▲                                │                                      │
      └──────── native UI, context, images, tracing, and tool lifecycle ──────┘
 ```
@@ -77,6 +77,7 @@ Normal use starts automatically after macOS login and does not require another t
 | Mode | Models | Local Codex tools | Extra setup |
 | --- | --- | --- | --- |
 | **Browser-only** | Instant through Pro | No; Codex shows a warning | None |
+| **Plus tools** | Instant through Extra High; Pro remains read-only | Yes, through a nonce-bound Codex relay | None |
 | **Full harness** | Instant through Pro | Instant–Extra High: yes; Pro: read-only | OpenAI tunnel + ChatGPT connector |
 
 Every picker entry has one fixed ChatGPT mode. Codex still displays its built-in Effort and Speed
@@ -86,6 +87,39 @@ context already collected by Codex, but ChatGPT Pro cannot initiate local MCP/to
 The proxy keeps Codex's built-in `openai` provider and live model catalog. It forwards the official
 catalog unchanged and appends only its ChatGPT Web entries, so native models, task history,
 approvals, sandboxing, and tool results remain owned by Codex.
+
+## Windows + ChatGPT Plus
+
+The Windows port adds a `--plus-tools` mode for a signed-in personal ChatGPT profile. ChatGPT Web
+acts as the model, while Codex remains the authority that executes filesystem, shell, patch, image,
+MCP/app, approval, and sandbox operations. Tool requests use a per-turn, nonce-bound text protocol
+and are rejected when the nonce, tool name, arguments, or terminal framing is invalid.
+
+Build and start setup from PowerShell:
+
+```powershell
+npx --yes bun@1.3.11 install --frozen-lockfile
+npx --yes bun@1.3.11 run build
+.\dist\runtime\bin\codex-chatgpt-web.cmd setup --plus-tools --browser firefox --acknowledge-unofficial
+```
+
+Setup opens a dedicated profile in the selected browser (Firefox is recommended on Windows),
+captures only the authenticated ChatGPT state into a separate Playwright context, installs the bridge as the
+`CodexChatGPTWebBridge` per-user Scheduled Task, journals the previous Codex route, and asks for one
+Codex restart. Native OpenAI models remain in the model picker and can be selected manually at any
+time while the bridge is healthy.
+
+For an emergency switch that does not depend on Bun, Chrome, or the bridge daemon:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\windows-route.ps1 -Mode Native -StopBridge
+```
+
+Windows runtime bundles also include this script at
+`.\dist\runtime\bin\windows-route.ps1`.
+
+See [WINDOWS-RECOVERY.md](WINDOWS-RECOVERY.md) for status checks, exact rollback behavior, manual
+recovery, and safe re-enablement.
 
 ## Full harness
 
@@ -154,7 +188,7 @@ codex-chatgpt-web service cancel-turns
 - The Responses listener is loopback-only, but another process running as the same local user can
   reach it. Use a trusted single-user workstation.
 - Browser turns are serialized to protect one profile and prevent transcript reuse across tasks.
-- Managed background installation currently supports macOS only.
+- Managed background installation supports macOS launchd and a per-user Windows Scheduled Task.
 - Codex Desktop hardcodes Pro's wire effort as **Ultra** and always shows a **Standard** speed row.
   Those controls do not alter the fixed ChatGPT Web model. Renaming them would require patching the
   signed Codex app.
@@ -186,7 +220,10 @@ Portions of the Responses translation, Codex catalog integration, and browser ha
 from [OpenCodex](https://github.com/lidge-jun/opencodex) under the MIT license. See
 [third-party notices](LICENSES/NOTICE.md).
 
-This project is experimental, independent software. It is not affiliated with or endorsed by
-OpenAI, and it must not be used to evade usage limits or access controls. Review OpenAI's current
-[Terms of Use](https://openai.com/policies/terms-of-use/) and
-[Services Agreement](https://openai.com/policies/services-agreement/) before public distribution.
+This project is experimental, independent software published for educational and interoperability
+research purposes. It is not affiliated with or endorsed by OpenAI and is not intended to
+circumvent, evade, or abuse OpenAI policies, usage limits, access controls, or account
+restrictions. Users are responsible for complying with OpenAI's current
+[Terms of Use](https://openai.com/policies/terms-of-use/),
+[Services Agreement](https://openai.com/policies/services-agreement/), and applicable workspace
+policies.

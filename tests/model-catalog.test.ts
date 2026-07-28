@@ -88,6 +88,18 @@ describe("native /models augmentation", () => {
     expect(web.every(model => (model.supported_reasoning_levels as unknown[]).length === 1)).toBe(true);
   });
 
+  test("advertises native Codex tools for Plus relay models except Pro", () => {
+    const config = defaultConfig("plus-tools");
+    config.proAvailable = true;
+    const models = augmentNativeModelCatalog(source(), config).models as Array<Record<string, unknown>>;
+    const web = models.filter(model => String(model.slug).startsWith("chatgpt-web/"));
+    expect(web.every(model =>
+      model.slug === "chatgpt-web/pro"
+        ? model.tool_mode === null
+        : model.tool_mode === "code_mode_only"
+    )).toBe(true);
+  });
+
   test("honors an explicit Codex context override without replacing or reordering native models", () => {
     const native = source();
     const nativeSnapshot = structuredClone(native);

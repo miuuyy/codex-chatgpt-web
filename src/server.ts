@@ -1,5 +1,7 @@
 import { createChatGptWebAdapter } from "./adapters/chatgpt-web";
 import { timingSafeEqual } from "node:crypto";
+import { createServer as createNodeServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { Readable } from "node:stream";
 import { chatGptTurnSessions } from "./adapters/chatgpt-web/turn-execution";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse } from "./bridge";
 import type { AppConfig } from "./config";
@@ -260,7 +262,46 @@ export async function compactRequest(req: Request, _config: AppConfig): Promise<
   );
 }
 
-export function startServer(config: AppConfig): ReturnType<typeof Bun.serve> {
+export interface BridgeServer {
+  port: number;
+  stop(force?: boolean): Promise<void>;
+}
+
+function nodeRequest(req: IncomingMessage, config: AppConfig): Request {
+  const method = req.method ?? "GET";
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(req.headers)) {
+    if (Array.isArray(value)) for (const item of value) headers.append(name, item);
+    else if (value !== undefined) headers.set(name, value);
+  }
+  const body = method === "GET" || method === "HEAD"
+    ? undefined
+    : Readable.toWeb(req) as unknown as ReadableStream<Uint8Array>;
+  return new Request(`http://${config.host}:${config.port}${req.url ?? "/"}`, {
+    method,
+    headers,
+    body,
+    ...(body ? { duplex: "half" } : {}),
+  } as RequestInit);
+}
+
+async function writeNodeResponse(response: Response, res: ServerResponse): Promise<void> {
+  res.statusCode = response.status;
+  response.headers.forEach((value, name) => res.setHeader(name, value));
+  if (!response.body) {
+    res.end();
+    return;
+  }
+  await new Promise<void>((resolveWrite, rejectWrite) => {
+    const stream = Readable.fromWeb(response.body as unknown as import("node:stream/web").ReadableStream);
+    stream.once("error", rejectWrite);
+    res.once("error", rejectWrite);
+    res.once("finish", resolveWrite);
+    stream.pipe(res);
+  });
+}
+
+export function startServer(config: AppConfig): BridgeServer {
   const startedAt = Date.now();
   let draining = false;
   const httpTurns = new HttpTurnCounter();
@@ -274,11 +315,7 @@ export function startServer(config: AppConfig): ReturnType<typeof Bun.serve> {
     const actual = Buffer.from(header);
     return actual.length === expected.length && timingSafeEqual(actual, expected);
   };
-  const server = Bun.serve({
-    hostname: config.host,
-    port: config.port,
-    idleTimeout: 0,
-    fetch(req) {
+  const fetchRequest = (req: Request): Response | Promise<Response> => {
       const url = new URL(req.url);
       if (req.method === "GET" && url.pathname === "/healthz") {
         return Response.json({
@@ -321,8 +358,43 @@ export function startServer(config: AppConfig): ReturnType<typeof Bun.serve> {
         return httpTurns.track(() => compactRequest(req, config));
       }
       return new Response("Not found", { status: 404 });
-    },
-  });
+  };
+  const server: BridgeServer = process.platform === "win32"
+    ? (() => {
+      const nodeServer = createNodeServer((incoming, outgoing) => {
+        void Promise.resolve(fetchRequest(nodeRequest(incoming, config)))
+          .then(response => writeNodeResponse(response, outgoing))
+          .catch(error => {
+            if (!outgoing.headersSent) outgoing.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
+            outgoing.end(error instanceof Error ? error.message : String(error));
+          });
+      });
+      nodeServer.listen(config.port, config.host);
+      const address = nodeServer.address();
+      const port = typeof address === "object" && address ? address.port : config.port;
+      return {
+        port,
+        stop: async () => {
+          if (!nodeServer.listening) return;
+          await new Promise<void>((resolveClose, rejectClose) => {
+            nodeServer.close(error => error ? rejectClose(error) : resolveClose());
+            nodeServer.closeAllConnections();
+          });
+        },
+      };
+    })()
+    : (() => {
+      const bunServer = Bun.serve({
+        hostname: config.host,
+        port: config.port,
+        idleTimeout: 0,
+        fetch: fetchRequest,
+      });
+      return {
+        port: bunServer.port ?? config.port,
+        stop: async force => { await bunServer.stop(force); },
+      };
+    })();
   const shutdown = () => {
     draining = true;
     flushResponseState();

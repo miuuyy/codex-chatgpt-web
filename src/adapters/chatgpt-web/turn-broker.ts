@@ -3,6 +3,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { dirname } from "node:path";
 import type { ChatGptTurnEnvironment } from "./environment";
+import type { PromptRelayToolCall } from "./prompt-tool-relay";
 
 interface PendingTurn extends ChatGptTurnEnvironment {
   expiresAt: number;
@@ -83,6 +84,10 @@ function environmentIdentity(environment: ChatGptTurnEnvironment): string {
   });
 }
 
+function isWindowsNamedPipe(path: string): boolean {
+  return path.startsWith("\\\\.\\pipe\\");
+}
+
 export class TurnBroker {
   static forSocket(path: string): TurnBroker {
     let broker = brokers.get(path);
@@ -159,6 +164,35 @@ export class TurnBroker {
     invocation.resolve(result);
   }
 
+  invokeFromPrompt(
+    token: string,
+    calls: readonly PromptRelayToolCall[],
+  ): { requests: BrokerToolRequest[]; results: Promise<BrokerToolResult[]> } {
+    this.prune();
+    const channel = this.channels.get(token);
+    if (!channel) throw new Error("turn token is invalid or expired");
+    if (calls.length === 0) throw new Error("prompt relay tool batch is empty");
+    const pending = calls.map(call => {
+      const callId = opaqueId("call");
+      const request: BrokerToolRequest = {
+        callId,
+        wireName: call.wireName,
+        freeform: call.freeform,
+        ...(call.freeform ? { input: call.input ?? "" } : { arguments: call.arguments ?? {} }),
+      };
+      const result = new Promise<BrokerToolResult>((resolveInvoke, rejectInvoke) => {
+        channel.invocations.set(callId, { request, resolve: resolveInvoke, reject: rejectInvoke });
+      });
+      channel.queuedCallIds.push(callId);
+      return { request, result };
+    });
+    this.scheduleToolWaiters(channel);
+    return {
+      requests: pending.map(item => item.request),
+      results: Promise.all(pending.map(item => item.result)),
+    };
+  }
+
   revoke(token: string): void {
     const channel = this.channels.get(token);
     if (!channel) return;
@@ -180,24 +214,32 @@ export class TurnBroker {
         else rejectClose(error);
       }));
     }
-    if (existsSync(this.socketPath) && lstatSync(this.socketPath).isSocket()) unlinkSync(this.socketPath);
+    if (!isWindowsNamedPipe(this.socketPath)
+      && existsSync(this.socketPath)
+      && lstatSync(this.socketPath).isSocket()) unlinkSync(this.socketPath);
   }
 
   private start(): Promise<void> {
     if (this.startPromise) return this.startPromise;
     this.startPromise = new Promise<void>((resolveStart, rejectStart) => {
-      mkdirSync(dirname(this.socketPath), { recursive: true, mode: 0o700 });
+      if (!isWindowsNamedPipe(this.socketPath)) {
+        mkdirSync(dirname(this.socketPath), { recursive: true, mode: 0o700 });
+      }
       const listen = () => {
         const server = createServer(socket => this.handleSocket(socket));
         this.server = server;
         server.once("error", rejectStart);
         server.listen(this.socketPath, () => {
           server.off("error", rejectStart);
-          chmodSync(this.socketPath, 0o600);
+          if (!isWindowsNamedPipe(this.socketPath)) chmodSync(this.socketPath, 0o600);
           resolveStart();
         });
       };
 
+      if (isWindowsNamedPipe(this.socketPath)) {
+        listen();
+        return;
+      }
       if (!existsSync(this.socketPath)) {
         listen();
         return;

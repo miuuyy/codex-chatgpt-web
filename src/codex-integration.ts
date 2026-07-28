@@ -179,7 +179,7 @@ function withTrailingNewline(lines: string[]): string {
 
 function removeManagedComment(lines: string[]): void {
   for (let index = lines.length - 1; index >= 0; index -= 1) {
-    if (lines[index] === MANAGED_COMMENT) lines.splice(index, 1);
+    if (lines[index].replace(/\r$/, "") === MANAGED_COMMENT) lines.splice(index, 1);
   }
 }
 
@@ -225,7 +225,7 @@ function verifyInstalledV3(text: string, journal: CodexIntegrationJournal): void
   if (current.model_provider.present || current.model_catalog_json.present) {
     throw new Error("Codex model_provider or model_catalog_json changed after setup; refusing to overwrite the user's newer value");
   }
-  if (!lines.includes(MANAGED_COMMENT)) {
+  if (!lines.some(line => line.replace(/\r$/, "") === MANAGED_COMMENT)) {
     throw new Error("Managed Codex route marker changed after setup; refusing to overwrite it");
   }
 }

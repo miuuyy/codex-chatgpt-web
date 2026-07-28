@@ -14,11 +14,13 @@ import { assertServiceIdle, getServiceStatus, installService, removeLegacyRuntim
 import { connectTunnel, createTunnelConfig, installRuntimeKey, installRuntimeKeyBytes, installTunnelClient, managedRuntimeKeyPath, stopTunnel, waitForTunnelReady } from "./tunnel";
 import { getTunnelServiceStatus, installTunnelService, restartTunnelService, stopTunnelService, tunnelServiceDefinitionMatches, uninstallTunnelService } from "./tunnel-service";
 import { VERSION } from "./version";
+import { defaultBrowserExecutable, ensureBrowserExecutable, type BrowserEngine } from "./browser-engine";
 
 export interface SetupOptions {
   mode: RuntimeMode;
   port?: number;
-  chromeExecutablePath?: string;
+  browserEngine?: BrowserEngine;
+  browserExecutablePath?: string;
   appName?: string;
   forceLogin?: boolean;
   autoApproveToolCalls?: boolean;
@@ -66,7 +68,8 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     port: before.port,
     contextWindow: before.contextWindow,
     appName: before.appName,
-    chromeExecutablePath: before.chromeExecutablePath,
+    browserEngine: before.browserEngine,
+    browserExecutablePath: before.browserExecutablePath,
     storageStatePath: before.storageStatePath,
     brokerSocketPath: before.brokerSocketPath,
     headed: before.headed,
@@ -82,7 +85,8 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     port: after.port,
     contextWindow: after.contextWindow,
     appName: after.appName,
-    chromeExecutablePath: after.chromeExecutablePath,
+    browserEngine: after.browserEngine,
+    browserExecutablePath: after.browserExecutablePath,
     storageStatePath: after.storageStatePath,
     brokerSocketPath: after.brokerSocketPath,
     headed: after.headed,
@@ -140,7 +144,11 @@ function baseConfig(existing: AppConfig | undefined, options: SetupOptions): App
     if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65_535) throw new Error("--port must be an integer from 1 to 65535");
     config.port = options.port;
   }
-  if (options.chromeExecutablePath) config.chromeExecutablePath = options.chromeExecutablePath;
+  if (options.browserEngine && options.browserEngine !== config.browserEngine) {
+    config.browserEngine = options.browserEngine;
+    config.browserExecutablePath = defaultBrowserExecutable(options.browserEngine);
+  }
+  if (options.browserExecutablePath) config.browserExecutablePath = options.browserExecutablePath;
   if (options.appName) config.appName = options.appName;
   if (options.autoApproveToolCalls !== undefined) config.autoApproveToolCalls = options.autoApproveToolCalls;
   if (options.acknowledgedUnofficial) config.acknowledgedUnofficialAt = new Date().toISOString();
@@ -151,7 +159,7 @@ function baseConfig(existing: AppConfig | undefined, options: SetupOptions): App
 }
 
 async function configureTunnel(config: AppConfig, existing: AppConfig | undefined, options: SetupOptions): Promise<void> {
-  if (config.mode === "browser-only") {
+  if (config.mode !== "full") {
     delete config.tunnel;
     return;
   }
@@ -178,11 +186,12 @@ async function configureTunnel(config: AppConfig, existing: AppConfig | undefine
 }
 
 export async function setup(options: SetupOptions): Promise<SetupResult> {
-  if (process.platform !== "darwin") {
-    throw new Error("The 0.1 release installer currently supports macOS only; no untested service fallback is installed.");
+  if (process.platform !== "darwin" && process.platform !== "win32") {
+    throw new Error("Managed setup is currently supported on macOS and Windows only.");
   }
   const existing = loadExistingConfig();
   const config = baseConfig(existing, options);
+  ensureBrowserExecutable(config);
   const refreshTunnelWorker = tunnelWorkerRuntimeChanged(existing, config);
   if (existing && options.restartService) config.controlToken = randomBytes(32).toString("base64url");
   const beforeService = getServiceStatus();
@@ -237,7 +246,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   removeLegacyRuntimeArtifacts(config);
 
   let tunnelReady: boolean | null = null;
-  if (config.mode === "browser-only" && existing?.mode === "full") {
+  if (config.mode !== "full" && existing?.mode === "full") {
     const previousTunnelService = getTunnelServiceStatus();
     if (previousTunnelService.installed || previousTunnelService.loaded) await uninstallTunnelService();
     stopTunnel(existing);

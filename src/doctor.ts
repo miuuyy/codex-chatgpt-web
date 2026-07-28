@@ -6,6 +6,7 @@ import { browserLoginStateExists, loginVerificationMarkerPath } from "./browser-
 import { getServiceStatus } from "./service";
 import { tunnelStatus } from "./tunnel";
 import { getTunnelServiceStatus } from "./tunnel-service";
+import { browserName, resolvedBrowserExecutable } from "./browser-engine";
 
 export type CheckStatus = "ok" | "warning" | "error";
 
@@ -63,10 +64,12 @@ export async function runDoctor(): Promise<DoctorReport> {
     return { ok: false, checks };
   }
 
-  if (!existsSync(config.chromeExecutablePath)) {
-    checks.push({ id: "chrome", status: "error", message: `Chrome executable is missing: ${config.chromeExecutablePath}` });
+  const browserExecutable = resolvedBrowserExecutable(config);
+  const browser = browserName(config.browserEngine);
+  if (!existsSync(browserExecutable)) {
+    checks.push({ id: "browser", status: "error", message: `${browser} executable is missing: ${browserExecutable}` });
   } else {
-    checks.push({ id: "chrome", status: "ok", message: `Chrome executable found: ${config.chromeExecutablePath}` });
+    checks.push({ id: "browser", status: "ok", message: `${browser} executable found: ${browserExecutable}` });
   }
   if (!browserLoginStateExists(config)) {
     checks.push({ id: "login", status: "error", message: "ChatGPT login state is missing or unverified; run `codex-chatgpt-web login`" });
@@ -91,9 +94,9 @@ export async function runDoctor(): Promise<DoctorReport> {
   if (!service.supported) {
     checks.push({ id: "service", status: "warning", message: "Managed service is unavailable on this OS; keep `serve` running manually" });
   } else if (!service.installed || !service.loaded) {
-    checks.push({ id: "service", status: "error", message: "macOS background service is not installed and loaded" });
+    checks.push({ id: "service", status: "error", message: "Background service is not installed and running" });
   } else {
-    checks.push({ id: "service", status: "ok", message: "macOS background service is loaded" });
+    checks.push({ id: "service", status: "ok", message: "Background service is running" });
   }
   checks.push(await proxyCheck(config));
 
@@ -124,6 +127,12 @@ export async function runDoctor(): Promise<DoctorReport> {
       status: "warning",
       message: `Local checks cannot prove that ChatGPT connector ${JSON.stringify(config.appName)} is attached to this tunnel`,
       detail: "Verify it once at https://chatgpt.com/#settings/Connectors while the tunnel is ready.",
+    });
+  } else if (config.mode === "plus-tools") {
+    checks.push({
+      id: "tools",
+      status: "ok",
+      message: "Plus-compatible prompt relay is enabled; Codex remains the sandboxed tool executor",
     });
   } else {
     checks.push({ id: "tools", status: "warning", message: "Browser-only mode intentionally has no local tools or MCP tunnel" });

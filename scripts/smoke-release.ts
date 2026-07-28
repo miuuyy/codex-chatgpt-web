@@ -1,4 +1,4 @@
-import { cpSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -10,7 +10,10 @@ const runtimeRoot = join(root, "relocated-runtime");
 cpSync(sourceBundle, firstLocation, { recursive: true });
 renameSync(firstLocation, runtimeRoot);
 
-const launcher = join(runtimeRoot, "bin", "codex-chatgpt-web");
+const launcher = join(runtimeRoot, "bin", process.platform === "win32" ? "codex-chatgpt-web.cmd" : "codex-chatgpt-web");
+if (process.platform === "win32" && !existsSync(join(runtimeRoot, "bin", "windows-route.ps1"))) {
+  throw new Error("Windows runtime is missing the standalone native-route recovery script");
+}
 const cliBundle = readFileSync(join(runtimeRoot, "app", "cli.js"), "utf8");
 const launcherText = readFileSync(launcher, "utf8");
 for (const forbidden of [sourceRoot, dirname(sourceBundle), "/private/tmp/codex-chatgpt-web-verify", "/tmp/codex-chatgpt-web-verify"]) {
@@ -23,7 +26,10 @@ const manifest = JSON.parse(readFileSync(join(runtimeRoot, "manifest.json"), "ut
 if (manifest.schemaVersion !== 1 || manifest.appVersion !== "0.1.16" || manifest.playwright !== "1.62.0") {
   throw new Error(`Unexpected runtime manifest: ${JSON.stringify(manifest)}`);
 }
-const version = Bun.spawnSync([launcher, "--version"], { stdout: "pipe", stderr: "pipe" });
+const launchCommand = (args: string[]) => process.platform === "win32"
+  ? [process.env.ComSpec ?? "cmd.exe", "/d", "/s", "/c", "call", launcher, ...args]
+  : [launcher, ...args];
+const version = Bun.spawnSync(launchCommand(["--version"]), { stdout: "pipe", stderr: "pipe" });
 if (version.exitCode !== 0 || version.stdout.toString().trim() !== "0.1.16") {
   throw new Error(`Relocated launcher failed: ${version.stderr.toString()}`);
 }
@@ -43,9 +49,14 @@ const config = {
   port,
   contextWindow: 256_000,
   appName: "Codex Native",
-  chromeExecutablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  browserEngine: "chromium",
+  browserExecutablePath: process.platform === "win32"
+    ? join(process.env.PROGRAMFILES || "C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe")
+    : "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   storageStatePath: join(appHome, "browser", "storage-state.json"),
-  brokerSocketPath: join(appHome, "runtime", "turn-broker.sock"),
+  brokerSocketPath: process.platform === "win32"
+    ? `\\\\.\\pipe\\codex-chatgpt-web-smoke-${process.pid}`
+    : join(appHome, "runtime", "turn-broker.sock"),
   headed: true,
   proAvailable: true,
   autoApproveToolCalls: false,
@@ -57,7 +68,7 @@ writeFileSync(join(appHome, "config.json"), `${JSON.stringify(config, null, 2)}\
 writeFileSync(config.storageStatePath, "{}\n", { mode: 0o600 });
 
 const env = { ...process.env, CODEX_CHATGPT_WEB_HOME: appHome, CODEX_HOME: codexHome };
-const child = Bun.spawn([launcher, "serve"], { env, stdout: "pipe", stderr: "pipe" });
+const child = Bun.spawn(launchCommand(["serve"]), { env, stdout: "pipe", stderr: "pipe" });
 try {
   const deadline = Date.now() + 10_000;
   let health: Response | undefined;
@@ -129,7 +140,14 @@ try {
   }
   process.stdout.write("RELOCATABLE_RUNTIME_SMOKE_OK\n");
 } finally {
-  child.kill("SIGTERM");
+  if (process.platform === "win32") {
+    Bun.spawnSync(["taskkill.exe", "/PID", String(child.pid), "/T", "/F"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+  } else {
+    child.kill("SIGTERM");
+  }
   await child.exited;
   rmSync(root, { recursive: true, force: true });
 }

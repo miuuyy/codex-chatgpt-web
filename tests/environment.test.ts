@@ -56,6 +56,53 @@ function currentWire(options: { workspace?: string; sandbox?: string; includeIds
 }
 
 describe("trusted current Codex environment envelope", () => {
+  test("accepts the v0.145 managed restricted workspace envelope", () => {
+    const managedEnvironment = `<environment_context>
+  <cwd>${root}</cwd>
+  <filesystem><workspace_roots><root>${root}</root></workspace_roots><permission_profile type="managed"><file_system type="restricted"><entry access="read"><special>:root</special></entry><entry access="write"><path>${root}</path></entry></file_system></permission_profile></filesystem>
+</environment_context>`;
+    const parsed = currentWire({ sandbox: "workspace-write" });
+    const input = (parsed._rawBody as { input: Array<{ content: Array<{ text: string }> }> }).input;
+    input[0]!.content[1]!.text = managedEnvironment;
+
+    expect(extractChatGptTurnEnvironment(parsed)).toEqual({
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "workspaceWrite", writableRoots: [root], networkAccess: false },
+      tools: [],
+    });
+  });
+
+  test("accepts the v0.145 trusted prose sandbox envelope", () => {
+    const parsed = currentWire();
+    parsed._rawBody = {
+      input: [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Inspect the workspace" }],
+        },
+      ],
+    };
+    parsed.context.systemPrompt = [
+      `<environment_context><cwd>${root}</cwd><filesystem><workspace_roots><root>${root}</root></workspace_roots></filesystem></environment_context>`,
+    ];
+    parsed.context.messages.unshift({
+      role: "developer",
+      content: "<permissions instructions>Filesystem sandboxing is active. `sandbox_mode` is `workspace-write`.</permissions instructions>",
+      timestamp: 0,
+    });
+
+    expect(extractChatGptTurnEnvironment(parsed)).toEqual({
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "workspaceWrite", writableRoots: [root], networkAccess: false },
+      tools: [],
+    });
+  });
+
   test("accepts the v0.146 split envelope when workspace and sandbox metadata agree", () => {
     expect(extractChatGptTurnEnvironment(currentWire())).toEqual({
       cwd: root,

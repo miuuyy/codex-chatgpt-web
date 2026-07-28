@@ -1,8 +1,9 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright-core";
+import type { Browser, BrowserContext, Locator, Page } from "playwright-core";
 import { atomicWriteFile, expandUserPath, getConfigDir } from "../../config";
 import type { CodexProviderConfig } from "../../types";
+import { browserName, browserType, defaultBrowserExecutable, resolvedBrowserExecutable, type BrowserEngine } from "../../browser-engine";
 import { parseDataUrl } from "../image";
 import { ChatGptMarkdownStream } from "./markdown";
 import { resolveChatGptWebModelMode, type ChatGptWebCapabilities, type ChatGptWebModelMode } from "./model";
@@ -10,12 +11,31 @@ import { CHATGPT_INTERNAL_COMPACTION_MARKER, containsChatGptCompactionMarker, st
 import { estimateCompiledChatGptWebInputTokens } from "./usage";
 import { assertAuthenticatedChatGptPage, assertTemporaryChatPage, CHATGPT_TEMPORARY_CHAT_URL } from "../../chatgpt-session";
 import { loginVerificationMarkerPath } from "../../browser-login";
+import type { BrokerToolRequest, BrokerToolResult } from "./turn-broker";
+import {
+  isRecoverablePromptRelayFormatError,
+  parsePromptRelayDomResponse,
+  promptRelayCorrection,
+  promptRelayResults,
+  type PromptRelayToolCall,
+} from "./prompt-tool-relay";
 
 const workers = new Map<string, ChatGptBrowserWorker>();
 
 export const DEFAULT_CHATGPT_TURN_TIMEOUT_MS = 40 * 60_000;
 export const CHATGPT_RESPONSE_DOM_GRACE_MS = 30_000;
 export const CHATGPT_EMPTY_RESPONSE_GRACE_MS = 10_000;
+
+export function chatGptComposerPrompt(browserEngine: BrowserEngine, prompt: string): string {
+  // Firefox collapses pasted line feeds inside ChatGPT's contenteditable paragraph. The
+  // transport payload is compact JSON, so meaningful newlines are escaped and stay intact.
+  return browserEngine === "firefox" ? prompt.replaceAll("\n", " ") : prompt;
+}
+
+export function chatGptCanonicalComposerText(browserEngine: BrowserEngine, text: string): string {
+  // Firefox represents some runs of ordinary spaces as non-breaking spaces in contenteditable.
+  return browserEngine === "firefox" ? text.replaceAll("\u00a0", " ") : text;
+}
 
 const browserStageTimeouts = {
   browserPage: 60_000,
@@ -42,12 +62,17 @@ export interface BrowserTurn {
   onCommentary?: (text: string, continuation?: boolean) => void;
   /** Append-only, structurally stable Markdown chunks. */
   onTextDelta: (delta: string) => void;
+  /** Plus-compatible local tool relay. The promise resolves after Codex executes the emitted calls. */
+  onPromptToolCalls?: (
+    calls: PromptRelayToolCall[],
+  ) => Promise<Array<{ request: BrokerToolRequest; result: BrokerToolResult }>>;
 }
 
 interface ResolvedBrowserConfig {
   appName: string;
   storageStatePath: string;
-  chromeExecutablePath: string;
+  browserEngine: BrowserEngine;
+  browserExecutablePath: string;
   turnTimeoutMs: number;
   headed: boolean;
   autoApproveToolCalls: boolean;
@@ -237,10 +262,14 @@ export function redactChatGptUiDiagnostic(value: string): string {
 
 function resolveBrowserConfig(provider: CodexProviderConfig): ResolvedBrowserConfig {
   const configured = provider.chatgptWeb ?? {};
+  const browserEngine = configured.browserEngine ?? "chromium";
+  const configuredPath = configured.browserExecutablePath?.trim() || configured.chromeExecutablePath?.trim()
+    || defaultBrowserExecutable(browserEngine);
   return {
     appName: configured.appName?.trim() || "Codex Native",
     storageStatePath: resolve(expandUserPath(configured.storageStatePath?.trim() || join(getConfigDir(), "browser", "storage-state.json"))),
-    chromeExecutablePath: resolve(expandUserPath(configured.chromeExecutablePath?.trim() || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")),
+    browserEngine,
+    browserExecutablePath: resolve(expandUserPath(configuredPath || resolvedBrowserExecutable({ browserEngine }))),
     turnTimeoutMs: configured.turnTimeoutMs ?? DEFAULT_CHATGPT_TURN_TIMEOUT_MS,
     headed: configured.headed !== false,
     autoApproveToolCalls: configured.autoApproveToolCalls === true,
@@ -351,11 +380,11 @@ export class ChatGptBrowserWorker {
     if (!existsSync(this.config.storageStatePath) || !existsSync(loginVerificationMarkerPath(this.config.storageStatePath))) {
       throw new Error(`ChatGPT web login state is missing: ${this.config.storageStatePath}`);
     }
-    if (!existsSync(this.config.chromeExecutablePath)) {
-      throw new Error(`Configured Chrome executable does not exist: ${this.config.chromeExecutablePath}`);
+    if (!existsSync(this.config.browserExecutablePath)) {
+      throw new Error(`Configured ${browserName(this.config.browserEngine)} executable does not exist: ${this.config.browserExecutablePath}`);
     }
-    this.browser = await chromium.launch({
-      executablePath: this.config.chromeExecutablePath,
+    this.browser = await browserType(this.config.browserEngine).launch({
+      executablePath: this.config.browserExecutablePath,
       headless: !this.config.headed,
     });
     this.context = await this.browser.newContext({ storageState: this.config.storageStatePath });
@@ -448,21 +477,23 @@ export class ChatGptBrowserWorker {
     let observed = "";
     while (Date.now() < deadline) {
       observed = await this.attachedPromptText(page);
-      if (observed === prompt) return;
+      if (chatGptCanonicalComposerText(this.config.browserEngine, observed) === prompt) return;
       await new Promise(resolveSleep => setTimeout(resolveSleep, 50));
     }
+    const canonicalObserved = chatGptCanonicalComposerText(this.config.browserEngine, observed);
     let commonPrefix = 0;
-    while (commonPrefix < prompt.length && prompt[commonPrefix] === observed[commonPrefix]) commonPrefix += 1;
+    while (commonPrefix < prompt.length && prompt[commonPrefix] === canonicalObserved[commonPrefix]) commonPrefix += 1;
     throw new Error(
-      `ChatGPT composer did not preserve the complete prompt (expectedChars=${prompt.length}, actualChars=${observed.length}, commonPrefixChars=${commonPrefix})`,
+      `ChatGPT composer did not preserve the complete prompt (expectedChars=${prompt.length}, actualChars=${canonicalObserved.length}, commonPrefixChars=${commonPrefix})`,
     );
   }
 
   private async attachPrompt(page: Page, prompt: string, localTools: boolean): Promise<void> {
     const composer = page.getByRole("textbox", { name: "Chat with ChatGPT" });
+    const composerPrompt = chatGptComposerPrompt(this.config.browserEngine, prompt);
     if (!localTools) {
-      await composer.fill(prompt);
-      await this.assertPromptAttached(page, prompt);
+      await composer.fill(composerPrompt);
+      await this.assertPromptAttached(page, composerPrompt);
       return;
     }
     await composer.fill(`@${this.config.appName}`);
@@ -473,8 +504,8 @@ export class ChatGptBrowserWorker {
     await selectedPlugin.waitFor({ state: "visible", timeout: 10_000 });
     await composer.focus();
     await page.keyboard.press("End");
-    await page.keyboard.insertText(` ${prompt}`);
-    await this.assertPromptAttached(page, prompt);
+    await page.keyboard.insertText(` ${composerPrompt}`);
+    await this.assertPromptAttached(page, composerPrompt);
   }
 
   private async attachFiles(page: Page, prompt: CompiledChatGptWebPrompt): Promise<void> {
@@ -503,6 +534,19 @@ export class ChatGptBrowserWorker {
       await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
     }
     throw new Error("ChatGPT accepted the prompt attachments but did not make the message ready to send");
+  }
+
+  private async sendPrompt(page: Page): Promise<void> {
+    const send = page.getByTestId("send-button");
+    await send.waitFor({ state: "visible", timeout: 10_000 });
+    const state = await send.evaluate(element => ({
+      disabled: (element as HTMLButtonElement).disabled,
+      ariaDisabled: element.getAttribute("aria-disabled"),
+    }));
+    if (state.disabled || state.ariaDisabled === "true") {
+      throw new Error("ChatGPT Send button remained disabled after the complete prompt was attached");
+    }
+    await send.evaluate(element => (element as HTMLElement).click());
   }
 
   private async handleToolConfirmation(page: Page): Promise<boolean> {
@@ -648,102 +692,156 @@ export class ChatGptBrowserWorker {
         this.selectModelAndEffort(page, turn.modelId, turn.reasoning, turn.capabilities)
       ));
       await this.runStage(turn.traceId, "prompt_attachment", browserStageTimeouts.promptAttachment, () => (
-        this.attachPrompt(page, prepared.text, mode.localTools)
+        this.attachPrompt(page, prepared.text, mode.localTools && turn.capabilities.toolTransport !== "prompt-relay")
       ));
       await this.runStage(turn.traceId, "file_attachment", browserStageTimeouts.fileAttachment, () => (
         this.attachFiles(page, prepared)
       ));
       const responseTurns = page.locator('section[data-testid^="conversation-turn-"][data-turn="assistant"]');
-      const initialResponseTurnCount = await responseTurns.count();
-      const responseTurn = responseTurns.nth(initialResponseTurnCount);
-      await this.runStage(turn.traceId, "send", browserStageTimeouts.send, () => page.getByTestId("send-button").click());
+      let previousResponseTestId = await responseTurns.last().getAttribute("data-testid").catch(() => null);
+      await this.runStage(turn.traceId, "send", browserStageTimeouts.send, () => this.sendPrompt(page));
 
       let lastHeartbeat = 0;
       let finalText = "";
-      let sawRunning = false;
-      let loggedCompletionWait = false;
-      const sentAt = Date.now();
-      const visibleTrace = new ChatGptVisibleTraceTracker();
-      const markdownStream = new ChatGptMarkdownStream(stripChatGptTransportMarkers);
-      const completionTracker = new ChatGptCompletionTracker();
-      const domHealthTracker = new ChatGptTurnDomHealthTracker();
+      let protocolCorrectionAttempts = 0;
       for (;;) {
-        if (turn.abortSignal?.aborted) {
+        const responseTurn = responseTurns.last();
+        let sawRunning = false;
+        let loggedCompletionWait = false;
+        const sentAt = Date.now();
+        const visibleTrace = new ChatGptVisibleTraceTracker();
+        const markdownStream = new ChatGptMarkdownStream(stripChatGptTransportMarkers);
+        const completionTracker = new ChatGptCompletionTracker();
+        const domHealthTracker = new ChatGptTurnDomHealthTracker();
+        let completedMarkdown = "";
+        let completedVisibleText = "";
+        for (;;) {
+          if (turn.abortSignal?.aborted) {
+            const stop = page.getByRole("button", { name: "Stop answering" });
+            if (await stop.isVisible().catch(() => false)) await stop.click().catch(() => {});
+            throw new DOMException("ChatGPT web turn aborted", "AbortError");
+          }
+          if (Date.now() >= deadline) throw new Error("ChatGPT web turn timed out");
+          if (Date.now() - lastHeartbeat >= 10_000) {
+            turn.onHeartbeat?.();
+            lastHeartbeat = Date.now();
+          }
+          const currentResponseTestId = await responseTurn.getAttribute("data-testid").catch(() => null);
+          if (!currentResponseTestId || currentResponseTestId === previousResponseTestId) {
+            await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
+            continue;
+          }
+          const useMcp = mode.localTools && turn.capabilities.toolTransport !== "prompt-relay";
+          if (useMcp && await this.handleToolConfirmation(page)) {
+            await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
+            continue;
+          }
+
+          const snapshot = await this.responseDomSnapshot(responseTurn);
           const stop = page.getByRole("button", { name: "Stop answering" });
-          if (await stop.isVisible().catch(() => false)) await stop.click().catch(() => {});
-          throw new DOMException("ChatGPT web turn aborted", "AbortError");
-        }
-        if (Date.now() >= deadline) throw new Error("ChatGPT web turn timed out");
-        if (Date.now() - lastHeartbeat >= 10_000) {
-          turn.onHeartbeat?.();
-          lastHeartbeat = Date.now();
+          const running = await stop.isVisible().catch(() => false);
+          if (running) sawRunning = true;
+          if (snapshot.responsePresent) {
+            for (const trace of visibleTrace.observe(snapshot.traceBlocks, snapshot.completionActionVisible)) {
+              if (trace.kind === "commentary") turn.onCommentary?.(trace.text, trace.continuation === true);
+              else turn.onReasoningSummary?.(trace.text);
+            }
+            const domError = domHealthTracker.update({
+              responsePresent: true,
+              running,
+              currentText: snapshot.visibleText,
+              completionActionVisible: snapshot.completionActionVisible,
+            });
+            if (domError) throw new Error(domError);
+            const isPromptRelay = Boolean(prepared.toolRelay);
+            if (snapshot.completionActionVisible && !isPromptRelay) {
+              const stableDelta = markdownStream.observeStableHtml(snapshot.stableHtml);
+              if (stableDelta) turn.onTextDelta(stableDelta);
+            }
+            if (completionTracker.update({
+              responsePresent: true,
+              running,
+              currentText: snapshot.visibleText,
+              completionActionVisible: snapshot.completionActionVisible,
+            })) {
+              if (snapshot.visibleText === "api_tool unavailable") {
+                throw new Error("ChatGPT selected mode rejected the Codex Native MCP tool (api_tool unavailable)");
+              }
+              const final = markdownStream.finish(snapshot.fullHtml);
+              if (!final.markdown && snapshot.visibleText) {
+                throw new Error("ChatGPT completed with visible text that could not be serialized as Markdown");
+              }
+              if (final.delta && !isPromptRelay) turn.onTextDelta(final.delta);
+              completedMarkdown = final.markdown;
+              completedVisibleText = snapshot.visibleText;
+              break;
+            }
+            if (!loggedCompletionWait && Date.now() - sentAt >= 30_000) {
+              loggedCompletionWait = true;
+              const diagnostic = await this.stalledTurnDiagnostic(page, responseTurn).catch(error => JSON.stringify({
+                diagnosticError: error instanceof Error ? error.message : String(error),
+              }));
+              console.warn(
+                `[chatgpt-web] waiting for completed-turn evidence (running=${running}, sawRunning=${sawRunning}, textChars=${snapshot.visibleText.length}, completionActionVisible=${snapshot.completionActionVisible}, ui=${diagnostic})`,
+              );
+            }
+          } else {
+            const domError = domHealthTracker.update({
+              responsePresent: false,
+              running,
+              currentText: "",
+              completionActionVisible: false,
+            });
+            if (domError) throw new Error(domError);
+          }
+          await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
         }
 
-        if (mode.localTools && await this.handleToolConfirmation(page)) {
-          await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
+        if (!prepared.toolRelay) {
+          finalText = completedMarkdown;
+          break;
+        }
+        if (!turn.onPromptToolCalls) throw new Error("Prompt relay is enabled without a Codex tool callback");
+        let parsed;
+        try {
+          parsed = parsePromptRelayDomResponse(
+            completedVisibleText,
+            completedMarkdown,
+            prepared.toolRelay.nonce,
+            prepared.toolRelay.tools,
+          );
+        } catch (error) {
+          if (!isRecoverablePromptRelayFormatError(error) || protocolCorrectionAttempts >= 2) throw error;
+          protocolCorrectionAttempts += 1;
+          previousResponseTestId = await responseTurns.last().getAttribute("data-testid").catch(() => null);
+          const correction = promptRelayCorrection(
+            prepared.toolRelay.nonce,
+            error instanceof Error ? error.message : "invalid tool-call format",
+          );
+          await this.attachPrompt(page, correction, false);
+          await this.sendPrompt(page);
           continue;
         }
-
-        const snapshot = await this.responseDomSnapshot(responseTurn);
-        const stop = page.getByRole("button", { name: "Stop answering" });
-        const running = await stop.isVisible().catch(() => false);
-        if (running) sawRunning = true;
-        if (snapshot.responsePresent) {
-          for (const trace of visibleTrace.observe(snapshot.traceBlocks, snapshot.completionActionVisible)) {
-            if (trace.kind === "commentary") turn.onCommentary?.(trace.text, trace.continuation === true);
-            else turn.onReasoningSummary?.(trace.text);
-          }
-          const domError = domHealthTracker.update({
-            responsePresent: snapshot.responsePresent,
-            running,
-            currentText: snapshot.visibleText,
-            completionActionVisible: snapshot.completionActionVisible,
-          });
-          if (domError) throw new Error(domError);
-          // ChatGPT can render visible commentary Markdown between tool-status rows. Only a
-          // Markdown root accompanied by the response action belongs to the final answer stream.
-          if (snapshot.completionActionVisible) {
-            const stableDelta = markdownStream.observeStableHtml(snapshot.stableHtml);
-            if (stableDelta) turn.onTextDelta(stableDelta);
-          }
-          if (completionTracker.update({
-            responsePresent: snapshot.responsePresent,
-            running,
-            currentText: snapshot.visibleText,
-            completionActionVisible: snapshot.completionActionVisible,
-          })) {
-            if (snapshot.visibleText === "api_tool unavailable") {
-              throw new Error("ChatGPT selected mode rejected the Codex Native MCP tool (api_tool unavailable)");
-            }
-            const final = markdownStream.finish(snapshot.fullHtml);
-            if (!final.markdown && snapshot.visibleText) {
-              throw new Error("ChatGPT completed with visible text that could not be serialized as Markdown");
-            }
-            if (final.delta) turn.onTextDelta(final.delta);
-            finalText = final.markdown;
-            break;
-          }
-          if (!loggedCompletionWait && Date.now() - sentAt >= 30_000) {
-            loggedCompletionWait = true;
-            const diagnostic = await this.stalledTurnDiagnostic(page, responseTurn).catch(error => JSON.stringify({
-              diagnosticError: error instanceof Error ? error.message : String(error),
-            }));
-            console.warn(
-              `[chatgpt-web] waiting for completed-turn evidence (running=${running}, sawRunning=${sawRunning}, textChars=${snapshot.visibleText.length}, completionActionVisible=${snapshot.completionActionVisible}, ui=${diagnostic})`,
-            );
-          }
-        } else {
-          const domError = domHealthTracker.update({
-            responsePresent: false,
-            running,
-            currentText: "",
-            completionActionVisible: false,
-          });
-          if (domError) throw new Error(domError);
+        if (!parsed.calls) {
+          if (completedMarkdown) turn.onTextDelta(completedMarkdown);
+          finalText = completedMarkdown;
+          break;
         }
-        await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
+        if (parsed.visibleText) turn.onCommentary?.(parsed.visibleText);
+        const resolved = await turn.onPromptToolCalls(parsed.calls);
+        const continuation = promptRelayResults(
+          prepared.toolRelay.nonce,
+          resolved.map(item => ({ callId: item.request.callId, wireName: item.request.wireName })),
+          resolved.map(item => item.result),
+        );
+        previousResponseTestId = await responseTurns.last().getAttribute("data-testid").catch(() => null);
+        await this.attachPrompt(page, continuation.text, false);
+        await this.attachFiles(page, {
+          text: continuation.text,
+          images: continuation.images,
+        });
+        await this.sendPrompt(page);
       }
-
       if (this.context) {
         const state = await this.context.storageState();
         atomicWriteFile(this.config.storageStatePath, `${JSON.stringify(state)}\n`);

@@ -15,7 +15,7 @@ mkdirSync(binDir, { recursive: true });
 
 const build = await Bun.build({
   entrypoints: [join(root, "src", "cli.ts")],
-  target: "bun",
+  target: process.platform === "win32" ? "node" : "bun",
   minify: true,
   external: ["playwright-core"],
   packages: "external",
@@ -36,10 +36,18 @@ const install = Bun.spawnSync([process.execPath, "install", "--production", "--f
 if (install.exitCode !== 0) {
   throw new Error(`Runtime dependencies failed to install: ${install.stderr.toString() || install.stdout.toString()}`);
 }
-cpSync(realpathSync(process.execPath), join(runtimeDir, "bun"));
-chmodSync(join(runtimeDir, "bun"), 0o755);
+const runtimeName = process.platform === "win32" ? "node.exe" : "bun";
+let runtimeSource = realpathSync(process.execPath);
+if (process.platform === "win32") {
+  const located = Bun.spawnSync(["where.exe", "node.exe"], { stdout: "pipe", stderr: "pipe" });
+  const first = located.stdout.toString().split(/\r?\n/).find(Boolean);
+  if (located.exitCode !== 0 || !first) throw new Error("Windows runtime build requires node.exe on PATH");
+  runtimeSource = realpathSync(first);
+}
+cpSync(runtimeSource, join(runtimeDir, runtimeName));
+if (process.platform !== "win32") chmodSync(join(runtimeDir, runtimeName), 0o755);
 
-const launcher = `#!/bin/sh
+const posixLauncher = `#!/bin/sh
 set -eu
 invoked="$0"
 case "$invoked" in
@@ -59,8 +67,18 @@ root="$(CDPATH= cd -- "$bin_dir/.." && pwd -P)"
 export CODEX_CHATGPT_WEB_LAUNCHER="$invoked"
 exec "$root/runtime/bun" "$root/app/cli.js" "$@"
 `;
-writeFileSync(join(binDir, "codex-chatgpt-web"), launcher, { mode: 0o755 });
-chmodSync(join(binDir, "codex-chatgpt-web"), 0o755);
+const windowsLauncher = `@echo off\r
+setlocal\r
+set "CODEX_CHATGPT_WEB_LAUNCHER=%~f0"\r
+"%~dp0..\\runtime\\node.exe" "%~dp0..\\app\\cli.js" %*\r
+`;
+const launcherName = process.platform === "win32" ? "codex-chatgpt-web.cmd" : "codex-chatgpt-web";
+writeFileSync(join(binDir, launcherName), process.platform === "win32" ? windowsLauncher : posixLauncher, { mode: 0o755 });
+if (process.platform === "win32") {
+  copyFileSync(join(root, "scripts", "windows-route.ps1"), join(binDir, "windows-route.ps1"));
+} else {
+  chmodSync(join(binDir, launcherName), 0o755);
+}
 
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version?: string };
 if (packageJson.version !== VERSION) throw new Error("package.json and runtime version are out of sync");
@@ -71,7 +89,7 @@ writeFileSync(join(output, "manifest.json"), `${JSON.stringify({
   bunVersion: Bun.version,
   platform: process.platform,
   arch: process.arch,
-  launcher: "bin/codex-chatgpt-web",
+  launcher: `bin/${launcherName}`,
   entrypoint: "app/cli.js",
   playwright: JSON.parse(readFileSync(playwrightPackage, "utf8")).version,
 }, null, 2)}\n`);

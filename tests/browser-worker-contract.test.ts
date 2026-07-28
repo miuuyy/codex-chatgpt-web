@@ -1,6 +1,16 @@
 import { expect, test } from "bun:test";
-import { ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, chatGptEffortLabelsMatch, isChatGptTraceControl, redactChatGptUiDiagnostic } from "../src/adapters/chatgpt-web/browser-worker";
+import { ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, chatGptCanonicalComposerText, chatGptComposerPrompt, chatGptEffortLabelsMatch, isChatGptTraceControl, redactChatGptUiDiagnostic } from "../src/adapters/chatgpt-web/browser-worker";
 import { CHATGPT_INTERNAL_COMPACTION_MARKER, containsChatGptCompactionMarker, stripChatGptTransportMarkers } from "../src/adapters/chatgpt-web/prompt";
+
+test("Firefox normalizes only outer transport line feeds", () => {
+  const prompt = "contract line\n{\"message\":\"keeps\\\\nJSON escape\"}\nresume";
+  expect(chatGptComposerPrompt("firefox", prompt)).toBe(
+    "contract line {\"message\":\"keeps\\\\nJSON escape\"} resume",
+  );
+  expect(chatGptComposerPrompt("chromium", prompt)).toBe(prompt);
+  expect(chatGptCanonicalComposerText("firefox", "plain\u00a0\u00a0spaces")).toBe("plain  spaces");
+  expect(chatGptCanonicalComposerText("chromium", "plain\u00a0space")).toBe("plain\u00a0space");
+});
 
 test("effort selection is idempotent across rendered whitespace", () => {
   expect(chatGptEffortLabelsMatch("High", "High")).toBe(true);
