@@ -76,13 +76,21 @@ launcher runtime from a stale or external process. Legacy macOS launchd services
 removed during an explicit launcher migration; launchd remains only for the advanced terminal-only
 mode.
 
-Setup keeps Codex's built-in `openai` provider and switches only `openai_base_url`. The daemon
-forwards the authenticated official model catalog and appends only the routed models owned by the
+Setup switches `openai_base_url` and installs one managed provider, `codex-chatgpt-web`, that is
+identical to Codex's built-in `openai` provider except for `base_url` and
+`supports_websockets = false`. Codex's built-in providers are not overridable — a user-supplied
+`[model_providers.openai]` table is discarded by `merge_configured_model_providers` — so pinning
+the transport requires a separate provider id plus the top-level `model_provider` assignment. Both
+are recorded in the integration journal and reversed by uninstall. The daemon forwards the
+authenticated official model catalog and appends only the routed models owned by the
 `chatgpt-web/` namespace; no static catalog is installed.
 
-The built-in provider attempts a Responses WebSocket prewarm. The local route explicitly returns
-HTTP `426`, which is Codex's native capability-negotiation signal for an immediate, session-sticky
-switch to its HTTP/SSE transport. No model or provider fallback occurs.
+The managed provider never negotiates a Responses WebSocket, so the loopback route is reached over
+HTTP/SSE on the first attempt. `GET /v1/responses` still returns HTTP `426` as a defensive signal
+for any client that tries to upgrade. Without the provider, Codex opens a WebSocket against the
+loopback route on every turn and spends its entire `stream_max_retries` budget — the visible
+`Reconnecting 1/5 … 5/5` banner — before falling back to HTTP. No model or provider fallback
+occurs.
 
 Setup never restarts an already loaded daemon implicitly. A requested stop, restart, replacement,
 or uninstall first calls a private authenticated drain endpoint. The daemon rejects new turns and

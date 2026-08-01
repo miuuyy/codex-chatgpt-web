@@ -18,6 +18,18 @@ import { defaultConfig } from "../src/config";
 
 const roots: string[] = [];
 
+const MANAGED_COMMENT = "# Managed by codex-chatgpt-web; `codex-chatgpt-web uninstall` restores prior values.";
+const MANAGED_PROVIDER_BLOCK = [
+  "# Managed by codex-chatgpt-web; the local route has no Responses WebSocket, so this pins HTTP/SSE.",
+  "[model_providers.codex-chatgpt-web]",
+  'name = "OpenAI"',
+  'base_url = "http://127.0.0.1:17841/v1"',
+  'wire_api = "responses"',
+  "requires_openai_auth = true",
+  "supports_websockets = false",
+  "supports_standalone_web_search = true",
+].join("\n");
+
 function fixture(): { root: string; codexHome: string; appHome: string } {
   const root = join(tmpdir(), `codex-chatgpt-web-integration-${process.pid}-${Date.now()}-${Math.random()}`);
   const codexHome = join(root, "codex");
@@ -54,7 +66,7 @@ describe("reversible native Codex route integration", () => {
     });
   });
 
-  test("installs only openai_base_url and keeps the built-in openai provider", () => {
+  test("installs an HTTP-only managed provider so Codex never opens a WebSocket to the local route", () => {
     const { codexHome } = fixture();
     const configPath = join(codexHome, "config.toml");
     const original = `model = "gpt-5.6-sol"\n\n[features]\ngoals = true\n`;
@@ -62,11 +74,17 @@ describe("reversible native Codex route integration", () => {
 
     const journal = installCodexIntegration(defaultConfig("browser-only"));
     const installed = readFileSync(configPath, "utf8");
-    expect(journal.version).toBe(4);
+    expect(journal.version).toBe(5);
+    expect(journal.installed.model_provider).toBe("codex-chatgpt-web");
     expect(installed).toContain('openai_base_url = "http://127.0.0.1:17841/v1"');
-    expect(installed).not.toMatch(/^\s*model_provider\s*=/m);
+    expect(installed).toMatch(/^model_provider = "codex-chatgpt-web"$/m);
+    expect(installed).toContain(MANAGED_PROVIDER_BLOCK);
+    expect(installed).toContain("supports_websockets = false");
+    // The managed provider must stay otherwise identical to the built-in `openai` provider.
+    expect(installed).toContain('name = "OpenAI"');
+    expect(installed).toContain("requires_openai_auth = true");
+    expect(installed).toContain("supports_standalone_web_search = true");
     expect(installed).not.toMatch(/^\s*model_catalog_json\s*=/m);
-    expect(installed).not.toContain("[model_providers.codex-chatgpt-web]");
 
     expect(uninstallCodexIntegration()).toEqual({ changed: true });
     expect(readFileSync(configPath, "utf8")).toBe(original);
@@ -99,7 +117,8 @@ describe("reversible native Codex route integration", () => {
     installCodexIntegration(config, { replaceExistingRoute: true });
     const installed = readFileSync(configPath, "utf8");
     expect(installed).toContain('openai_base_url = "http://127.0.0.1:17841/v1"');
-    expect(installed).not.toMatch(/^\s*model_provider\s*=/m);
+    expect(installed).toMatch(/^model_provider = "codex-chatgpt-web"$/m);
+    expect(installed).not.toContain("existing-provider");
     expect(installed).not.toMatch(/^\s*model_catalog_json\s*=/m);
 
     uninstallCodexIntegration();
@@ -163,7 +182,7 @@ describe("reversible native Codex route integration", () => {
     deactivateCodexIntegration();
 
     expect(JSON.parse(readFileSync(getCodexJournalPath(), "utf8"))).toMatchObject({
-      version: 4,
+      version: 5,
       active: false,
     });
     expect(inspectCodexIntegration()).toMatchObject({ installed: true, active: false, errors: [] });
@@ -175,18 +194,78 @@ describe("reversible native Codex route integration", () => {
     const configPath = join(codexHome, "config.toml");
     const original = 'model = "gpt-5.6-sol"\n';
     writeFileSync(configPath, original);
-    installCodexIntegration(defaultConfig("browser-only"));
-    const previous = JSON.parse(readFileSync(getCodexJournalPath(), "utf8"));
-    delete previous.active;
-    previous.version = 3;
-    writeFileSync(getCodexJournalPath(), `${JSON.stringify(previous, null, 2)}\n`);
+    // A v3 install only rewrote openai_base_url; it never wrote a managed provider.
+    writeFileSync(
+      configPath,
+      `model = "gpt-5.6-sol"\n${MANAGED_COMMENT}\nopenai_base_url = "http://127.0.0.1:17841/v1"\n`,
+    );
+    mkdirSync(join(getCodexJournalPath(), ".."), { recursive: true });
+    writeFileSync(getCodexJournalPath(), `${JSON.stringify({
+      version: 3,
+      configPath,
+      installed: { openai_base_url: "http://127.0.0.1:17841/v1" },
+      previous: {
+        openai_base_url: { present: false },
+        model_provider: { present: false },
+        model_catalog_json: { present: false },
+      },
+      format: { lineEnding: "\n", trailingNewline: true },
+    }, null, 2)}\n`);
 
     expect(deactivateCodexIntegration()).toEqual({ changed: true, active: false });
     expect(readFileSync(configPath, "utf8")).toBe(original);
     expect(JSON.parse(readFileSync(getCodexJournalPath(), "utf8"))).toMatchObject({
-      version: 4,
+      version: 5,
       active: false,
+      installed: { model_provider: "codex-chatgpt-web" },
     });
+  });
+
+  test("upgrades a live v4 base-url-only route to the managed HTTP-only provider", () => {
+    const { codexHome } = fixture();
+    const configPath = join(codexHome, "config.toml");
+    const original = 'model = "gpt-5.6-sol"\n';
+    writeFileSync(configPath, original);
+    writeFileSync(
+      configPath,
+      `model = "gpt-5.6-sol"\n${MANAGED_COMMENT}\nopenai_base_url = "http://127.0.0.1:17841/v1"\n`,
+    );
+    mkdirSync(join(getCodexJournalPath(), ".."), { recursive: true });
+    writeFileSync(getCodexJournalPath(), `${JSON.stringify({
+      version: 4,
+      active: true,
+      configPath,
+      installed: { openai_base_url: "http://127.0.0.1:17841/v1" },
+      previous: {
+        openai_base_url: { present: false },
+        model_provider: { present: false },
+        model_catalog_json: { present: false },
+      },
+      format: { lineEnding: "\n", trailingNewline: true },
+    }, null, 2)}\n`);
+
+    const journal = installCodexIntegration(defaultConfig("browser-only"));
+    expect(journal.version).toBe(5);
+    const installed = readFileSync(configPath, "utf8");
+    expect(installed).toMatch(/^model_provider = "codex-chatgpt-web"$/m);
+    expect(installed).toContain(MANAGED_PROVIDER_BLOCK);
+    expect(inspectCodexIntegration()).toMatchObject({ installed: true, active: true, errors: [] });
+
+    uninstallCodexIntegration();
+    expect(readFileSync(configPath, "utf8")).toBe(original);
+  });
+
+  test("fails closed when the managed provider block is edited after setup", () => {
+    const { codexHome } = fixture();
+    const configPath = join(codexHome, "config.toml");
+    writeFileSync(configPath, 'model = "gpt-5.6-sol"\n');
+    installCodexIntegration(defaultConfig("browser-only"));
+    const tampered = readFileSync(configPath, "utf8")
+      .replace("[model_providers.codex-chatgpt-web]", "[model_providers.someone-else]");
+    writeFileSync(configPath, tampered);
+
+    expect(() => uninstallCodexIntegration()).toThrow("model provider block changed after setup");
+    expect(readFileSync(configPath, "utf8")).toBe(tampered);
   });
 
   test("fails closed when the native route changes while the bridge is disconnected", () => {
@@ -271,8 +350,10 @@ describe("reversible native Codex route integration", () => {
     const installed = readFileSync(configPath, "utf8");
     expect(installed).not.toContain("opencodex-catalog");
     expect(installed).not.toContain("model_catalog_json");
-    expect(installed).not.toContain("model_provider");
+    expect(installed).not.toContain('name = "Codex + ChatGPT Web"');
     expect(installed).toContain('openai_base_url = "http://127.0.0.1:17841/v1"');
+    expect(installed).toMatch(/^model_provider = "codex-chatgpt-web"$/m);
+    expect(installed).toContain(MANAGED_PROVIDER_BLOCK);
   });
 
   test("fails closed when the installed route changed after setup", () => {

@@ -7,6 +7,31 @@ import { atomicWriteFile, expandUserPath, getConfigDir } from "./config";
 
 const MANAGED_COMMENT = "# Managed by codex-chatgpt-web; `codex-chatgpt-web uninstall` restores prior values.";
 
+/**
+ * Codex only offers Responses over WebSocket on providers that advertise it, and built-in
+ * providers are not overridable (`merge_configured_model_providers` uses `or_insert`). The local
+ * route serves HTTP/SSE only, so the bridge installs its own provider that is byte-identical to
+ * the built-in `openai` provider except for `base_url` and `supports_websockets = false`. Without
+ * it Codex opens a WebSocket against the loopback route on every turn and burns its full
+ * `stream_max_retries` budget ("Reconnecting 1/5 ... 5/5") before falling back to HTTP.
+ */
+const MANAGED_PROVIDER_ID = "codex-chatgpt-web";
+const MANAGED_PROVIDER_HEADER = `[model_providers.${MANAGED_PROVIDER_ID}]`;
+const MANAGED_PROVIDER_COMMENT = "# Managed by codex-chatgpt-web; the local route has no Responses WebSocket, so this pins HTTP/SSE.";
+
+function managedProviderLines(installedUrl: string): string[] {
+  return [
+    MANAGED_PROVIDER_COMMENT,
+    MANAGED_PROVIDER_HEADER,
+    'name = "OpenAI"',
+    `base_url = ${JSON.stringify(installedUrl)}`,
+    'wire_api = "responses"',
+    "requires_openai_auth = true",
+    "supports_websockets = false",
+    "supports_standalone_web_search = true",
+  ];
+}
+
 interface PreviousAssignment {
   present: boolean;
   rawLine?: string;
@@ -17,6 +42,21 @@ interface PreviousAssignment {
 type ManagedAssignmentKey = "openai_base_url" | "model_provider" | "model_catalog_json";
 
 export interface CodexIntegrationJournal {
+  version: 5;
+  active: boolean;
+  configPath: string;
+  installed: {
+    openai_base_url: string;
+    model_provider: string;
+  };
+  previous: Record<ManagedAssignmentKey, PreviousAssignment>;
+  format?: {
+    lineEnding: "\n" | "\r\n";
+    trailingNewline: boolean;
+  };
+}
+
+interface LegacyCodexIntegrationJournalV4 {
   version: 4;
   active: boolean;
   configPath: string;
@@ -59,7 +99,15 @@ interface LegacyCodexIntegrationJournal {
   };
 }
 
-type ManagedRouteJournal = CodexIntegrationJournal | LegacyCodexIntegrationJournalV3;
+type ManagedRouteJournal =
+  | CodexIntegrationJournal
+  | LegacyCodexIntegrationJournalV4
+  | LegacyCodexIntegrationJournalV3;
+
+/** The managed provider id a journal installed, or `undefined` for pre-v5 base-url-only routes. */
+function journalManagedProvider(journal: ManagedRouteJournal): string | undefined {
+  return journal.version === 5 ? journal.installed.model_provider : undefined;
+}
 type AnyCodexIntegrationJournal = ManagedRouteJournal | LegacyCodexIntegrationJournal;
 
 interface FileSnapshot {
@@ -327,6 +375,52 @@ function removeManagedComment(document: CodexConfigDocument): void {
   }
 }
 
+/** Locate the managed `[model_providers.codex-chatgpt-web]` table as a half-open `[start, end)`. */
+function findManagedProviderBlock(lines: string[]): { start: number; end: number } | undefined {
+  const header = lines.findIndex(line => line.trim() === MANAGED_PROVIDER_HEADER);
+  if (header < 0) return undefined;
+  let start = header;
+  if (start > 0 && lines[start - 1] === MANAGED_PROVIDER_COMMENT) start -= 1;
+  let end = header + 1;
+  while (end < lines.length && !/^\s*\[/.test(lines[end]!)) end += 1;
+  while (end - 1 > header && lines[end - 1]!.trim() === "") end -= 1;
+  return { start, end };
+}
+
+function removeManagedProviderBlock(document: CodexConfigDocument): boolean {
+  const block = findManagedProviderBlock(document.lines);
+  if (!block) return false;
+  let start = block.start;
+  if (start > 0 && document.lines[start - 1]!.trim() === "") start -= 1;
+  for (let index = block.end - 1; index >= start; index -= 1) removeDocumentLine(document, index);
+  return true;
+}
+
+/**
+ * Appends the managed provider table. The separating blank line is written here and consumed by
+ * {@link removeManagedProviderBlock}, so install/uninstall is byte-symmetric.
+ */
+function appendManagedProviderBlock(document: CodexConfigDocument, installedUrl: string): void {
+  const lines = managedProviderLines(installedUrl);
+  if (document.lines.length > 0) lines.unshift("");
+  for (const line of lines) insertDocumentLine(document, document.lines.length, line);
+}
+
+/** Point the top-level `model_provider` at the managed provider and rewrite its table. */
+function writeManagedProvider(document: CodexConfigDocument, installedUrl: string): void {
+  const assignment = `model_provider = ${JSON.stringify(MANAGED_PROVIDER_ID)}`;
+  const existing = findTopLevelAssignment(document.lines, "model_provider");
+  if (existing.index !== undefined) {
+    document.lines[existing.index] = assignment;
+  } else {
+    const baseUrl = findTopLevelAssignment(document.lines, "openai_base_url");
+    if (baseUrl.index === undefined) throw new Error("Managed Codex openai_base_url is missing");
+    insertDocumentLine(document, baseUrl.index + 1, assignment);
+  }
+  removeManagedProviderBlock(document);
+  appendManagedProviderBlock(document, installedUrl);
+}
+
 function installRoute(
   text: string,
   installedUrl: string,
@@ -357,6 +451,7 @@ function installRoute(
   removeManagedComment(document);
   const installedBaseUrl = findTopLevelAssignment(document.lines, "openai_base_url");
   insertDocumentLine(document, installedBaseUrl.index!, MANAGED_COMMENT);
+  writeManagedProvider(document, installedUrl);
   return { text: renderDocument(document), previous };
 }
 
@@ -366,7 +461,20 @@ function verifyInstalledRoute(text: string, journal: ManagedRouteJournal): void 
   if (current.openai_base_url.value !== journal.installed.openai_base_url) {
     throw new Error("Codex openai_base_url changed after setup; refusing to overwrite the user's newer value");
   }
-  if (current.model_provider.present || current.model_catalog_json.present) {
+  const managedProvider = journalManagedProvider(journal);
+  if (managedProvider === undefined) {
+    if (current.model_provider.present) {
+      throw new Error("Codex model_provider or model_catalog_json changed after setup; refusing to overwrite the user's newer value");
+    }
+  } else {
+    if (current.model_provider.value !== managedProvider) {
+      throw new Error("Codex model_provider changed after setup; refusing to overwrite the user's newer value");
+    }
+    if (!findManagedProviderBlock(lines)) {
+      throw new Error("Managed Codex model provider block changed after setup; refusing to overwrite it");
+    }
+  }
+  if (current.model_catalog_json.present) {
     throw new Error("Codex model_provider or model_catalog_json changed after setup; refusing to overwrite the user's newer value");
   }
   if (!lines.includes(MANAGED_COMMENT)) {
@@ -379,7 +487,7 @@ function previousAssignmentMatches(current: PreviousAssignment, previous: Previo
     && (!current.present || current.value === previous.value);
 }
 
-function verifyRestoredRoute(text: string, journal: CodexIntegrationJournal): void {
+function verifyRestoredRoute(text: string, journal: ManagedRouteJournal): void {
   const lines = splitLines(text);
   const current = assignments(lines);
   for (const key of ["openai_base_url", "model_provider", "model_catalog_json"] as const) {
@@ -389,6 +497,9 @@ function verifyRestoredRoute(text: string, journal: CodexIntegrationJournal): vo
   }
   if (lines.includes(MANAGED_COMMENT)) {
     throw new Error("Managed Codex route marker is present while the bridge is disconnected");
+  }
+  if (findManagedProviderBlock(lines)) {
+    throw new Error("Managed Codex model provider block is present while the bridge is disconnected");
   }
 }
 
@@ -406,7 +517,13 @@ function assertPreservedPreviousAssignments(
 function restoreManagedRoute(text: string, journal: ManagedRouteJournal): string {
   verifyInstalledRoute(text, journal);
   const document = parseDocument(text);
+  removeManagedProviderBlock(document);
   removeManagedComment(document);
+  if (journalManagedProvider(journal) !== undefined) {
+    const installedProvider = findTopLevelAssignment(document.lines, "model_provider");
+    if (installedProvider.index === undefined) throw new Error("Managed Codex model_provider is missing");
+    removeDocumentLine(document, installedProvider.index);
+  }
   const currentBaseUrl = findTopLevelAssignment(document.lines, "openai_base_url");
   if (currentBaseUrl.index === undefined) throw new Error("Managed Codex openai_base_url is missing");
   const previousBaseUrl = journal.previous.openai_base_url;
@@ -459,12 +576,19 @@ function readJournal(): AnyCodexIntegrationJournal | undefined {
   const path = getCodexJournalPath();
   if (!existsSync(path)) return undefined;
   const value = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-  if (value.version === 4
+  if (value.version === 5
     && typeof value.active === "boolean"
     && value.installed
     && value.previous
     && typeof value.configPath === "string") {
     return value as unknown as CodexIntegrationJournal;
+  }
+  if (value.version === 4
+    && typeof value.active === "boolean"
+    && value.installed
+    && value.previous
+    && typeof value.configPath === "string") {
+    return value as unknown as LegacyCodexIntegrationJournalV4;
   }
   if (value.version === 3 && value.installed && value.previous && typeof value.configPath === "string") {
     return value as unknown as LegacyCodexIntegrationJournalV3;
@@ -499,8 +623,8 @@ export function preflightCodexIntegration(
   const existing = readJournal();
   const installedUrl = routeUrl(config);
   if (existing) assertJournalTargetsConfig(existing, configPath);
-  if (existing?.version === 3 || existing?.version === 4) {
-    if (existing.version === 4 && !existing.active) verifyRestoredRoute(currentText, existing);
+  if (existing?.version === 3 || existing?.version === 4 || existing?.version === 5) {
+    if (existing.version !== 3 && !existing.active) verifyRestoredRoute(currentText, existing);
     else verifyInstalledRoute(currentText, existing);
     return;
   }
@@ -525,9 +649,9 @@ export function installCodexIntegration(
   const installedUrl = routeUrl(config);
   if (existing) assertJournalTargetsConfig(existing, configPath);
 
-  if (existing?.version === 3 || existing?.version === 4) {
+  if (existing?.version === 3 || existing?.version === 4 || existing?.version === 5) {
     let installedText: string;
-    if (existing.version === 4 && !existing.active) {
+    if (existing.version !== 3 && !existing.active) {
       verifyRestoredRoute(currentText, existing);
       const patched = installRoute(currentText, installedUrl, true);
       assertPreservedPreviousAssignments(patched.previous, existing.previous);
@@ -537,13 +661,15 @@ export function installCodexIntegration(
       const document = parseDocument(currentText);
       const current = findTopLevelAssignment(document.lines, "openai_base_url");
       document.lines[current.index!] = `openai_base_url = ${JSON.stringify(installedUrl)}`;
+      // Also upgrades a v3/v4 base-url-only route in place by adding the managed provider.
+      writeManagedProvider(document, installedUrl);
       installedText = renderDocument(document);
     }
     const updated: CodexIntegrationJournal = {
       ...existing,
-      version: 4,
+      version: 5,
       active: true,
-      installed: { openai_base_url: installedUrl },
+      installed: { openai_base_url: installedUrl, model_provider: MANAGED_PROVIDER_ID },
     };
     writeFilesWithCompensation([
       { path: configPath, data: installedText },
@@ -561,10 +687,10 @@ export function installCodexIntegration(
   }
   const patched = installRoute(baseline, installedUrl, options.replaceExistingRoute === true);
   const journal: CodexIntegrationJournal = {
-    version: 4,
+    version: 5,
     active: true,
     configPath,
-    installed: { openai_base_url: installedUrl },
+    installed: { openai_base_url: installedUrl, model_provider: MANAGED_PROVIDER_ID },
     previous: patched.previous,
     format: textFormat(baseline),
   };
@@ -585,15 +711,16 @@ export function deactivateCodexIntegration(): SetCodexIntegrationActiveResult {
   assertJournalTargetsConfig(existing, getCodexConfigPath());
   if (!existsSync(existing.configPath)) throw new Error(`Codex config is missing: ${existing.configPath}`);
   const current = readFileSync(existing.configPath, "utf8");
-  if (existing.version === 4 && !existing.active) {
+  if (existing.version !== 3 && !existing.active) {
     verifyRestoredRoute(current, existing);
     return { changed: false, active: false };
   }
   const restored = restoreManagedRoute(current, existing);
   const disconnected: CodexIntegrationJournal = {
     ...existing,
-    version: 4,
+    version: 5,
     active: false,
+    installed: { openai_base_url: existing.installed.openai_base_url, model_provider: MANAGED_PROVIDER_ID },
   };
   writeFilesWithCompensation([
     { path: existing.configPath, data: restored },
@@ -618,7 +745,12 @@ export function activateCodexIntegration(): SetCodexIntegrationActiveResult {
   verifyRestoredRoute(current, existing);
   const patched = installRoute(current, existing.installed.openai_base_url, true);
   assertPreservedPreviousAssignments(patched.previous, existing.previous);
-  const connected: CodexIntegrationJournal = { ...existing, active: true };
+  const connected: CodexIntegrationJournal = {
+    ...existing,
+    version: 5,
+    active: true,
+    installed: { openai_base_url: existing.installed.openai_base_url, model_provider: MANAGED_PROVIDER_ID },
+  };
   writeFilesWithCompensation([
     { path: existing.configPath, data: patched.text },
     { path: getCodexJournalPath(), data: `${JSON.stringify(connected, null, 2)}\n` },
@@ -637,7 +769,7 @@ export function uninstallCodexIntegration(): UninstallCodexIntegrationResult {
       throw new Error(`Managed legacy catalog changed after setup: ${journal.catalogPath}`);
     }
     restored = restoreLegacyV2(current, journal);
-  } else if (journal.version === 4 && !journal.active) {
+  } else if (journal.version !== 3 && !journal.active) {
     verifyRestoredRoute(current, journal);
     restored = current;
   } else {
@@ -683,8 +815,8 @@ export function inspectCodexIntegration(): {
     try {
       assertJournalTargetsConfig(journal, getCodexConfigPath());
       const text = readFileSync(journal.configPath, "utf8");
-      if (journal.version === 4 && !journal.active) verifyRestoredRoute(text, journal);
-      else if (journal.version === 3 || journal.version === 4) verifyInstalledRoute(text, journal);
+      if (journal.version !== 2 && journal.version !== 3 && !journal.active) verifyRestoredRoute(text, journal);
+      else if (journal.version === 3 || journal.version === 4 || journal.version === 5) verifyInstalledRoute(text, journal);
       else {
         const lines = splitLines(text);
         for (const key of ["model_provider", "model_catalog_json"] as const) {
@@ -700,9 +832,11 @@ export function inspectCodexIntegration(): {
   }
   return {
     installed: Boolean(journal),
-    active: journal?.version === 4 ? journal.active : Boolean(journal),
+    active: journal?.version === 4 || journal?.version === 5 ? journal.active : Boolean(journal),
     configPath: getCodexConfigPath(),
-    ...(journal?.version === 3 || journal?.version === 4 ? { routeUrl: journal.installed.openai_base_url } : {}),
+    ...(journal?.version === 3 || journal?.version === 4 || journal?.version === 5
+      ? { routeUrl: journal.installed.openai_base_url }
+      : {}),
     ...(journal ? { journal } : {}),
     errors,
   };

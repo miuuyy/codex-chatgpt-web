@@ -51,7 +51,7 @@ Setup options:
   --app-name NAME              ChatGPT connector name (default: Codex Native)
   --tunnel-id ID               Existing OpenAI tunnel id (full mode)
   --runtime-key-file PATH      File containing a Tunnels Read+Use runtime key
-  --replace-codex-route        Reversibly replace an existing openai_base_url
+  --replace-codex-route        Reversibly replace an existing openai_base_url/model_provider
   --restart-service            Explicitly restart this project's daemon after an update
   --login                      Refresh the stored ChatGPT login even if one exists
   --auto-approve-tool-calls    Opt in to per-call browser clicks on "Allow once" prompts
