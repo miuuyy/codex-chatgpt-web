@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { AppConfig } from "./config";
 import { atomicWriteFile, expandUserPath, getConfigDir } from "./config";
+import { OPENCODEX_CONFIG_MARKER } from "./opencodex";
 
 const MANAGED_COMMENT = "# Managed by codex-chatgpt-web; `codex-chatgpt-web uninstall` restores prior values.";
 
@@ -337,7 +338,10 @@ function installRoute(
   const conflicts = (Object.entries(previous) as Array<[ManagedAssignmentKey, PreviousAssignment]>)
     .filter(([, assignment]) => assignment.present)
     .map(([key, assignment]) => `${key}=${JSON.stringify(assignment.value)}`);
-  if (conflicts.length > 0 && !replaceExistingRoute) {
+  // When opencodex owns the existing route, allow replacement automatically: codex-chatgpt-web
+  // will chain native passthrough through opencodex, and uninstall restores opencodex's URL.
+  const ownedByOpenCodex = text.includes(OPENCODEX_CONFIG_MARKER);
+  if (conflicts.length > 0 && !replaceExistingRoute && !ownedByOpenCodex) {
     throw new Error(
       `Codex already configures model routing (${conflicts.join(", ")}). `
       + "Rerun with --replace-codex-route to replace it reversibly.",

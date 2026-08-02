@@ -18,6 +18,8 @@ import {
   type ChatGptWebModelRoute,
 } from "./chatgpt-web-models";
 import { forwardNativeCodexRequest, type NativeFetch } from "./native-passthrough";
+import { setOpenCodexConfig, getActiveOpenCodexUpstream } from "./native-passthrough";
+import { resolveOpenCodexUpstream } from "./opencodex";
 import {
   buildCompactV1Output,
   COMPACT_PROMPT,
@@ -166,7 +168,7 @@ export async function modelsRequest(
   if (!upstream.ok) return upstream;
   let catalog: Record<string, unknown>;
   try {
-    catalog = augmentNativeModelCatalog(await upstream.json(), config, contextOverride?.());
+    catalog = await augmentNativeModelCatalog(await upstream.json(), config, contextOverride?.());
   } catch (error) {
     return formatErrorResponse(502, "invalid_response_error", error instanceof Error ? error.message : String(error));
   }
@@ -387,6 +389,19 @@ export function startServer(
   dependencies: { fetchUpstream?: NativeFetch } = {},
 ): ReturnType<typeof Bun.serve> {
   const startedAt = Date.now();
+  // Initialize opencodex upstream detection for native passthrough routing.
+  setOpenCodexConfig(config.opencodex);
+  // Trigger an initial background probe so the first model catalog request has a warm cache.
+  if (config.opencodex && (config.opencodex.url || config.opencodex.autoDetect === true)) {
+    void resolveOpenCodexUpstream(config.opencodex.url).then(upstream => {
+      if (upstream) {
+        console.info(
+          `[chatgpt-web] opencodex detected at ${upstream.baseUrl} (v${upstream.version ?? "unknown"}) — `
+          + "native passthrough routes through opencodex for multi-provider model access",
+        );
+      }
+    }).catch(() => {});
+  }
   if (config.mode === "full") {
     void TurnBroker.forSocket(config.brokerSocketPath).listen().catch(error => {
       console.error(
@@ -416,6 +431,7 @@ export function startServer(
     fetch(req) {
       const url = new URL(req.url);
       if (req.method === "GET" && url.pathname === "/healthz") {
+        const ocxUpstream = getActiveOpenCodexUpstream();
         return Response.json({
           status: "ok",
           service: "codex-chatgpt-web",
@@ -427,6 +443,7 @@ export function startServer(
           accepting_turns: !draining,
           successful_model_catalog_requests: successfulModelCatalogRequests,
           last_successful_model_catalog_request_at: lastSuccessfulModelCatalogRequestAt,
+          opencodex_upstream: ocxUpstream ? { url: ocxUpstream.baseUrl, version: ocxUpstream.version } : null,
           ...activity(),
         });
       }

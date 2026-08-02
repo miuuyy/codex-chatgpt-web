@@ -38,6 +38,21 @@ export interface AppConfig {
   runtimeCommand: string[];
   acknowledgedUnofficialAt?: string;
   tunnel?: TunnelConfig;
+  /**
+   * OpenCodex upstream configuration. When set, native Codex passthrough requests are routed
+   * through the opencodex proxy instead of directly to the ChatGPT backend, giving access to
+   * opencodex's full multi-provider model routing.
+   */
+  opencodex?: OpenCodexConfig;
+}
+
+export interface OpenCodexConfig {
+  /** Explicit opencodex proxy URL (e.g. "http://127.0.0.1:10100"). When absent, auto-detected. */
+  url?: string;
+  /** When true, probe opencodex on the configured URL (or default port). Defaults to false — must be explicitly enabled. */
+  autoDetect?: boolean;
+  /** When true, merge opencodex's routed models into the /v1/models catalog. Defaults to true. */
+  mergeModels?: boolean;
 }
 
 export function expandUserPath(value: string): string {
@@ -333,6 +348,21 @@ function parseConfig(value: unknown, path: string): AppConfig {
   assertDurableRuntimeCommand(parsed.runtimeCommand as string[]);
   if (parsed.proAvailable !== undefined && typeof parsed.proAvailable !== "boolean") {
     throw new Error(`Invalid proAvailable in ${path}`);
+  }
+  if (parsed.opencodex !== undefined) {
+    if (!parsed.opencodex || typeof parsed.opencodex !== "object" || Array.isArray(parsed.opencodex)) {
+      throw new Error(`Invalid opencodex configuration in ${path}`);
+    }
+    const ocx = parsed.opencodex as Record<string, unknown>;
+    if (ocx.url !== undefined && (typeof ocx.url !== "string" || !ocx.url.trim())) {
+      throw new Error(`opencodex.url must be a non-empty string in ${path}`);
+    }
+    if (ocx.autoDetect !== undefined && typeof ocx.autoDetect !== "boolean") {
+      throw new Error(`opencodex.autoDetect must be a boolean in ${path}`);
+    }
+    if (ocx.mergeModels !== undefined && typeof ocx.mergeModels !== "boolean") {
+      throw new Error(`opencodex.mergeModels must be a boolean in ${path}`);
+    }
   }
   return { ...parsed, proAvailable: parsed.proAvailable === true } as AppConfig;
 }

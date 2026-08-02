@@ -12,6 +12,7 @@ import { TurnBroker, type BrokerToolRequest, type BrokerToolResult } from "./tur
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptTurnExecutionKey, chatGptTurnSessions, type ChatGptBrowserOutcome, type ChatGptTraceEvent, type ChatGptTurnRuntime, type ChatGptTurnSession } from "./turn-execution";
 import { estimateChatGptWebUsage } from "./usage";
 import { ChatGptThreadEnvironmentStore } from "./thread-environment";
+import { getActiveOpenCodexUpstream } from "../../native-passthrough";
 
 function brokerSocketPath(provider: CodexProviderConfig): string {
   const configured = provider.chatgptWeb?.brokerSocketPath?.trim();
@@ -127,6 +128,34 @@ function emitProContextWarning(
   emit({ type: "assistant_boundary" });
   emit({ type: "text_delta", text: warning, phase: "commentary" });
   emit({ type: "assistant_boundary" });
+}
+
+/** One-time per-session flag so the opencodex routing notice appears only on the first turn. */
+let openCodexNoticeEmitted = false;
+
+/**
+ * Emit a one-time commentary notice when opencodex is the active upstream, informing the user
+ * that non-ChatGPT-Web models route through opencodex's multi-provider proxy. Mirrors the
+ * pattern used by the Pro context warning and opencodex's own adapter routing notices.
+ */
+function emitOpenCodexRoutingNotice(emit: (event: AdapterEvent) => void): void {
+  if (openCodexNoticeEmitted) return;
+  const upstream = getActiveOpenCodexUpstream();
+  if (!upstream) return;
+  openCodexNoticeEmitted = true;
+  const version = upstream.version ? ` (v${upstream.version})` : "";
+  emit({ type: "assistant_boundary" });
+  emit({
+    type: "text_delta",
+    text: `ℹ️ opencodex${version} detected at ${upstream.baseUrl}. Non-ChatGPT-Web model requests route through opencodex for multi-provider access (Anthropic, Google, DeepSeek, Kimi, Ollama, and more). ChatGPT Web models continue running through the embedded browser.`,
+    phase: "commentary",
+  });
+  emit({ type: "assistant_boundary" });
+}
+
+/** Reset the one-time notice flag (for testing). */
+export function resetOpenCodexNotice(): void {
+  openCodexNoticeEmitted = false;
 }
 
 function replayEvents(events: AdapterEvent[], emit: (event: AdapterEvent) => void): void {
@@ -288,7 +317,10 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
                 events.push(event);
                 emit(event);
               };
-              if (!parsed._compactionRequest) emitProContextWarning(parsed, capabilities, emitCaptured);
+              if (!parsed._compactionRequest) {
+                emitProContextWarning(parsed, capabilities, emitCaptured);
+                emitOpenCodexRoutingNotice(emitCaptured);
+              }
               const trace = session.runtime.trace.drain();
               reasoning = trace.map(event => event.text);
               emitTraceEvents(trace, emitCaptured);
@@ -343,7 +375,10 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
               emitTraceEvents(trace, emitRound);
             };
             const emitNewText = (deltas: string[]) => emitTextDeltas(deltas, emitRound);
-            if (!parsed._compactionRequest) emitProContextWarning(parsed, capabilities, emitRound);
+            if (!parsed._compactionRequest) {
+              emitProContextWarning(parsed, capabilities, emitRound);
+              emitOpenCodexRoutingNotice(emitRound);
+            }
             emitNewTrace(session.runtime.trace.drain());
             emitNewText(session.runtime.text.drain());
             const nextTools = turnToken

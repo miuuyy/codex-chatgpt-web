@@ -42,12 +42,12 @@ function source(): Record<string, unknown> {
 }
 
 describe("native /models augmentation", () => {
-  test("preserves every native model in order and appends one fixed model per ChatGPT Web mode", () => {
+  test("preserves every native model in order and appends one fixed model per ChatGPT Web mode", async () => {
     const native = source();
     const nativeSnapshot = structuredClone(native);
     const config = defaultConfig("full");
     config.proAvailable = true;
-    const result = augmentNativeModelCatalog(native, config);
+    const result = await augmentNativeModelCatalog(native, config);
     const models = result.models as Array<Record<string, unknown>>;
 
     expect(native).toEqual(nativeSnapshot);
@@ -75,7 +75,7 @@ describe("native /models augmentation", () => {
     }
   });
 
-  test("owns only its namespace, is idempotent, and omits account-gated Pro when unavailable", () => {
+  test("owns only its namespace, is idempotent, and omits account-gated Pro when unavailable", async () => {
     const config = defaultConfig("browser-only");
     config.proAvailable = false;
     const polluted = source();
@@ -83,8 +83,8 @@ describe("native /models augmentation", () => {
       { slug: "chatgpt-web/gpt-5.6-sol", display_name: "legacy generic route" },
       { slug: "chatgpt-web/pro", display_name: "stale Pro route" },
     );
-    const first = augmentNativeModelCatalog(polluted, config);
-    const second = augmentNativeModelCatalog(first, config);
+    const first = await augmentNativeModelCatalog(polluted, config);
+    const second = await augmentNativeModelCatalog(first, config);
     const models = second.models as Array<Record<string, unknown>>;
     const web = models.filter(model => String(model.slug).startsWith("chatgpt-web/"));
     expect(web.map(model => model.slug)).toEqual(
@@ -95,12 +95,12 @@ describe("native /models augmentation", () => {
     expect(web.every(model => (model.supported_reasoning_levels as unknown[]).length === 1)).toBe(true);
   });
 
-  test("honors an explicit Codex context override without replacing or reordering native models", () => {
+  test("honors an explicit Codex context override without replacing or reordering native models", async () => {
     const native = source();
     const nativeSnapshot = structuredClone(native);
     // model_context_window is one top-level Codex setting, so it must not depend on which model
     // the config's `model` line happens to name - that line can hold a ChatGPT Web slug.
-    const result = augmentNativeModelCatalog(native, defaultConfig("full"), {
+    const result = await augmentNativeModelCatalog(native, defaultConfig("full"), {
       model: "chatgpt-web/medium",
       contextWindow: 371_851,
     });
@@ -121,11 +121,11 @@ describe("native /models augmentation", () => {
     }
   });
 
-  test("never lowers a native window that already exceeds the Codex context override", () => {
+  test("never lowers a native window that already exceeds the Codex context override", async () => {
     const native = source();
     const models = native.models as Array<Record<string, unknown>>;
     models[0]!.max_context_window = 1_000_000;
-    const result = augmentNativeModelCatalog(native, defaultConfig("full"), {
+    const result = await augmentNativeModelCatalog(native, defaultConfig("full"), {
       model: "gpt-5.6-sol",
       contextWindow: 371_851,
     });
@@ -133,7 +133,7 @@ describe("native /models augmentation", () => {
     expect((result.models as Array<Record<string, unknown>>)[0]!.max_context_window).toBe(1_000_000);
   });
 
-  test("uses an available compatible official model when an account exposes a smaller catalog", () => {
+  test("uses an available compatible official model when an account exposes a smaller catalog", async () => {
     const native = source();
     const models = native.models as Array<Record<string, unknown>>;
     models.splice(1, 1);
@@ -145,7 +145,7 @@ describe("native /models augmentation", () => {
       shell_type: "shell_command",
     });
 
-    const result = augmentNativeModelCatalog(native, defaultConfig("full"));
+    const result = await augmentNativeModelCatalog(native, defaultConfig("full"));
     const web = (result.models as Array<Record<string, unknown>>)
       .filter(model => String(model.slug).startsWith("chatgpt-web/"));
     expect(web.length).toBe(4);
@@ -153,7 +153,7 @@ describe("native /models augmentation", () => {
     expect(web.every(model => model.tool_mode === "code_mode_only")).toBe(true);
   });
 
-  test("follows official catalog order instead of preferring a named paid-tier model", () => {
+  test("follows official catalog order instead of preferring a named paid-tier model", async () => {
     const native = source();
     const sourceModels = native.models as Array<Record<string, unknown>>;
     const sol = sourceModels[1]!;
@@ -165,14 +165,14 @@ describe("native /models augmentation", () => {
     };
     native.models = [sourceModels[0], terra, sol];
 
-    const result = augmentNativeModelCatalog(native, defaultConfig("full"));
+    const result = await augmentNativeModelCatalog(native, defaultConfig("full"));
     const web = (result.models as Array<Record<string, unknown>>)
       .filter(model => String(model.slug).startsWith("chatgpt-web/"));
     expect(web.every(model => model.shell_type === "terra-shell")).toBe(true);
   });
 
-  test("fails closed when no official model satisfies the harness contract", () => {
-    expect(() => augmentNativeModelCatalog({
+  test("fails closed when no official model satisfies the harness contract", async () => {
+    await expect(augmentNativeModelCatalog({
       models: [{
         slug: "other",
         visibility: "list",
@@ -180,6 +180,6 @@ describe("native /models augmentation", () => {
         supported_reasoning_levels: [],
         tool_mode: null,
       }],
-    }, defaultConfig("full"))).toThrow("no list-visible, API-supported, tool-capable model");
+    }, defaultConfig("full"))).rejects.toThrow("no list-visible, API-supported, tool-capable model");
   });
 });

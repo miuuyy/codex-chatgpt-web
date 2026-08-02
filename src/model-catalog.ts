@@ -101,11 +101,11 @@ export function buildChatGptWebModel(
   return model;
 }
 
-export function augmentNativeModelCatalog(
+export async function augmentNativeModelCatalog(
   value: unknown,
   config: AppConfig,
   contextOverride?: CodexModelContextOverride,
-): JsonObject {
+): Promise<JsonObject> {
   const catalog = object(value, "native Codex models response");
   if (!Array.isArray(catalog.models)) {
     throw new Error("Native Codex models response is missing a models array");

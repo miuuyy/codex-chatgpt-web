@@ -1,5 +1,7 @@
 import { readJsonRequestBody } from "./http-body";
 import { BRIDGE_REASONING_PREFIX } from "./responses/reasoning-envelope";
+import { resolveOpenCodexUpstream, type OpenCodexUpstream } from "./opencodex";
+import type { AppConfig } from "./config";
 
 const CODEX_BACKEND = "https://chatgpt.com/backend-api/codex";
 const HOP_BY_HOP_HEADERS = new Set([
@@ -16,6 +18,44 @@ const HOP_BY_HOP_HEADERS = new Set([
 
 export type NativeFetch = (request: Request) => Promise<Response>;
 export type NativeCodexEndpoint = "models" | "responses" | "responses/compact";
+
+/** Runtime state for the resolved opencodex upstream. */
+let activeOpenCodexUpstream: OpenCodexUpstream | null = null;
+let openCodexConfigRef: AppConfig["opencodex"] | undefined;
+
+/** Update the opencodex config reference (called from server startup and setup). */
+export function setOpenCodexConfig(config: AppConfig["opencodex"]): void {
+  openCodexConfigRef = config;
+}
+
+/** Whether opencodex auto-detection is enabled (defaults to true). */
+function openCodexAutoDetectEnabled(): boolean {
+  // Only active when explicitly enabled in config. Default is off — the user must
+  // register opencodex as a provider in config.json for routing to activate.
+  return openCodexConfigRef?.autoDetect === true;
+}
+
+/**
+ * Resolve the effective upstream for native passthrough. When opencodex is running and
+ * auto-detect is enabled (or an explicit URL is configured), requests route through it.
+ * Otherwise, the direct ChatGPT backend is used.
+ */
+async function resolveNativeUpstream(): Promise<{ url: string; viaOpenCodex: boolean }> {
+  if (!openCodexAutoDetectEnabled() && !openCodexConfigRef?.url) {
+    return { url: CODEX_BACKEND, viaOpenCodex: false };
+  }
+  const upstream = await resolveOpenCodexUpstream(openCodexConfigRef?.url);
+  if (upstream) {
+    activeOpenCodexUpstream = upstream;
+    return { url: `${upstream.baseUrl}/v1`, viaOpenCodex: true };
+  }
+  return { url: CODEX_BACKEND, viaOpenCodex: false };
+}
+
+/** Returns the currently active opencodex upstream, if any. */
+export function getActiveOpenCodexUpstream(): OpenCodexUpstream | null {
+  return activeOpenCodexUpstream;
+}
 
 type JsonObject = Record<string, unknown>;
 
@@ -87,6 +127,7 @@ export async function forwardNativeCodexRequest(
     throw new Error("Native Codex passthrough requires the incoming Bearer authorization");
   }
 
+  const { url: upstreamBase } = await resolveNativeUpstream();
   const incomingUrl = new URL(request.url);
   const headers = endToEndHeaders(request.headers);
   if (endpoint === "models") headers.delete("if-none-match");
@@ -105,7 +146,7 @@ export async function forwardNativeCodexRequest(
       body = originalBody;
     }
   }
-  const upstreamRequest = new Request(`${CODEX_BACKEND}/${endpoint}${incomingUrl.search}`, {
+  const upstreamRequest = new Request(`${upstreamBase}/${endpoint}${incomingUrl.search}`, {
     method,
     headers,
     ...(body ? { body } : {}),

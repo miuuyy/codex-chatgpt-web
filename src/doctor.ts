@@ -9,6 +9,7 @@ import { tunnelStatus } from "./tunnel";
 import { getTunnelServiceStatus } from "./tunnel-service";
 import { inspectLauncherBrowserHost, readLauncherBrowserHostDescriptor } from "./launcher-browser-host";
 import { processRunning } from "./process";
+import { probeOpenCodex, OPENCODEX_DEFAULT_PORT } from "./opencodex";
 
 export type CheckStatus = "ok" | "warning" | "error";
 
@@ -207,6 +208,27 @@ export async function runDoctor(): Promise<DoctorReport> {
     });
   } else {
     checks.push({ id: "tools", status: "warning", message: "Browser-only mode intentionally has no local tools or MCP tunnel" });
+  }
+
+  // OpenCodex upstream detection.
+  if (config.opencodex && (config.opencodex.url || config.opencodex.autoDetect === true)) {
+    const ocxPort = config.opencodex?.url
+      ? Number(new URL(config.opencodex.url).port) || OPENCODEX_DEFAULT_PORT
+      : OPENCODEX_DEFAULT_PORT;
+    const ocx = await probeOpenCodex(ocxPort, "127.0.0.1", 2_000);
+    if (ocx) {
+      checks.push({
+        id: "opencodex",
+        status: "ok",
+        message: `opencodex ${ocx.version ?? ""} detected at ${ocx.baseUrl} — native passthrough routes through it`,
+      });
+    } else {
+      checks.push({
+        id: "opencodex",
+        status: "warning",
+        message: `Configured opencodex at ${config.opencodex.url ?? "default port"} is not reachable — falling back to direct ChatGPT backend`,
+      });
+    }
   }
 
   return {
