@@ -315,7 +315,7 @@ export interface CodexProviderConfig {
     brokerSocketPath?: string;
     /** Persisted, trusted Codex task authority used for follow-up turns that omit the envelope. */
     threadEnvironmentStatePath?: string;
-    /** Maximum duration of one complete browser response. */
+    /** Optional explicit safety ceiling. Browser turns have no absolute deadline by default. */
     turnTimeoutMs?: number;
     /** Keep the single controlled browser visible. */
     headed?: boolean;

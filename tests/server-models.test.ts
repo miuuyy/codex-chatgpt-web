@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
 import { defaultConfig } from "../src/config";
-import { CHATGPT_WEB_AUTO_COMPACT_TOKEN_LIMIT, CHATGPT_WEB_CONTEXT_WINDOW } from "../src/model-catalog";
+import {
+  CHATGPT_WEB_AUTO_COMPACT_TOKEN_LIMIT,
+  CHATGPT_WEB_CONTEXT_WINDOW,
+  CHATGPT_WEB_MODEL_PRIORITY,
+} from "../src/model-catalog";
 import { modelsRequest } from "../src/server";
 
 test("proxies official /models auth and query, then appends the fixed ChatGPT Web models", async () => {
@@ -35,6 +39,8 @@ test("proxies official /models auth and query, then appends the fixed ChatGPT We
       context_window?: number;
       max_context_window?: number;
       auto_compact_token_limit?: number;
+      supported_in_api?: boolean;
+      priority?: number;
     }>;
   };
   expect(body.models.map(model => model.slug)).toEqual([
@@ -50,5 +56,7 @@ test("proxies official /models auth and query, then appends the fixed ChatGPT We
     expect(model.context_window).toBe(CHATGPT_WEB_CONTEXT_WINDOW);
     expect(model.max_context_window).toBe(CHATGPT_WEB_CONTEXT_WINDOW);
     expect(model.auto_compact_token_limit).toBe(CHATGPT_WEB_AUTO_COMPACT_TOKEN_LIMIT);
+    expect(model.supported_in_api).toBe(true);
+    expect(model.priority).toBe(CHATGPT_WEB_MODEL_PRIORITY);
   }
 });

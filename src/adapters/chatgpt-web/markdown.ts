@@ -42,38 +42,23 @@ export function chatGptHtmlToMarkdown(html: string): string {
 }
 
 /**
- * Converts append-only rendered ChatGPT blocks into Responses text deltas.
- * A stable prefix must be observed twice before it is committed. The final unstable block is
- * emitted only by `finish`, so already-streamed Markdown never needs a retraction.
+ * Buffers ChatGPT's mutable rendered answer until terminal DOM evidence is stable.
+ *
+ * The Web UI may rewrite an already-visible paragraph while hydrating citations, links, lists, or
+ * a replacement renderer. Responses text deltas cannot be retracted, so no final-answer Markdown
+ * is emitted before `finish`; live reasoning/status events remain a separate append-only stream.
  */
-export class ChatGptMarkdownStream {
-  private candidate = "";
-  private committed = "";
+export class ChatGptMarkdownBuffer {
+  private html = "";
 
   constructor(private readonly transform: (markdown: string) => string = markdown => markdown) {}
 
-  observeStableHtml(html: string): string {
-    const next = this.transform(chatGptHtmlToMarkdown(html));
-    if (!next.startsWith(this.committed)) {
-      throw new Error("ChatGPT changed Markdown that was already streamed to Codex");
-    }
-    if (next !== this.candidate) {
-      this.candidate = next;
-      return "";
-    }
-    const delta = next.slice(this.committed.length);
-    this.committed = next;
-    return delta;
+  observe(html: string): void {
+    this.html = html;
   }
 
-  finish(html: string): { markdown: string; delta: string } {
-    const markdown = this.transform(chatGptHtmlToMarkdown(html));
-    if (!markdown.startsWith(this.committed)) {
-      throw new Error("ChatGPT final Markdown does not extend the streamed stable prefix");
-    }
-    const delta = markdown.slice(this.committed.length);
-    this.committed = markdown;
-    this.candidate = markdown;
-    return { markdown, delta };
+  finish(): { markdown: string; delta: string } {
+    const markdown = this.transform(chatGptHtmlToMarkdown(this.html));
+    return { markdown, delta: markdown };
   }
 }

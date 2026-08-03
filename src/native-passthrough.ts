@@ -15,7 +15,7 @@ const HOP_BY_HOP_HEADERS = new Set([
 ]);
 
 export type NativeFetch = (request: Request) => Promise<Response>;
-export type NativeCodexEndpoint = "models" | "responses" | "responses/compact";
+export type NativeCodexEndpoint = "models" | "responses" | "responses/compact" | "alpha/search";
 
 type JsonObject = Record<string, unknown>;
 

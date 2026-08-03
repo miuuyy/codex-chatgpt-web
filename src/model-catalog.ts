@@ -12,6 +12,8 @@ type JsonObject = Record<string, unknown>;
 export const CHATGPT_WEB_CONTEXT_WINDOW = 256_000;
 /** Leave enough room for Codex to submit and receive the checkpoint summary before the hard cap. */
 export const CHATGPT_WEB_AUTO_COMPACT_TOKEN_LIMIT = Math.floor(CHATGPT_WEB_CONTEXT_WINDOW * 0.9);
+/** Keep all five routed models inside Codex's five-entry spawn-agent override registry. */
+export const CHATGPT_WEB_MODEL_PRIORITY = 0;
 
 function object(value: unknown, label: string): JsonObject {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -73,7 +75,10 @@ export function buildChatGptWebModel(
     description: route.description,
     input_modalities: ["text", "image"],
     visibility: "list",
-    supported_in_api: false,
+    // These slugs are implemented by this local Responses-compatible bridge. Marking them false
+    // makes Codex drop them from spawn_agent whenever openai_base_url points at the bridge.
+    supported_in_api: true,
+    priority: CHATGPT_WEB_MODEL_PRIORITY,
     // Codex MultiAgent V2 encrypts delegated task payloads for native OpenAI models. A browser
     // provider cannot decrypt that cross-backend payload, so every routed Web model must stay on
     // the native V1 surface where `message` and `fork_context` remain ordinary Codex context.

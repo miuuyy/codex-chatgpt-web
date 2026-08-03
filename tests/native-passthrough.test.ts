@@ -66,6 +66,31 @@ test("forwards native Codex compaction requests to the official compact endpoint
   expect(await response.json()).toEqual({ output: [] });
 });
 
+test("forwards standalone Web Search through the authenticated native Codex route", async () => {
+  const body = JSON.stringify({ query: "Codex Web Search passthrough" });
+  const request = new Request("http://127.0.0.1:17841/v1/alpha/search?locale=en", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer codex-oauth-token",
+      "content-type": "application/json",
+      host: "127.0.0.1:17841",
+    },
+    body,
+  });
+  let upstreamRequest: Request | undefined;
+  const response = await forwardNativeCodexRequest(request, "alpha/search", async input => {
+    upstreamRequest = input;
+    return Response.json({ results: [{ title: "result" }] });
+  });
+
+  expect(upstreamRequest!.url).toBe("https://chatgpt.com/backend-api/codex/alpha/search?locale=en");
+  expect(upstreamRequest!.method).toBe("POST");
+  expect(upstreamRequest!.headers.get("authorization")).toBe("Bearer codex-oauth-token");
+  expect(upstreamRequest!.headers.get("host")).toBeNull();
+  expect(await upstreamRequest!.text()).toBe(body);
+  expect(await response.json()).toEqual({ results: [{ title: "result" }] });
+});
+
 test("removes ChatGPT Web item identities before native Codex compaction", async () => {
   const body = {
     model: "gpt-5.6-sol",

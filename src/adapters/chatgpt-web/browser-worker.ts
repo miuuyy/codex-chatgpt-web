@@ -4,7 +4,7 @@ import { chromium, type Browser, type BrowserContext, type Locator, type Page } 
 import { atomicWriteFile, expandUserPath, getConfigDir } from "../../config";
 import type { CodexProviderConfig } from "../../types";
 import { parseDataUrl } from "../image";
-import { ChatGptMarkdownStream } from "./markdown";
+import { ChatGptMarkdownBuffer } from "./markdown";
 import { resolveChatGptWebModelMode, type ChatGptWebCapabilities, type ChatGptWebModelMode } from "./model";
 import { CHATGPT_INTERNAL_COMPACTION_MARKER, CHATGPT_MAX_INPUT_IMAGES, containsChatGptCompactionMarker, stripChatGptTransportMarkers, type CompiledChatGptWebPrompt, type ChatGptWebPromptImage } from "./prompt";
 import { estimateCompiledChatGptWebInputTokens } from "./usage";
@@ -42,7 +42,6 @@ export async function closeChatGptBrowserWorkers(): Promise<void> {
   }
 }
 
-export const DEFAULT_CHATGPT_TURN_TIMEOUT_MS = 40 * 60_000;
 export const CHATGPT_RESPONSE_DOM_GRACE_MS = 60_000;
 export const CHATGPT_EMPTY_RESPONSE_GRACE_MS = 10_000;
 export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
@@ -89,7 +88,7 @@ export interface ResolvedBrowserConfig {
   browserHostDescriptorPath?: string;
   storageStatePath: string;
   chromeExecutablePath: string;
-  turnTimeoutMs: number;
+  turnTimeoutMs?: number;
   headed: boolean;
   autoApproveToolCalls: boolean;
 }
@@ -200,7 +199,6 @@ interface ChatGptResponseDomSnapshot {
   responsePresent: boolean;
   visibleText: string;
   fullHtml: string;
-  stableHtml: string;
   completionActionVisible: boolean;
   traceBlocks: ChatGptVisibleTraceBlock[];
 }
@@ -209,7 +207,6 @@ const absentResponseDomSnapshot = (): ChatGptResponseDomSnapshot => ({
   responsePresent: false,
   visibleText: "",
   fullHtml: "",
-  stableHtml: "",
   completionActionVisible: false,
   traceBlocks: [],
 });
@@ -234,7 +231,7 @@ export class ChatGptVisibleTraceTracker {
       // Every visible Markdown root belongs to the final assistant answer. ChatGPT may split one
       // answer into several roots around status/tool UI; emitting the earlier roots as commentary
       // moves most of the answer under Codex's `Working` disclosure and leaves a truncated final.
-      // ChatGptMarkdownStream owns all Markdown roots; this tracker owns status/reasoning only.
+      // ChatGptMarkdownBuffer owns all Markdown roots; this tracker owns status/reasoning only.
       if (block.kind === "markdown") continue;
       const text = stripChatGptTransportMarkers(block.text)
         .replace(/\r\n/g, "\n")
@@ -278,12 +275,17 @@ export function redactChatGptUiDiagnostic(value: string): string {
     .replace(/\b(turn|binding|call)_[A-Za-z0-9_-]{12,}\b/g, "$1_[redacted]");
 }
 
-function resolveBrowserConfig(provider: CodexProviderConfig): ResolvedBrowserConfig {
+export function resolveBrowserConfig(provider: CodexProviderConfig): ResolvedBrowserConfig {
   const configured = provider.chatgptWeb ?? {};
   const browserHost = configured.browserHost ?? "managed-chrome";
   const browserHostDescriptorPath = configured.browserHostDescriptorPath?.trim();
+  const turnTimeoutMs = configured.turnTimeoutMs;
   if (browserHost === "launcher" && !browserHostDescriptorPath) {
     throw new Error("Launcher browser host requires chatgptWeb.browserHostDescriptorPath");
+  }
+  if (turnTimeoutMs !== undefined
+    && (!Number.isFinite(turnTimeoutMs) || turnTimeoutMs <= 0)) {
+    throw new Error("ChatGPT Web turnTimeoutMs must be a positive finite number");
   }
   return {
     appName: configured.appName?.trim() || "Codex Native",
@@ -291,7 +293,7 @@ function resolveBrowserConfig(provider: CodexProviderConfig): ResolvedBrowserCon
     ...(browserHostDescriptorPath ? { browserHostDescriptorPath: resolve(expandUserPath(browserHostDescriptorPath)) } : {}),
     storageStatePath: resolve(expandUserPath(configured.storageStatePath?.trim() || join(getConfigDir(), "browser", "storage-state.json"))),
     chromeExecutablePath: resolve(expandUserPath(configured.chromeExecutablePath?.trim() || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")),
-    turnTimeoutMs: configured.turnTimeoutMs ?? DEFAULT_CHATGPT_TURN_TIMEOUT_MS,
+    ...(turnTimeoutMs !== undefined ? { turnTimeoutMs } : {}),
     headed: configured.headed !== false,
     autoApproveToolCalls: configured.autoApproveToolCalls === true,
   };
@@ -822,7 +824,6 @@ export class ChatGptBrowserWorker {
         .filter(candidate => !candidate.parentElement?.closest(".markdown"))
         .filter(visible);
       const rendered = renderedRoots.at(-1);
-      const renderedChildren = rendered ? [...rendered.children] : [];
       const completionAction = rendered
         ? [...root.querySelectorAll<HTMLElement>(completionActionSelector)]
           .filter(visible)
@@ -832,15 +833,24 @@ export class ChatGptBrowserWorker {
       const completionActionSet = new Set(completionAction ? [completionAction] : []);
       const candidates = new Map<HTMLElement, "markdown" | "status">();
       renderedRoots.forEach(candidate => candidates.set(candidate, "markdown"));
+      const overlapsRenderedAnswer = (candidate: HTMLElement): boolean => renderedRoots.some(rendered => (
+        candidate.contains(rendered) || rendered.contains(candidate)
+      ));
       root.querySelectorAll<HTMLElement>(
         'button, [role="status"], [aria-busy="true"], [data-testid*="cot"], [data-testid*="reason"], [data-testid*="thought"]',
       ).forEach(candidate => {
         if (completionActionSet.has(candidate)) return;
         const semantic = candidate.closest<HTMLElement>("button") ?? candidate;
-        if (!candidates.has(semantic)) candidates.set(semantic, "status");
+        // A renderer may wrap the final Markdown in a reason/status container. That wrapper and
+        // its descendants still belong exclusively to the final-answer stream; assigning either
+        // side to the trace stream duplicates or truncates the answer under Codex's `Working` UI.
+        if (!overlapsRenderedAnswer(semantic) && !candidates.has(semantic)) {
+          candidates.set(semantic, "status");
+        }
       });
       root.querySelectorAll<HTMLElement>("[data-streaming-response-status]").forEach(container => {
-        if (![...candidates.keys()].some(candidate => container.contains(candidate))) {
+        if (!overlapsRenderedAnswer(container)
+          && ![...candidates.keys()].some(candidate => container.contains(candidate))) {
           candidates.set(container, "status");
         }
       });
@@ -858,10 +868,6 @@ export class ChatGptBrowserWorker {
         responsePresent: true,
         visibleText: renderedRoots.map(candidate => candidate.innerText.trim()).filter(Boolean).join("\n\n"),
         fullHtml: renderedRoots.map(candidate => candidate.innerHTML).join(""),
-        stableHtml: [
-          ...renderedRoots.slice(0, -1).map(candidate => candidate.innerHTML),
-          ...renderedChildren.slice(0, -1).map(child => child.outerHTML),
-        ].join(""),
         completionActionVisible: completionAction !== undefined,
         traceBlocks,
       };
@@ -967,7 +973,9 @@ export class ChatGptBrowserWorker {
     try {
       if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
       const estimatedInputTokens = estimateCompiledChatGptWebInputTokens(prepared, turn.modelId);
-      const deadline = Date.now() + this.config.turnTimeoutMs;
+      const deadline = this.config.turnTimeoutMs === undefined
+        ? undefined
+        : Date.now() + this.config.turnTimeoutMs;
       const page = await this.runStage(turn.traceId, "browser_page", browserStageTimeouts.browserPage, async (abortSignal) => {
         if (!launcherSurfaceId) {
           const managed = await this.pageForNewTurn();
@@ -1049,7 +1057,7 @@ export class ChatGptBrowserWorker {
       let loggedCompletionWait = false;
       const sentAt = Date.now();
       const visibleTrace = new ChatGptVisibleTraceTracker();
-      const markdownStream = new ChatGptMarkdownStream(stripChatGptTransportMarkers);
+      const markdownBuffer = new ChatGptMarkdownBuffer(stripChatGptTransportMarkers);
       const completionTracker = new ChatGptCompletionTracker();
       const domHealthTracker = new ChatGptTurnDomHealthTracker();
       for (;;) {
@@ -1061,7 +1069,9 @@ export class ChatGptBrowserWorker {
           if (await stop.isVisible().catch(() => false)) await stop.press("Enter").catch(() => {});
           throw new DOMException("ChatGPT web turn aborted", "AbortError");
         }
-        if (Date.now() >= deadline) throw new Error("ChatGPT web turn timed out");
+        if (deadline !== undefined && Date.now() >= deadline) {
+          throw new Error("ChatGPT web turn timed out");
+        }
         if (Date.now() - lastHeartbeat >= 10_000) {
           turn.onHeartbeat?.();
           lastHeartbeat = Date.now();
@@ -1077,6 +1087,7 @@ export class ChatGptBrowserWorker {
         const running = await stop.isVisible().catch(() => false);
         if (running) sawRunning = true;
         if (snapshot.responsePresent) {
+          markdownBuffer.observe(snapshot.fullHtml);
           for (const trace of visibleTrace.observe(snapshot.traceBlocks, snapshot.completionActionVisible)) {
             if (trace.kind === "commentary") turn.onCommentary?.(trace.text, trace.continuation === true);
             else turn.onReasoningSummary?.(trace.text, trace.continuation === true);
@@ -1088,12 +1099,6 @@ export class ChatGptBrowserWorker {
             completionActionVisible: snapshot.completionActionVisible,
           });
           if (domError) throw new Error(domError);
-          // Commit only when ChatGPT exposes response-scoped completion actions, but keep every
-          // top-level Markdown root in that response as one final-answer stream.
-          if (snapshot.completionActionVisible) {
-            const stableDelta = markdownStream.observeStableHtml(snapshot.stableHtml);
-            if (stableDelta) turn.onTextDelta(stableDelta);
-          }
           if (completionTracker.update({
             responsePresent: snapshot.responsePresent,
             running,
@@ -1104,7 +1109,7 @@ export class ChatGptBrowserWorker {
             if (snapshot.visibleText === "api_tool unavailable") {
               throw new Error("ChatGPT selected mode rejected the Codex Native MCP tool (api_tool unavailable)");
             }
-            const final = markdownStream.finish(snapshot.fullHtml);
+            const final = markdownBuffer.finish();
             if (!final.markdown && snapshot.visibleText) {
               throw new Error("ChatGPT completed with visible text that could not be serialized as Markdown");
             }

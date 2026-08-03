@@ -24,7 +24,6 @@ function filesystemEnvironmentXml(permissionProfileXml: string): string {
 </environment_context>`;
 }
 
-// Codex CLI 0.146+ permission_profile shapes (captured via `codex debug prompt-input`).
 const dangerFullAccessProfileXml = `<permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile>`;
 const workspaceWriteProfileXml = `<permission_profile type="managed"><file_system type="restricted"><entry access="read"><special>:root</special></entry><entry access="write"><path>${root}</path></entry><entry access="write"><special>:slash_tmp</special></entry><entry access="write"><special>:tmpdir</special></entry><entry access="read"><path>${root}/.git</path></entry></file_system></permission_profile>`;
 const readOnlyProfileXml = `<permission_profile type="managed"><file_system type="restricted"><entry access="read"><special>:root</special></entry></file_system></permission_profile>`;
@@ -138,7 +137,7 @@ describe("permission_profile sandbox detection (Codex CLI 0.146+)", () => {
     });
   });
 
-  test("permission_profile type=external fails closed instead of being treated as workspaceWrite", () => {
+  test("permission_profile type=external remains unmapped and fails closed", () => {
     expect(() => extractChatGptTurnEnvironment(currentWire({
       sandbox: "workspace-write",
       environmentXml: filesystemEnvironmentXml(externalProfileXml),

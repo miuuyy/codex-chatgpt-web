@@ -124,6 +124,27 @@ test("turn broker creates its private runtime directory on a cold start", async 
   }
 });
 
+test("turn broker tokens do not expire while their browser turn is still alive", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cgw-broker-unbounded-"));
+  const socketPath = defaultBrokerEndpoint(root);
+  const broker = TurnBroker.forSocket(socketPath);
+  try {
+    const token = await broker.register({
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: [],
+    });
+    await Bun.sleep(5);
+    await expect(callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token }))
+      .resolves.toMatchObject({ bindingId: expect.any(String) });
+  } finally {
+    await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("turn broker names the finished turn that owns a replayed handle", async () => {
   const root = mkdtempSync(join(tmpdir(), "cgw-broker-"));
   const socketPath = defaultBrokerEndpoint(root);

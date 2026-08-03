@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { ChatGptBrowserWorker, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, chatGptSubmissionEvidence, isChatGptTraceControl, redactChatGptUiDiagnostic } from "../src/adapters/chatgpt-web/browser-worker";
+import { ChatGptBrowserWorker, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, chatGptSubmissionEvidence, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig } from "../src/adapters/chatgpt-web/browser-worker";
 import { CHATGPT_INTERNAL_COMPACTION_MARKER, containsChatGptCompactionMarker, stripChatGptTransportMarkers } from "../src/adapters/chatgpt-web/prompt";
 
 test("Codex context uses the owned CDP composer transport, never the operating-system clipboard", () => {
@@ -50,6 +50,19 @@ test("browser turns run concurrently up to the five-tab limit", async () => {
     releases.get(traceId)?.();
   }
   await Promise.all([...active.slice(1), sixth]);
+});
+
+test("browser turns have no absolute deadline unless one is explicitly configured", () => {
+  const provider = { adapter: "chatgpt-web" as const, baseUrl: "browser://chatgpt" };
+  expect(resolveBrowserConfig(provider).turnTimeoutMs).toBeUndefined();
+  expect(resolveBrowserConfig({
+    ...provider,
+    chatgptWeb: { turnTimeoutMs: 123_000 },
+  }).turnTimeoutMs).toBe(123_000);
+  expect(() => resolveBrowserConfig({
+    ...provider,
+    chatgptWeb: { turnTimeoutMs: 0 },
+  })).toThrow("turnTimeoutMs must be a positive finite number");
 });
 
 test("browser stage timeout aborts late page acquisition", async () => {
@@ -523,7 +536,12 @@ test("response DOM aggregation keeps every top-level Markdown root in the final 
   const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
   expect(workerSource).toContain('const renderedRoots = [...root.querySelectorAll<HTMLElement>(".markdown")]');
   expect(workerSource).toContain('fullHtml: renderedRoots.map(candidate => candidate.innerHTML).join("")');
-  expect(workerSource).toContain('...renderedRoots.slice(0, -1).map(candidate => candidate.innerHTML)');
+  expect(workerSource).toContain("markdownBuffer.observe(snapshot.fullHtml)");
+  expect(workerSource).not.toContain("stableHtml:");
+  expect(workerSource).not.toContain("observeStableHtml");
+  expect(workerSource).toContain("const overlapsRenderedAnswer = (candidate: HTMLElement)");
+  expect(workerSource).toContain("!overlapsRenderedAnswer(semantic)");
+  expect(workerSource).toContain("!overlapsRenderedAnswer(container)");
   expect(workerSource).not.toContain('fullHtml: rendered?.innerHTML ?? ""');
 });
 

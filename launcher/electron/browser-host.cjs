@@ -458,22 +458,26 @@ class BrowserHost {
     return this.snapshot();
   }
 
-  closeTab(tabId) {
-    const tab = this.turnTabs.get(tabId);
-    if (!tab) throw new Error("Browser tab does not exist");
-    this.turnTabs.delete(tabId);
-    if (tab.status === "running") {
+  removeTurnTab(tab, abortRunning) {
+    this.turnTabs.delete(tab.id);
+    if (abortRunning && tab.status === "running") {
       this.closedTurnOwners.set(tab.traceId, tab.helperPid);
       tab.status = "aborted";
     }
     try { this.window.contentView.removeChildView(tab.view); } catch {}
     if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
-    if (this.selectedTabId === tabId) {
+    if (this.selectedTabId === tab.id) {
       this.selectedTabId = [...this.turnTabs.keys()].at(-1) || "home";
     }
     this.syncViewVisibility();
     this.publishState?.(this.snapshot());
     this.writeDescriptor();
+  }
+
+  closeTab(tabId) {
+    const tab = this.turnTabs.get(tabId);
+    if (!tab) throw new Error("Browser tab does not exist");
+    this.removeTurnTab(tab, true);
     this.logger.info("browser.tab_closed", { tabId, traceId: tab.traceId, status: tab.status });
     return this.snapshot();
   }
@@ -676,11 +680,16 @@ class BrowserHost {
     tab.message = status === "completed" ? "Task completed" : message || `ChatGPT turn ${status}`;
     tab.loading = false;
     if (!tab.view.webContents.isDestroyed()) tab.view.webContents.setBackgroundThrottling(true);
-    if (hideAfterTurn && !this.activeTraceId) this.hide();
     if (status === "completed") {
       this.logger.info("browser.tab_completed", { tabId: tab.id, traceId });
     }
-    this.publishState?.(this.snapshot());
+    // A browser tab represents an active Codex turn, not durable task history. Retaining terminal
+    // tabs leaked one slot per response/compaction until the five-tab safety limit made later
+    // turns fail. The result already lives in Codex; release the browser document on every
+    // terminal path while leaving other concurrently running tabs untouched.
+    this.removeTurnTab(tab, false);
+    if (hideAfterTurn && !this.activeTraceId) this.hide();
+    this.logger.info("browser.tab_released", { tabId: tab.id, traceId, status: tab.status });
   }
 
   async returnToIdle() {

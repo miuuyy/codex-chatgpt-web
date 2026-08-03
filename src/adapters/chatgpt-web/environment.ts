@@ -84,10 +84,9 @@ function environmentBeforeUser(input: unknown[], userIndex: number, expectedTurn
 function sandboxTypeFromEnvironment(text: string): ChatGptSandboxPolicy["type"] | undefined {
   const unrestricted = /<permission_profile\s+type=["']disabled["'][^>]*>[\s\S]*?<file_system\s+type=["']unrestricted["'][^>]*\/?\s*>/i.test(text)
     || /<sandbox_mode>danger-full-access<\/sandbox_mode>/i.test(text);
-  // Codex CLI 0.146+ drops <sandbox_mode> for a managed permission_profile whose
-  // restricted file_system block carries read/write entries instead.
   const restrictedFileSystem = /<permission_profile\s+type=["']managed["'][^>]*>[\s\S]*?<file_system\s+type=["']restricted["'][^>]*>([\s\S]*?)<\/file_system>/i.exec(text);
-  const restrictedHasWriteEntry = restrictedFileSystem !== null && /<entry\s+access=["']write["'][^>]*>/i.test(restrictedFileSystem[1]!);
+  const restrictedHasWriteEntry = restrictedFileSystem !== null
+    && /<entry\s+access=["']write["'][^>]*>/i.test(restrictedFileSystem[1]!);
   const workspaceWrite = /<sandbox_mode>workspace-write<\/sandbox_mode>/i.test(text)
     || restrictedHasWriteEntry;
   const readOnly = /<sandbox_mode>read-only<\/sandbox_mode>/i.test(text)

@@ -9,7 +9,7 @@ import { ChatGptCompletionTracker, chatGptImageFilePayloads, chatGptPromptFilePa
 import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "../src/adapters/chatgpt-web/environment";
 import { createChatGptWebAdapter } from "../src/adapters/chatgpt-web/index";
-import { chatGptHtmlToMarkdown, ChatGptMarkdownStream } from "../src/adapters/chatgpt-web/markdown";
+import { chatGptHtmlToMarkdown, ChatGptMarkdownBuffer } from "../src/adapters/chatgpt-web/markdown";
 import { CHATGPT_WEB_MODEL_ID, resolveChatGptWebModelMode } from "../src/adapters/chatgpt-web/model";
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
 import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSessions, chatGptTurnExecutionKey } from "../src/adapters/chatgpt-web/turn-execution";
@@ -477,19 +477,21 @@ describe("ChatGPT outer-native harness v3", () => {
     expect(tracker.update({ ...state, running: true }, 8_100)).toBe(false);
   });
 
-  test("preserves GFM formatting and streams only a stable rendered prefix", () => {
+  test("preserves GFM formatting while buffering mutable rendered Markdown until completion", () => {
     const heading = '<h2 data-start="0" data-end="15">Format Probe</h2>';
     const bold = '<p data-start="16" data-end="24"><strong>bold</strong></p>';
     const list = '<ul><li><p>alpha</p></li><li><p>beta</p></li></ul>';
     const html = `${heading}${bold}${list}`;
     expect(chatGptHtmlToMarkdown(html)).toBe("## Format Probe\n\n**bold**\n\n- alpha\n- beta");
 
-    const stream = new ChatGptMarkdownStream();
-    expect(stream.observeStableHtml(heading)).toBe("");
-    expect(stream.observeStableHtml(heading)).toBe("## Format Probe");
-    const final = stream.finish(html);
-    expect(final.delta).toBe("\n\n**bold**\n\n- alpha\n- beta");
-    expect(final.markdown).toBe("## Format Probe\n\n**bold**\n\n- alpha\n- beta");
+    const buffer = new ChatGptMarkdownBuffer();
+    buffer.observe(`${heading}<p>Source</p>`);
+    buffer.observe(`${heading}<p><a href="https://example.com">Source</a></p>`);
+    buffer.observe(html);
+    expect(buffer.finish()).toEqual({
+      delta: "## Format Probe\n\n**bold**\n\n- alpha\n- beta",
+      markdown: "## Format Probe\n\n**bold**\n\n- alpha\n- beta",
+    });
   });
 
   test("drops decorative HTML images without removing textual links", () => {
