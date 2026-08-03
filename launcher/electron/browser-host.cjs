@@ -114,6 +114,18 @@ function isTemporaryChatUrl(value) {
     && parsed.searchParams.get("temporary-chat") === "true";
 }
 
+function canonicalConversationUrl(value) {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:" || parsed.hostname !== "chatgpt.com" || parsed.port
+    || parsed.username || parsed.password || parsed.hash) return null;
+  return parsed.href;
+}
+
 class BrowserHost {
   constructor({ window, descriptorPath, cdpPort, control, helper, logger, publishState }) {
     this.window = window;
@@ -179,6 +191,7 @@ class BrowserHost {
     return {
       id: tab.id,
       traceId: tab.traceId,
+      ...(tab.routeKey ? { routeKey: tab.routeKey } : {}),
       title: tab.label,
       status: tab.status,
       loading: tab.loading === true,
@@ -191,7 +204,7 @@ class BrowserHost {
     return this.turnTabs.get(this.selectedTabId) || null;
   }
 
-  createTurnTab(traceId, helperPid) {
+  createTurnTab(traceId, helperPid, routeKey) {
     if (this.turnTabs.size >= MAX_BROWSER_TABS) {
       throw new Error(
         `ChatGPT Web already has ${MAX_BROWSER_TABS} browser tabs; close one before starting another turn to avoid excessive parallel traffic on the ChatGPT account`,
@@ -217,10 +230,11 @@ class BrowserHost {
       surfaceId,
       traceId,
       helperPid,
+      routeKey: routeKey || null,
       view,
       status: "running",
       ordinal,
-      label: `ChatGPT ${ordinal}`,
+      label: routeKey || `ChatGPT ${ordinal}`,
       pageTitle: "ChatGPT",
       url: IDLE_BROWSER_URL,
       loading: true,
@@ -624,15 +638,37 @@ class BrowserHost {
     return this.snapshot();
   }
 
-  beginTurn(traceId, reveal, helperPid) {
+  beginTurn(traceId, reveal, helperPid, routeKey, routeUrl) {
     if (this.manualOperation) {
       throw new Error(`ChatGPT browser is busy with ${this.manualOperation}`);
     }
-    const existing = [...this.turnTabs.values()].find((tab) => tab.traceId === traceId);
+    const existingByTrace = [...this.turnTabs.values()].find((tab) => tab.traceId === traceId);
+    if (existingByTrace && (existingByTrace.routeKey || null) !== (routeKey || null)) {
+      throw new Error(`ChatGPT browser turn ${traceId} changed its persistent route key`);
+    }
+    const existingByRoute = routeKey
+      ? [...this.turnTabs.values()].find((tab) => tab.routeKey === routeKey)
+      : undefined;
+    const matchingUnkeyedTabs = routeKey && routeUrl
+      ? [...this.turnTabs.values()].filter((tab) => !tab.routeKey
+        && tab.status !== "running"
+        && canonicalConversationUrl(tab.url) === routeUrl)
+      : [];
+    const adoptable = matchingUnkeyedTabs.find((tab) => tab.id === this.selectedTabId)
+      || matchingUnkeyedTabs[0];
+    const existing = existingByTrace || existingByRoute || adoptable;
     if (existing) {
-      if (existing.status === "running" && existing.helperPid !== helperPid) {
-        throw new Error(`ChatGPT browser turn ${traceId} is owned by another helper process`);
+      if (existing.status === "running" && (existing.traceId !== traceId || existing.helperPid !== helperPid)) {
+        throw new Error(routeKey
+          ? `ChatGPT browser route ${routeKey} is already running another turn`
+          : `ChatGPT browser turn ${traceId} is owned by another helper process`);
       }
+      const adopted = Boolean(routeKey && !existing.routeKey);
+      if (adopted) {
+        existing.routeKey = routeKey;
+        existing.label = routeKey;
+      }
+      existing.traceId = traceId;
       existing.helperPid = helperPid;
       existing.status = "running";
       existing.loading = true;
@@ -645,15 +681,26 @@ class BrowserHost {
       else this.syncViewVisibility();
       this.publishState?.(this.snapshot());
       this.writeDescriptor();
-      this.logger.info("browser.tab_reused", { tabId: existing.id, traceId });
+      this.logger.info(adopted
+        ? "browser.route_tab_adopted"
+        : routeKey ? "browser.route_tab_reused" : "browser.tab_reused", {
+        tabId: existing.id,
+        traceId,
+        ...(routeKey ? { routeKey } : {}),
+      });
       return { surfaceId: existing.surfaceId, tabId: existing.id };
     }
-    const tab = this.createTurnTab(traceId, helperPid);
+    const tab = this.createTurnTab(traceId, helperPid, routeKey);
     this.selectedTabId = tab.id;
     if (reveal) this.show();
     else this.syncViewVisibility();
     this.publishState?.(this.snapshot());
-    this.logger.info("browser.tab_created", { tabId: tab.id, traceId, tabCount: this.turnTabs.size });
+    this.logger.info("browser.tab_created", {
+      tabId: tab.id,
+      traceId,
+      tabCount: this.turnTabs.size,
+      ...(routeKey ? { routeKey } : {}),
+    });
     return { surfaceId: tab.surfaceId, tabId: tab.id };
   }
 
@@ -1386,6 +1433,7 @@ class BrowserHost {
 module.exports = {
   allowedAuthUrl,
   BrowserHost,
+  canonicalConversationUrl,
   CHATGPT_VIEWPORT_CSS,
   IDLE_BROWSER_URL,
   isTemporaryChatUrl,

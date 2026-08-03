@@ -87,9 +87,17 @@ test("launcher turn control sends authenticated lifecycle events", async () => {
       phase: "start",
       traceId: "abc123def456",
       helperPid: process.pid,
+      routeKey: "dcp-pro-advisory",
+      routeUrl: "https://chatgpt.com/g/g-p-dcp/c/dcp-oracle",
     })).resolves.toEqual({ surfaceId: "launcher_surface_id_0123456789AB" });
     expect(received.authorization).toBe("Bearer launcher-control-token-0123456789abcdefghijklmnop");
-    expect(received.body).toEqual({ phase: "start", traceId: "abc123def456", helperPid: process.pid });
+    expect(received.body).toEqual({
+      phase: "start",
+      traceId: "abc123def456",
+      helperPid: process.pid,
+      routeKey: "dcp-pro-advisory",
+      routeUrl: "https://chatgpt.com/g/g-p-dcp/c/dcp-oracle",
+    });
     await notifyLauncherTurn(path, {
       phase: "end",
       traceId: "abc123def456",

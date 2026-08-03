@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { ChatGptBrowserWorker, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, chatGptSubmissionEvidence, isChatGptTraceControl, redactChatGptUiDiagnostic } from "../src/adapters/chatgpt-web/browser-worker";
-import { CHATGPT_INTERNAL_COMPACTION_MARKER, containsChatGptCompactionMarker, stripChatGptTransportMarkers } from "../src/adapters/chatgpt-web/prompt";
+import { CHATGPT_INTERNAL_COMPACTION_MARKER, containsChatGptCompactionMarker, normalizeChatGptConversationMarkdown, stripChatGptTransportMarkers } from "../src/adapters/chatgpt-web/prompt";
 
 test("Codex context uses the owned CDP composer transport, never the operating-system clipboard", () => {
   const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
@@ -572,6 +572,11 @@ test("visible DOM trace translates the explicit ChatGPT compaction marker once",
   expect(new ChatGptVisibleTraceTracker().observe([
     { kind: "markdown", text: partial },
   ], false)).toEqual([{ kind: "reasoning", text: "Context automatically compacted" }]);
+});
+
+test("persistent conversation response comparison normalizes escaped nonce underscores", () => {
+  expect(normalizeChatGptConversationMarkdown("SECOND\\_OK DCP\\_1785778675\\_515185"))
+    .toBe("SECOND_OK DCP_1785778675_515185");
 });
 
 test("trace parsing excludes the Answer now UI control", () => {

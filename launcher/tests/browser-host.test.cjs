@@ -840,6 +840,149 @@ test("a later provider round reuses its task tab and restores active ownership",
   assert.deepEqual(events, ["visible", "published", "descriptor", "browser.tab_reused"]);
 });
 
+test("persistent conversation rounds reuse one route-keyed tab across trace ids", () => {
+  const throttling = [];
+  const tab = {
+    id: "tab-dcp-route",
+    surfaceId: "surface-dcp-route",
+    traceId: "trace_dcp_first",
+    helperPid: 111,
+    routeKey: "dcp-pro-advisory",
+    label: "dcp-pro-advisory",
+    status: "ready",
+    loading: false,
+    message: "Task completed",
+    view: {
+      webContents: {
+        isDestroyed: () => false,
+        setBackgroundThrottling: (enabled) => throttling.push(enabled),
+      },
+    },
+  };
+  const events = [];
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    manualOperation: null,
+    turnTabs: new Map([[tab.id, tab]]),
+    selectedTabId: "home",
+    syncViewVisibility: () => events.push("visible"),
+    snapshot: () => ({ tabs: [] }),
+    publishState: () => events.push("published"),
+    writeDescriptor: () => events.push("descriptor"),
+    logger: { info: (event) => events.push(event) },
+  });
+
+  const lease = BrowserHost.prototype.beginTurn.call(
+    fixture,
+    "trace_dcp_second",
+    false,
+    222,
+    "dcp-pro-advisory",
+  );
+
+  assert.deepEqual(lease, { surfaceId: "surface-dcp-route", tabId: "tab-dcp-route" });
+  assert.equal(fixture.turnTabs.size, 1);
+  assert.equal(tab.traceId, "trace_dcp_second");
+  assert.equal(tab.helperPid, 222);
+  assert.equal(tab.status, "running");
+  assert.equal(fixture.selectedTabId, tab.id);
+  assert.deepEqual(throttling, [false]);
+  assert.deepEqual(events, ["visible", "published", "descriptor", "browser.route_tab_reused"]);
+});
+
+test("the first persistent round adopts the selected matching retained tab", () => {
+  const routeUrl = "https://chatgpt.com/g/g-p-dcp/c/dcp-oracle";
+  const tab = {
+    id: "tab-retained",
+    surfaceId: "surface-retained",
+    traceId: "trace_previous",
+    helperPid: 111,
+    routeKey: null,
+    label: "ChatGPT 1",
+    status: "ready",
+    url: routeUrl,
+    view: {
+      webContents: {
+        isDestroyed: () => false,
+        setBackgroundThrottling() {},
+      },
+    },
+  };
+  const events = [];
+  const fixture = {
+    manualOperation: null,
+    turnTabs: new Map([[tab.id, tab]]),
+    selectedTabId: tab.id,
+    syncViewVisibility() {},
+    snapshot: () => ({ tabs: [] }),
+    publishState() {},
+    writeDescriptor() {},
+    logger: { info: event => events.push(event) },
+  };
+
+  const lease = BrowserHost.prototype.beginTurn.call(
+    fixture,
+    "trace_dcp_second",
+    false,
+    222,
+    "dcp-pro-advisory",
+    routeUrl,
+  );
+
+  assert.deepEqual(lease, { surfaceId: "surface-retained", tabId: "tab-retained" });
+  assert.equal(fixture.turnTabs.size, 1);
+  assert.equal(tab.routeKey, "dcp-pro-advisory");
+  assert.equal(tab.label, "dcp-pro-advisory");
+  assert.equal(tab.traceId, "trace_dcp_second");
+  assert.deepEqual(events, ["browser.route_tab_adopted"]);
+});
+
+test("a concurrent turn cannot take over a running persistent route tab", () => {
+  const tab = {
+    id: "tab-dcp-route",
+    traceId: "trace_dcp_first",
+    helperPid: 111,
+    routeKey: "dcp-pro-advisory",
+    status: "running",
+  };
+  const fixture = {
+    manualOperation: null,
+    turnTabs: new Map([[tab.id, tab]]),
+  };
+
+  assert.throws(
+    () => BrowserHost.prototype.beginTurn.call(
+      fixture,
+      "trace_dcp_second",
+      false,
+      222,
+      "dcp-pro-advisory",
+    ),
+    /route dcp-pro-advisory is already running another turn/,
+  );
+  assert.equal(tab.traceId, "trace_dcp_first");
+  assert.equal(tab.helperPid, 111);
+});
+
+test("ordinary Temporary Chat rounds retain per-trace tab isolation", () => {
+  const calls = [];
+  const fixture = {
+    manualOperation: null,
+    turnTabs: new Map(),
+    createTurnTab: (...args) => {
+      calls.push(args);
+      return { id: "tab-new", surfaceId: "surface-new" };
+    },
+    syncViewVisibility() {},
+    snapshot: () => ({ tabs: [] }),
+    publishState() {},
+    logger: { info() {} },
+  };
+
+  BrowserHost.prototype.beginTurn.call(fixture, "trace_temporary", false, 333);
+
+  assert.deepEqual(calls, [["trace_temporary", 333, undefined]]);
+});
+
 test("five browser tabs are a hard account-safety limit", () => {
   const turnTabs = new Map(Array.from({ length: 5 }, (_unused, index) => [
     `tab-${index + 1}`,

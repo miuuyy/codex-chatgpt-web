@@ -31,6 +31,11 @@ export interface CompiledChatGptWebPrompt {
   images: ChatGptWebPromptImage[];
 }
 
+/** ChatGPT's Markdown serializer escapes underscores in opaque identifiers such as nonces. */
+export function normalizeChatGptConversationMarkdown(text: string): string {
+  return text.replace(/\\_/g, "_");
+}
+
 export function compileChatGptConversationDeltaPrompt(
   parsed: CodexParsedRequest,
   capabilities: ChatGptWebCapabilities,

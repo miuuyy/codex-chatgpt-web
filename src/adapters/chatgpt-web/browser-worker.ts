@@ -6,7 +6,7 @@ import type { ChatGptConversationRoute, CodexProviderConfig } from "../../types"
 import { parseDataUrl } from "../image";
 import { ChatGptMarkdownStream } from "./markdown";
 import { resolveChatGptWebModelMode, type ChatGptWebCapabilities, type ChatGptWebModelMode } from "./model";
-import { CHATGPT_INTERNAL_COMPACTION_MARKER, CHATGPT_MAX_INPUT_IMAGES, containsChatGptCompactionMarker, stripChatGptTransportMarkers, type CompiledChatGptWebPrompt, type ChatGptWebPromptImage } from "./prompt";
+import { CHATGPT_INTERNAL_COMPACTION_MARKER, CHATGPT_MAX_INPUT_IMAGES, containsChatGptCompactionMarker, normalizeChatGptConversationMarkdown, stripChatGptTransportMarkers, type CompiledChatGptWebPrompt, type ChatGptWebPromptImage } from "./prompt";
 import { estimateCompiledChatGptWebInputTokens } from "./usage";
 import {
   assertAuthenticatedChatGptPage,
@@ -1042,6 +1042,10 @@ export class ChatGptBrowserWorker {
       phase: "start",
       traceId: turn.traceId,
       helperPid: process.pid,
+      ...(turn.conversationRoute ? {
+        routeKey: turn.conversationRoute.routeKey,
+        routeUrl: turn.conversationRoute.conversationUrl,
+      } : {}),
     });
     const surfaceId = lease.surfaceId;
     if (!surfaceId) throw new Error("Launcher did not lease a browser tab for the ChatGPT turn");
@@ -1194,7 +1198,10 @@ export class ChatGptBrowserWorker {
       let loggedCompletionWait = false;
       const sentAt = Date.now();
       const visibleTrace = new ChatGptVisibleTraceTracker();
-      const markdownStream = new ChatGptMarkdownStream(stripChatGptTransportMarkers);
+      const sanitizeMarkdown = turn.conversationRoute
+        ? (text: string) => normalizeChatGptConversationMarkdown(stripChatGptTransportMarkers(text))
+        : stripChatGptTransportMarkers;
+      const markdownStream = new ChatGptMarkdownStream(sanitizeMarkdown);
       const completionTracker = new ChatGptCompletionTracker();
       const domHealthTracker = new ChatGptTurnDomHealthTracker();
       for (;;) {

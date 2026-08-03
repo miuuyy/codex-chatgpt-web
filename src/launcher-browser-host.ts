@@ -248,7 +248,7 @@ export async function inspectLauncherBrowserHost(
 }
 
 export type LauncherTurnActivity =
-  | { phase: "start"; traceId: string; helperPid: number }
+  | { phase: "start"; traceId: string; helperPid: number; routeKey?: string; routeUrl?: string }
   | {
       phase: "end";
       traceId: string;

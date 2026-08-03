@@ -2,6 +2,20 @@ const { createServer } = require("node:http");
 const { randomBytes, timingSafeEqual } = require("node:crypto");
 
 const MAX_BODY_BYTES = 16 * 1024;
+const ROUTE_KEY = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+
+function canonicalConversationUrl(value) {
+  if (typeof value !== "string" || value !== value.trim() || !value) return null;
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:" || parsed.hostname !== "chatgpt.com" || parsed.port
+    || parsed.username || parsed.password || parsed.hash) return null;
+  return parsed.href;
+}
 
 function secureTokenMatches(expected, authorization) {
   const prefix = "Bearer ";
@@ -113,7 +127,20 @@ class BrowserControlServer {
       }
       const preferences = this.getPreferences();
       if (request.url === "/v1/turn/start") {
-        const lease = host.beginTurn(body.traceId, preferences.showBrowserDuringTurns === true, body.helperPid);
+        if (body.routeKey !== undefined && (typeof body.routeKey !== "string" || !ROUTE_KEY.test(body.routeKey))) {
+          throw new Error("routeKey is invalid");
+        }
+        const routeUrl = body.routeUrl === undefined ? undefined : canonicalConversationUrl(body.routeUrl);
+        if ((body.routeKey === undefined) !== (routeUrl === undefined) || routeUrl === null) {
+          throw new Error("routeKey and canonical routeUrl must be supplied together");
+        }
+        const lease = host.beginTurn(
+          body.traceId,
+          preferences.showBrowserDuringTurns === true,
+          body.helperPid,
+          body.routeKey,
+          routeUrl,
+        );
         this.logger.info("browser.turn_started", { traceId: body.traceId });
         writeJson(response, 200, { ok: true, ...lease });
         return;
