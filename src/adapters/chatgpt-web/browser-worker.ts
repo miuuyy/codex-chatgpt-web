@@ -638,6 +638,32 @@ export class ChatGptBrowserWorker {
     return { identities };
   }
 
+  private async waitForStableAssistantMessageSnapshot(
+    page: Page,
+    route: ChatGptConversationRoute,
+    abortSignal: AbortSignal,
+    intervalMs = 250,
+    requiredStableTransitions = 5,
+  ): Promise<ChatGptAssistantMessageSnapshot> {
+    let previous = await this.assistantMessageSnapshot(page);
+    let stableTransitions = 0;
+    for (;;) {
+      if (abortSignal.aborted) {
+        throw new DOMException("ChatGPT assistant-message history stabilization aborted", "AbortError");
+      }
+      await new Promise(resolveSleep => setTimeout(resolveSleep, intervalMs));
+      if (abortSignal.aborted) {
+        throw new DOMException("ChatGPT assistant-message history stabilization aborted", "AbortError");
+      }
+      await this.assertConversationRoutePage(page, route);
+      const current = await this.assistantMessageSnapshot(page);
+      if (sameChatGptAssistantMessageSnapshot(previous, current)) stableTransitions += 1;
+      else stableTransitions = 0;
+      previous = current;
+      if (stableTransitions >= requiredStableTransitions) return current;
+    }
+  }
+
   private async assertConversationComposerEmpty(page: Page, route: ChatGptConversationRoute): Promise<void> {
     if ((await this.attachedPromptText(page)).trim()) {
       throw new Error(`ChatGPT conversation route ${route.routeKey} has a pre-existing composer draft`);
@@ -1110,7 +1136,14 @@ export class ChatGptBrowserWorker {
       ));
       if (turn.conversationRoute) await this.assertConversationRoutePage(page, turn.conversationRoute);
       const responseTurns = page.locator(CHATGPT_ASSISTANT_MESSAGE_ROOT_SELECTOR);
-      const initialAssistantMessages = await this.assistantMessageSnapshot(page);
+      const initialAssistantMessages = turn.conversationRoute
+        ? await this.runStage(
+          turn.traceId,
+          "assistant_history_stability",
+          15_000,
+          signal => this.waitForStableAssistantMessageSnapshot(page, turn.conversationRoute!, signal),
+        )
+        : await this.assistantMessageSnapshot(page);
       if (turn.conversationRoute) await this.assertConversationComposerEmpty(page, turn.conversationRoute);
       await this.runStage(turn.traceId, "prompt_attachment", browserStageTimeouts.promptAttachment, () => (
         this.attachPrompt(page, prepared.text, mode.localTools)

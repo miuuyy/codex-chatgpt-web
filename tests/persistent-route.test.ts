@@ -198,6 +198,44 @@ test("persistent routes reject a pre-existing composer draft instead of clearing
   }, {}, route)).resolves.toBeUndefined();
 });
 
+test("persistent routes wait for stable assistant identities before mutating the composer", async () => {
+  const waitForStableAssistantMessageSnapshot = (ChatGptBrowserWorker.prototype as unknown as {
+    waitForStableAssistantMessageSnapshot(
+      page: unknown,
+      route: ChatGptConversationRoute,
+      signal: AbortSignal,
+      intervalMs?: number,
+      requiredStableTransitions?: number,
+    ): Promise<ChatGptAssistantMessageSnapshot>;
+  }).waitForStableAssistantMessageSnapshot;
+  const snapshots: ChatGptAssistantMessageSnapshot[] = [
+    { identities: ["conversation-turn-a"] },
+    { identities: ["conversation-turn-a", "conversation-turn-b"] },
+    { identities: ["conversation-turn-a", "conversation-turn-b"] },
+    { identities: ["conversation-turn-a", "conversation-turn-b"] },
+  ];
+  let routeChecks = 0;
+  const stable = await waitForStableAssistantMessageSnapshot.call({
+    assistantMessageSnapshot: async () => snapshots.shift() ?? {
+      identities: ["conversation-turn-a", "conversation-turn-b"],
+    },
+    assertConversationRoutePage: async () => { routeChecks += 1; },
+  }, {}, route, new AbortController().signal, 0, 2);
+
+  expect(stable).toEqual({ identities: ["conversation-turn-a", "conversation-turn-b"] });
+  expect(routeChecks).toBe(3);
+
+  const workerSource = await Bun.file(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url)).text();
+  const stability = workerSource.indexOf('"assistant_history_stability"');
+  const emptyComposer = workerSource.indexOf("assertConversationComposerEmpty(page", stability);
+  const promptMutation = workerSource.indexOf('"prompt_attachment"', emptyComposer);
+  const postMutationDriftCheck = workerSource.indexOf("sameChatGptAssistantMessageSnapshot(", promptMutation);
+  expect(stability).toBeGreaterThan(-1);
+  expect(emptyComposer).toBeGreaterThan(stability);
+  expect(promptMutation).toBeGreaterThan(emptyComposer);
+  expect(postMutationDriftCheck).toBeGreaterThan(promptMutation);
+});
+
 test("same-route requests are FIFO and cannot overlap or consume each other's result", async () => {
   const queue = new ChatGptRouteQueue();
   let active = 0;
