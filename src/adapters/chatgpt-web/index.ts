@@ -4,7 +4,7 @@ import { defaultBrokerEndpoint, expandUserPath, resolveBrokerEndpoint } from "..
 import { namespacedToolName, type AdapterEvent, type CodexContentPart, type CodexParsedRequest, type CodexProviderConfig, type CodexToolResultMessage, type CodexUsage } from "../../types";
 import type { ProviderAdapter } from "../base";
 import { parseDataUrl } from "../image";
-import { ChatGptBrowserWorker, DEFAULT_CHATGPT_TURN_TIMEOUT_MS } from "./browser-worker";
+import { ChatGptBrowserWorker } from "./browser-worker";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "./environment";
 import { resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import { chatGptReadOnlyContextWarning, compileChatGptConversationDeltaPrompt, compileChatGptWebPrompt } from "./prompt";
@@ -155,7 +155,7 @@ function validateBatchTools(parsed: CodexParsedRequest, requests: BrokerToolRequ
 export function createChatGptWebAdapter(provider: CodexProviderConfig): ProviderAdapter {
   const worker = ChatGptBrowserWorker.forProvider(provider);
   const broker = TurnBroker.forSocket(brokerSocketPath(provider));
-  const timeoutMs = provider.chatgptWeb?.turnTimeoutMs ?? DEFAULT_CHATGPT_TURN_TIMEOUT_MS;
+  const timeoutMs = provider.chatgptWeb?.turnTimeoutMs;
   const capabilities: ChatGptWebCapabilities = {
     localToolsEnabled: provider.chatgptWeb?.localToolsEnabled === true,
     proAvailable: provider.chatgptWeb?.proAvailable === true,
@@ -215,7 +215,11 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
       reasoning: parsed.options.reasoning,
       capabilities,
       prepare: async () => {
-        const turnToken = await broker.register(environment, timeoutMs + 60_000, traceId);
+        const turnToken = await broker.register(
+          environment,
+          timeoutMs === undefined ? undefined : timeoutMs + 60_000,
+          traceId,
+        );
         activeToken = turnToken;
         tokenSettled = true;
         token.resolve(turnToken);

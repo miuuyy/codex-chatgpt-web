@@ -6,6 +6,14 @@ import type { AppConfig } from "./config";
 import { atomicWriteFile, expandUserPath, getConfigDir } from "./config";
 
 const MANAGED_COMMENT = "# Managed by codex-chatgpt-web; `codex-chatgpt-web uninstall` restores prior values.";
+const MANAGED_REMOTE_COMPACTION_LINE =
+  "remote_compaction_v2 = false # Managed by codex-chatgpt-web: bounds retained Web image history.";
+const MANAGED_MULTI_AGENT_LINE =
+  "multi_agent = true # Managed by codex-chatgpt-web: enables routed Web subagents.";
+const MANAGED_MULTI_AGENT_V2_LINE =
+  "multi_agent_v2 = false # Managed by codex-chatgpt-web: keeps routed Web subagent payloads readable.";
+const MANAGED_MULTI_AGENT_V2_TABLE_LINE =
+  "enabled = false # Managed by codex-chatgpt-web: keeps routed Web subagent payloads readable.";
 
 interface PreviousAssignment {
   present: boolean;
@@ -16,7 +24,50 @@ interface PreviousAssignment {
 
 type ManagedAssignmentKey = "openai_base_url" | "model_provider" | "model_catalog_json";
 
+interface PreviousFeatureAssignment extends PreviousAssignment {
+  tablePresent: boolean;
+  tableName?: "features" | "features.multi_agent_v2";
+}
+
 export interface CodexIntegrationJournal {
+  version: 6;
+  active: boolean;
+  configPath: string;
+  installed: {
+    openai_base_url: string;
+    remote_compaction_v2: false;
+    multi_agent: true;
+    multi_agent_v2: false;
+  };
+  previous: Record<ManagedAssignmentKey, PreviousAssignment>;
+  previousRemoteCompactionV2: PreviousFeatureAssignment;
+  previousMultiAgent: PreviousFeatureAssignment;
+  previousMultiAgentV2: PreviousFeatureAssignment;
+  format?: {
+    lineEnding: "\n" | "\r\n";
+    trailingNewline: boolean;
+  };
+}
+
+interface LegacyCodexIntegrationJournalV5 {
+  version: 5;
+  active: boolean;
+  configPath: string;
+  installed: {
+    openai_base_url: string;
+    remote_compaction_v2: false;
+    multi_agent: true;
+  };
+  previous: Record<ManagedAssignmentKey, PreviousAssignment>;
+  previousRemoteCompactionV2: PreviousFeatureAssignment;
+  previousMultiAgent: PreviousFeatureAssignment;
+  format?: {
+    lineEnding: "\n" | "\r\n";
+    trailingNewline: boolean;
+  };
+}
+
+interface LegacyCodexIntegrationJournalV4 {
   version: 4;
   active: boolean;
   configPath: string;
@@ -59,7 +110,11 @@ interface LegacyCodexIntegrationJournal {
   };
 }
 
-type ManagedRouteJournal = CodexIntegrationJournal | LegacyCodexIntegrationJournalV3;
+type ManagedRouteJournal =
+  | CodexIntegrationJournal
+  | LegacyCodexIntegrationJournalV5
+  | LegacyCodexIntegrationJournalV4
+  | LegacyCodexIntegrationJournalV3;
 type AnyCodexIntegrationJournal = ManagedRouteJournal | LegacyCodexIntegrationJournal;
 
 interface FileSnapshot {
@@ -327,6 +382,311 @@ function removeManagedComment(document: CodexConfigDocument): void {
   }
 }
 
+interface TomlTableRange {
+  headerIndex: number;
+  endIndex: number;
+}
+
+function findTomlTable(lines: string[], tableName: string): TomlTableRange | undefined {
+  const escaped = tableName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const header = new RegExp(`^\\s*\\[${escaped}\\]\\s*(?:#.*)?$`);
+  const matches = lines
+    .map((line, index) => header.test(line) ? index : -1)
+    .filter(index => index >= 0);
+  if (matches.length > 1) throw new Error(`Codex config contains duplicate [${tableName}] tables`);
+  const headerIndex = matches[0];
+  if (headerIndex === undefined) return undefined;
+  const relativeEnd = lines
+    .slice(headerIndex + 1)
+    .findIndex(line => /^\s*\[\[?[^\]]+\]\]?\s*(?:#.*)?$/.test(line));
+  return {
+    headerIndex,
+    endIndex: relativeEnd < 0 ? lines.length : headerIndex + 1 + relativeEnd,
+  };
+}
+
+function findBooleanAssignmentInTable(
+  lines: string[],
+  tableName: "features" | "features.multi_agent_v2",
+  key: string,
+): PreviousFeatureAssignment {
+  const table = findTomlTable(lines, tableName);
+  if (!table) return { present: false, tablePresent: false, tableName };
+  const regex = assignmentRegex(key);
+  const matches: PreviousAssignment[] = [];
+  for (let index = table.headerIndex + 1; index < table.endIndex; index += 1) {
+    const line = lines[index]!;
+    if (/^\s*#/.test(line)) continue;
+    const match = regex.exec(line);
+    if (!match) continue;
+    const value = stripTomlComment(match[1]!).trim();
+    if (value !== "true" && value !== "false") {
+      throw new Error(`${key} in Codex [${tableName}] must be a boolean`);
+    }
+    matches.push({ present: true, rawLine: line, value, index });
+  }
+  if (matches.length > 1) {
+    throw new Error(`Codex config contains duplicate [${tableName}].${key} assignments`);
+  }
+  return { ...(matches[0] ?? { present: false }), tablePresent: true, tableName };
+}
+
+function findFeatureAssignment(lines: string[], key: string): PreviousFeatureAssignment {
+  return findBooleanAssignmentInTable(lines, "features", key);
+}
+
+function findMultiAgentV2Assignment(lines: string[]): PreviousFeatureAssignment {
+  const scalar = findFeatureAssignment(lines, "multi_agent_v2");
+  const table = findTomlTable(lines, "features.multi_agent_v2");
+  if (scalar.present && table) {
+    throw new Error(
+      "Codex config defines multi_agent_v2 as both [features] scalar and [features.multi_agent_v2] table",
+    );
+  }
+  return table
+    ? findBooleanAssignmentInTable(lines, "features.multi_agent_v2", "enabled")
+    : scalar;
+}
+
+function installBooleanFeature(
+  text: string,
+  key: string,
+  managedLine: string,
+): {
+  text: string;
+  previous: PreviousFeatureAssignment;
+} {
+  const document = parseDocument(text);
+  const previous = findFeatureAssignment(document.lines, key);
+  let table = findTomlTable(document.lines, "features");
+  if (!table) {
+    insertDocumentLine(document, document.lines.length, "[features]");
+    table = findTomlTable(document.lines, "features")!;
+  }
+  const current = findFeatureAssignment(document.lines, key);
+  if (current.index !== undefined) {
+    document.lines[current.index] = managedLine;
+  } else {
+    insertDocumentLine(document, table.endIndex, managedLine);
+  }
+  return { text: renderDocument(document), previous };
+}
+
+function installMultiAgentV2Feature(text: string): {
+  text: string;
+  previous: PreviousFeatureAssignment;
+} {
+  const document = parseDocument(text);
+  const previous = findMultiAgentV2Assignment(document.lines);
+  if (previous.tableName !== "features.multi_agent_v2") {
+    return installBooleanFeature(text, "multi_agent_v2", MANAGED_MULTI_AGENT_V2_LINE);
+  }
+  const table = findTomlTable(document.lines, "features.multi_agent_v2");
+  if (!table) throw new Error("Codex [features.multi_agent_v2] table disappeared during setup");
+  const current = findBooleanAssignmentInTable(
+    document.lines,
+    "features.multi_agent_v2",
+    "enabled",
+  );
+  if (current.index !== undefined) {
+    document.lines[current.index] = MANAGED_MULTI_AGENT_V2_TABLE_LINE;
+  } else {
+    insertDocumentLine(document, table.endIndex, MANAGED_MULTI_AGENT_V2_TABLE_LINE);
+  }
+  return { text: renderDocument(document), previous };
+}
+
+function verifyInstalledBooleanFeature(
+  text: string,
+  key: string,
+  expectedValue: "true" | "false",
+  managedLine: string,
+): void {
+  const current = findFeatureAssignment(splitLines(text), key);
+  if (current.value !== expectedValue || current.rawLine !== managedLine) {
+    throw new Error(
+      `Codex [features].${key} changed after setup; refusing to overwrite the user's newer value`,
+    );
+  }
+}
+
+function verifyInstalledMultiAgentV2Feature(
+  text: string,
+  previous: PreviousFeatureAssignment,
+): void {
+  if (previous.tableName !== "features.multi_agent_v2") {
+    const current = findMultiAgentV2Assignment(splitLines(text));
+    if (current.tableName !== "features"
+      || current.value !== "false"
+      || current.rawLine !== MANAGED_MULTI_AGENT_V2_LINE) {
+      throw new Error(
+        "Codex [features].multi_agent_v2 changed after setup; refusing to overwrite the user's newer value",
+      );
+    }
+    return;
+  }
+  const lines = splitLines(text);
+  if (findFeatureAssignment(lines, "multi_agent_v2").present) {
+    throw new Error(
+      "Codex [features].multi_agent_v2 changed after setup; refusing to overwrite the user's newer value",
+    );
+  }
+  const current = findBooleanAssignmentInTable(lines, "features.multi_agent_v2", "enabled");
+  if (current.value !== "false" || current.rawLine !== MANAGED_MULTI_AGENT_V2_TABLE_LINE) {
+    throw new Error(
+      "Codex [features.multi_agent_v2].enabled changed after setup; refusing to overwrite the user's newer value",
+    );
+  }
+}
+
+function restoreBooleanFeature(
+  text: string,
+  key: string,
+  expectedValue: "true" | "false",
+  managedLine: string,
+  previous: PreviousFeatureAssignment,
+): string {
+  verifyInstalledBooleanFeature(text, key, expectedValue, managedLine);
+  const document = parseDocument(text);
+  const current = findFeatureAssignment(document.lines, key);
+  if (current.index === undefined) throw new Error(`Managed Codex ${key} is missing`);
+  if (previous.present) {
+    if (!previous.rawLine) {
+      throw new Error(`Codex integration journal is missing the prior ${key} line`);
+    }
+    document.lines[current.index] = previous.rawLine;
+  } else {
+    removeDocumentLine(document, current.index);
+    if (!previous.tablePresent) {
+      const table = findTomlTable(document.lines, "features");
+      if (!table) throw new Error("Managed Codex [features] table is missing");
+      const remaining = document.lines
+        .slice(table.headerIndex + 1, table.endIndex)
+        .filter(line => line.trim().length > 0);
+      if (remaining.length === 0) removeDocumentLine(document, table.headerIndex);
+    }
+  }
+  return renderDocument(document);
+}
+
+function restoreMultiAgentV2Feature(
+  text: string,
+  previous: PreviousFeatureAssignment,
+): string {
+  if (previous.tableName !== "features.multi_agent_v2") {
+    return restoreBooleanFeature(
+      text,
+      "multi_agent_v2",
+      "false",
+      MANAGED_MULTI_AGENT_V2_LINE,
+      previous,
+    );
+  }
+  verifyInstalledMultiAgentV2Feature(text, previous);
+  const document = parseDocument(text);
+  const current = findBooleanAssignmentInTable(
+    document.lines,
+    "features.multi_agent_v2",
+    "enabled",
+  );
+  if (current.index === undefined) throw new Error("Managed Codex multi_agent_v2.enabled is missing");
+  if (previous.present) {
+    if (!previous.rawLine) {
+      throw new Error("Codex integration journal is missing the prior multi_agent_v2.enabled line");
+    }
+    document.lines[current.index] = previous.rawLine;
+  } else {
+    removeDocumentLine(document, current.index);
+  }
+  return renderDocument(document);
+}
+
+function installManagedFeatures(text: string): {
+  text: string;
+  previousRemoteCompactionV2: PreviousFeatureAssignment;
+  previousMultiAgent: PreviousFeatureAssignment;
+  previousMultiAgentV2: PreviousFeatureAssignment;
+} {
+  const compaction = installBooleanFeature(
+    text,
+    "remote_compaction_v2",
+    MANAGED_REMOTE_COMPACTION_LINE,
+  );
+  const multiAgent = installBooleanFeature(
+    compaction.text,
+    "multi_agent",
+    MANAGED_MULTI_AGENT_LINE,
+  );
+  const multiAgentV2 = installMultiAgentV2Feature(multiAgent.text);
+  return {
+    text: multiAgentV2.text,
+    previousRemoteCompactionV2: compaction.previous,
+    previousMultiAgent: multiAgent.previous,
+    previousMultiAgentV2: multiAgentV2.previous,
+  };
+}
+
+function verifyInstalledFeatures(
+  text: string,
+  journal: CodexIntegrationJournal | LegacyCodexIntegrationJournalV5,
+): void {
+  verifyInstalledBooleanFeature(
+    text,
+    "remote_compaction_v2",
+    "false",
+    MANAGED_REMOTE_COMPACTION_LINE,
+  );
+  verifyInstalledBooleanFeature(text, "multi_agent", "true", MANAGED_MULTI_AGENT_LINE);
+  if (journal.version === 6) {
+    verifyInstalledMultiAgentV2Feature(text, journal.previousMultiAgentV2);
+  }
+}
+
+function restoreManagedFeatures(
+  text: string,
+  journal: CodexIntegrationJournal | LegacyCodexIntegrationJournalV5,
+): string {
+  const withoutMultiAgentV2 = journal.version === 6
+    ? restoreMultiAgentV2Feature(text, journal.previousMultiAgentV2)
+    : text;
+  const withoutMultiAgent = restoreBooleanFeature(
+    withoutMultiAgentV2,
+    "multi_agent",
+    "true",
+    MANAGED_MULTI_AGENT_LINE,
+    journal.previousMultiAgent,
+  );
+  return restoreBooleanFeature(
+    withoutMultiAgent,
+    "remote_compaction_v2",
+    "false",
+    MANAGED_REMOTE_COMPACTION_LINE,
+    journal.previousRemoteCompactionV2,
+  );
+}
+
+function installIntegrationConfig(
+  text: string,
+  installedUrl: string,
+  replaceExistingRoute: boolean,
+): {
+  text: string;
+  previous: CodexIntegrationJournal["previous"];
+  previousRemoteCompactionV2: PreviousFeatureAssignment;
+  previousMultiAgent: PreviousFeatureAssignment;
+  previousMultiAgentV2: PreviousFeatureAssignment;
+} {
+  const route = installRoute(text, installedUrl, replaceExistingRoute);
+  const features = installManagedFeatures(route.text);
+  return {
+    text: features.text,
+    previous: route.previous,
+    previousRemoteCompactionV2: features.previousRemoteCompactionV2,
+    previousMultiAgent: features.previousMultiAgent,
+    previousMultiAgentV2: features.previousMultiAgentV2,
+  };
+}
+
 function installRoute(
   text: string,
   installedUrl: string,
@@ -372,6 +732,7 @@ function verifyInstalledRoute(text: string, journal: ManagedRouteJournal): void 
   if (!lines.includes(MANAGED_COMMENT)) {
     throw new Error("Managed Codex route marker changed after setup; refusing to overwrite it");
   }
+  if (journal.version === 5 || journal.version === 6) verifyInstalledFeatures(text, journal);
 }
 
 function previousAssignmentMatches(current: PreviousAssignment, previous: PreviousAssignment): boolean {
@@ -379,7 +740,10 @@ function previousAssignmentMatches(current: PreviousAssignment, previous: Previo
     && (!current.present || current.value === previous.value);
 }
 
-function verifyRestoredRoute(text: string, journal: CodexIntegrationJournal): void {
+function verifyRestoredRoute(
+  text: string,
+  journal: CodexIntegrationJournal | LegacyCodexIntegrationJournalV5 | LegacyCodexIntegrationJournalV4,
+): void {
   const lines = splitLines(text);
   const current = assignments(lines);
   for (const key of ["openai_base_url", "model_provider", "model_catalog_json"] as const) {
@@ -389,6 +753,28 @@ function verifyRestoredRoute(text: string, journal: CodexIntegrationJournal): vo
   }
   if (lines.includes(MANAGED_COMMENT)) {
     throw new Error("Managed Codex route marker is present while the bridge is disconnected");
+  }
+  if (journal.version === 5 || journal.version === 6) {
+    const previousFeatures: Array<readonly [string, PreviousFeatureAssignment]> = [
+      ["remote_compaction_v2", journal.previousRemoteCompactionV2],
+      ["multi_agent", journal.previousMultiAgent],
+    ];
+    if (journal.version === 6) {
+      previousFeatures.push(["multi_agent_v2", journal.previousMultiAgentV2]);
+    }
+    for (const [key, previous] of previousFeatures) {
+      const current = key === "multi_agent_v2"
+        ? findMultiAgentV2Assignment(lines)
+        : findFeatureAssignment(lines, key);
+      const matches = current.present === previous.present
+        && (current.tableName ?? "features") === (previous.tableName ?? "features")
+        && (!current.present || current.rawLine === previous.rawLine);
+      if (!matches) {
+        throw new Error(
+          `Codex [features].${key} changed while the bridge was disconnected; refusing to overwrite the user's newer value`,
+        );
+      }
+    }
   }
 }
 
@@ -401,6 +787,30 @@ function assertPreservedPreviousAssignments(
       throw new Error(`Codex ${key} changed while the bridge was disconnected; refusing to replace it`);
     }
   }
+}
+
+function assertPreservedPreviousFeature(
+  actual: PreviousFeatureAssignment,
+  expected: PreviousFeatureAssignment,
+  key: string,
+): void {
+  const matches = actual.present === expected.present
+    && (actual.tableName ?? "features") === (expected.tableName ?? "features")
+    && (!actual.present || actual.rawLine === expected.rawLine);
+  if (!matches) {
+    throw new Error(
+      `Codex [features].${key} changed while the bridge was disconnected; refusing to replace it`,
+    );
+  }
+}
+
+function updateManagedRouteUrl(text: string, journal: ManagedRouteJournal, installedUrl: string): string {
+  verifyInstalledRoute(text, journal);
+  const document = parseDocument(text);
+  const current = findTopLevelAssignment(document.lines, "openai_base_url");
+  if (current.index === undefined) throw new Error("Managed Codex openai_base_url is missing");
+  document.lines[current.index] = `openai_base_url = ${JSON.stringify(installedUrl)}`;
+  return renderDocument(document);
 }
 
 function restoreManagedRoute(text: string, journal: ManagedRouteJournal): string {
@@ -425,7 +835,10 @@ function restoreManagedRoute(text: string, journal: ManagedRouteJournal): string
     const index = Math.min(item.previous.index ?? firstTableIndex(document.lines), firstTableIndex(document.lines));
     insertDocumentLine(document, index, item.previous.rawLine);
   }
-  return renderDocument(document);
+  const restoredRoute = renderDocument(document);
+  return journal.version === 5 || journal.version === 6
+    ? restoreManagedFeatures(restoredRoute, journal)
+    : restoredRoute;
 }
 
 function restoreLegacyV2(text: string, journal: LegacyCodexIntegrationJournal): string {
@@ -459,12 +872,31 @@ function readJournal(): AnyCodexIntegrationJournal | undefined {
   const path = getCodexJournalPath();
   if (!existsSync(path)) return undefined;
   const value = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+  if (value.version === 6
+    && typeof value.active === "boolean"
+    && value.installed
+    && value.previous
+    && value.previousRemoteCompactionV2
+    && value.previousMultiAgent
+    && value.previousMultiAgentV2
+    && typeof value.configPath === "string") {
+    return value as unknown as CodexIntegrationJournal;
+  }
+  if (value.version === 5
+    && typeof value.active === "boolean"
+    && value.installed
+    && value.previous
+    && value.previousRemoteCompactionV2
+    && value.previousMultiAgent
+    && typeof value.configPath === "string") {
+    return value as unknown as LegacyCodexIntegrationJournalV5;
+  }
   if (value.version === 4
     && typeof value.active === "boolean"
     && value.installed
     && value.previous
     && typeof value.configPath === "string") {
-    return value as unknown as CodexIntegrationJournal;
+    return value as unknown as LegacyCodexIntegrationJournalV4;
   }
   if (value.version === 3 && value.installed && value.previous && typeof value.configPath === "string") {
     return value as unknown as LegacyCodexIntegrationJournalV3;
@@ -499,8 +931,10 @@ export function preflightCodexIntegration(
   const existing = readJournal();
   const installedUrl = routeUrl(config);
   if (existing) assertJournalTargetsConfig(existing, configPath);
-  if (existing?.version === 3 || existing?.version === 4) {
-    if (existing.version === 4 && !existing.active) verifyRestoredRoute(currentText, existing);
+  if (existing?.version === 3 || existing?.version === 4 || existing?.version === 5 || existing?.version === 6) {
+    if ((existing.version === 4 || existing.version === 5 || existing.version === 6) && !existing.active) {
+      verifyRestoredRoute(currentText, existing);
+    }
     else verifyInstalledRoute(currentText, existing);
     return;
   }
@@ -511,7 +945,7 @@ export function preflightCodexIntegration(
     }
     baseline = restoreLegacyV2(currentText, existing);
   }
-  installRoute(baseline, installedUrl, options.replaceExistingRoute === true);
+  installIntegrationConfig(baseline, installedUrl, options.replaceExistingRoute === true);
 }
 
 export function installCodexIntegration(
@@ -525,28 +959,140 @@ export function installCodexIntegration(
   const installedUrl = routeUrl(config);
   if (existing) assertJournalTargetsConfig(existing, configPath);
 
-  if (existing?.version === 3 || existing?.version === 4) {
+  if (existing?.version === 6) {
     let installedText: string;
+    let previousRemoteCompactionV2 = existing.previousRemoteCompactionV2;
+    let previousMultiAgent = existing.previousMultiAgent;
+    let previousMultiAgentV2 = existing.previousMultiAgentV2;
+    if (!existing.active) {
+      verifyRestoredRoute(currentText, existing);
+      const patched = installIntegrationConfig(currentText, installedUrl, true);
+      assertPreservedPreviousAssignments(patched.previous, existing.previous);
+      assertPreservedPreviousFeature(
+        patched.previousRemoteCompactionV2,
+        existing.previousRemoteCompactionV2,
+        "remote_compaction_v2",
+      );
+      assertPreservedPreviousFeature(
+        patched.previousMultiAgent,
+        existing.previousMultiAgent,
+        "multi_agent",
+      );
+      assertPreservedPreviousFeature(
+        patched.previousMultiAgentV2,
+        existing.previousMultiAgentV2,
+        "multi_agent_v2",
+      );
+      installedText = patched.text;
+      // Preserve unrelated [features] edits made while disconnected by remembering whether the
+      // table itself now belongs to the user's baseline.
+      previousRemoteCompactionV2 = patched.previousRemoteCompactionV2;
+      previousMultiAgent = patched.previousMultiAgent;
+      previousMultiAgentV2 = patched.previousMultiAgentV2;
+    } else {
+      installedText = updateManagedRouteUrl(currentText, existing, installedUrl);
+    }
+    const updated: CodexIntegrationJournal = {
+      ...existing,
+      active: true,
+      installed: {
+        openai_base_url: installedUrl,
+        remote_compaction_v2: false,
+        multi_agent: true,
+        multi_agent_v2: false,
+      },
+      previousRemoteCompactionV2,
+      previousMultiAgent,
+      previousMultiAgentV2,
+    };
+    writeFilesWithCompensation([
+      { path: configPath, data: installedText },
+      { path: getCodexJournalPath(), data: `${JSON.stringify(updated, null, 2)}\n` },
+    ], [getCodexModelsCachePath()]);
+    return updated;
+  }
+
+  if (existing?.version === 5) {
+    let installedText: string;
+    let previousRemoteCompactionV2 = existing.previousRemoteCompactionV2;
+    let previousMultiAgent = existing.previousMultiAgent;
+    let previousMultiAgentV2: PreviousFeatureAssignment;
+    if (!existing.active) {
+      verifyRestoredRoute(currentText, existing);
+      const patched = installIntegrationConfig(currentText, installedUrl, true);
+      assertPreservedPreviousAssignments(patched.previous, existing.previous);
+      assertPreservedPreviousFeature(
+        patched.previousRemoteCompactionV2,
+        existing.previousRemoteCompactionV2,
+        "remote_compaction_v2",
+      );
+      assertPreservedPreviousFeature(
+        patched.previousMultiAgent,
+        existing.previousMultiAgent,
+        "multi_agent",
+      );
+      installedText = patched.text;
+      previousRemoteCompactionV2 = patched.previousRemoteCompactionV2;
+      previousMultiAgent = patched.previousMultiAgent;
+      previousMultiAgentV2 = patched.previousMultiAgentV2;
+    } else {
+      const routedText = updateManagedRouteUrl(currentText, existing, installedUrl);
+      const multiAgentV2 = installMultiAgentV2Feature(routedText);
+      installedText = multiAgentV2.text;
+      previousMultiAgentV2 = multiAgentV2.previous;
+    }
+    const updated: CodexIntegrationJournal = {
+      version: 6,
+      active: true,
+      configPath: existing.configPath,
+      installed: {
+        openai_base_url: installedUrl,
+        remote_compaction_v2: false,
+        multi_agent: true,
+        multi_agent_v2: false,
+      },
+      previous: existing.previous,
+      previousRemoteCompactionV2,
+      previousMultiAgent,
+      previousMultiAgentV2,
+      ...(existing.format ? { format: existing.format } : {}),
+    };
+    writeFilesWithCompensation([
+      { path: configPath, data: installedText },
+      { path: getCodexJournalPath(), data: `${JSON.stringify(updated, null, 2)}\n` },
+    ], [getCodexModelsCachePath()]);
+    return updated;
+  }
+
+  if (existing?.version === 3 || existing?.version === 4) {
+    let routedText: string;
     if (existing.version === 4 && !existing.active) {
       verifyRestoredRoute(currentText, existing);
       const patched = installRoute(currentText, installedUrl, true);
       assertPreservedPreviousAssignments(patched.previous, existing.previous);
-      installedText = patched.text;
+      routedText = patched.text;
     } else {
-      verifyInstalledRoute(currentText, existing);
-      const document = parseDocument(currentText);
-      const current = findTopLevelAssignment(document.lines, "openai_base_url");
-      document.lines[current.index!] = `openai_base_url = ${JSON.stringify(installedUrl)}`;
-      installedText = renderDocument(document);
+      routedText = updateManagedRouteUrl(currentText, existing, installedUrl);
     }
+    const features = installManagedFeatures(routedText);
     const updated: CodexIntegrationJournal = {
-      ...existing,
-      version: 4,
+      version: 6,
       active: true,
-      installed: { openai_base_url: installedUrl },
+      configPath: existing.configPath,
+      installed: {
+        openai_base_url: installedUrl,
+        remote_compaction_v2: false,
+        multi_agent: true,
+        multi_agent_v2: false,
+      },
+      previous: existing.previous,
+      previousRemoteCompactionV2: features.previousRemoteCompactionV2,
+      previousMultiAgent: features.previousMultiAgent,
+      previousMultiAgentV2: features.previousMultiAgentV2,
+      ...(existing.format ? { format: existing.format } : {}),
     };
     writeFilesWithCompensation([
-      { path: configPath, data: installedText },
+      { path: configPath, data: features.text },
       { path: getCodexJournalPath(), data: `${JSON.stringify(updated, null, 2)}\n` },
     ], [getCodexModelsCachePath()]);
     return updated;
@@ -559,13 +1105,21 @@ export function installCodexIntegration(
     }
     baseline = restoreLegacyV2(currentText, existing);
   }
-  const patched = installRoute(baseline, installedUrl, options.replaceExistingRoute === true);
+  const patched = installIntegrationConfig(baseline, installedUrl, options.replaceExistingRoute === true);
   const journal: CodexIntegrationJournal = {
-    version: 4,
+    version: 6,
     active: true,
     configPath,
-    installed: { openai_base_url: installedUrl },
+    installed: {
+      openai_base_url: installedUrl,
+      remote_compaction_v2: false,
+      multi_agent: true,
+      multi_agent_v2: false,
+    },
     previous: patched.previous,
+    previousRemoteCompactionV2: patched.previousRemoteCompactionV2,
+    previousMultiAgent: patched.previousMultiAgent,
+    previousMultiAgentV2: patched.previousMultiAgentV2,
     format: textFormat(baseline),
   };
   writeFilesWithCompensation([
@@ -585,16 +1139,17 @@ export function deactivateCodexIntegration(): SetCodexIntegrationActiveResult {
   assertJournalTargetsConfig(existing, getCodexConfigPath());
   if (!existsSync(existing.configPath)) throw new Error(`Codex config is missing: ${existing.configPath}`);
   const current = readFileSync(existing.configPath, "utf8");
-  if (existing.version === 4 && !existing.active) {
+  if ((existing.version === 4 || existing.version === 5 || existing.version === 6) && !existing.active) {
     verifyRestoredRoute(current, existing);
     return { changed: false, active: false };
   }
   const restored = restoreManagedRoute(current, existing);
-  const disconnected: CodexIntegrationJournal = {
-    ...existing,
-    version: 4,
-    active: false,
-  };
+  const disconnected:
+    | CodexIntegrationJournal
+    | LegacyCodexIntegrationJournalV5
+    | LegacyCodexIntegrationJournalV4 = existing.version === 6 || existing.version === 5
+      ? { ...existing, active: false }
+      : { ...existing, version: 4, active: false };
   writeFilesWithCompensation([
     { path: existing.configPath, data: restored },
     { path: getCodexJournalPath(), data: `${JSON.stringify(disconnected, null, 2)}\n` },
@@ -611,16 +1166,83 @@ export function activateCodexIntegration(): SetCodexIntegrationActiveResult {
   assertJournalTargetsConfig(existing, getCodexConfigPath());
   if (!existsSync(existing.configPath)) throw new Error(`Codex config is missing: ${existing.configPath}`);
   const current = readFileSync(existing.configPath, "utf8");
-  if (existing.version === 3 || existing.active) {
+  if (existing.version === 6 && existing.active) {
     verifyInstalledRoute(current, existing);
     return { changed: false, active: true };
   }
-  verifyRestoredRoute(current, existing);
-  const patched = installRoute(current, existing.installed.openai_base_url, true);
-  assertPreservedPreviousAssignments(patched.previous, existing.previous);
-  const connected: CodexIntegrationJournal = { ...existing, active: true };
+  if (existing.version === 5 && existing.active) {
+    verifyInstalledRoute(current, existing);
+    const multiAgentV2 = installMultiAgentV2Feature(current);
+    const connected: CodexIntegrationJournal = {
+      version: 6,
+      active: true,
+      configPath: existing.configPath,
+      installed: {
+        openai_base_url: existing.installed.openai_base_url,
+        remote_compaction_v2: false,
+        multi_agent: true,
+        multi_agent_v2: false,
+      },
+      previous: existing.previous,
+      previousRemoteCompactionV2: existing.previousRemoteCompactionV2,
+      previousMultiAgent: existing.previousMultiAgent,
+      previousMultiAgentV2: multiAgentV2.previous,
+      ...(existing.format ? { format: existing.format } : {}),
+    };
+    writeFilesWithCompensation([
+      { path: existing.configPath, data: multiAgentV2.text },
+      { path: getCodexJournalPath(), data: `${JSON.stringify(connected, null, 2)}\n` },
+    ], [getCodexModelsCachePath()]);
+    return { changed: true, active: true };
+  }
+  let routedText: string;
+  if ((existing.version === 4 || existing.version === 5 || existing.version === 6) && !existing.active) {
+    verifyRestoredRoute(current, existing);
+    const patched = installRoute(current, existing.installed.openai_base_url, true);
+    assertPreservedPreviousAssignments(patched.previous, existing.previous);
+    routedText = patched.text;
+  } else {
+    verifyInstalledRoute(current, existing);
+    routedText = current;
+  }
+  const features = installManagedFeatures(routedText);
+  if (existing.version === 5 || existing.version === 6) {
+    assertPreservedPreviousFeature(
+      features.previousRemoteCompactionV2,
+      existing.previousRemoteCompactionV2,
+      "remote_compaction_v2",
+    );
+    assertPreservedPreviousFeature(
+      features.previousMultiAgent,
+      existing.previousMultiAgent,
+      "multi_agent",
+    );
+    if (existing.version === 6) {
+      assertPreservedPreviousFeature(
+        features.previousMultiAgentV2,
+        existing.previousMultiAgentV2,
+        "multi_agent_v2",
+      );
+    }
+  }
+  const connected: CodexIntegrationJournal = {
+    version: 6,
+    active: true,
+    configPath: existing.configPath,
+    installed: {
+      openai_base_url: existing.installed.openai_base_url,
+      remote_compaction_v2: false,
+      multi_agent: true,
+      multi_agent_v2: false,
+    },
+    previous: existing.previous,
+    previousRemoteCompactionV2: features.previousRemoteCompactionV2,
+    previousMultiAgent: features.previousMultiAgent,
+    previousMultiAgentV2: features.previousMultiAgentV2,
+    ...(existing.format ? { format: existing.format } : {}),
+  };
   writeFilesWithCompensation([
-    { path: existing.configPath, data: patched.text },
+    { path: existing.configPath, data: features.text },
     { path: getCodexJournalPath(), data: `${JSON.stringify(connected, null, 2)}\n` },
   ], [getCodexModelsCachePath()]);
   return { changed: true, active: true };
@@ -637,7 +1259,7 @@ export function uninstallCodexIntegration(): UninstallCodexIntegrationResult {
       throw new Error(`Managed legacy catalog changed after setup: ${journal.catalogPath}`);
     }
     restored = restoreLegacyV2(current, journal);
-  } else if (journal.version === 4 && !journal.active) {
+  } else if ((journal.version === 4 || journal.version === 5 || journal.version === 6) && !journal.active) {
     verifyRestoredRoute(current, journal);
     restored = current;
   } else {
@@ -683,8 +1305,12 @@ export function inspectCodexIntegration(): {
     try {
       assertJournalTargetsConfig(journal, getCodexConfigPath());
       const text = readFileSync(journal.configPath, "utf8");
-      if (journal.version === 4 && !journal.active) verifyRestoredRoute(text, journal);
-      else if (journal.version === 3 || journal.version === 4) verifyInstalledRoute(text, journal);
+      if ((journal.version === 4 || journal.version === 5 || journal.version === 6) && !journal.active) {
+        verifyRestoredRoute(text, journal);
+      }
+      else if (journal.version === 3 || journal.version === 4 || journal.version === 5 || journal.version === 6) {
+        verifyInstalledRoute(text, journal);
+      }
       else {
         const lines = splitLines(text);
         for (const key of ["model_provider", "model_catalog_json"] as const) {
@@ -700,9 +1326,13 @@ export function inspectCodexIntegration(): {
   }
   return {
     installed: Boolean(journal),
-    active: journal?.version === 4 ? journal.active : Boolean(journal),
+    active: journal?.version === 4 || journal?.version === 5 || journal?.version === 6
+      ? journal.active
+      : Boolean(journal),
     configPath: getCodexConfigPath(),
-    ...(journal?.version === 3 || journal?.version === 4 ? { routeUrl: journal.installed.openai_base_url } : {}),
+    ...(journal?.version === 3 || journal?.version === 4 || journal?.version === 5 || journal?.version === 6
+      ? { routeUrl: journal.installed.openai_base_url }
+      : {}),
     ...(journal ? { journal } : {}),
     errors,
   };

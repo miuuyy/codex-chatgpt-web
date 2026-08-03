@@ -246,6 +246,36 @@ test("health proves that Codex received a successful augmented model catalog", a
   }
 });
 
+test("server exposes authenticated standalone Web Search on the routed v1 base URL", async () => {
+  const config = { ...defaultConfig("browser-only"), port: 0 };
+  let upstreamRequest: Request | undefined;
+  const server = startServer(config, {
+    fetchUpstream: async request => {
+      upstreamRequest = request;
+      return Response.json({ results: ["native-search-result"] });
+    },
+  });
+  const endpoint = `http://127.0.0.1:${server.port}`;
+  try {
+    const response = await fetch(`${endpoint}/v1/alpha/search`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-codex-session",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ query: "bridge route" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ results: ["native-search-result"] });
+    expect(upstreamRequest!.url).toBe("https://chatgpt.com/backend-api/codex/alpha/search");
+    expect(upstreamRequest!.headers.get("authorization")).toBe("Bearer test-codex-session");
+    expect(await upstreamRequest!.json()).toEqual({ query: "bridge route" });
+  } finally {
+    await server.stop(true);
+  }
+});
+
 test("authenticated shutdown requires a verified idle drain", async () => {
   const config = { ...defaultConfig("browser-only"), port: 0 };
   const server = startServer(config);

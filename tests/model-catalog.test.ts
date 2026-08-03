@@ -5,6 +5,7 @@ import {
   augmentNativeModelCatalog,
   CHATGPT_WEB_AUTO_COMPACT_TOKEN_LIMIT,
   CHATGPT_WEB_CONTEXT_WINDOW,
+  CHATGPT_WEB_MODEL_PRIORITY,
 } from "../src/model-catalog";
 
 function source(): Record<string, unknown> {
@@ -64,6 +65,8 @@ describe("native /models augmentation", () => {
         default_reasoning_level: route.codexEffort,
         supported_reasoning_levels: [{ effort: route.codexEffort, description: route.displayName }],
         multi_agent_version: "v1",
+        supported_in_api: true,
+        priority: CHATGPT_WEB_MODEL_PRIORITY,
         context_window: CHATGPT_WEB_CONTEXT_WINDOW,
         max_context_window: CHATGPT_WEB_CONTEXT_WINDOW,
         auto_compact_token_limit: CHATGPT_WEB_AUTO_COMPACT_TOKEN_LIMIT,
@@ -73,6 +76,22 @@ describe("native /models augmentation", () => {
       });
       expect(model).not.toHaveProperty("comp_hash");
     }
+  });
+
+  test("keeps every routed Web model in Codex's V1 spawn-agent model registry", () => {
+    const config = defaultConfig("full");
+    config.proAvailable = true;
+    const models = augmentNativeModelCatalog(source(), config).models as Array<Record<string, unknown>>;
+
+    // Codex treats a custom openai_base_url as an API-compatible provider, filters out models
+    // unsupported by that API, sorts by priority, and exposes at most five spawn overrides.
+    const spawnOverrides = models
+      .filter(model => model.supported_in_api === true && model.visibility === "list")
+      .toSorted((left, right) => Number(left.priority) - Number(right.priority))
+      .slice(0, 5)
+      .map(model => model.slug);
+
+    expect(spawnOverrides).toEqual(CHATGPT_WEB_MODEL_ROUTES.map(route => route.slug));
   });
 
   test("owns only its namespace, is idempotent, and omits account-gated Pro when unavailable", () => {

@@ -1,6 +1,6 @@
 {
   "name": "codex-chatgpt-web",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "description": "A focused local Responses bridge that runs Codex tasks through a user-authenticated ChatGPT web session.",
   "repository": {

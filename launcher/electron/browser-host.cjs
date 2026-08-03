@@ -472,22 +472,26 @@ class BrowserHost {
     return this.snapshot();
   }
 
-  closeTab(tabId) {
-    const tab = this.turnTabs.get(tabId);
-    if (!tab) throw new Error("Browser tab does not exist");
-    this.turnTabs.delete(tabId);
-    if (tab.status === "running") {
+  removeTurnTab(tab, abortRunning) {
+    this.turnTabs.delete(tab.id);
+    if (abortRunning && tab.status === "running") {
       this.closedTurnOwners.set(tab.traceId, tab.helperPid);
       tab.status = "aborted";
     }
     try { this.window.contentView.removeChildView(tab.view); } catch {}
     if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
-    if (this.selectedTabId === tabId) {
+    if (this.selectedTabId === tab.id) {
       this.selectedTabId = [...this.turnTabs.keys()].at(-1) || "home";
     }
     this.syncViewVisibility();
     this.publishState?.(this.snapshot());
     this.writeDescriptor();
+  }
+
+  closeTab(tabId) {
+    const tab = this.turnTabs.get(tabId);
+    if (!tab) throw new Error("Browser tab does not exist");
+    this.removeTurnTab(tab, true);
     this.logger.info("browser.tab_closed", { tabId, traceId: tab.traceId, status: tab.status });
     return this.snapshot();
   }
@@ -723,11 +727,25 @@ class BrowserHost {
     tab.message = status === "completed" ? "Task completed" : message || `ChatGPT turn ${status}`;
     tab.loading = false;
     if (!tab.view.webContents.isDestroyed()) tab.view.webContents.setBackgroundThrottling(true);
-    if (hideAfterTurn && !this.activeTraceId) this.hide();
     if (status === "completed") {
       this.logger.info("browser.tab_completed", { tabId: tab.id, traceId });
     }
-    this.publishState?.(this.snapshot());
+    // Ordinary task tabs represent active Codex turns, not durable task history. Release them on
+    // every terminal path so responses and compactions cannot exhaust the five-tab safety limit.
+    // A route-keyed tab is intentionally durable: it owns the registered Project conversation and
+    // must survive terminal turns so the next trace reuses the same browser document.
+    if (!tab.routeKey) this.removeTurnTab(tab, false);
+    else {
+      this.publishState?.(this.snapshot());
+      this.writeDescriptor();
+    }
+    if (hideAfterTurn && !this.activeTraceId) this.hide();
+    this.logger.info(tab.routeKey ? "browser.route_tab_retained" : "browser.tab_released", {
+      tabId: tab.id,
+      traceId,
+      status: tab.status,
+      ...(tab.routeKey ? { routeKey: tab.routeKey } : {}),
+    });
   }
 
   async returnToIdle() {

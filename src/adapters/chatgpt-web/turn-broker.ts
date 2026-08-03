@@ -6,7 +6,7 @@ import { isWindowsPipeEndpoint } from "../../config";
 import type { ChatGptTurnEnvironment } from "./environment";
 
 interface PendingTurn extends ChatGptTurnEnvironment {
-  expiresAt: number;
+  expiresAt?: number;
 }
 
 export interface BrokerToolRequest {
@@ -133,13 +133,19 @@ export class TurnBroker {
     await this.start();
   }
 
-  async register(environment: ChatGptTurnEnvironment, ttlMs: number, traceId = "unknown"): Promise<string> {
+  async register(environment: ChatGptTurnEnvironment, ttlMs?: number, traceId = "unknown"): Promise<string> {
     await this.start();
     this.prune();
+    if (ttlMs !== undefined && (!Number.isFinite(ttlMs) || ttlMs <= 0)) {
+      throw new Error("ChatGPT web turn broker TTL must be a positive finite number");
+    }
     const token = opaqueId("turn");
     const channel: TurnChannel = {
       traceId,
-      environment: { ...environment, expiresAt: Date.now() + ttlMs },
+      environment: {
+        ...environment,
+        ...(ttlMs !== undefined ? { expiresAt: Date.now() + ttlMs } : {}),
+      },
       queuedCallIds: [],
       invocations: new Map(),
       waiters: new Set(),
@@ -156,7 +162,12 @@ export class TurnBroker {
     if (environmentIdentity(channel.environment) !== environmentIdentity(environment)) {
       throw new Error("Codex turn environment changed during an active ChatGPT tool loop");
     }
-    channel.environment = { ...environment, expiresAt: channel.environment.expiresAt };
+    channel.environment = {
+      ...environment,
+      ...(channel.environment.expiresAt !== undefined
+        ? { expiresAt: channel.environment.expiresAt }
+        : {}),
+    };
   }
 
   async nextToolBatch(token: string, signal?: AbortSignal): Promise<BrokerToolRequest[]> {
@@ -481,7 +492,7 @@ export class TurnBroker {
   private prune(): void {
     const now = Date.now();
     for (const [token, channel] of this.channels) {
-      if (channel.environment.expiresAt > now) continue;
+      if (channel.environment.expiresAt === undefined || channel.environment.expiresAt > now) continue;
       this.revoke(token);
     }
   }

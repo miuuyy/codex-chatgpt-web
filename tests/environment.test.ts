@@ -17,10 +17,25 @@ const environmentXml = `<environment_context>
   <filesystem><workspace_roots><root>${root}</root></workspace_roots><permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile></filesystem>
 </environment_context>`;
 
-function currentWire(options: { workspace?: string; sandbox?: string; includeIds?: boolean } = {}): CodexParsedRequest {
+function filesystemEnvironmentXml(permissionProfileXml: string): string {
+  return `<environment_context>
+  <cwd>${root}</cwd>
+  <filesystem><workspace_roots><root>${root}</root></workspace_roots>${permissionProfileXml}</filesystem>
+</environment_context>`;
+}
+
+const dangerFullAccessProfileXml = `<permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile>`;
+const workspaceWriteProfileXml = `<permission_profile type="managed"><file_system type="restricted"><entry access="read"><special>:root</special></entry><entry access="write"><path>${root}</path></entry><entry access="write"><special>:slash_tmp</special></entry><entry access="write"><special>:tmpdir</special></entry><entry access="read"><path>${root}/.git</path></entry></file_system></permission_profile>`;
+const readOnlyProfileXml = `<permission_profile type="managed"><file_system type="restricted"><entry access="read"><special>:root</special></entry></file_system></permission_profile>`;
+const externalProfileXml = `<permission_profile type="external"><file_system type="external" /></permission_profile>`;
+
+function currentWire(
+  options: { workspace?: string; sandbox?: string; includeIds?: boolean; environmentXml?: string } = {},
+): CodexParsedRequest {
   const workspace = options.workspace ?? root;
   const sandbox = options.sandbox ?? "none";
   const includeIds = options.includeIds ?? true;
+  const envXml = options.environmentXml ?? environmentXml;
   const turnMetadata = {
     thread_id: "thread_current",
     turn_id: "turn_current",
@@ -41,7 +56,7 @@ function currentWire(options: { workspace?: string; sandbox?: string; includeIds
           role: "user",
           content: [
             { type: "input_text", text: "<app-context>native app context</app-context>" },
-            { type: "input_text", text: environmentXml },
+            { type: "input_text", text: envXml },
           ],
         },
         {
@@ -79,6 +94,54 @@ describe("trusted current Codex environment envelope", () => {
   test("rejects unprovenanced adjacent user content without native item ids", () => {
     expect(() => extractChatGptTurnEnvironment(currentWire({ includeIds: false })))
       .toThrow("missing cwd");
+  });
+});
+
+describe("permission_profile sandbox detection (Codex CLI 0.146+)", () => {
+  test("new-format workspace-write resolves with a workspaceWrite sandbox policy", () => {
+    expect(extractChatGptTurnEnvironment(currentWire({
+      sandbox: "workspace-write",
+      environmentXml: filesystemEnvironmentXml(workspaceWriteProfileXml),
+    }))).toEqual({
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "workspaceWrite", writableRoots: [root], networkAccess: false },
+      tools: [],
+    });
+  });
+
+  test("new-format read-only resolves with a readOnly sandbox policy", () => {
+    expect(extractChatGptTurnEnvironment(currentWire({
+      sandbox: "read-only",
+      environmentXml: filesystemEnvironmentXml(readOnlyProfileXml),
+    }))).toEqual({
+      cwd: root,
+      roots: [root],
+      writableRoots: [],
+      sandboxPolicy: { type: "readOnly", networkAccess: false },
+      tools: [],
+    });
+  });
+
+  test("new-format danger-full-access still resolves dangerFullAccess", () => {
+    expect(extractChatGptTurnEnvironment(currentWire({
+      sandbox: "none",
+      environmentXml: filesystemEnvironmentXml(dangerFullAccessProfileXml),
+    }))).toEqual({
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: [],
+    });
+  });
+
+  test("permission_profile type=external remains unmapped and fails closed", () => {
+    expect(() => extractChatGptTurnEnvironment(currentWire({
+      sandbox: "workspace-write",
+      environmentXml: filesystemEnvironmentXml(externalProfileXml),
+    }))).toThrow("missing cwd");
   });
 });
 

@@ -750,6 +750,40 @@ test("selected home surface remains represented while task tabs are retained", (
   assert.equal(snapshot.tabs[0].active, true);
 });
 
+test("selecting a task tab shows and focuses its owned Playwright surface", () => {
+  const visibility = [];
+  const focused = [];
+  const makeView = (id) => ({
+    setVisible: (visible) => visibility.push([id, visible]),
+    webContents: { focus: () => focused.push(id) },
+  });
+  const first = { id: "tab-first", view: makeView("first") };
+  const second = { id: "tab-second", view: makeView("second") };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    view: makeView("home"),
+    authView: null,
+    turnTabs: new Map([[first.id, first], [second.id, second]]),
+    selectedTabId: first.id,
+    visible: true,
+    surfaceActive: true,
+    boundsReady: true,
+    snapshot: () => ({ activeTabId: fixture.selectedTabId }),
+    publishState() {},
+    writeDescriptor() {},
+  });
+
+  const state = BrowserHost.prototype.selectTab.call(fixture, second.id);
+
+  assert.equal(fixture.selectedTabId, second.id);
+  assert.deepEqual(visibility, [
+    ["home", false],
+    ["first", false],
+    ["second", true],
+  ]);
+  assert.deepEqual(focused, ["second"]);
+  assert.equal(state.activeTabId, second.id);
+});
+
 test("a stale helper cannot end a replacement turn with the same trace id", async () => {
   const turnTabs = new Map([["tab-1", {
     id: "tab-1",
@@ -780,7 +814,7 @@ test("closing a running browser tab preserves ownership until its helper reports
       webContents: { isDestroyed: () => false, close: () => closed.push("contents") },
     },
   };
-  const fixture = {
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
     turnTabs: new Map([[tab.id, tab]]),
     closedTurnOwners: new Map(),
     selectedTabId: tab.id,
@@ -790,7 +824,7 @@ test("closing a running browser tab preserves ownership until its helper reports
     publishState() {},
     writeDescriptor() {},
     logger: { info() {} },
-  };
+  });
 
   BrowserHost.prototype.closeTab.call(fixture, tab.id);
 
@@ -996,13 +1030,15 @@ test("five browser tabs are a hard account-safety limit", () => {
 });
 
 test("ending one browser turn does not stop another running tab", async () => {
+  let closedViews = 0;
+  let removedViews = 0;
   const ended = {
     id: "tab-ended",
     traceId: "trace_ended",
     helperPid: 555,
     status: "running",
     loading: true,
-    view: { webContents: { isDestroyed: () => false, setBackgroundThrottling() {} } },
+    view: { webContents: { isDestroyed: () => false, setBackgroundThrottling() {}, close: () => { closedViews += 1; } } },
   };
   const active = {
     id: "tab-active",
@@ -1015,6 +1051,13 @@ test("ending one browser turn does not stop another running tab", async () => {
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {
     turnTabs: new Map([[ended.id, ended], [active.id, active]]),
     closedTurnOwners: new Map(),
+    selectedTabId: ended.id,
+    window: { contentView: { removeChildView: (view) => {
+      assert.equal(view, ended.view);
+      removedViews += 1;
+    } } },
+    syncViewVisibility() {},
+    writeDescriptor() {},
     publishState() {},
     snapshot: () => ({ tabs: [] }),
     hide: () => assert.fail("a second running tab must keep the browser host active"),
@@ -1030,6 +1073,102 @@ test("ending one browser turn does not stop another running tab", async () => {
   );
 
   assert.equal(ended.status, "ready");
+  assert.equal(fixture.turnTabs.has(ended.id), false);
+  assert.equal(fixture.turnTabs.has(active.id), true);
+  assert.equal(fixture.selectedTabId, active.id);
+  assert.equal(closedViews, 1);
+  assert.equal(removedViews, 1);
   assert.equal(active.status, "running");
   assert.equal(fixture.activeTraceId, active.traceId);
+});
+
+test("failed and aborted browser turns release their tab slots", async () => {
+  for (const status of ["failed", "aborted"]) {
+    let closed = false;
+    const tab = {
+      id: `tab-${status}`,
+      traceId: `trace_${status}`,
+      helperPid: 777,
+      status: "running",
+      loading: true,
+      view: { webContents: {
+        isDestroyed: () => false,
+        setBackgroundThrottling() {},
+        close: () => { closed = true; },
+      } },
+    };
+    const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+      turnTabs: new Map([[tab.id, tab]]),
+      closedTurnOwners: new Map(),
+      selectedTabId: tab.id,
+      window: { contentView: { removeChildView() {} } },
+      syncViewVisibility() {},
+      writeDescriptor() {},
+      publishState() {},
+      snapshot: () => ({ tabs: [] }),
+      hide() {},
+      logger: { info() {} },
+    });
+
+    await BrowserHost.prototype.endTurn.call(
+      fixture,
+      tab.traceId,
+      tab.helperPid,
+      status,
+      true,
+      `turn ${status}`,
+    );
+
+    assert.equal(fixture.turnTabs.size, 0);
+    assert.equal(fixture.selectedTabId, "home");
+    assert.equal(tab.status, status === "aborted" ? "aborted" : "error");
+    assert.equal(closed, true);
+  }
+});
+
+test("terminal persistent-route turns retain their single route-keyed tab", async () => {
+  for (const status of ["completed", "failed", "aborted"]) {
+    let closed = false;
+    const events = [];
+    const tab = {
+      id: `tab-route-${status}`,
+      traceId: `trace_route_${status}`,
+      helperPid: 888,
+      routeKey: "dcp-pro-advisory",
+      status: "running",
+      loading: true,
+      view: { webContents: {
+        isDestroyed: () => false,
+        setBackgroundThrottling() {},
+        close: () => { closed = true; },
+      } },
+    };
+    const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+      turnTabs: new Map([[tab.id, tab]]),
+      closedTurnOwners: new Map(),
+      selectedTabId: tab.id,
+      syncViewVisibility() {},
+      writeDescriptor: () => events.push("descriptor"),
+      publishState: () => events.push("published"),
+      snapshot: () => ({ tabs: [tab.id] }),
+      hide() {},
+      logger: { info: event => events.push(event) },
+    });
+
+    await BrowserHost.prototype.endTurn.call(
+      fixture,
+      tab.traceId,
+      tab.helperPid,
+      status,
+      true,
+      `turn ${status}`,
+    );
+
+    assert.equal(fixture.turnTabs.size, 1);
+    assert.equal(fixture.turnTabs.get(tab.id), tab);
+    assert.equal(fixture.selectedTabId, tab.id);
+    assert.equal(tab.status, status === "completed" ? "ready" : status === "aborted" ? "aborted" : "error");
+    assert.equal(closed, false);
+    assert.deepEqual(events.slice(-3), ["published", "descriptor", "browser.route_tab_retained"]);
+  }
 });

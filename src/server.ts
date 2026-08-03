@@ -186,6 +186,17 @@ export async function modelsRequest(
   return new Response(body, { status: upstream.status, statusText: upstream.statusText, headers });
 }
 
+export async function nativeSearchRequest(
+  req: Request,
+  fetchUpstream?: NativeFetch,
+): Promise<Response> {
+  try {
+    return await forwardNativeCodexRequest(req, "alpha/search", fetchUpstream);
+  } catch (error) {
+    return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
+  }
+}
+
 function toolBridgeMaps(parsed: CodexParsedRequest): {
   toolNsMap: Map<string, { namespace: string; name: string }>;
   freeformToolNames: Set<string>;
@@ -498,6 +509,10 @@ export function startServer(
       if (req.method === "POST" && url.pathname === "/v1/responses/compact") {
         if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
         return httpTurns.track(() => compactRequest(req, config), req.signal);
+      }
+      if (req.method === "POST" && url.pathname === "/v1/alpha/search") {
+        if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
+        return httpTurns.track(() => nativeSearchRequest(req, dependencies.fetchUpstream), req.signal);
       }
       return new Response("Not found", { status: 404 });
     },
