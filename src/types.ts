@@ -17,6 +17,8 @@ export interface CodexParsedRequest {
    * executes searches via the gpt-5.4-mini sidecar (see src/web-search). Absent when not requested.
    */
   _webSearch?: Record<string, unknown>;
+  /** Exact registered persistent ChatGPT conversation selected by the routed model slug. */
+  _chatGptConversationRoute?: ChatGptConversationRoute;
   /**
    * True when Codex requested structured output (`text.format` = json_schema/json_object). The
    * web-search tool_result is then rendered as compact JSON instead of markdown prose, so its
@@ -41,6 +43,17 @@ export interface CodexParsedRequest {
    * ChatGPT Web has no OpenAI backend key for that blob and must fail before opening the browser.
    */
   _opaqueMultiAgentV2Payload?: boolean;
+}
+
+export interface ChatGptConversationRoute {
+  routeKey: string;
+  routeMode: "conversation";
+  /** Canonical copied ChatGPT URL. Its path is intentionally opaque to the bridge. */
+  conversationUrl: string;
+  expectedProjectLabel: string;
+  expectedConversationLabel: string;
+  requiredModel: "pro";
+  payloadMode: "signed_capsule_or_delta";
 }
 
 export interface CodexContext {

@@ -7,7 +7,7 @@ import { parseDataUrl } from "../image";
 import { ChatGptBrowserWorker, DEFAULT_CHATGPT_TURN_TIMEOUT_MS } from "./browser-worker";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "./environment";
 import { resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
-import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt";
+import { chatGptReadOnlyContextWarning, compileChatGptConversationDeltaPrompt, compileChatGptWebPrompt } from "./prompt";
 import { TurnBroker, type BrokerToolRequest, type BrokerToolResult } from "./turn-broker";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptTurnExecutionKey, chatGptTurnSessions, type ChatGptBrowserOutcome, type ChatGptTraceEvent, type ChatGptTurnRuntime, type ChatGptTurnSession } from "./turn-execution";
 import { estimateChatGptWebUsage } from "./usage";
@@ -185,7 +185,13 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
         modelId: parsed.modelId,
         reasoning: parsed.options.reasoning,
         capabilities,
-        prepare: async () => ({ ...compileChatGptWebPrompt(parsed, capabilities), release: () => {} }),
+        conversationRoute: parsed._chatGptConversationRoute,
+        prepare: async () => ({
+          ...(parsed._chatGptConversationRoute
+            ? compileChatGptConversationDeltaPrompt(parsed, capabilities)
+            : compileChatGptWebPrompt(parsed, capabilities)),
+          release: () => {},
+        }),
         abortSignal: browserAbort.signal,
         onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),
         onCommentary: (text, continuation) => trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) }),

@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright-core";
 import { atomicWriteFile, expandUserPath, getConfigDir } from "../../config";
-import type { CodexProviderConfig } from "../../types";
+import type { ChatGptConversationRoute, CodexProviderConfig } from "../../types";
 import { parseDataUrl } from "../image";
 import { ChatGptMarkdownStream } from "./markdown";
 import { resolveChatGptWebModelMode, type ChatGptWebCapabilities, type ChatGptWebModelMode } from "./model";
@@ -11,7 +11,7 @@ import { estimateCompiledChatGptWebInputTokens } from "./usage";
 import {
   assertAuthenticatedChatGptPage,
   assertTemporaryChatPage,
-  CHATGPT_ASSISTANT_TURN_SELECTOR,
+  CHATGPT_ASSISTANT_MESSAGE_ROOT_SELECTOR,
   CHATGPT_COMPLETION_ACTION_SELECTOR,
   CHATGPT_COMPOSER_SELECTOR,
   CHATGPT_EFFORT_CONTROL_SELECTOR,
@@ -24,7 +24,8 @@ import {
 import { loginVerificationMarkerPath } from "../../browser-login";
 import { connectLauncherBrowserHost, notifyLauncherTurn } from "../../launcher-browser-host";
 import { LauncherBrowserHelperClient } from "./launcher-helper-client";
-import { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
+import { ChatGptRouteQueue, MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
+import { canonicalChatGptUrl } from "../../persistent-route";
 
 export { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 
@@ -72,6 +73,7 @@ export interface BrowserTurn {
   modelId: string;
   reasoning?: string;
   capabilities: ChatGptWebCapabilities;
+  conversationRoute?: ChatGptConversationRoute;
   prepare: () => Promise<CompiledChatGptWebPrompt & { release: () => void }>;
   abortSignal?: AbortSignal;
   onHeartbeat?: () => void;
@@ -108,6 +110,29 @@ export function chatGptTurnIsComplete(state: {
 }
 
 export type ChatGptSubmissionEvidence = "user_turn" | "assistant_turn" | "generation_running";
+
+export interface ChatGptAssistantMessageSnapshot {
+  identities: string[];
+}
+
+export function newChatGptAssistantMessageIdentity(
+  before: ChatGptAssistantMessageSnapshot,
+  after: ChatGptAssistantMessageSnapshot,
+): string | undefined {
+  if (after.identities.length !== before.identities.length + 1) return undefined;
+  if (before.identities.some((identity, index) => after.identities[index] !== identity)) return undefined;
+  const identity = after.identities.at(-1);
+  if (!identity || before.identities.includes(identity)) return undefined;
+  return identity;
+}
+
+export function sameChatGptAssistantMessageSnapshot(
+  left: ChatGptAssistantMessageSnapshot,
+  right: ChatGptAssistantMessageSnapshot,
+): boolean {
+  return left.identities.length === right.identities.length
+    && left.identities.every((identity, index) => right.identities[index] === identity);
+}
 
 export function chatGptSubmissionEvidence(state: {
   initialUserTurnCount: number;
@@ -351,6 +376,7 @@ export class ChatGptBrowserWorker {
   private launcherHelper?: LauncherBrowserHelperClient;
   private verificationTail: Promise<void> = Promise.resolve();
   private readonly activeRuns = new Map<string, Promise<string>>();
+  private readonly routeQueue = new ChatGptRouteQueue();
 
   private constructor(private readonly config: ResolvedBrowserConfig) {}
 
@@ -367,7 +393,10 @@ export class ChatGptBrowserWorker {
     if (useHelper) {
       this.launcherHelper ??= new LauncherBrowserHelperClient(this.config);
     }
-    const run = Promise.resolve().then(() => useHelper ? this.launcherHelper!.run(turn) : this.runExclusive(turn));
+    const execute = () => useHelper ? this.launcherHelper!.run(turn) : this.runExclusive(turn);
+    const run = Promise.resolve().then(() => turn.conversationRoute
+      ? this.routeQueue.run(turn.conversationRoute.conversationUrl, turn.abortSignal, execute)
+      : execute());
     this.activeRuns.set(turn.traceId, run);
     void run.finally(() => {
       if (this.activeRuns.get(turn.traceId) === run) this.activeRuns.delete(turn.traceId);
@@ -574,6 +603,65 @@ export class ChatGptBrowserWorker {
       await new Promise(resolveSleep => setTimeout(resolveSleep, 50));
     }
     throw new Error(`ChatGPT did not expose exactly one visible composer (visibleComposers=${count})`);
+  }
+
+  private async assertConversationRoutePage(page: Page, route: ChatGptConversationRoute): Promise<void> {
+    let currentUrl: string;
+    try {
+      currentUrl = canonicalChatGptUrl(page.url());
+    } catch {
+      throw new Error(`ChatGPT conversation route ${route.routeKey} is no longer active`);
+    }
+    if (currentUrl !== route.conversationUrl) {
+      throw new Error(`ChatGPT conversation route ${route.routeKey} changed unexpectedly`);
+    }
+    await assertAuthenticatedChatGptPage(page);
+    for (const [kind, label] of [
+      ["Project", route.expectedProjectLabel],
+      ["conversation", route.expectedConversationLabel],
+    ] as const) {
+      const matches = page.getByText(label, { exact: true }).filter({ visible: true });
+      if (await matches.count() < 1) {
+        throw new Error(`ChatGPT conversation route ${route.routeKey} did not expose its expected ${kind} label`);
+      }
+    }
+  }
+
+  private async assistantMessageSnapshot(page: Page): Promise<ChatGptAssistantMessageSnapshot> {
+    const roots = page.locator(CHATGPT_ASSISTANT_MESSAGE_ROOT_SELECTOR);
+    const identities = await roots.evaluateAll(elements => (
+      elements.map(element => element.getAttribute("data-testid") ?? "")
+    ));
+    if (identities.some(identity => !identity) || new Set(identities).size !== identities.length) {
+      throw new Error("ChatGPT assistant-message identities are missing or ambiguous");
+    }
+    return { identities };
+  }
+
+  private async assertConversationComposerEmpty(page: Page, route: ChatGptConversationRoute): Promise<void> {
+    if ((await this.attachedPromptText(page)).trim()) {
+      throw new Error(`ChatGPT conversation route ${route.routeKey} has a pre-existing composer draft`);
+    }
+  }
+
+  private async waitForNewAssistantMessage(
+    page: Page,
+    before: ChatGptAssistantMessageSnapshot,
+    abortSignal: AbortSignal,
+    route?: ChatGptConversationRoute,
+  ): Promise<{ identity: string; turn: Locator }> {
+    for (;;) {
+      if (abortSignal.aborted) throw new DOMException("ChatGPT assistant-message binding aborted", "AbortError");
+      if (route) await this.assertConversationRoutePage(page, route);
+      const after = await this.assistantMessageSnapshot(page);
+      const identity = newChatGptAssistantMessageIdentity(before, after);
+      if (identity) return { identity, turn: page.getByTestId(identity) };
+      if (after.identities.length > before.identities.length + 1
+        || before.identities.some((value, index) => after.identities[index] !== value)) {
+        throw new Error("ChatGPT assistant-message history changed ambiguously after submission");
+      }
+      await new Promise(resolveSleep => setTimeout(resolveSleep, 50));
+    }
   }
 
   private async waitForSubmissionAccepted(
@@ -994,34 +1082,50 @@ export class ChatGptBrowserWorker {
       console.info(
         `[chatgpt-web] browser turn ${turn.traceId} opened (transport=inline, promptChars=${prepared.text.length}, estimatedInputTokens=${estimatedInputTokens}, images=${prepared.images.length})`,
       );
-      await this.runStage(turn.traceId, "temporary_chat_navigation", browserStageTimeouts.navigation, () => (
-        page.goto(CHATGPT_TEMPORARY_CHAT_URL, { waitUntil: "domcontentloaded", timeout: 60_000 }).then(() => undefined)
-      ));
+      const targetUrl = turn.conversationRoute?.conversationUrl ?? CHATGPT_TEMPORARY_CHAT_URL;
+      await this.runStage(
+        turn.traceId,
+        turn.conversationRoute ? "conversation_navigation" : "temporary_chat_navigation",
+        browserStageTimeouts.navigation,
+        () => page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 60_000 }).then(() => undefined),
+      );
       try {
         await this.runStage(turn.traceId, "composer_ready", browserStageTimeouts.composerReady, () => (
           this.activeComposer(page)
         ));
       } catch {
-        throw new Error("ChatGPT web login is expired or the Temporary Chat surface is unavailable");
+        throw new Error(
+          turn.conversationRoute
+            ? `ChatGPT web login is expired or conversation route ${turn.conversationRoute.routeKey} is unavailable`
+            : "ChatGPT web login is expired or the Temporary Chat surface is unavailable",
+        );
       }
       await this.runStage(turn.traceId, "session_verification", browserStageTimeouts.sessionVerification, async () => {
         await assertAuthenticatedChatGptPage(page);
-        await assertTemporaryChatPage(page);
+        if (turn.conversationRoute) await this.assertConversationRoutePage(page, turn.conversationRoute);
+        else await assertTemporaryChatPage(page);
       });
       const mode = await this.runStage(turn.traceId, "effort_selection", browserStageTimeouts.effortSelection, () => (
         this.selectModelAndEffort(page, turn.modelId, turn.reasoning, turn.capabilities)
       ));
+      if (turn.conversationRoute) await this.assertConversationRoutePage(page, turn.conversationRoute);
+      const responseTurns = page.locator(CHATGPT_ASSISTANT_MESSAGE_ROOT_SELECTOR);
+      const initialAssistantMessages = await this.assistantMessageSnapshot(page);
+      if (turn.conversationRoute) await this.assertConversationComposerEmpty(page, turn.conversationRoute);
       await this.runStage(turn.traceId, "prompt_attachment", browserStageTimeouts.promptAttachment, () => (
         this.attachPrompt(page, prepared.text, mode.localTools)
       ));
       await this.runStage(turn.traceId, "file_attachment", browserStageTimeouts.fileAttachment, () => (
         this.attachFiles(page, prepared)
       ));
-      const responseTurns = page.locator(CHATGPT_ASSISTANT_TURN_SELECTOR);
-      const initialResponseTurnCount = await responseTurns.count();
-      const responseTurn = responseTurns.nth(initialResponseTurnCount);
+      const preparedAssistantMessages = await this.assistantMessageSnapshot(page);
+      if (!sameChatGptAssistantMessageSnapshot(initialAssistantMessages, preparedAssistantMessages)) {
+        throw new Error("ChatGPT assistant-message history changed while the new prompt was being prepared");
+      }
+      const initialResponseTurnCount = initialAssistantMessages.identities.length;
       const userTurns = page.locator(CHATGPT_USER_TURN_SELECTOR);
       const initialUserTurnCount = await userTurns.count();
+      if (turn.conversationRoute) await this.assertConversationRoutePage(page, turn.conversationRoute);
       await this.runStage(turn.traceId, "send", browserStageTimeouts.send, async () => {
         const composer = await this.activeComposer(page);
         const sendButton = composer
@@ -1042,6 +1146,14 @@ export class ChatGptBrowserWorker {
         );
         console.info(`[chatgpt-web] browser turn ${turn.traceId} submission accepted evidence=${evidence}`);
       });
+      const boundResponse = await this.runStage(
+        turn.traceId,
+        "response_binding",
+        CHATGPT_RESPONSE_DOM_GRACE_MS,
+        signal => this.waitForNewAssistantMessage(page, initialAssistantMessages, signal, turn.conversationRoute),
+      );
+      const responseTurn = boundResponse.turn;
+      console.info(`[chatgpt-web] browser turn ${turn.traceId} response bound identity=${boundResponse.identity}`);
 
       let lastHeartbeat = 0;
       let finalText = "";
@@ -1062,6 +1174,7 @@ export class ChatGptBrowserWorker {
           throw new DOMException("ChatGPT web turn aborted", "AbortError");
         }
         if (Date.now() >= deadline) throw new Error("ChatGPT web turn timed out");
+        if (turn.conversationRoute) await this.assertConversationRoutePage(page, turn.conversationRoute);
         if (Date.now() - lastHeartbeat >= 10_000) {
           turn.onHeartbeat?.();
           lastHeartbeat = Date.now();
@@ -1133,6 +1246,7 @@ export class ChatGptBrowserWorker {
         await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
       }
 
+      if (turn.conversationRoute) await this.assertConversationRoutePage(page, turn.conversationRoute);
       if (this.context && this.config.browserHost === "managed-chrome") {
         const state = await this.context.storageState();
         atomicWriteFile(this.config.storageStatePath, `${JSON.stringify(state)}\n`);

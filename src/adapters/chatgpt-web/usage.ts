@@ -1,7 +1,7 @@
 import { estimateTokens } from "../../lib/token-estimate";
 import type { CodexParsedRequest, CodexUsage } from "../../types";
 import type { CompiledChatGptWebPrompt } from "./prompt";
-import { compileChatGptWebPrompt } from "./prompt";
+import { compileChatGptConversationDeltaPrompt, compileChatGptWebPrompt } from "./prompt";
 import { resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import type { BrokerToolRequest } from "./turn-broker";
 
@@ -50,7 +50,9 @@ export function estimateChatGptWebInputTokens(
 ): number {
   const mode = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
   return estimateCompiledChatGptWebInputTokens(
-    compileChatGptWebPrompt(parsed, capabilities, mode.localTools ? ESTIMATE_TURN_TOKEN : undefined),
+    parsed._chatGptConversationRoute
+      ? compileChatGptConversationDeltaPrompt(parsed, capabilities)
+      : compileChatGptWebPrompt(parsed, capabilities, mode.localTools ? ESTIMATE_TURN_TOKEN : undefined),
     parsed.modelId,
   );
 }

@@ -19,9 +19,10 @@
 </p>
 
 Pick **ChatGPT Web — Instant**, **Medium**, **High**, **Extra High**, or **Pro** in Codex's native
-model picker. The bridge sends the complete Codex task context to a fresh ChatGPT Temporary Chat,
-attaches images, and streams visible reasoning, tool activity, and Markdown back into the same
-Codex task.
+model picker. Those built-in routes send the complete Codex task context to a fresh ChatGPT
+Temporary Chat. Optional registered Project-conversation models instead send only the latest
+capsule or delta to an exact saved conversation. Both routes stream visible reasoning, tool
+activity, and Markdown back into the same Codex task.
 
 <p align="center">
   <img src="assets/demo.gif" alt="ChatGPT Web running inside the native Codex harness" width="960">
@@ -47,9 +48,9 @@ connects ChatGPT back to the tools of that same Codex task.
   another host model. The original model picker, task lifecycle, streaming, tracing, and tool UI
   remain intact.
 - **Local-first task sessions.** Codex remains the source of truth for task history on your
-  computer. Every browser turn starts in a fresh ChatGPT Temporary Chat and receives the complete
-  accumulated Codex context, so browser chats are not reused across tasks or added to normal
-  ChatGPT history.
+  computer. The default models use a fresh Temporary Chat and receive the complete accumulated
+  Codex context. An explicitly registered Project-conversation model reuses only its exact saved
+  destination and receives the new capsule or delta instead of replaying Codex history.
 - **The full Codex harness over MCP.** In full mode, Instant through Extra High can use the active
   Codex task's filesystem, shell, images, approvals, and configured tools/apps through MCP. Calls
   and real results stay inside the same browser response—nothing is simulated as text.
@@ -92,6 +93,31 @@ Then complete the three checks in the app:
 
 Pro appears only when the signed-in account exposes it. The separate **MCP** page is optional and
 guides the full-harness setup without terminal commands.
+
+### Optional persistent Project conversation
+
+Copy the exact URL of an existing ChatGPT Project conversation, then register it locally:
+
+```bash
+codex-chatgpt-web conversation register \
+  --key dcp-pro-advisory \
+  --url '<exact copied ChatGPT conversation URL>' \
+  --project 'DCP' \
+  --conversation '<exact conversation title>'
+```
+
+Restart the launcher runtime and Codex once. The model picker then exposes a dedicated
+`chatgpt-web/project/dcp-pro-advisory` Pro model. The URL is stored only in the owner-local private
+configuration and is treated as opaque: the bridge does not assume or reconstruct a ChatGPT path
+format. Before each send it navigates directly to that URL, verifies the exact URL and visible
+Project/conversation labels, confirms Pro, and snapshots existing assistant-message identities.
+Only one request may use that destination at a time, and only the newly completed assistant turn is
+returned. The bridge never creates a replacement Project or conversation.
+
+Project instructions and uploaded Project sources are managed by ChatGPT; see OpenAI's
+[Projects documentation](https://learn.chatgpt.com/docs/projects). Persistent routing is Pro-only,
+read-only with respect to local Codex tools, and transmits only the latest user capsule/delta plus
+images in that delta—not the accumulated Codex task history.
 
 A packaged browser-only install needs no Google Chrome, model API key, system Node/Bun, or separate
 browser download.

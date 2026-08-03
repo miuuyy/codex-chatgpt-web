@@ -1,3 +1,6 @@
+import { chatGptConversationRoute, conversationRouteModelSlug } from "./persistent-route";
+import type { ChatGptConversationRoute } from "./types";
+
 export const CHATGPT_WEB_MODEL_PREFIX = "chatgpt-web/";
 export const CHATGPT_WEB_BACKEND_MODEL = "gpt-5.6-sol";
 
@@ -11,6 +14,7 @@ export interface ChatGptWebModelRoute {
   codexEffort: ChatGptWebCodexEffort;
   adapterEffort: ChatGptWebAdapterEffort;
   requiresPro: boolean;
+  conversationRouteKey?: string;
 }
 
 /**
@@ -68,14 +72,41 @@ export function isChatGptWebModelSlug(modelId: string): boolean {
   return modelId.startsWith(CHATGPT_WEB_MODEL_PREFIX);
 }
 
-export function availableChatGptWebModelRoutes(proAvailable: boolean): readonly ChatGptWebModelRoute[] {
-  return proAvailable
-    ? CHATGPT_WEB_MODEL_ROUTES
-    : CHATGPT_WEB_MODEL_ROUTES.filter(route => !route.requiresPro);
+function conversationModelRoute(route: ChatGptConversationRoute): ChatGptWebModelRoute {
+  return {
+    slug: conversationRouteModelSlug(route.routeKey),
+    displayName: `ChatGPT Web — ${route.expectedProjectLabel}: ${route.expectedConversationLabel}`,
+    description: `ChatGPT Pro advisory route for the registered ${route.expectedProjectLabel} Project conversation.`,
+    codexEffort: "ultra",
+    adapterEffort: "max",
+    requiresPro: true,
+    conversationRouteKey: route.routeKey,
+  };
 }
 
-export function requireChatGptWebModelRoute(modelId: string, proAvailable: boolean): ChatGptWebModelRoute {
-  const route = routesBySlug.get(modelId);
+export function availableChatGptWebModelRoutes(
+  proAvailable: boolean,
+  conversationRoutes: readonly ChatGptConversationRoute[] = [],
+): readonly ChatGptWebModelRoute[] {
+  const temporary = proAvailable
+    ? CHATGPT_WEB_MODEL_ROUTES
+    : CHATGPT_WEB_MODEL_ROUTES.filter(route => !route.requiresPro);
+  return proAvailable
+    ? [...temporary, ...conversationRoutes.map(conversationModelRoute)]
+    : temporary;
+}
+
+export function requireChatGptWebModelRoute(
+  modelId: string,
+  proAvailable: boolean,
+  conversationRoutes: readonly ChatGptConversationRoute[] = [],
+): ChatGptWebModelRoute {
+  const conversationRouteKey = modelId.startsWith("chatgpt-web/project/")
+    ? modelId.slice("chatgpt-web/project/".length)
+    : undefined;
+  const route = conversationRouteKey
+    ? conversationModelRoute(chatGptConversationRoute(conversationRoutes, conversationRouteKey))
+    : routesBySlug.get(modelId);
   if (!route) throw new Error(`ChatGPT web model is not enabled: ${modelId}`);
   if (route.requiresPro && !proAvailable) {
     throw new Error("ChatGPT Web Pro is not available for this account");

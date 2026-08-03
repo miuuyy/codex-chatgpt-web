@@ -17,6 +17,7 @@ import {
   requireChatGptWebModelRoute,
   type ChatGptWebModelRoute,
 } from "./chatgpt-web-models";
+import { chatGptConversationRoute } from "./persistent-route";
 import { forwardNativeCodexRequest, type NativeFetch } from "./native-passthrough";
 import {
   buildCompactV1Output,
@@ -145,7 +146,13 @@ export class HttpTurnCounter {
 type ChatGptWebAdapterFactory = (provider: CodexProviderConfig) => ProviderAdapter;
 
 export function routeChatGptWebRequest(parsed: CodexParsedRequest, config: AppConfig): ChatGptWebModelRoute {
-  const route = requireChatGptWebModelRoute(parsed.modelId, config.proAvailable);
+  const route = requireChatGptWebModelRoute(parsed.modelId, config.proAvailable, config.conversationRoutes);
+  if (route.conversationRouteKey) {
+    if (parsed._compactionRequest) {
+      throw new Error("Persistent ChatGPT conversation routes do not accept Codex compaction turns");
+    }
+    parsed._chatGptConversationRoute = chatGptConversationRoute(config.conversationRoutes, route.conversationRouteKey);
+  }
   parsed.modelId = CHATGPT_WEB_BACKEND_MODEL;
   parsed.options.reasoning = route.adapterEffort;
   return route;
@@ -342,7 +349,7 @@ export async function compactRequest(
     }
   }
   try {
-    requireChatGptWebModelRoute(raw.model, config.proAvailable);
+    requireChatGptWebModelRoute(raw.model, config.proAvailable, config.conversationRoutes);
   } catch (error) {
     return formatErrorResponse(400, "invalid_request_error", error instanceof Error ? error.message : String(error));
   }

@@ -132,7 +132,7 @@ export function augmentNativeModelCatalog(
       }
     }
   }
-  const webModels = availableChatGptWebModelRoutes(config.proAvailable)
+  const webModels = availableChatGptWebModelRoutes(config.proAvailable, config.conversationRoutes)
     .map(route => buildChatGptWebModel(template, route, config));
   return {
     ...structuredClone(catalog),

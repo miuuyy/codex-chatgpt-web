@@ -98,6 +98,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     controlToken: before.controlToken,
     runtimeCommand: before.runtimeCommand,
     tunnel: before.tunnel,
+    conversationRoutes: before.conversationRoutes,
   }) !== JSON.stringify({
     mode: after.mode,
     releaseVersion: after.releaseVersion,
@@ -116,6 +117,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     controlToken: after.controlToken,
     runtimeCommand: after.runtimeCommand,
     tunnel: after.tunnel,
+    conversationRoutes: after.conversationRoutes,
   });
 }
 

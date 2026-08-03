@@ -20,6 +20,12 @@ export const CHATGPT_ASSISTANT_TURN_SELECTOR = [
   '[data-testid^="conversation-turn-"][data-message-author-role="assistant"]',
   '[data-testid^="conversation-turn-"]:has([data-message-author-role="assistant"])',
 ].join(", ");
+
+/** Stable outer message roots used to bind a persistent response to the exact submitted turn. */
+export const CHATGPT_ASSISTANT_MESSAGE_ROOT_SELECTOR = [
+  '[data-testid^="conversation-turn-"][data-turn="assistant"]',
+  '[data-testid^="conversation-turn-"]:has([data-message-author-role="assistant"])',
+].join(", ");
 export const CHATGPT_USER_TURN_SELECTOR = [
   '[data-testid^="conversation-turn-"][data-turn="user"]',
   '[data-testid^="conversation-turn-"][data-message-author-role="user"]',

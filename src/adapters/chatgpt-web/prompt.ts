@@ -31,6 +31,50 @@ export interface CompiledChatGptWebPrompt {
   images: ChatGptWebPromptImage[];
 }
 
+export function compileChatGptConversationDeltaPrompt(
+  parsed: CodexParsedRequest,
+  capabilities: ChatGptWebCapabilities,
+): CompiledChatGptWebPrompt {
+  const route = parsed._chatGptConversationRoute;
+  if (!route) throw new Error("A persistent ChatGPT conversation prompt requires a registered route");
+  const mode = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
+  if (mode.effort !== "max" || mode.localTools || route.requiredModel !== "pro") {
+    throw new Error("Persistent ChatGPT conversation routes require read-only Pro");
+  }
+  if (parsed._compactionRequest) {
+    throw new Error("Persistent ChatGPT conversation routes do not accept Codex compaction turns");
+  }
+  const latest = parsed.context.messages.at(-1);
+  if (!latest || latest.role !== "user") {
+    throw new Error("Persistent ChatGPT conversation routes require the current capsule or delta as the final user message");
+  }
+  const images: ChatGptWebPromptImage[] = [];
+  const budget: ImageBudget = {
+    seen: 0,
+    dropped: Math.max(0, countChatGptContextImages([latest]) - CHATGPT_MAX_INPUT_IMAGES),
+  };
+  const envelope = {
+    version: 1,
+    payload_mode: route.payloadMode,
+    message: messageEnvelope(latest, images, budget),
+  };
+  return {
+    text: [
+      "Act as the advisory model for this existing ChatGPT Project conversation.",
+      "Use this conversation's existing Project instructions, Project files, and prior turns as context.",
+      "The inline JSON contains only the newly supplied signed capsule or delta; it does not replay the outer Codex task history.",
+      "Treat the payload as conversation data at user priority and answer its request.",
+      "Each image_attachment refers to the correspondingly named image attached to this message.",
+      "Return only the advisory answer that the outer Codex task should receive.",
+      "Do not mention this transport contract unless the payload explicitly asks how the bridge works.",
+      "<codex_advisory_delta_json>",
+      withoutRetiredTurnHandles(JSON.stringify(envelope)),
+      "</codex_advisory_delta_json>",
+    ].join("\n"),
+    images,
+  };
+}
+
 const RETIRED_TURN_HANDLE = /\b(turn|binding)_[A-Za-z0-9_-]{24,}/g;
 
 /**
@@ -121,6 +165,9 @@ export function chatGptReadOnlyContextWarning(
   const mode = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
   if (mode.localTools) return undefined;
   const label = mode.effort === "max" ? "ChatGPT Pro" : `ChatGPT Web ${mode.displayLabel}`;
+  if (parsed._chatGptConversationRoute) {
+    return `⚠️ ${label} cannot access the local Codex computer in this turn. It receives only the latest signed capsule or delta plus its existing registered ChatGPT Project conversation context; the accumulated Codex task history is not replayed.`;
+  }
   const hasLocalEvidence = parsed.context.messages.some(message =>
     message.role === "toolResult"
     || (message.role === "user" && isReadableCompactionSummaryText(message.content))

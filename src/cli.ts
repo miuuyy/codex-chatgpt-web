@@ -5,7 +5,8 @@ import { timingSafeEqual } from "node:crypto";
 import { existsSync, rmSync } from "node:fs";
 import { stdin, stdout } from "node:process";
 import { checkBrowserEngine, loginToChatGpt } from "./browser-login";
-import { getConfigDir, getConfigPath, loadConfig, loadConfigForSetup } from "./config";
+import { getConfigDir, getConfigPath, loadConfig, loadConfigForSetup, saveConfig } from "./config";
+import { conversationRouteModelSlug, validateChatGptConversationRoutes } from "./persistent-route";
 import { inspectLauncherBrowserHost, readLauncherBrowserHostDescriptor } from "./launcher-browser-host";
 import {
   activateCodexIntegration,
@@ -33,6 +34,7 @@ Usage:
   codex-chatgpt-web login
   codex-chatgpt-web doctor [--json]
   codex-chatgpt-web route <status|connect|disconnect>
+  codex-chatgpt-web conversation <list|register|remove>
   codex-chatgpt-web browser check
   codex-chatgpt-web serve
   codex-chatgpt-web mcp [--broker-socket PATH]
@@ -207,6 +209,69 @@ async function routeCommand(args: string[]): Promise<void> {
   stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
+async function conversationCommand(args: string[]): Promise<void> {
+  const action = args.shift() ?? "list";
+  const config = loadConfig();
+  if (action === "list") {
+    assertNoArgs(args);
+    stdout.write(`${JSON.stringify((config.conversationRoutes ?? []).map(route => ({
+      route_key: route.routeKey,
+      route_mode: route.routeMode,
+      expected_project_label: route.expectedProjectLabel,
+      expected_conversation_label: route.expectedConversationLabel,
+      required_model: route.requiredModel,
+      payload_mode: route.payloadMode,
+      model: conversationRouteModelSlug(route.routeKey),
+    })), null, 2)}\n`);
+    return;
+  }
+  if (action === "register") {
+    const routeKey = takeOption(args, "--key");
+    const conversationUrl = takeOption(args, "--url");
+    const expectedProjectLabel = takeOption(args, "--project");
+    const expectedConversationLabel = takeOption(args, "--conversation");
+    assertNoArgs(args);
+    if (!routeKey || !conversationUrl || !expectedProjectLabel || !expectedConversationLabel) {
+      throw new Error("conversation register requires --key, --url, --project, and --conversation");
+    }
+    const routes = validateChatGptConversationRoutes([
+      ...(config.conversationRoutes ?? []).filter(route => route.routeKey !== routeKey),
+      {
+        routeKey,
+        routeMode: "conversation",
+        conversationUrl,
+        expectedProjectLabel,
+        expectedConversationLabel,
+        requiredModel: "pro",
+        payloadMode: "signed_capsule_or_delta",
+      },
+    ]);
+    config.conversationRoutes = routes;
+    saveConfig(config);
+    stdout.write(`${JSON.stringify({
+      registered: routeKey,
+      model: conversationRouteModelSlug(routeKey),
+      restartRequired: true,
+    }, null, 2)}\n`);
+    return;
+  }
+  if (action === "remove") {
+    const routeKey = takeOption(args, "--key");
+    assertNoArgs(args);
+    if (!routeKey) throw new Error("conversation remove requires --key");
+    const existing = config.conversationRoutes ?? [];
+    if (!existing.some(route => route.routeKey === routeKey)) {
+      throw new Error(`ChatGPT conversation route is not registered: ${routeKey}`);
+    }
+    const remaining = existing.filter(route => route.routeKey !== routeKey);
+    config.conversationRoutes = remaining.length > 0 ? remaining : undefined;
+    saveConfig(config);
+    stdout.write(`${JSON.stringify({ removed: routeKey, restartRequired: true }, null, 2)}\n`);
+    return;
+  }
+  throw new Error(`Unknown conversation action: ${action}`);
+}
+
 async function serviceCommand(args: string[]): Promise<void> {
   const action = args.shift() ?? "status";
   assertNoArgs(args);
@@ -341,6 +406,7 @@ async function main(): Promise<void> {
     stdout.write(`ChatGPT login stored at ${result.storageStatePath}\n`);
   } else if (command === "doctor" || command === "status") await doctorCommand(args);
   else if (command === "route") await routeCommand(args);
+  else if (command === "conversation") await conversationCommand(args);
   else if (command === "browser") {
     const action = args.shift();
     assertNoArgs(args);

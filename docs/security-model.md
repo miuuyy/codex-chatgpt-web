@@ -66,10 +66,14 @@ transport, or returns a fabricated success.
 
 ### Cross-turn data leakage
 
-Browser turns use at most five independent task-bound tabs in one private login partition. Every
-outer Codex task owns a fresh Temporary Chat document and an exact launcher surface lease; chats are
-never reused across tasks. Closing a running tab destroys its page and terminates that turn. The
-five-tab limit bounds parallel account traffic. Tool calls remain in the same ChatGPT response. The
+Browser turns use at most five task-bound tabs in one private login partition. Fixed models give
+every outer Codex task a fresh Temporary Chat document and exact launcher surface lease. Optional
+registered Project-conversation models are intentionally stateful: they navigate only to an exact
+owner-local canonical URL, verify its visible labels and Pro selection, serialize requests per URL,
+and bind the response to one new assistant-message identity after an unchanged pre-send snapshot.
+They transmit only the latest capsule/delta, not replayed Codex history. Closing a running tab
+destroys its page and terminates that turn. The five-tab limit bounds parallel account traffic. Tool
+calls remain in the same ChatGPT response. The
 bounded local continuation cache is private, expires, and exists only to implement Codex
 `previous_response_id` replay. ChatGPT Web context compaction remains inside the active browser
 response; the bridge does not fabricate or install a Codex history checkpoint.

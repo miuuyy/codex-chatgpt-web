@@ -23,7 +23,9 @@ launcher-owned codex-chatgpt-web daemon
 - Exposes Instant (`chatgpt-web/light`), Medium, High, and Extra High; each model advertises exactly one
   immutable Codex effort matching its ChatGPT browser mode. `chatgpt-web/pro` is appended only when
   the authenticated account exposes Pro.
-- Sends the complete Codex context and image attachments to a fresh ChatGPT Temporary Chat.
+- The fixed models send the complete Codex context and image attachments to a fresh ChatGPT
+  Temporary Chat. Registered Project-conversation models send only the latest capsule/delta and its
+  images to their exact saved URL.
 - Never starts the broker, tunnel, or MCP server.
 - Emits a nonfatal Codex commentary warning that local tools are unavailable for the selected model.
 
@@ -40,8 +42,10 @@ launcher-owned codex-chatgpt-web daemon
 The desktop launcher owns one persistent Electron partition and up to five task-bound browser
 tabs. Each Codex task is leased an independent `WebContentsView` and surface ID; Playwright attaches
 to that exact surface through a launcher-owned loopback CDP endpoint. It does not launch another
-browser or copy authentication state. Each tab opens a fresh Temporary Chat, shares only the local
-login partition, and keeps its own document and lifecycle. Completed tabs remain inspectable until
+browser or copy authentication state. Fixed models open a fresh Temporary Chat. A registered
+Project-conversation model navigates directly to its owner-local opaque canonical URL and verifies
+the visible Project and conversation labels. Tabs share only the local login partition and keep
+their own document and lifecycle. Completed tabs remain inspectable until
 closed. Closing a running tab destroys its page and terminates that browser turn. A sixth concurrent
 turn fails explicitly; the cap avoids excessive parallel traffic that could trigger account abuse
 controls.
@@ -50,6 +54,15 @@ The complete serialized Codex task is inserted as one inline JSON envelope. Imag
 the JSON and are attached natively with stable references. The runtime does not create a context
 JSONL file, upload a synthetic context document, include prompt hashes, or truncate the envelope.
 Attachment acceptance and send readiness are verified before the turn begins.
+
+Persistent routes are explicit Pro-only models under `chatgpt-web/project/<route-key>`. A per-URL
+FIFO mutex prevents overlapping sends even if the same URL was accidentally presented by multiple
+callers. The browser snapshots the ordered `data-testid` identity of every existing assistant turn
+before sending, then accepts exactly one new identity after the unchanged prefix. It reads and
+returns only that completed turn. Route, label, or identity drift fails closed; no retry, fallback,
+replacement tab, Project, or conversation is created. These routes reject compaction turns and
+compile only the latest user capsule/delta, leaving prior context to the existing ChatGPT Project
+conversation.
 
 ChatGPT owns context compaction inside that browser response. The appended models intentionally
 advertise no Codex context window or auto-compaction threshold, and routed compaction v1/v2 calls
@@ -107,7 +120,8 @@ launcher error.
 - Store browser state and tunnel credentials under the application home with mode `0600`.
 - Protect lifecycle control endpoints with a random application-owned bearer token.
 - Never place secret values in command-line arguments, logs, generated profiles, or Git.
-- Limit browser turns to five independent task-bound tabs and reject unsupported models explicitly.
+- Limit browser turns to five task-bound tabs; additionally serialize every registered persistent
+  destination. Reject unsupported models explicitly.
   The selected routed model fixes the adapter effort; a conflicting request effort cannot change it.
 - Do not retry or switch modes to evade product usage limits.
 

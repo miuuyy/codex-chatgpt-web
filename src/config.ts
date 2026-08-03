@@ -3,7 +3,8 @@ import { chmodSync, mkdirSync, openSync, closeSync, renameSync, rmSync, writeFil
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
-import type { CodexProviderConfig } from "./types";
+import type { ChatGptConversationRoute, CodexProviderConfig } from "./types";
+import { validateChatGptConversationRoutes } from "./persistent-route";
 import { VERSION } from "./version";
 
 export type RuntimeMode = "browser-only" | "full";
@@ -38,6 +39,8 @@ export interface AppConfig {
   runtimeCommand: string[];
   acknowledgedUnofficialAt?: string;
   tunnel?: TunnelConfig;
+  /** Owner-local persistent Project conversations. Exact URLs never belong in source control. */
+  conversationRoutes?: ChatGptConversationRoute[];
 }
 
 export function expandUserPath(value: string): string {
@@ -334,7 +337,12 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (parsed.proAvailable !== undefined && typeof parsed.proAvailable !== "boolean") {
     throw new Error(`Invalid proAvailable in ${path}`);
   }
-  return { ...parsed, proAvailable: parsed.proAvailable === true } as AppConfig;
+  const conversationRoutes = validateChatGptConversationRoutes(parsed.conversationRoutes, `conversationRoutes in ${path}`);
+  return {
+    ...parsed,
+    proAvailable: parsed.proAvailable === true,
+    ...(conversationRoutes.length > 0 ? { conversationRoutes } : { conversationRoutes: undefined }),
+  } as AppConfig;
 }
 
 export function saveConfig(config: AppConfig): void {

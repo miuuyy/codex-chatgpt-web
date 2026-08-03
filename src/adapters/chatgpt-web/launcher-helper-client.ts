@@ -135,6 +135,7 @@ export class LauncherBrowserHelperClient {
             modelId: turn.modelId,
             reasoning: turn.reasoning,
             capabilities: turn.capabilities,
+            conversationRoute: turn.conversationRoute,
             prepared: { text: prepared.text, images: prepared.images } satisfies CompiledChatGptWebPrompt,
           },
         }).catch(error => this.finishWithError(turn.traceId, error instanceof Error ? error : new Error(String(error))));

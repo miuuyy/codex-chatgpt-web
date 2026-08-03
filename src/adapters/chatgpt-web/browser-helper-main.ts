@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline";
 import { stdin, stderr, stdout } from "node:process";
-import type { CodexProviderConfig } from "../../types";
+import type { ChatGptConversationRoute, CodexProviderConfig } from "../../types";
+import { validateChatGptConversationRoutes } from "../../persistent-route";
 import { ChatGptBrowserWorker, closeChatGptBrowserWorkers, type BrowserTurn } from "./browser-worker";
 import type { ChatGptWebCapabilities } from "./model";
 import { createProcessLineWriter } from "./process-line-writer";
@@ -20,6 +21,7 @@ interface RunMessage {
     modelId: string;
     reasoning?: string;
     capabilities: ChatGptWebCapabilities;
+    conversationRoute?: ChatGptConversationRoute;
     prepared: CompiledChatGptWebPrompt;
   };
 }
@@ -92,6 +94,9 @@ async function run(message: RunMessage): Promise<void> {
   if (!message.turn.prepared || typeof message.turn.prepared.text !== "string" || !Array.isArray(message.turn.prepared.images)) {
     throw new Error("Browser helper prompt is invalid");
   }
+  const conversationRoute = message.turn.conversationRoute === undefined
+    ? undefined
+    : validateChatGptConversationRoutes([message.turn.conversationRoute], "browser helper conversationRoute")[0];
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: "https://chatgpt.com",
@@ -110,6 +115,7 @@ async function run(message: RunMessage): Promise<void> {
     modelId: message.turn.modelId,
     reasoning: message.turn.reasoning,
     capabilities: message.turn.capabilities,
+    ...(conversationRoute ? { conversationRoute } : {}),
     prepare: async () => ({ ...message.turn.prepared, release: () => {} }),
     abortSignal: abortController.signal,
     onHeartbeat: () => writeProtocol({ type: "event", id: message.id, event: "heartbeat" }),
