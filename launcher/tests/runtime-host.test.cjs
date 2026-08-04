@@ -29,6 +29,7 @@ test("core setup preserves an existing full-harness installation", async () => {
   const result = await fixture.host.setupCore();
   assert.equal(result.mode, "full");
   assert.deepEqual(fixture.invocation().args.slice(0, 2), ["setup", "--full"]);
+  assert.equal(fixture.invocation().args.includes("--replace-codex-route"), false);
 });
 
 test("core setup starts in browser-only mode when no installation exists", async () => {
@@ -36,6 +37,15 @@ test("core setup starts in browser-only mode when no installation exists", async
   const result = await fixture.host.setupCore();
   assert.equal(result.mode, "browser-only");
   assert.deepEqual(fixture.invocation().args.slice(0, 2), ["setup", "--browser-only"]);
+  assert.equal(fixture.invocation().args.includes("--replace-codex-route"), false);
+});
+
+test("core force setup passes --replace-codex-route", async () => {
+  const fixture = hostFor(null);
+  const result = await fixture.host.setupCore({ replace: true });
+  assert.equal(result.mode, "browser-only");
+  assert.ok(fixture.invocation().args.includes("--replace-codex-route"));
+  assert.ok(fixture.invocation().args.includes("--restart-service"));
 });
 
 test("MCP setup reuses valid private credentials without exposing or rewriting them", async () => {

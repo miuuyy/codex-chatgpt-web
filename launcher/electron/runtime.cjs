@@ -643,7 +643,7 @@ class RuntimeHost {
     }
   }
 
-  async setupCore() {
+  async setupCore({ replace = false } = {}) {
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
     const existing = this.runtimeConfigSnapshot();
     const mode = existing.mode;
@@ -655,8 +655,11 @@ class RuntimeHost {
       "--acknowledge-unofficial",
       "--restart-service",
     ];
+    if (replace === true) args.splice(args.length - 1, 0, "--replace-codex-route");
     const result = await this.runSetup("core-setup", args, {
-      message: "Installing ChatGPT Web models into Codex",
+      message: replace === true
+        ? "Replacing the existing Codex model route with ChatGPT Web models"
+        : "Installing ChatGPT Web models into Codex",
       successMessage: "Codex integration installed",
       timeoutMs: CORE_SETUP_TIMEOUT_MS,
     });

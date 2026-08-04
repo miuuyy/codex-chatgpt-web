@@ -755,6 +755,10 @@ function SetupSurface({
     await api!.setupCore();
     updateState((await api!.snapshot()).state);
   });
+  const installForce = () => run(async () => {
+    await api!.setupCore({ replace: true });
+    updateState((await api!.snapshot()).state);
+  });
 
   return (
     <ContentSurface
@@ -795,8 +799,11 @@ function SetupSurface({
           disabled={busy
             || !snapshot.smokePassed
             || (snapshot.state.coreSetupComplete === true && snapshot.state.codexCatalogVerified !== true)}
+          forceAction={copy.installForce}
+          forceDisabled={busy || !snapshot.smokePassed}
           index={3}
           onAction={install}
+          onForceAction={installForce}
           title={copy.stepInstall}
         />
       </div>
@@ -1309,16 +1316,22 @@ function SetupRow({
   complete,
   description,
   disabled,
+  forceAction,
+  forceDisabled,
   index,
   onAction,
+  onForceAction,
   title,
 }: {
   action: string;
   complete: boolean;
   description: string;
   disabled: boolean;
+  forceAction?: string;
+  forceDisabled?: boolean;
   index: number;
   onAction: () => void;
+  onForceAction?: () => void;
   title: string;
 }) {
   return (
@@ -1328,9 +1341,16 @@ function SetupRow({
         <strong>{title}</strong>
         <p>{description}</p>
       </div>
-      <SecondaryButton disabled={disabled || complete} onClick={onAction}>
-        {action}
-      </SecondaryButton>
+      <div className="setup-row-actions">
+        <SecondaryButton disabled={disabled || complete} onClick={onAction}>
+          {action}
+        </SecondaryButton>
+        {forceAction && onForceAction && !complete ? (
+          <SecondaryButton disabled={forceDisabled === true} onClick={onForceAction}>
+            {forceAction}
+          </SecondaryButton>
+        ) : null}
+      </div>
     </div>
   );
 }

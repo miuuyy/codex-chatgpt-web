@@ -892,6 +892,14 @@ code {
   border-bottom: 1px solid var(--color-border);
 }
 
+.setup-row-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 12px 0;
+}
+
 .setup-index {
   display: grid;
   width: 24px;
@@ -2000,7 +2008,8 @@ code {
     padding: 10px 0;
   }
 
-  .setup-row > .button-secondary {
+  .setup-row > .button-secondary,
+  .setup-row > .setup-row-actions {
     grid-column: 2;
     justify-self: start;
     margin-bottom: 7px;

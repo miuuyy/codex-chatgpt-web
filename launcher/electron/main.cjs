@@ -462,13 +462,15 @@ function registerIpc({ logger, stateStore }) {
     stopCatalogVerificationMonitor();
     return { cancelled: false, state };
   });
-  handle("launcher:setup-core", async () => {
+  handle("launcher:setup-core", async (_event, input) => {
     const browser = await browserHost.probeAuthentication();
     if (!browser.authenticated) throw new Error("Sign in to ChatGPT before installing the Codex integration");
     if (!(smokePassedThisSession || smokePassedForCurrentVersion(stateStore.read()))) {
       throw new Error("Run the browser smoke test before installing the Codex integration");
     }
-    const result = await runtimeHost.setupCore();
+    const result = await runtimeHost.setupCore({
+      replace: input?.replace === true,
+    });
     stateStore.update({
       bridgeEnabled: true,
       coreSetupComplete: true,
