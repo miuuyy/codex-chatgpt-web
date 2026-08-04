@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  CHATGPT_COMPACTION_CONTEXT_FILENAME,
   CHATGPT_INTERNAL_COMPACTION_MARKER,
   compileChatGptWebPrompt,
 } from "../src/adapters/chatgpt-web/prompt";
@@ -70,6 +71,22 @@ test("compaction prompts are isolated summarization turns without local or nativ
   expect(compiled.text).not.toContain("codex_bind_turn");
   expect(compiled.text).not.toContain("web search, browsing, research");
   expect(compiled.text).not.toContain("missing local-computer bridge");
+  expect(compiled.text).toContain(`attached UTF-8 document named ${CHATGPT_COMPACTION_CONTEXT_FILENAME}`);
+  expect(compiled.text).toContain("Read the complete attached document before acting.");
+  expect(compiled.text).not.toContain("<codex_context_json>");
+  expect(compiled.contextAttachment).toMatchObject({
+    name: CHATGPT_COMPACTION_CONTEXT_FILENAME,
+    mimeType: "text/plain",
+  });
+  const encoded = compiled.contextAttachment!.text.match(/^<codex_context_json>\n(.+)\n<\/codex_context_json>$/s)?.[1];
+  expect(JSON.parse(encoded!)).toEqual({
+    version: 3,
+    system: ["preserve-system"],
+    messages: [
+      { role: "developer", content: "preserve-developer" },
+      { role: "user", content: "perform the task" },
+    ],
+  });
 });
 
 test("assigns prior assistant output to the model and never attributes Codex context to the human", () => {
@@ -136,6 +153,42 @@ test("a long task keeps the newest images and drops the overflow instead of fail
   expect(compiled.text).toContain("older image not attached");
   expect(compiled.text).toContain("step 1");
   expect(compiled.text).toContain("step 13");
+});
+
+test("compaction reserves one attachment slot and keeps the newest nine images", () => {
+  const image = (marker: string) => ({
+    type: "image" as const,
+    imageUrl: `data:image/png;base64,${marker}`,
+  });
+  const markers = Array.from({ length: 13 }, (_unused, index) => `IMG${index + 1}`);
+  const compact: CodexParsedRequest = {
+    modelId: CHATGPT_WEB_MODEL_ID,
+    context: {
+      messages: markers.map((marker, index) => ({
+        role: "user" as const,
+        content: [{ type: "text" as const, text: `step ${index + 1}` }, image(marker)],
+        timestamp: index + 1,
+      })),
+    },
+    stream: true,
+    options: { reasoning: "high" },
+    _compactionRequest: true,
+  };
+
+  const compiled = compileChatGptWebPrompt(
+    compact,
+    { localToolsEnabled: false, proAvailable: true },
+  );
+
+  expect(compiled.images.map(entry => entry.imageUrl)).toEqual(
+    markers.slice(-9).map(marker => `data:image/png;base64,${marker}`),
+  );
+  expect(compiled.contextAttachment?.text).toContain("only 9 image slots are available for this message");
+  expect(compiled.contextAttachment?.text.match(/older image not attached/g)).toHaveLength(4);
+  expect(compiled.contextAttachment?.text.match(/"type":"image_attachment"/g)).toHaveLength(9);
+  expect(compiled.contextAttachment?.text).not.toContain("data:image");
+  for (const marker of markers) expect(compiled.contextAttachment?.text).not.toContain(marker);
+  expect(compiled.text).not.toContain("older image not attached");
 });
 
 test("the replayed context never carries a finished turn's broker handles", () => {
@@ -222,7 +275,50 @@ test("keeps large contexts intact in the inline text envelope", () => {
   expect(compiled.text).toContain(largeContent);
   expect(compiled.text).toContain(token);
   expect(compiled.text).toContain(`<codex_context_json>`);
+  expect(compiled.contextAttachment).toBeNull();
   expect(compiled.text).not.toContain(`<codex_context_attachment>`);
   expect(compiled.text).not.toContain("sha256");
   expect(compiled.text).not.toContain("SHA-256");
+});
+
+test("moves a large compaction envelope into one exact text attachment without duplication", () => {
+  const beginning = "unique-compaction-beginning";
+  const middle = "unique-compaction-middle";
+  const ending = "unique-compaction-ending";
+  const largeContent = `${beginning}${"x".repeat(300_000)}${middle}${"y".repeat(300_000)}${ending}`;
+  const compact = request("high");
+  compact._compactionRequest = true;
+  compact.context.messages.push({
+    role: "toolResult",
+    toolCallId: "call_large",
+    toolName: "exec_command",
+    content: `${largeContent} turn_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`,
+    isError: false,
+    timestamp: 3,
+  });
+
+  const compiled = compileChatGptWebPrompt(
+    compact,
+    { localToolsEnabled: false, proAvailable: true },
+  );
+
+  expect(compiled.text.length).toBeLessThan(10_000);
+  expect(compiled.text).not.toContain(beginning);
+  expect(compiled.text).not.toContain(middle);
+  expect(compiled.text).not.toContain(ending);
+  expect(compiled.text).not.toContain("<codex_context_json>");
+  expect(compiled.contextAttachment).toMatchObject({
+    name: CHATGPT_COMPACTION_CONTEXT_FILENAME,
+    mimeType: "text/plain",
+  });
+  const attachment = compiled.contextAttachment!.text;
+  expect(attachment.startsWith("<codex_context_json>\n")).toBe(true);
+  expect(attachment.endsWith("\n</codex_context_json>")).toBe(true);
+  expect(attachment.match(new RegExp(beginning, "g"))).toHaveLength(1);
+  expect(attachment.match(new RegExp(middle, "g"))).toHaveLength(1);
+  expect(attachment.match(new RegExp(ending, "g"))).toHaveLength(1);
+  expect(attachment).not.toContain("turn_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+  expect(attachment).toContain("[retired turn handle]");
+  const encoded = attachment.slice("<codex_context_json>\n".length, -"\n</codex_context_json>".length);
+  expect(() => JSON.parse(encoded) as unknown).not.toThrow();
 });

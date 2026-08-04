@@ -6,7 +6,7 @@ import type { CodexProviderConfig } from "../../types";
 import { parseDataUrl } from "../image";
 import { ChatGptMarkdownStream } from "./markdown";
 import { resolveChatGptWebModelMode, type ChatGptWebCapabilities, type ChatGptWebModelMode } from "./model";
-import { CHATGPT_INTERNAL_COMPACTION_MARKER, CHATGPT_MAX_INPUT_IMAGES, containsChatGptCompactionMarker, stripChatGptTransportMarkers, type CompiledChatGptWebPrompt, type ChatGptWebPromptImage } from "./prompt";
+import { CHATGPT_INTERNAL_COMPACTION_MARKER, CHATGPT_MAX_INPUT_ATTACHMENTS, CHATGPT_MAX_INPUT_IMAGES, containsChatGptCompactionMarker, isChatGptWebContextAttachment, stripChatGptTransportMarkers, type CompiledChatGptWebPrompt, type ChatGptWebPromptImage } from "./prompt";
 import { estimateCompiledChatGptWebInputTokens } from "./usage";
 import {
   assertAuthenticatedChatGptPage,
@@ -329,7 +329,22 @@ export function chatGptImageFilePayloads(images: ChatGptWebPromptImage[]): Array
 export function chatGptPromptFilePayloads(
   prompt: CompiledChatGptWebPrompt,
 ): Array<{ name: string; mimeType: string; buffer: Buffer }> {
-  return chatGptImageFilePayloads(prompt.images);
+  const contextAttachment: unknown = prompt.contextAttachment;
+  if (contextAttachment !== null && !isChatGptWebContextAttachment(contextAttachment)) {
+    throw new Error("ChatGPT web compaction context attachment is invalid");
+  }
+  const attachmentCount = prompt.images.length + (contextAttachment === null ? 0 : 1);
+  if (attachmentCount > CHATGPT_MAX_INPUT_ATTACHMENTS) {
+    throw new Error(`ChatGPT web accepts at most ${CHATGPT_MAX_INPUT_ATTACHMENTS} input attachments per Codex turn`);
+  }
+  return [
+    ...(contextAttachment ? [{
+      name: contextAttachment.name,
+      mimeType: contextAttachment.mimeType,
+      buffer: Buffer.from(contextAttachment.text, "utf8"),
+    }] : []),
+    ...chatGptImageFilePayloads(prompt.images),
+  ];
 }
 
 export class ChatGptBrowserWorker {
@@ -410,11 +425,16 @@ export class ChatGptBrowserWorker {
     stage: string,
     timeoutMs: number,
     action: (abortSignal: AbortSignal) => Promise<T>,
+    turnAbortSignal?: AbortSignal,
   ): Promise<T> {
+    if (turnAbortSignal?.aborted) {
+      throw new DOMException("ChatGPT web turn aborted", "AbortError");
+    }
     const startedAt = performance.now();
     console.info(`[chatgpt-web] browser turn ${traceId} stage=${stage} started`);
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let abortStage: (() => void) | undefined;
     try {
       const timeout = new Promise<never>((_, rejectTimeout) => {
         timer = setTimeout(() => {
@@ -422,7 +442,17 @@ export class ChatGptBrowserWorker {
           controller.abort();
         }, timeoutMs);
       });
-      const value = await Promise.race([action(controller.signal), timeout]);
+      const pending: Promise<T | never>[] = [action(controller.signal), timeout];
+      if (turnAbortSignal) {
+        pending.push(new Promise<never>((_, rejectAbort) => {
+          abortStage = () => {
+            controller.abort();
+            rejectAbort(new DOMException("ChatGPT web turn aborted", "AbortError"));
+          };
+          turnAbortSignal.addEventListener("abort", abortStage, { once: true });
+        }));
+      }
+      const value = await Promise.race(pending);
       console.info(`[chatgpt-web] browser turn ${traceId} stage=${stage} completed durationMs=${Math.round(performance.now() - startedAt)}`);
       return value;
     } catch (error) {
@@ -430,6 +460,7 @@ export class ChatGptBrowserWorker {
       throw error;
     } finally {
       if (timer) clearTimeout(timer);
+      if (turnAbortSignal && abortStage) turnAbortSignal.removeEventListener("abort", abortStage);
     }
   }
 
@@ -967,6 +998,10 @@ export class ChatGptBrowserWorker {
     try {
       if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
       const estimatedInputTokens = estimateCompiledChatGptWebInputTokens(prepared, turn.modelId);
+      const contextFileBytes = prepared.contextAttachment
+        ? Buffer.byteLength(prepared.contextAttachment.text, "utf8")
+        : 0;
+      const attachmentCount = prepared.images.length + (prepared.contextAttachment ? 1 : 0);
       const deadline = Date.now() + this.config.turnTimeoutMs;
       const page = await this.runStage(turn.traceId, "browser_page", browserStageTimeouts.browserPage, async (abortSignal) => {
         if (!launcherSurfaceId) {
@@ -992,7 +1027,7 @@ export class ChatGptBrowserWorker {
       });
       if (!launcherSurfaceId) managedPage = page;
       console.info(
-        `[chatgpt-web] browser turn ${turn.traceId} opened (transport=inline, promptChars=${prepared.text.length}, estimatedInputTokens=${estimatedInputTokens}, images=${prepared.images.length})`,
+        `[chatgpt-web] browser turn ${turn.traceId} opened (transport=${prepared.contextAttachment ? "context-file" : "inline"}, promptChars=${prepared.text.length}, contextFileBytes=${contextFileBytes}, estimatedInputTokens=${estimatedInputTokens}, attachments=${attachmentCount}, images=${prepared.images.length})`,
       );
       await this.runStage(turn.traceId, "temporary_chat_navigation", browserStageTimeouts.navigation, () => (
         page.goto(CHATGPT_TEMPORARY_CHAT_URL, { waitUntil: "domcontentloaded", timeout: 60_000 }).then(() => undefined)
@@ -1016,7 +1051,7 @@ export class ChatGptBrowserWorker {
       ));
       await this.runStage(turn.traceId, "file_attachment", browserStageTimeouts.fileAttachment, () => (
         this.attachFiles(page, prepared)
-      ));
+      ), turn.abortSignal);
       const responseTurns = page.locator(CHATGPT_ASSISTANT_TURN_SELECTOR);
       const initialResponseTurnCount = await responseTurns.count();
       const responseTurn = responseTurns.nth(initialResponseTurnCount);

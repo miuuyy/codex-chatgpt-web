@@ -46,17 +46,24 @@ closed. Closing a running tab destroys its page and terminates that browser turn
 turn fails explicitly; the cap avoids excessive parallel traffic that could trigger account abuse
 controls.
 
-The complete serialized Codex task is inserted as one inline JSON envelope. Image bytes stay out of
-the JSON and are attached natively with stable references. The runtime does not create a context
-JSONL file, upload a synthetic context document, include prompt hashes, or truncate the envelope.
-Attachment acceptance and send readiness are verified before the turn begins.
+Normal routed turns insert the complete serialized Codex task as one inline JSON envelope. Image
+bytes stay out of the JSON and are attached natively with stable references.
 
-ChatGPT owns context compaction inside that browser response. The appended models intentionally
-advertise no Codex context window or auto-compaction threshold, and routed compaction v1/v2 calls
-fail explicitly instead of opening a second summarizer turn. A prompt-level checkpoint marker is
-translated into a visible Codex trace item; tool-capable turns re-bind the same capability after
-that checkpoint. Visible ChatGPT status rows become reasoning summaries, while stable prose between
-rows becomes native Codex commentary.
+Dedicated Codex compaction turns use the same read-only summarization path, but only the bounded
+control contract is inserted into the composer. The complete sanitized `<codex_context_json>`
+envelope is uploaded as one in-memory UTF-8 `text/plain` attachment named
+`codex-compaction-context.txt`. The application never writes that context document to disk, never
+falls back to pasting it inline, and never truncates or hashes it. The document reserves one of
+ChatGPT's ten attachment slots, so compaction retains at most the newest nine images. The browser
+waits for an exact visible tile for every attachment and for the send button to become enabled;
+upload failure terminates the turn before sending.
+
+Token accounting includes both the inline control text and attached context text. Routed models
+continue to advertise a 256,000-token context window and a 230,400-token automatic compaction
+threshold. Compaction remains a no-tools turn, and its existing server response conversion stays
+unchanged. A prompt-level checkpoint marker is translated into a visible Codex trace item;
+tool-capable normal turns re-bind the same capability after that checkpoint. Visible ChatGPT status
+rows become reasoning summaries, while stable prose between rows becomes native Codex commentary.
 
 ## Installation and service lifecycle
 

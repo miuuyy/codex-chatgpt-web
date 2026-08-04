@@ -57,10 +57,11 @@ connects ChatGPT back to the tools of that same Codex task.
   custom MCP connector this bridge needs. Its native capabilities, including web search and
   research, remain available. Gather local workspace context with Instant through Extra High,
   switch to Pro, and Pro receives the complete accumulated Codex task for deeper analysis.
-- **Fail-closed and manually tested.** Model selection, long inline context, images, streaming,
-  visible trace, compaction, native tool rounds, cancellation, and Pro were exercised end-to-end on
-  macOS and Windows 11. UI drift and missing capabilities produce explicit errors rather than
-  silent fallbacks.
+- **Fail-closed transport.** Normal turns transport complete context inline. Dedicated compaction
+  turns keep their control instructions inline and upload the complete context as an in-memory
+  UTF-8 `codex-compaction-context.txt` attachment. The browser verifies every attachment tile and
+  send readiness before submission. UI drift, upload failure, and missing capabilities produce
+  explicit errors rather than silent fallbacks.
 
 Temporary Chat is a ChatGPT privacy mode, not anonymity or local-only inference: prompts are still
 processed by OpenAI and are subject to the account's settings and OpenAI's

@@ -11,11 +11,11 @@ import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "../sr
 import { createChatGptWebAdapter } from "../src/adapters/chatgpt-web/index";
 import { chatGptHtmlToMarkdown, ChatGptMarkdownStream } from "../src/adapters/chatgpt-web/markdown";
 import { CHATGPT_WEB_MODEL_ID, resolveChatGptWebModelMode } from "../src/adapters/chatgpt-web/model";
-import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
+import { CHATGPT_COMPACTION_CONTEXT_FILENAME, chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
 import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSessions, chatGptTurnExecutionKey } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, TurnBroker, type BrokerToolResult } from "../src/adapters/chatgpt-web/turn-broker";
 import { defaultBrokerEndpoint } from "../src/config";
-import { estimateChatGptWebUsage } from "../src/adapters/chatgpt-web/usage";
+import { estimateChatGptWebUsage, estimateCompiledChatGptWebInputTokens } from "../src/adapters/chatgpt-web/usage";
 import { decodeCompactionSummary, SUMMARY_PREFIX } from "../src/responses/compaction";
 import { parseRequest } from "../src/responses/parser";
 import type { AdapterEvent, CodexParsedRequest, CodexProviderConfig, CodexTool } from "../src/types";
@@ -338,6 +338,67 @@ describe("ChatGPT outer-native harness v3", () => {
     expect(compiled.text).toContain("<codex_context_json>");
     expect(files.map(file => file.name)).toEqual(["codex-input-image-1.png"]);
     expect(files[0]!.mimeType).toBe("image/png");
+  });
+
+  test("uploads compaction context as the first in-memory file and preserves usage accounting", () => {
+    const imageUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    const request = parsed();
+    request._compactionRequest = true;
+    request.context.systemPrompt = ["d".repeat(70_000)];
+    request.context.messages[0]!.content = [
+      { type: "text", text: "Inspect the attached context and image" },
+      { type: "image", imageUrl, detail: "high" },
+    ];
+    const compiled = compileChatGptWebPrompt(request, readOnlyCapabilities);
+    const files = chatGptPromptFilePayloads(compiled);
+
+    expect(compiled.text).not.toContain("d".repeat(70_000));
+    expect(files.map(file => file.name)).toEqual([
+      CHATGPT_COMPACTION_CONTEXT_FILENAME,
+      "codex-input-image-1.png",
+    ]);
+    expect(files[0]!.mimeType).toBe("text/plain");
+    expect(files[0]!.buffer.toString("utf8")).toBe(compiled.contextAttachment!.text);
+    expect(files[1]!.mimeType).toBe("image/png");
+
+    const inlineRequest = structuredClone(request);
+    delete inlineRequest._compactionRequest;
+    const inline = compileChatGptWebPrompt(
+      inlineRequest,
+      toolCapabilities,
+      "turn_123456789012345678901234",
+    );
+    const attachmentEstimate = estimateCompiledChatGptWebInputTokens(compiled, request.modelId);
+    const inlineEstimate = estimateCompiledChatGptWebInputTokens(inline, request.modelId);
+    expect(Math.abs(attachmentEstimate - inlineEstimate)).toBeLessThan(1_000);
+  });
+
+  test("compaction without images uploads exactly one text file and rejects an eleventh attachment", () => {
+    const request = parsed();
+    request._compactionRequest = true;
+    const compiled = compileChatGptWebPrompt(request, readOnlyCapabilities);
+    expect(chatGptPromptFilePayloads(compiled).map(file => file.name)).toEqual([
+      CHATGPT_COMPACTION_CONTEXT_FILENAME,
+    ]);
+
+    const imageUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    expect(chatGptPromptFilePayloads({
+      ...compiled,
+      images: Array.from({ length: 9 }, (_unused, index) => ({
+        ref: `codex-input-image-${index + 1}`,
+        imageUrl,
+      })),
+    }).map(file => file.name)).toEqual([
+      CHATGPT_COMPACTION_CONTEXT_FILENAME,
+      ...Array.from({ length: 9 }, (_unused, index) => `codex-input-image-${index + 1}.png`),
+    ]);
+    expect(() => chatGptPromptFilePayloads({
+      ...compiled,
+      images: Array.from({ length: 10 }, (_unused, index) => ({
+        ref: `codex-input-image-${index + 1}`,
+        imageUrl,
+      })),
+    })).toThrow("at most 10 input attachments");
   });
 
   test("maps one ChatGPT Web model to explicit effort modes and fails closed on invalid combinations", () => {

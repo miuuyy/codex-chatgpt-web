@@ -3,6 +3,7 @@ import { stdin, stderr, stdout } from "node:process";
 import type { CodexProviderConfig } from "../../types";
 import { ChatGptBrowserWorker, closeChatGptBrowserWorkers, type BrowserTurn } from "./browser-worker";
 import type { ChatGptWebCapabilities } from "./model";
+import { validateBrowserHelperPreparedPrompt } from "./browser-helper-prompt";
 import { createProcessLineWriter } from "./process-line-writer";
 import type { CompiledChatGptWebPrompt } from "./prompt";
 
@@ -89,9 +90,7 @@ async function run(message: RunMessage): Promise<void> {
     throw new Error("Browser helper turn identity is invalid");
   }
   if (abortControllers.has(message.id)) throw new Error(`Browser helper turn already exists: ${message.id}`);
-  if (!message.turn.prepared || typeof message.turn.prepared.text !== "string" || !Array.isArray(message.turn.prepared.images)) {
-    throw new Error("Browser helper prompt is invalid");
-  }
+  const prepared = validateBrowserHelperPreparedPrompt(message.turn.prepared);
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: "https://chatgpt.com",
@@ -110,7 +109,7 @@ async function run(message: RunMessage): Promise<void> {
     modelId: message.turn.modelId,
     reasoning: message.turn.reasoning,
     capabilities: message.turn.capabilities,
-    prepare: async () => ({ ...message.turn.prepared, release: () => {} }),
+    prepare: async () => ({ ...prepared, release: () => {} }),
     abortSignal: abortController.signal,
     onHeartbeat: () => writeProtocol({ type: "event", id: message.id, event: "heartbeat" }),
     onReasoningSummary: (text, continuation) => writeProtocol({

@@ -32,7 +32,7 @@ test("browser turns run concurrently up to the five-tab limit", async () => {
     traceId,
     modelId: "chatgpt-web/high",
     capabilities: { localToolsEnabled: false, proAvailable: true },
-    prepare: async () => ({ text: traceId, images: [], release() {} }),
+    prepare: async () => ({ text: traceId, images: [], contextAttachment: null, release() {} }),
     onTextDelta() {},
   });
 
@@ -78,6 +78,38 @@ test("browser stage timeout aborts late page acquisition", async () => {
 
   await expect(result).rejects.toThrow("ChatGPT browser stage timed out: browser_page");
   expect(acquisitionAborted).toBeTrue();
+});
+
+test("turn cancellation aborts the active file attachment stage", async () => {
+  const controller = new AbortController();
+  let attachmentAborted = false;
+  const runStage = (ChatGptBrowserWorker.prototype as unknown as {
+    runStage<T>(
+      traceId: string,
+      stage: string,
+      timeoutMs: number,
+      action: (signal: AbortSignal) => Promise<T>,
+      turnAbortSignal?: AbortSignal,
+    ): Promise<T>;
+  }).runStage;
+
+  const result = runStage.call(
+    {},
+    "trace_cancelled_upload",
+    "file_attachment",
+    60_000,
+    async (signal) => await new Promise<string>((_resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        attachmentAborted = true;
+        reject(new DOMException("ChatGPT web turn aborted", "AbortError"));
+      }, { once: true });
+    }),
+    controller.signal,
+  );
+  controller.abort();
+
+  await expect(result).rejects.toMatchObject({ name: "AbortError" });
+  expect(attachmentAborted).toBeTrue();
 });
 
 test("closing the launcher page is an immediate terminal turn error", async () => {
@@ -379,7 +411,7 @@ test("tool-capable prompts use the shared Playwright connector selection before 
   ]);
 });
 
-test("image attachment readiness uses exact file tiles and not localized remove-button text", async () => {
+test("compaction attachment readiness uploads one document and image batch before sending", async () => {
   const imageUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
   const calls: Array<[string, string?]> = [];
   const send = {
@@ -391,7 +423,11 @@ test("image attachment readiness uses exact file tiles and not localized remove-
   const composerForm = {
     getByRole: (role: string, options: { name: string; exact: boolean }) => {
       expect(role).toBe("group");
-      expect(options).toEqual({ name: "codex-input-image-1.png", exact: true });
+      expect([
+        "codex-compaction-context.txt",
+        "codex-input-image-1.png",
+      ]).toContain(options.name);
+      expect(options.exact).toBe(true);
       return {
         waitFor: async (state: { state: string; timeout: number }) => {
           expect(state).toEqual({ state: "visible", timeout: 60_000 });
@@ -433,17 +469,137 @@ test("image attachment readiness uses exact file tiles and not localized remove-
   }).attachFiles;
 
   await attachFiles.call({ activeComposer: async () => composer }, page, {
+    contextAttachment: {
+      name: "codex-compaction-context.txt",
+      mimeType: "text/plain",
+      text: "<codex_context_json>\n{}\n</codex_context_json>",
+    },
     images: [{ ref: "codex-input-image-1", imageUrl }],
   });
 
   expect(calls).toEqual([
     ["inputReady"],
-    ["setFiles", "codex-input-image-1.png"],
+    ["setFiles", "codex-compaction-context.txt,codex-input-image-1.png"],
+    ["fileTile", "codex-compaction-context.txt"],
     ["fileTile", "codex-input-image-1.png"],
     ["sendEnabled"],
   ]);
   const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
   expect(workerSource).not.toContain('aria-label^="Remove file "');
+});
+
+test("compaction upload rejects when the document input rejects text/plain", async () => {
+  let tileChecked = false;
+  let sendChecked = false;
+  const composerForm = {
+    getByRole: () => {
+      tileChecked = true;
+      return { waitFor: async () => {} };
+    },
+    getByTestId: () => {
+      sendChecked = true;
+      return { isEnabled: async () => true };
+    },
+  };
+  const composer = { locator: () => composerForm };
+  const page = {
+    locator: (selector: string) => selector === 'input[data-testid="upload-photos-input"]'
+      ? {
+        waitFor: async () => {},
+        setInputFiles: async () => { throw new Error("text/plain upload rejected"); },
+      }
+      : { allInnerTexts: async () => [] },
+  };
+  const attachFiles = (ChatGptBrowserWorker.prototype as unknown as {
+    attachFiles(page: unknown, prompt: unknown): Promise<void>;
+  }).attachFiles;
+
+  await expect(attachFiles.call({ activeComposer: async () => composer }, page, {
+    text: "summarize",
+    images: [],
+    contextAttachment: {
+      name: "codex-compaction-context.txt",
+      mimeType: "text/plain",
+      text: "<codex_context_json>\n{}\n</codex_context_json>",
+    },
+  })).rejects.toThrow("text/plain upload rejected");
+  expect(tileChecked).toBeFalse();
+  expect(sendChecked).toBeFalse();
+});
+
+test("compaction upload rejects an alert when the exact document tile never appears", async () => {
+  let sendChecked = false;
+  const composerForm = {
+    getByRole: () => ({
+      waitFor: async () => { throw new Error("tile timeout"); },
+    }),
+    getByTestId: () => {
+      sendChecked = true;
+      return { isEnabled: async () => true };
+    },
+  };
+  const composer = { locator: () => composerForm };
+  const page = {
+    locator: (selector: string) => {
+      if (selector === 'input[data-testid="upload-photos-input"]') {
+        return { waitFor: async () => {}, setInputFiles: async () => {} };
+      }
+      if (selector === '[role="alert"]') {
+        return { allInnerTexts: async () => ["Unsupported document type"] };
+      }
+      throw new Error(`unexpected selector: ${selector}`);
+    },
+  };
+  const attachFiles = (ChatGptBrowserWorker.prototype as unknown as {
+    attachFiles(page: unknown, prompt: unknown): Promise<void>;
+  }).attachFiles;
+
+  await expect(attachFiles.call({ activeComposer: async () => composer }, page, {
+    text: "summarize",
+    images: [],
+    contextAttachment: {
+      name: "codex-compaction-context.txt",
+      mimeType: "text/plain",
+      text: "<codex_context_json>\n{}\n</codex_context_json>",
+    },
+  })).rejects.toThrow("ChatGPT did not accept all prompt attachments: Unsupported document type");
+  expect(sendChecked).toBeFalse();
+});
+
+test("compaction upload rejects before send when attachments never enable the message", async () => {
+  const originalNow = Date.now;
+  let now = 0;
+  Date.now = () => {
+    now += 60_001;
+    return now;
+  };
+  try {
+    const composerForm = {
+      getByRole: () => ({ waitFor: async () => {} }),
+      getByTestId: () => ({ isEnabled: async () => false }),
+    };
+    const composer = { locator: () => composerForm };
+    const page = {
+      locator: (selector: string) => selector === 'input[data-testid="upload-photos-input"]'
+        ? { waitFor: async () => {}, setInputFiles: async () => {} }
+        : { allInnerTexts: async () => [] },
+    };
+    const attachFiles = (ChatGptBrowserWorker.prototype as unknown as {
+      attachFiles(page: unknown, prompt: unknown): Promise<void>;
+    }).attachFiles;
+
+    await expect(attachFiles.call({ activeComposer: async () => composer }, page, {
+      text: "summarize",
+      images: [],
+      contextAttachment: {
+        name: "codex-compaction-context.txt",
+        mimeType: "text/plain",
+        text: "<codex_context_json>\n{}\n</codex_context_json>",
+      },
+    })).rejects.toThrow("did not make the message ready to send");
+  } finally {
+    Date.now = originalNow;
+  }
 });
 
 test("effort selection uses structural menu indices instead of localized labels", () => {

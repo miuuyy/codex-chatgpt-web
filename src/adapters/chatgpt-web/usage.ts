@@ -33,6 +33,9 @@ export function estimateCompiledChatGptWebInputTokens(
   compiled: CompiledChatGptWebPrompt,
   modelId: string,
 ): number {
+  const inputText = compiled.contextAttachment
+    ? `${compiled.text}\n${compiled.contextAttachment.text}`
+    : compiled.text;
   const imageTokens = compiled.images.reduce(
     (total, image) => total + (image.detail === "original"
       ? CHATGPT_ORIGINAL_IMAGE_RESERVE_TOKENS
@@ -40,7 +43,7 @@ export function estimateCompiledChatGptWebInputTokens(
     0,
   );
   return CHATGPT_PLATFORM_RESERVE_TOKENS
-    + conservativeTextTokens(compiled.text, modelId)
+    + conservativeTextTokens(inputText, modelId)
     + imageTokens;
 }
 

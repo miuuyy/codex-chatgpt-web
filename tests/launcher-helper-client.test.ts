@@ -3,7 +3,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LauncherBrowserHelperClient } from "../src/adapters/chatgpt-web/launcher-helper-client";
+import { validateBrowserHelperPreparedPrompt } from "../src/adapters/chatgpt-web/browser-helper-prompt";
 import type { ResolvedBrowserConfig } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_COMPACTION_CONTEXT_FILENAME } from "../src/adapters/chatgpt-web/prompt";
 import { LAUNCHER_BROWSER_HOST_KIND } from "../src/launcher-browser-host";
 
 const roots: string[] = [];
@@ -26,7 +28,7 @@ test("Bun daemon streams a prepared browser turn through the persistent Node hel
       send({ type: "event", id: message.id, event: "reasoning", text: "Reading project" });
       send({ type: "event", id: message.id, event: "reasoning", text: " files", continuation: true });
       send({ type: "event", id: message.id, event: "text", text: "done" });
-      send({ type: "result", id: message.id, text: "done" });
+      send({ type: "result", id: message.id, text: JSON.stringify(message.turn.prepared) });
     });
   `, { mode: 0o700 });
   const descriptorPath = join(root, "launcher.json");
@@ -58,6 +60,11 @@ test("Bun daemon streams a prepared browser turn through the persistent Node hel
   const reasoning: Array<{ text: string; continuation: boolean }> = [];
   const deltas: string[] = [];
   let released = false;
+  const contextText = `<codex_context_json>\n${JSON.stringify({
+    unicode: "مرحبا 世界",
+    lines: "one\ntwo",
+    delimiters: "<tag>quoted \\\"value\\\" \\\\ path-like text",
+  })}\n</codex_context_json>`;
   const client = new LauncherBrowserHelperClient(config);
   try {
     const result = await client.run({
@@ -65,11 +72,28 @@ test("Bun daemon streams a prepared browser turn through the persistent Node hel
       modelId: "gpt-5.6-sol",
       reasoning: "high",
       capabilities: { localToolsEnabled: false, proAvailable: false },
-      prepare: async () => ({ text: "inspect", images: [], release: () => { released = true; } }),
+      prepare: async () => ({
+        text: "inspect",
+        images: [],
+        contextAttachment: {
+          name: CHATGPT_COMPACTION_CONTEXT_FILENAME,
+          mimeType: "text/plain",
+          text: contextText,
+        },
+        release: () => { released = true; },
+      }),
       onReasoningSummary: (text, continuation) => reasoning.push({ text, continuation: continuation === true }),
       onTextDelta: text => deltas.push(text),
     });
-    expect(result).toBe("done");
+    expect(JSON.parse(result)).toEqual({
+      text: "inspect",
+      images: [],
+      contextAttachment: {
+        name: CHATGPT_COMPACTION_CONTEXT_FILENAME,
+        mimeType: "text/plain",
+        text: contextText,
+      },
+    });
     expect(reasoning).toEqual([
       { text: "Reading project", continuation: false },
       { text: " files", continuation: true },
@@ -121,6 +145,7 @@ test("an abort dispatched during run submission cannot overtake the run frame", 
     prepare: async () => ({
       text: "inspect",
       images: [],
+      contextAttachment: null,
       release: () => { released = true; },
     }),
     onTextDelta: () => {},
@@ -128,4 +153,43 @@ test("an abort dispatched during run submission cannot overtake the run frame", 
 
   expect(messages).toEqual(["run", "abort"]);
   expect(released).toBe(true);
+});
+
+test("browser helper accepts only the exact in-memory compaction attachment shape", () => {
+  const valid = {
+    text: "summarize",
+    images: [],
+    contextAttachment: {
+      name: CHATGPT_COMPACTION_CONTEXT_FILENAME,
+      mimeType: "text/plain" as const,
+      text: "<codex_context_json>\n{}\n</codex_context_json>",
+    },
+  };
+  expect(validateBrowserHelperPreparedPrompt(valid)).toBe(valid);
+  expect(() => validateBrowserHelperPreparedPrompt({
+    text: "summarize",
+    images: [],
+  })).toThrow("Browser helper context attachment is invalid");
+
+  const invalidAttachments: unknown[] = [
+    [],
+    { mimeType: "text/plain", text: "context" },
+    { name: CHATGPT_COMPACTION_CONTEXT_FILENAME, mimeType: "application/json", text: "context" },
+    { name: CHATGPT_COMPACTION_CONTEXT_FILENAME, mimeType: "text/plain" },
+    { name: CHATGPT_COMPACTION_CONTEXT_FILENAME, mimeType: "text/plain", text: 42 },
+    { name: CHATGPT_COMPACTION_CONTEXT_FILENAME, mimeType: "text/plain", text: "" },
+    {
+      name: CHATGPT_COMPACTION_CONTEXT_FILENAME,
+      mimeType: "text/plain",
+      text: "<codex_context_json>\n{}\n</codex_context_json>",
+      path: "C:\\temp\\context.txt",
+    },
+  ];
+  for (const contextAttachment of invalidAttachments) {
+    expect(() => validateBrowserHelperPreparedPrompt({
+      text: "summarize",
+      images: [],
+      contextAttachment,
+    })).toThrow("Browser helper context attachment is invalid");
+  }
 });
