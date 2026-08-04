@@ -4,6 +4,8 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { AppConfig } from "./config";
 import { atomicWriteFile, expandUserPath, getConfigDir } from "./config";
+import { discardCodexConfigBackup, ensureCodexConfigBackup, restoreCodexConfigBackup } from "./codex-config-backup";
+import { VERSION } from "./version";
 
 const MANAGED_COMMENT = "# Managed by codex-chatgpt-web; `codex-chatgpt-web uninstall` restores prior values.";
 const MANAGED_REMOTE_COMPACTION_LINE =
@@ -957,6 +959,17 @@ export function installCodexIntegration(
   const currentText = existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
   const existing = readJournal();
   const installedUrl = routeUrl(config);
+  // Full-file backup before the first mutation (DeepSeek-style). Later updates keep the original snapshot.
+  ensureCodexConfigBackup({
+    routeUrl: installedUrl,
+    version: VERSION,
+    report: [
+      "Saved a full copy of config.toml before codex-chatgpt-web modified the Codex route.",
+      ...(options.replaceExistingRoute
+        ? ["Install used --replace-codex-route to replace an existing Codex model route."]
+        : []),
+    ],
+  });
   if (existing) assertJournalTargetsConfig(existing, configPath);
 
   if (existing?.version === 6) {
@@ -1250,7 +1263,10 @@ export function activateCodexIntegration(): SetCodexIntegrationActiveResult {
 
 export function uninstallCodexIntegration(): UninstallCodexIntegrationResult {
   const journal = readJournal();
-  if (!journal) return { changed: false };
+  if (!journal) {
+    const fullBackup = restoreCodexConfigBackup();
+    return { changed: Boolean(fullBackup) };
+  }
   if (!existsSync(journal.configPath)) throw new Error(`Codex config is missing: ${journal.configPath}`);
   const current = readFileSync(journal.configPath, "utf8");
   let restored: string;
@@ -1273,6 +1289,8 @@ export function uninstallCodexIntegration(): UninstallCodexIntegrationResult {
     if (catalogSnapshot?.exists) rmSync(catalogSnapshot.path);
     rmSync(modelsCacheSnapshot.path, { force: true });
     rmSync(getCodexJournalPath(), { force: true });
+    // Full-file backup is a safety snapshot of the pre-install config; drop it after a verified restore.
+    discardCodexConfigBackup();
   } catch (error) {
     const rollbackFailures: string[] = [];
     for (const snapshot of [modelsCacheSnapshot, catalogSnapshot, configSnapshot]) {

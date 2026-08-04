@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -72,12 +72,35 @@ describe("reversible native Codex route integration", () => {
     expect(installed).not.toMatch(/^\s*model_provider\s*=/m);
     expect(installed).not.toMatch(/^\s*model_catalog_json\s*=/m);
     expect(installed).not.toContain("[model_providers.codex-chatgpt-web]");
+    const backupPath = join(codexHome, "backup-codex-chatgpt-web", "config.toml");
+    expect(readFileSync(backupPath, "utf8")).toBe(original);
 
     expect(uninstallCodexIntegration()).toEqual({ changed: true });
     expect(readFileSync(configPath, "utf8")).toBe(original);
+    expect(existsSync(join(codexHome, "backup-codex-chatgpt-web"))).toBe(false);
     expect(uninstallCodexIntegration()).toEqual({ changed: false });
   });
 
+  test("keeps the first full config.toml backup across later setup updates", () => {
+    const { codexHome } = fixture();
+    const configPath = join(codexHome, "config.toml");
+    const original = `model = "gpt-5.6-sol"\nmodel_provider = "openai"\n\n[features]\ngoals = true\n`;
+    writeFileSync(configPath, original);
+
+    installCodexIntegration(defaultConfig("browser-only"), { replaceExistingRoute: true });
+    const backupDir = join(codexHome, "backup-codex-chatgpt-web");
+    const backupPath = join(backupDir, "config.toml");
+    const manifestPath = join(backupDir, "manifest.txt");
+    expect(readFileSync(backupPath, "utf8")).toBe(original);
+    expect(readFileSync(manifestPath, "utf8")).toContain("original_config_existed=1");
+
+    installCodexIntegration(defaultConfig("browser-only"));
+    expect(readFileSync(backupPath, "utf8")).toBe(original);
+
+    expect(uninstallCodexIntegration()).toEqual({ changed: true });
+    expect(readFileSync(configPath, "utf8")).toBe(original);
+    expect(existsSync(backupDir)).toBe(false);
+  });
   test("restores an explicit remote_compaction_v2 setting byte-for-byte", () => {
     const { codexHome } = fixture();
     const configPath = join(codexHome, "config.toml");
