@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { Page } from "playwright-core";
-import { CHATGPT_PROMPT_INSERT_CHUNK_CHARS, ChatGptBrowserWorker, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, assertChatGptWebInputWithinContextWindow, browserDiagnosticCheckpoint, chatGptSubmissionEvidence, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_PROMPT_INSERT_CHUNK_CHARS, ChatGptBrowserWorker, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, assertChatGptWebInputWithinContextWindow, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, chatGptSubmissionEvidence, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert } from "../src/adapters/chatgpt-web/browser-worker";
 import { defaultChromeExecutable } from "../src/config";
 
 test("Codex context uses the owned CDP composer transport, never the operating-system clipboard", () => {
@@ -729,6 +729,14 @@ test("browser stage diagnostics use safe bounded artifact names", () => {
   expect(browserDiagnosticCheckpoint("effort menu / before click")).toBe("effort-menu-before-click");
   expect(browserDiagnosticCheckpoint("../turn_token secret")).toBe("turn_token-secret");
   expect(browserDiagnosticCheckpoint("x".repeat(200))).toHaveLength(80);
+});
+
+test("routine browser diagnostics do not take blocking screenshots", () => {
+  expect(browserDiagnosticIncludesScreenshot("send-ready", false)).toBeFalse();
+  expect(browserDiagnosticIncludesScreenshot("response-visible", false)).toBeFalse();
+  expect(browserDiagnosticIncludesScreenshot("response-stalled-30s", false)).toBeTrue();
+  expect(browserDiagnosticIncludesScreenshot("turn-failed", false)).toBeTrue();
+  expect(browserDiagnosticIncludesScreenshot("send-ready", true)).toBeTrue();
 });
 
 test("browser stage diagnostics preserve every critical local checkpoint", () => {

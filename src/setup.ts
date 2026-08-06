@@ -230,10 +230,13 @@ async function configureTunnel(config: AppConfig, existing: AppConfig | undefine
 async function bootstrapTunnelProfile(config: AppConfig): Promise<void> {
   let bootstrapError: unknown;
   try {
-    // `runtimes connect` writes the native profile and returns success only after its managed
-    // runtime is running, healthy, and ready. Setup stops that validation runtime transactionally;
-    // the launcher supervisor reconnects the same alias after the new configuration is committed.
+    // `runtimes connect` writes the native profile and returns once its managed runtime is healthy.
+    // Readiness follows after the first successful control-plane poll, so setup waits for it before
+    // stopping the validation runtime transactionally. The launcher supervisor reconnects the same
+    // alias after the new configuration is committed.
     connectTunnel(config);
+    const status = await waitForTunnelReady(config);
+    if (!status.ok) throw new Error(`Tunnel runtime did not become healthy and ready: ${status.detail}`);
   } catch (error) {
     bootstrapError = error;
   }

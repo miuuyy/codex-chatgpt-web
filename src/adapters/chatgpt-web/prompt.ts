@@ -154,10 +154,16 @@ export function chatGptReadOnlyContextWarning(
     message.role === "toolResult"
     || (message.role === "user" && isReadableCompactionSummaryText(message.content))
   );
+  const browserOnlyGuidance = !capabilities.localToolsEnabled
+    ? " This installation is in Browser-only mode. Open MCP in the launcher and connect the Full harness to give Instant through Extra High access to local tools."
+    : "";
   if (hasLocalEvidence) {
-    return `⚠️ ${label} cannot access the local Codex computer in this turn. It receives the complete accumulated task context, including earlier tool results or their compaction summary and attachments, but it cannot read or modify local files further. ChatGPT-native capabilities such as web search remain available when the product provides them.`;
+    return `⚠️ ${label} cannot access the local Codex computer in this turn. It receives the complete accumulated task context, including earlier tool results or their compaction summary and attachments, but it cannot read or modify local files further. ChatGPT-native capabilities such as web search remain available when the product provides them.${browserOnlyGuidance}`;
   }
-  return `⚠️ ${label} cannot access the local Codex computer in this turn. The accumulated context does not contain local tool results yet: it will see instructions and attachments, but not workspace contents. ChatGPT-native capabilities such as web search remain available when the product provides them. Prepare the local context with a tool-capable ChatGPT Web model first, then switch back.`;
+  const preparationGuidance = capabilities.localToolsEnabled
+    ? " Prepare the local context with a tool-capable ChatGPT Web model first, then switch back."
+    : browserOnlyGuidance;
+  return `⚠️ ${label} cannot access the local Codex computer in this turn. The accumulated context does not contain local tool results yet: it will see instructions and attachments, but not workspace contents. ChatGPT-native capabilities such as web search remain available when the product provides them.${preparationGuidance}`;
 }
 
 export function compileChatGptWebPrompt(

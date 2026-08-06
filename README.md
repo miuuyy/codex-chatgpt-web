@@ -149,6 +149,11 @@ checks. Use **Settings → Cancel retained browser turn** if a stopped task leav
 and **Settings → Remove Codex integration** before deleting the launcher so the previous Codex
 route is restored.
 
+Browser turn diagnostics save bounded JSON state at each checkpoint by default. Screenshots are
+reserved for stalled or failed turns so routine diagnostics do not delay successful responses. Set
+`CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1` before starting the runtime to include screenshots at
+every checkpoint while investigating browser UI drift.
+
 ## Limitations and security
 
 - This is unofficial browser automation, not an OpenAI API. ChatGPT UI changes can break selectors;

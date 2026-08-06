@@ -417,6 +417,13 @@ export function browserDiagnosticCheckpoint(value: string): string {
   return safe || "checkpoint";
 }
 
+export function browserDiagnosticIncludesScreenshot(
+  checkpoint: string,
+  captureAll = process.env.CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS === "1",
+): boolean {
+  return captureAll || checkpoint === "response-stalled-30s" || checkpoint === "turn-failed";
+}
+
 function privateDirectory(path: string): void {
   mkdirSync(path, { recursive: true, mode: 0o700 });
   try { chmodSync(path, 0o700); } catch { /* Windows ACLs are managed by the installer. */ }
@@ -458,8 +465,11 @@ class ChatGptBrowserDiagnostics {
       }
       const sequence = String(++this.sequence).padStart(2, "0");
       const stem = `${sequence}-${browserDiagnosticCheckpoint(checkpoint)}`;
+      const includeScreenshot = browserDiagnosticIncludesScreenshot(checkpoint);
       const [screenshot, state] = await Promise.all([
-        page.screenshot({ animations: "disabled", caret: "hide", timeout: 5_000, type: "png" }),
+        includeScreenshot
+          ? page.screenshot({ animations: "disabled", caret: "hide", timeout: 5_000, type: "png" })
+          : Promise.resolve(undefined),
         page.evaluate(({ composerSelector, effortControlSelector, effortItemSelector, assistantTurnSelector }) => {
           const visible = (element: Element): boolean => {
             const candidate = element as HTMLElement;
@@ -524,7 +534,7 @@ class ChatGptBrowserDiagnostics {
         }),
       ]);
       const capturedAt = new Date().toISOString();
-      atomicWriteFile(join(this.directory, `${stem}.png`), screenshot);
+      if (screenshot) atomicWriteFile(join(this.directory, `${stem}.png`), screenshot);
       atomicWriteFile(join(this.directory, `${stem}.json`), `${JSON.stringify({
         version: 1,
         capturedAt,

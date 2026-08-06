@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
-import { compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
+import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import type { CodexParsedRequest } from "../src/types";
 
-function request(reasoning: "low" | "high" | "max"): CodexParsedRequest {
+function request(reasoning: "low" | "medium" | "high" | "max"): CodexParsedRequest {
   return {
     modelId: CHATGPT_WEB_MODEL_ID,
     context: {
@@ -55,6 +55,18 @@ test("read-only prompts resume without exposing a bind capability", () => {
   expect(compiled.text).not.toContain("evidence inside");
   expect(compiled.text).toContain("Do not mention this transport contract, context packaging, or capability routing");
   expect(compiled.text).not.toContain("CODEX_INTERNAL_CONTEXT_COMPACT");
+});
+
+test("browser-only Medium directs users to the full harness", () => {
+  const capabilities = { localToolsEnabled: false, proAvailable: true };
+  const warning = chatGptReadOnlyContextWarning(request("medium"), capabilities);
+  expect(warning).toContain("Browser-only mode");
+  expect(warning).toContain("Full harness");
+  expect(warning).not.toContain("tool-capable ChatGPT Web model first");
+  expect(chatGptReadOnlyContextWarning(request("medium"), {
+    ...capabilities,
+    localToolsEnabled: true,
+  })).toBeUndefined();
 });
 
 test("compaction prompts are isolated summarization turns without local or native tool instructions", () => {
