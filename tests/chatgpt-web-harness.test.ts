@@ -5,13 +5,13 @@ import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildResponseJSON } from "../src/bridge";
-import { ChatGptCompletionTracker, chatGptImageFilePayloads, chatGptPromptFilePayloads, chatGptTurnIsComplete } from "../src/adapters/chatgpt-web/browser-worker";
+import { ChatGptCompletionTracker, chatGptImageFilePayloads, chatGptPromptFilePayloads, chatGptTurnIsComplete, ChatGptTransientLimitError } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "../src/adapters/chatgpt-web/environment";
 import { createChatGptWebAdapter } from "../src/adapters/chatgpt-web/index";
 import { chatGptHtmlToMarkdown, ChatGptMarkdownStream } from "../src/adapters/chatgpt-web/markdown";
 import { CHATGPT_WEB_MODEL_ID, resolveChatGptWebModelMode } from "../src/adapters/chatgpt-web/model";
-import { CHATGPT_COMPACTION_CONTEXT_FILENAME, chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
+import { CHATGPT_COMPACTION_CONTEXT_FILENAME, CHATGPT_TASK_CONTEXT_FILENAME, chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
 import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSessions, chatGptTurnExecutionKey } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, TurnBroker, type BrokerToolResult } from "../src/adapters/chatgpt-web/turn-broker";
 import { defaultBrokerEndpoint } from "../src/config";
@@ -315,15 +315,15 @@ describe("ChatGPT outer-native harness v3", () => {
     ];
     const compiled = compileChatGptWebPrompt(request, toolCapabilities, "turn_123456789012345678901234");
     expect(compiled.text).not.toContain(imageUrl);
-    expect(compiled.text).toContain('"attachment_ref":"codex-input-image-1"');
-    expect(compiled.text).toContain('"version":3');
+    expect(compiled.contextAttachment.text).toContain('"attachment_ref":"codex-input-image-1"');
+    expect(compiled.contextAttachment.text).toContain('"version":3');
     const files = chatGptImageFilePayloads(compiled.images);
     expect(files[0]?.name).toBe("codex-input-image-1.png");
     expect(files[0]?.mimeType).toBe("image/png");
     expect(files[0]?.buffer.length).toBeGreaterThan(0);
   });
 
-  test("keeps a large context inline and uploads only its referenced images", () => {
+  test("keeps a large context in the task document and uploads its referenced image", () => {
     const imageUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
     const request = parsed();
     request.context.systemPrompt = ["d".repeat(70_000)];
@@ -334,13 +334,18 @@ describe("ChatGPT outer-native harness v3", () => {
     const compiled = compileChatGptWebPrompt(request, toolCapabilities, "turn_123456789012345678901234");
     const files = chatGptPromptFilePayloads(compiled);
 
-    expect(compiled.text).toContain("d".repeat(70_000));
-    expect(compiled.text).toContain("<codex_context_json>");
-    expect(files.map(file => file.name)).toEqual(["codex-input-image-1.png"]);
-    expect(files[0]!.mimeType).toBe("image/png");
+    expect(compiled.text).not.toContain("d".repeat(70_000));
+    expect(compiled.text).not.toContain("<codex_context_json>");
+    expect(compiled.contextAttachment.text).toContain("d".repeat(70_000));
+    expect(files.map(file => file.name)).toEqual([
+      CHATGPT_TASK_CONTEXT_FILENAME,
+      "codex-input-image-1.png",
+    ]);
+    expect(files[0]!.mimeType).toBe("text/plain");
+    expect(files[1]!.mimeType).toBe("image/png");
   });
 
-  test("uploads compaction context as the first in-memory file and preserves usage accounting", () => {
+test("normal and compaction turns share the task-document transport", () => {
     const imageUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
     const request = parsed();
     request._compactionRequest = true;
@@ -352,31 +357,38 @@ describe("ChatGPT outer-native harness v3", () => {
     const compiled = compileChatGptWebPrompt(request, readOnlyCapabilities);
     const files = chatGptPromptFilePayloads(compiled);
 
-    expect(compiled.text).not.toContain("d".repeat(70_000));
+expect(compiled.text).not.toContain("d".repeat(70_000));
+    expect(compiled.contextAttachment.text).toContain("d".repeat(70_000));
+    expect(compiled.contextAttachment.text).toContain("<codex_context_json>");
     expect(files.map(file => file.name)).toEqual([
       CHATGPT_COMPACTION_CONTEXT_FILENAME,
       "codex-input-image-1.png",
     ]);
-    expect(files[0]!.mimeType).toBe("text/plain");
-    expect(files[0]!.buffer.toString("utf8")).toBe(compiled.contextAttachment!.text);
+    expect(files[0]!.mimeType).toBe("application/zip");
     expect(files[1]!.mimeType).toBe("image/png");
 
-    const inlineRequest = structuredClone(request);
-    delete inlineRequest._compactionRequest;
-    const inline = compileChatGptWebPrompt(
-      inlineRequest,
+    const normalRequest = structuredClone(request);
+    delete normalRequest._compactionRequest;
+    const normal = compileChatGptWebPrompt(
+      normalRequest,
       toolCapabilities,
       "turn_123456789012345678901234",
     );
-    const attachmentEstimate = estimateCompiledChatGptWebInputTokens(compiled, request.modelId);
-    const inlineEstimate = estimateCompiledChatGptWebInputTokens(inline, request.modelId);
-    expect(Math.abs(attachmentEstimate - inlineEstimate)).toBeLessThan(1_000);
+    expect(chatGptPromptFilePayloads(normal).map(file => file.name)).toEqual([
+      CHATGPT_TASK_CONTEXT_FILENAME,
+      "codex-input-image-1.png",
+    ]);
+    expect(chatGptPromptFilePayloads(normal)[0]!.mimeType).toBe("text/plain");
+    const compactionEstimate = estimateCompiledChatGptWebInputTokens(compiled, request.modelId);
+    const normalEstimate = estimateCompiledChatGptWebInputTokens(normal, request.modelId);
+    expect(Math.abs(compactionEstimate - normalEstimate)).toBeLessThan(1_000);
   });
 
-  test("compaction without images uploads exactly one text file and rejects an eleventh attachment", () => {
+test("every turn uploads one context file and reserves the tenth slot", () => {
     const request = parsed();
     request._compactionRequest = true;
     const compiled = compileChatGptWebPrompt(request, readOnlyCapabilities);
+    expect(compiled.text).not.toContain("<codex_context_json>");
     expect(chatGptPromptFilePayloads(compiled).map(file => file.name)).toEqual([
       CHATGPT_COMPACTION_CONTEXT_FILENAME,
     ]);
@@ -388,17 +400,19 @@ describe("ChatGPT outer-native harness v3", () => {
         ref: `codex-input-image-${index + 1}`,
         imageUrl,
       })),
-    }).map(file => file.name)).toEqual([
-      CHATGPT_COMPACTION_CONTEXT_FILENAME,
-      ...Array.from({ length: 9 }, (_unused, index) => `codex-input-image-${index + 1}.png`),
-    ]);
+}).map(file => file.name)).toEqual(
+      [
+        CHATGPT_COMPACTION_CONTEXT_FILENAME,
+        ...Array.from({ length: 9 }, (_unused, index) => `codex-input-image-${index + 1}.png`),
+      ],
+    );
     expect(() => chatGptPromptFilePayloads({
       ...compiled,
       images: Array.from({ length: 10 }, (_unused, index) => ({
         ref: `codex-input-image-${index + 1}`,
         imageUrl,
       })),
-    })).toThrow("at most 10 input attachments");
+    })).toThrow("at most 9 input images");
   });
 
   test("maps one ChatGPT Web model to explicit effort modes and fails closed on invalid combinations", () => {
@@ -446,9 +460,9 @@ describe("ChatGPT outer-native harness v3", () => {
     const compiled = compileChatGptWebPrompt(request, readOnlyCapabilities);
     expect(compiled.text).toContain("ChatGPT Web Pro with no Codex Native bridge to the user's local computer");
     expect(compiled.text).toContain("web search, browsing, research");
-    expect(compiled.text).toContain("prepared workspace evidence");
-    expect(compiled.text).toContain('"system":["system-rule","repo-rule"]');
-    expect(compiled.text).toContain('"attachment_ref":"codex-input-image-1"');
+    expect(compiled.contextAttachment.text).toContain("prepared workspace evidence");
+    expect(compiled.contextAttachment.text).toContain('"system":["system-rule","repo-rule"]');
+    expect(compiled.contextAttachment.text).toContain('"attachment_ref":"codex-input-image-1"');
     expect(compiled.images).toHaveLength(1);
     expect(compiled.text).not.toContain("codex_bind_turn");
     expect(compiled.text).not.toContain("turn_token");
@@ -588,7 +602,7 @@ describe("ChatGPT outer-native harness v3", () => {
       { role: "user", content: "continue", timestamp: 5 },
     ];
     const compiled = compileChatGptWebPrompt(request, toolCapabilities, "turn_123456789012345678901234");
-    const encoded = compiled.text.match(/<codex_context_json>\n(.+)\n<\/codex_context_json>/s)?.[1];
+    const encoded = compiled.contextAttachment.text.match(/<codex_context_json>\n(.+)\n<\/codex_context_json>/s)?.[1];
     const envelope = JSON.parse(encoded!) as { version: number; system: string[]; messages: Array<Record<string, unknown>> };
     expect(envelope.version).toBe(3);
     expect(envelope.system).toEqual(["system-rule", "repo-rule"]);
@@ -615,7 +629,7 @@ describe("ChatGPT outer-native harness v3", () => {
     const socketPath = brokerTestEndpoint(`cgw-h3-${process.pid}-${Date.now()}`);
     const broker = TurnBroker.forSocket(socketPath);
     const environment = extractChatGptTurnEnvironment(parsed(environmentXml));
-    const token = await broker.register(environment, 10_000);
+    const token = await broker.register(environment);
     const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
     const invocation = callTurnBroker<BrokerToolResult>(socketPath, {
       method: "invoke",
@@ -623,7 +637,7 @@ describe("ChatGPT outer-native harness v3", () => {
       wireName: "exec_command",
       freeform: false,
       arguments: { cmd: "pwd" },
-    }, 10_000);
+    }, null);
     const [request] = await broker.nextToolBatch(token);
     expect(request).toMatchObject({ wireName: "exec_command", freeform: false, arguments: { cmd: "pwd" } });
     expect(() => broker.completeTool(token, "unknown", toolResult({ output: "no" }))).toThrow("not pending");
@@ -635,7 +649,7 @@ describe("ChatGPT outer-native harness v3", () => {
   test("makes capability claim retries idempotent until the turn is revoked", async () => {
     const socketPath = brokerTestEndpoint(`cgw-h3-claim-${process.pid}-${Date.now()}`);
     const broker = TurnBroker.forSocket(socketPath);
-    const token = await broker.register(extractChatGptTurnEnvironment(parsed(environmentXml)), 10_000);
+    const token = await broker.register(extractChatGptTurnEnvironment(parsed(environmentXml)));
     const first = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
     const retry = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
     expect(retry.bindingId).toBe(first.bindingId);
@@ -645,7 +659,7 @@ describe("ChatGPT outer-native harness v3", () => {
   test("batches parallel ChatGPT MCP calls into one native Responses round", async () => {
     const socketPath = brokerTestEndpoint(`cgw-h3-parallel-${process.pid}-${Date.now()}`);
     const broker = TurnBroker.forSocket(socketPath);
-    const token = await broker.register(extractChatGptTurnEnvironment(parsed(environmentXml)), 10_000);
+    const token = await broker.register(extractChatGptTurnEnvironment(parsed(environmentXml)));
     const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
     const invoke = (cmd: string) => callTurnBroker<BrokerToolResult>(socketPath, {
       method: "invoke",
@@ -666,7 +680,7 @@ describe("ChatGPT outer-native harness v3", () => {
   test("revoking a turn rejects pending invocations and invalidates its binding", async () => {
     const socketPath = brokerTestEndpoint(`cgw-h3-revoke-${process.pid}-${Date.now()}`);
     const broker = TurnBroker.forSocket(socketPath);
-    const token = await broker.register(extractChatGptTurnEnvironment(parsed(environmentXml)), 10_000);
+    const token = await broker.register(extractChatGptTurnEnvironment(parsed(environmentXml)));
     const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
     const invocation = callTurnBroker(socketPath, {
       method: "invoke",
@@ -674,7 +688,7 @@ describe("ChatGPT outer-native harness v3", () => {
       wireName: "exec_command",
       freeform: false,
       arguments: { cmd: "sleep 30" },
-    }, 10_000);
+    }, null);
     await broker.nextToolBatch(token);
     broker.revoke(token);
     await expect(invocation).rejects.toThrow("revoked");
@@ -688,7 +702,7 @@ describe("ChatGPT outer-native harness v3", () => {
     const provider: CodexProviderConfig = {
       adapter: "chatgpt-web",
       baseUrl: "browser://chatgpt",
-      chatgptWeb: { brokerSocketPath: socketPath, turnTimeoutMs: 30_000, localToolsEnabled: true, proAvailable: true },
+      chatgptWeb: { brokerSocketPath: socketPath, localToolsEnabled: true, proAvailable: true },
     };
     const worker = ChatGptBrowserWorker.forProvider(provider);
     const originalRun = worker.run.bind(worker);
@@ -795,7 +809,7 @@ describe("ChatGPT outer-native harness v3", () => {
       adapter: "chatgpt-web",
       baseUrl: "browser://chatgpt-pro-test",
       contextWindow: 256_000,
-      chatgptWeb: { brokerSocketPath: socketPath, turnTimeoutMs: 30_000, localToolsEnabled: false, proAvailable: true },
+      chatgptWeb: { brokerSocketPath: socketPath, localToolsEnabled: false, proAvailable: true },
     };
     const worker = ChatGptBrowserWorker.forProvider(provider);
     const originalRun = worker.run.bind(worker);
@@ -895,6 +909,64 @@ describe("ChatGPT outer-native harness v3", () => {
     }
   });
 
+  test("classifies a persistent transient-limit dialog as retryable 429 and evicts the session", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-h3-transient-429-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: "browser://chatgpt-transient-429-test",
+      contextWindow: 256_000,
+      chatgptWeb: { brokerSocketPath: socketPath, localToolsEnabled: false, proAvailable: true },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    let browserStarts = 0;
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+      browserStarts += 1;
+      const prepared = await turn.prepare();
+      try {
+        if (browserStarts === 1) {
+          turn.onReasoningSummary?.("Mapped the repository surface");
+          throw new ChatGptTransientLimitError("send", 3);
+        }
+        turn.onReasoningSummary?.("Retried after the transient limit cleared");
+        const answer = "## Browser final\n\nPrepared context synthesized.";
+        turn.onTextDelta("## Browser final");
+        turn.onTextDelta("\n\nPrepared context synthesized.");
+        return answer;
+      } finally {
+        prepared.release();
+      }
+    };
+
+    const adapter = createChatGptWebAdapter(provider);
+    const request = rawWireRequest(environmentXml);
+    const firstEvents: AdapterEvent[] = [];
+    const secondEvents: AdapterEvent[] = [];
+    try {
+      await adapter.runTurn!(request, { headers: new Headers() }, event => firstEvents.push(event));
+      expect(browserStarts).toBe(1);
+      const errorEvent = firstEvents.find(event => event.type === "error");
+      expect(errorEvent).toEqual({
+        type: "error",
+        message: "ChatGPT transient request-limit dialog persisted during send after 3 dismissal(s); refusing a fourth activation",
+        status: 429,
+        errorType: "rate_limit_error",
+        code: "rate_limit_exceeded",
+        retryable: true,
+      });
+      expect(firstEvents.at(-1)?.type).toBe("error");
+
+      await adapter.runTurn(request, { headers: new Headers() }, event => secondEvents.push(event));
+      expect(browserStarts).toBe(2);
+      expect(secondEvents.some(event => event.type === "error")).toBe(false);
+      const secondDone = secondEvents.at(-1) as Extract<AdapterEvent, { type: "done" }>;
+      expect(secondDone).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
+
   test("serves the complete outer-native bridge contract over MCP stdio", async () => {
     const socketPath = brokerTestEndpoint(`cgw-h3-mcp-${process.pid}-${Date.now()}`);
     const broker = TurnBroker.forSocket(socketPath);
@@ -902,7 +974,7 @@ describe("ChatGPT outer-native harness v3", () => {
     gatewayOnlyEnvironment.tools = gatewayOnlyEnvironment.tools.filter(tool => (
       tool.name === "exec" || tool.name === "search_openai_docs"
     ));
-    const token = await broker.register(gatewayOnlyEnvironment, 60_000);
+    const token = await broker.register(gatewayOnlyEnvironment);
     const transport = new StdioClientTransport({
       command: process.execPath,
       args: ["src/cli.ts", "mcp", "--broker-socket", socketPath],
@@ -936,12 +1008,113 @@ describe("ChatGPT outer-native harness v3", () => {
       const discovered = (inventory.structuredContent as { tools: Array<{ wire_name: string }> }).tools;
       expect(discovered.map(tool => tool.wire_name)).toEqual(["mcp__openaiDeveloperDocs__search_openai_docs"]);
 
-      const execPromise = call("codex_exec", { binding_id: bindingId, cmd: "pwd", workdir: tempRoot });
+      const execPromise = call("codex_exec", {
+        binding_id: bindingId,
+        cmd: "pwd",
+        workdir: tempRoot,
+        yield_time_ms: 1_000,
+        max_output_tokens: 40_000,
+      });
       const [execRequest] = await broker.nextToolBatch(token);
       expect(execRequest).toMatchObject({ wireName: "exec", freeform: true });
-      expect(execRequest?.input).toContain(`tools["exec_command"](${JSON.stringify({ cmd: "pwd", workdir: tempRoot })})`);
+      const pragma = execRequest?.input?.split("\n", 1)[0]?.replace("// @exec: ", "");
+      expect(JSON.parse(pragma!)).toEqual({
+        ["yield" + "_time_ms"]: 1_000,
+        max_output_tokens: 40_000,
+      });
+      expect(execRequest?.input).toContain('["exec_command", "shell_command"]');
+      expect(execRequest?.input).toContain('typeof tools[name] === "function"');
+      expect(execRequest?.input).toContain('command: commandInput.cmd');
+      expect(execRequest?.input).not.toContain('timeout_ms');
+      const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+      const generated = new AsyncFunction(
+        "tools",
+        "text",
+        "image",
+        "audio",
+        "generatedImage",
+        execRequest!.input!,
+      );
+      let shellArguments: unknown;
+      const shellOutput: unknown[] = [];
+      await generated(
+        {
+          shell_command: async (args: unknown) => {
+            shellArguments = args;
+            return { type: "text", text: "shell-ok" };
+          },
+        },
+        (value: unknown) => shellOutput.push(value),
+        () => {},
+        () => {},
+        () => {},
+      );
+      expect(shellArguments).toEqual({ command: "pwd", workdir: tempRoot });
+      expect(shellOutput).toEqual(["shell-ok"]);
+      let execArguments: unknown;
+      await generated(
+        {
+          exec_command: async (args: unknown) => {
+            execArguments = args;
+            return "exec-ok";
+          },
+          shell_command: async () => {
+            throw new Error("exec_command should be preferred");
+          },
+        },
+        () => {},
+        () => {},
+        () => {},
+        () => {},
+      );
+      expect(execArguments).toEqual({
+        cmd: "pwd",
+        workdir: tempRoot,
+        ["yield" + "_time_ms"]: 1_000,
+        max_output_tokens: 40_000,
+      });
+      await expect(generated(
+        {},
+        () => {},
+        () => {},
+        () => {},
+        () => {},
+      )).rejects.toThrow("No compatible callable command tool");
       broker.completeTool(token, execRequest!.callId, toolResult({ output: tempRoot, exit_code: 0 }));
       expect((await execPromise).structuredContent).toEqual({ output: tempRoot, exit_code: 0 });
+
+      const ttyPromise = call("codex_exec", {
+        binding_id: bindingId,
+        cmd: "interactive",
+        workdir: tempRoot,
+        tty: true,
+      });
+      const [ttyRequest] = await broker.nextToolBatch(token);
+      expect(ttyRequest).toMatchObject({ wireName: "exec", freeform: true });
+      const ttyGenerated = new AsyncFunction(
+        "tools",
+        "text",
+        "image",
+        "audio",
+        "generatedImage",
+        ttyRequest!.input!,
+      );
+      let ttyShellCalls = 0;
+      await expect(ttyGenerated(
+        {
+          shell_command: async () => {
+            ttyShellCalls += 1;
+            return "unreachable";
+          },
+        },
+        () => {},
+        () => {},
+        () => {},
+        () => {},
+      )).rejects.toThrow("shell_command fallback does not support tty or resumable sessions");
+      expect(ttyShellCalls).toBe(0);
+      broker.completeTool(token, ttyRequest!.callId, toolResult({ output: "not-run", exit_code: 1 }));
+      await ttyPromise;
 
       const patchText = "*** Begin Patch\n*** Add File: test.txt\n+ok\n*** End Patch";
       const patchPromise = call("codex_apply_patch", { binding_id: bindingId, patch: patchText });

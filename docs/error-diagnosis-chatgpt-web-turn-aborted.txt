@@ -1,0 +1,55 @@
+# Handoff: Diagnosis of "stream disconnected before completion: ChatGPT web turn aborted"
+
+## 1. Environment & context for the receiving agent
+
+- Repo: `W:\ChtGPTWeb\codex-chatgpt-web` (Windows, PowerShell). A bridge that lets Codex CLI run on ChatGPT Web by emulating the OpenAI Responses API over a local HTTP server; a launcher (Electron) hosts a real ChatGPT browser tab per turn.
+- The adapter code lives in `src/adapters/chatgpt-web/` (`browser-worker.ts`, `index.ts`, `turn-execution.ts`, `launcher-helper-client.ts`, `environment.ts`, `model.ts`, `turn-broker.ts`); the HTTP/SSE bridge is `src/server.ts` + `src/bridge.ts`.
+- Commands: `bun test tests/*.test.ts`, `bunx tsc --noEmit`, `bun run build`; launcher tests via `bun test` in `launcher/`.
+- User-visible symptom: while chatting via the Codex CLI using the ChatGPT Web model, the answer "cuts off in the middle of the chat" and the CLI prints `stream disconnected before completion: ChatGPT web turn aborted`. It recurs consistently for "a certain chat" once it starts.
+- **No code has been changed yet. This is diagnosis-only; the solution is out of scope for this handoff.**
+
+## 2. What the error actually is
+
+- The prefix `stream disconnected before completion:` is **Codex CLI host text**, not in this repo (verified by repo-wide grep including `node_modules`). It is Codex's rendering of an SSE stream that ended mid-turn without a terminal `response.completed`/`response.failed` event.
+- The underlying in-repo error is `DOMException("ChatGPT web turn aborted", "AbortError")`, thrown deliberately whenever the browser turn's `AbortSignal` fires before the ChatGPT page produced a completed answer. Thrown in ~15 sites, chiefly:
+  - `src/adapters/chatgpt-web/index.ts:32-53` (`abortError()` + `withAbort`, wired to the incoming HTTP request's abort signal at lines 313 and 361-368).
+  - `src/adapters/chatgpt-web/browser-worker.ts` throughout (e.g. streaming loop check at ~2134-2136, `runStage` at ~530/549, response-poll at ~1433-1449, ~1930-1982).
+  - `src/adapters/chatgpt-web/launcher-helper-client.ts:142-164` (browser-helper process EOF/closed-pipe path).
+- When aborted mid-stream, `runBrowserTurn`'s `finally` presses ChatGPT's Stop button (`browser-worker.ts:2231-2235`) — this is the literal "cut off in the middle of the chat" seen in the ChatGPT tab.
+
+## 3. Propagation chain (what actually happens)
+
+1. The turn's shared `AbortController` (`browserAbort`, `index.ts:179`) is aborted mid-turn.
+2. The browser worker's streaming loop throws the `AbortError`; `runBrowserTurn` presses Stop in the ChatGPT tab.
+3. `runTurn` (`index.ts`) catches at `index.ts:414`, calls `session.cancel()` (aborts browser + revokes broker token), then rethrows.
+4. `server.ts:315-323` catches, pushes `{type:"error", message:"ChatGPT web turn aborted"}` into the event queue, closes it.
+5. `bridgeToResponsesSSE` (`src/bridge.ts`) tries to emit `response.failed`; if the client socket is already torn down the emit is a no-op → stream EOF without a terminal event → Codex prints `stream disconnected before completion: ChatGPT web turn aborted`.
+
+## 4. Root cause (primary suspect — session poisoning)
+
+- Session key: hash of `modelId + reasoning + {threadId, turnId, purpose}` (`turn-execution.ts:123-136`). A turn session is **shared across every HTTP request carrying that turn_id** — by design, so Codex can retry/reconnect the same turn after a dropped stream.
+- The bug: `index.ts:414-431`. On **any** error (not just rate limits) `session.cancel()` aborts the browser; the session is **only evicted for rate-limit errors** (429 path, lines 419-429). All other errors just rethrow while the session stays in the map with `browserOutcome` settled as `{type:"error", error: AbortError}` (`turn-execution.ts:148-159, 181-183`).
+- Consequence: every subsequent request with the same `turn_id` (Codex's normal retry of the same turn after a stream failure) hits the settled-outcome replay path `index.ts:283-285` → `if (settled.type === "error") throw settled.error` → fails instantly with "ChatGPT web turn aborted" **without ever opening the browser again**.
+- This is why a single transient abort appears to poison a chat, while other chats keep working (different turn_ids). The session only clears after a TTL prune (30 min idle) or max-settled eviction (256 entries) (`turn-execution.ts:285-302`), or a manual reset.
+
+## 5. Compounding flaw (secondary)
+
+- A client-side disconnect (Codex pressed ESC, network blip, Codex process reconnecting) rejects `withAbort` (`index.ts:313, 361-368`) with this same AbortError; the catch then calls `session.cancel()` which **kills the still-running, resumable browser turn**. The entire replay/resume machinery (`ChatGptTraceFeed`, `ChatGptTextFeed`, `eventsForFinalReplay`, small TTL) exists precisely so a reconnect can resume the same turn — but the unconditional `cancel()` in the catch defeats it.
+
+## 6. Other abort/error sources to rule out when confirming
+
+- Launcher tab closed mid-turn: `launcher/electron/browser-host.cjs` `closeTab` marks `status = "aborted"`; helper pipe EOF surfaces via `launcher-helper-client.ts:142-164`.
+- Admin/service ops: `chatGptTurnSessions.clear()`/`evict()` (incl. `/admin/cancel-browser-turns`, shutdown) at `server.ts:491, 552`; TTL/max-settled prune (`turn-execution.ts:285-302`).
+- `AsyncEventQueue` 10k-event backlog (`src/event-queue.ts`) and `DEFAULT_STALL_TIMEOUT_SEC` in `src/stall-timeout.ts` — less likely given this exact message, but not excluded.
+- Browser-side genuine failures (stage timeout, DOM health tracker, "target closed") surface via the `browserOutcome` error path, which also triggers the same poisoning.
+
+## 7. Evidence to collect to confirm the diagnosis
+
+- Bridge/daemon logs around the failing turn: `[chatgpt-web] browser turn <traceId> stage=... started/completed/failed` and any `browser turn ... failed` line with `error.message`. A `failed ... ChatGPT web turn aborted` confirms a browser-side abort; its absence implies the client-side (`withAbort`) path.
+- Launcher tab status for that turn (`aborted` vs `error`) and `browser.tab_closed`/`browser.tab_completed` log lines (`launcher/electron/browser-host.cjs`).
+- Timing: does the failure happen right at message send, ~30 min after last activity (TTL prune), or after launcher settings/service operations? One blip at message send is the strongest signal for the poisoning path.
+- Reproduce: send a message in the affected chat after the failure — if it fails instantly with the same message while a *new* chat works, that confirms the replay of a poisoned session (`index.ts:283-285`).
+
+## 8. Question to the receiving agent
+
+**Do you agree this diagnosis is correct — specifically (a) that the poisoned, never-evicted turn session (`index.ts:414-431` + settled-outcome replay at `index.ts:283-285`) is the primary cause of a recurring failure in one chat, and (b) that the unconditional `session.cancel()` on a client-side disconnect is why the resumable browser turn is lost? If you disagree or find counter-evidence in the code or logs, say so and show where, before any solution is planned.**

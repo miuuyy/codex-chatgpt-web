@@ -27,6 +27,7 @@ const {
 const { RuntimeHost } = require("./runtime.cjs");
 const { ensurePackagedRuntime } = require("./runtime-install.cjs");
 const { RuntimeSupervisor } = require("./runtime-supervisor.cjs");
+const { isUnstableBunVersion, resolveBunVersion } = require("./runtime-command.cjs");
 const { createStateStore, validateSidebarState } = require("./state.cjs");
 const {
   MIN_WINDOW_BOUNDS,
@@ -715,6 +716,22 @@ async function start() {
       logger.warn("bridge.route_status_failed", {
         message: error instanceof Error ? error.message : String(error),
       });
+    }
+    try {
+      const invocation = runtimeSupervisor.runtimeCommand(["serve"]);
+      const bunVersion = resolveBunVersion(invocation.executable);
+      logger.info("runtime.bun_resolved", { executable: invocation.executable, version: bunVersion });
+      if (isUnstableBunVersion(bunVersion)) {
+        throw new Error(
+          `Bun ${bunVersion} is unstable on Windows and can crash the Codex ChatGPT Web runtime. `
+          + "Upgrade Bun to 1.3.14 or later, or install a newer bundled runtime.",
+        );
+      }
+    } catch (error) {
+      logger.error("runtime.bun_version_unavailable", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
     }
     return runtimeSupervisor.startIfConfigured();
   })().then((runtime) => {

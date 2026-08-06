@@ -7,7 +7,7 @@ Codex app / CLI
 launcher-owned codex-chatgpt-web daemon
   ├─ official /models passthrough + fixed ChatGPT Web models
   ├─ native Responses passthrough or ChatGPT Responses/SSE bridge
-  ├─ ChatGPT browser worker (up to five task-bound Electron tabs)
+  ├─ ChatGPT browser worker (independent task-bound Electron tabs)
   ├─ capability broker (full mode only)
   └─ stdio MCP server
             ▲
@@ -37,31 +37,37 @@ launcher-owned codex-chatgpt-web daemon
 
 ## Browser lifecycle
 
-The desktop launcher owns one persistent Electron partition and up to five task-bound browser
-tabs. Each Codex task is leased an independent `WebContentsView` and surface ID; Playwright attaches
+The desktop launcher owns one persistent Electron partition and independently task-bound browser
+tabs with no fixed application-level maximum. Each Codex task is leased an independent
+`WebContentsView` and surface ID; Playwright attaches
 to that exact surface through a launcher-owned loopback CDP endpoint. It does not launch another
 browser or copy authentication state. Each tab opens a fresh Temporary Chat, shares only the local
 login partition, and keeps its own document and lifecycle. Completed tabs remain inspectable until
-closed. Closing a running tab destroys its page and terminates that browser turn. A sixth concurrent
-turn fails explicitly; the cap avoids excessive parallel traffic that could trigger account abuse
-controls.
+closed. Closing a running tab destroys its page and terminates that browser turn. The application
+does not reject additional tabs based on their count; available machine resources and ChatGPT
+account-side controls remain the practical boundaries.
 
-Normal routed turns insert the complete serialized Codex task as one inline JSON envelope. Image
-bytes stay out of the JSON and are attached natively with stable references.
+Every routed turn uploads exactly one task-context document containing the complete sanitized
+`<codex_context_json>` envelope. Normal, read-only, and tool-capable turns attach it as a plain
+UTF-8 text document named `codex-task-context.txt`; context-compaction turns attach the same
+envelope inside a ZIP archive named `codex-compaction-context.zip`. The document is created in
+memory and passed to Playwright as a UTF-8 buffer (the archive is built in memory with `fflate`). It
+is not written into the repository, workspace, planning directory, or a persistent temporary-file
+path.
 
-Dedicated Codex compaction turns use the same read-only summarization path, but only the bounded
-control contract is inserted into the composer. The complete sanitized `<codex_context_json>`
-envelope is uploaded as one in-memory UTF-8 `text/plain` attachment named
-`codex-compaction-context.txt`. The application never writes that context document to disk, never
-falls back to pasting it inline, and never truncates or hashes it. The document reserves one of
-ChatGPT's ten attachment slots, so compaction retains at most the newest nine images. The browser
-waits for an exact visible tile for every attachment and for the send button to become enabled;
-upload failure terminates the turn before sending.
+The composer contains only the fixed transport and capability bootstrap. Compaction changes tool
+and output semantics, not context transport. Image bytes stay outside the document as native
+attachments with stable references. One of ten attachment slots is always reserved for the context
+document, so the newest nine images are retained and older images become explicit placeholders in
+the serialized context. The browser re-resolves the current composer while attachments mount and
+requires exact attachment evidence, the preserved bootstrap, the selected connector when
+applicable, and the current visible, enabled, non-`aria-disabled` Send control before submission.
 
-Token accounting includes both the inline control text and attached context text. Routed models
-continue to advertise a 256,000-token context window and a 230,400-token automatic compaction
-threshold. Compaction remains a no-tools turn, and its existing server response conversion stays
-unchanged. A prompt-level checkpoint marker is translated into a visible Codex trace item;
+The context window is 256,000 tokens. Automatic compaction begins at 220,000 tokens, the maximum
+compaction input is 244,000 tokens, and 12,000 tokens remain reserved for the checkpoint output,
+leaving 24,000 tokens of trigger-to-ceiling headroom. Token accounting counts the bootstrap and
+attached context exactly once. Compaction remains a no-tools turn, and its existing server response
+conversion stays unchanged. A prompt-level checkpoint marker is translated into a visible Codex trace item;
 tool-capable normal turns re-bind the same capability after that checkpoint. Visible ChatGPT status
 rows become reasoning summaries, while stable prose between rows becomes native Codex commentary.
 
@@ -114,8 +120,9 @@ launcher error.
 - Store browser state and tunnel credentials under the application home with mode `0600`.
 - Protect lifecycle control endpoints with a random application-owned bearer token.
 - Never place secret values in command-line arguments, logs, generated profiles, or Git.
-- Limit browser turns to five independent task-bound tabs and reject unsupported models explicitly.
-  The selected routed model fixes the adapter effort; a conflicting request effort cannot change it.
+- Keep browser turns isolated in independent task-bound tabs and reject unsupported models
+  explicitly. The selected routed model fixes the adapter effort; a conflicting request effort
+  cannot change it.
 - Do not retry or switch modes to evade product usage limits.
 
 See the complete [security model](security-model.md).

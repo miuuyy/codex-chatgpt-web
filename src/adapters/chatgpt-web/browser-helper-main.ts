@@ -6,6 +6,7 @@ import type { ChatGptWebCapabilities } from "./model";
 import { validateBrowserHelperPreparedPrompt } from "./browser-helper-prompt";
 import { createProcessLineWriter } from "./process-line-writer";
 import type { CompiledChatGptWebPrompt } from "./prompt";
+import { isChatGptTransientLimitError } from "./transient-limit-error";
 
 interface RunMessage {
   type: "run";
@@ -13,7 +14,6 @@ interface RunMessage {
   config: {
     appName: string;
     browserHostDescriptorPath: string;
-    turnTimeoutMs: number;
     autoApproveToolCalls: boolean;
   };
   turn: {
@@ -47,6 +47,21 @@ const diagnosticOutput = createProcessLineWriter(stderr, handleOutputFailure);
 
 const writeProtocol = (message: unknown): void => {
   protocolOutput.write(JSON.stringify(message));
+};
+
+const writeProtocolError = (id: string, error: unknown): void => {
+  const message = error instanceof Error ? error.message : String(error);
+  writeProtocol({
+    type: "error",
+    id,
+    name: error instanceof Error ? error.name : "Error",
+    message,
+    ...(isChatGptTransientLimitError(error) ? {
+      code: error.code,
+      stage: error.stage,
+      dismissals: error.dismissals,
+    } : {}),
+  });
 };
 
 const diagnostic = (...values: unknown[]): void => {
@@ -98,7 +113,6 @@ async function run(message: RunMessage): Promise<void> {
       appName: message.config.appName,
       browserHost: "launcher",
       browserHostDescriptorPath: message.config.browserHostDescriptorPath,
-      turnTimeoutMs: message.config.turnTimeoutMs,
       autoApproveToolCalls: message.config.autoApproveToolCalls,
     },
   };
@@ -126,12 +140,7 @@ async function run(message: RunMessage): Promise<void> {
     const text = await ChatGptBrowserWorker.forProvider(provider).run(turn);
     writeProtocol({ type: "result", id: message.id, text });
   } catch (error) {
-    writeProtocol({
-      type: "error",
-      id: message.id,
-      name: error instanceof Error ? error.name : "Error",
-      message: error instanceof Error ? error.message : String(error),
-    });
+    writeProtocolError(message.id, error);
   } finally {
     abortControllers.delete(message.id);
   }
@@ -159,12 +168,7 @@ async function verify(message: VerifyMessage): Promise<void> {
     const selected = await ChatGptBrowserWorker.forProvider(provider).verifyConnector();
     writeProtocol({ type: "result", id: message.id, text: selected });
   } catch (error) {
-    writeProtocol({
-      type: "error",
-      id: message.id,
-      name: error instanceof Error ? error.name : "Error",
-      message: error instanceof Error ? error.message : String(error),
-    });
+    writeProtocolError(message.id, error);
   }
 }
 
@@ -181,17 +185,9 @@ input.on("line", line => {
   else if (message.type === "shutdown") {
     void requestShutdown();
   } else if (message.type === "verify") {
-    void verify(message).catch(error => writeProtocol({
-      type: "error",
-      id: message.id,
-      message: error instanceof Error ? error.message : String(error),
-    }));
+    void verify(message).catch(error => writeProtocolError(message.id, error));
   } else {
-    void run(message).catch(error => writeProtocol({
-      type: "error",
-      id: message.id,
-      message: error instanceof Error ? error.message : String(error),
-    }));
+    void run(message).catch(error => writeProtocolError(message.id, error));
   }
 });
 input.on("close", () => {

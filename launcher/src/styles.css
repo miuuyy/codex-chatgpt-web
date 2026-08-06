@@ -138,6 +138,10 @@ code {
   user-select: none;
 }
 
+.app-shell:has(.browser-surface) .app-titlebar {
+  -webkit-app-region: no-drag;
+}
+
 .titlebar-left {
   position: absolute;
   top: 0;
@@ -494,9 +498,17 @@ code {
   flex: 0 0 36px;
   align-items: flex-end;
   gap: 3px;
+  overflow-x: auto;
+  overflow-y: hidden;
   padding: 4px 8px 0;
   border-bottom: 1px solid var(--color-border-light);
   background: rgb(24 24 24 / 72%);
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.browser-tab-strip::-webkit-scrollbar {
+  display: none;
 }
 
 .app-shell:not(.is-sidebar-open) .browser-tab-strip {

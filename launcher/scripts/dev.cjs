@@ -1,5 +1,9 @@
 const { spawn, spawnSync } = require("node:child_process");
 const path = require("node:path");
+const {
+  DETACH_OWNED_CHILD,
+  terminateOwnedProcessTree,
+} = require("../electron/process-tree.cjs");
 
 const root = path.resolve(__dirname, "..");
 const vitePackage = require.resolve("vite/package.json", { paths: [root] });
@@ -15,6 +19,14 @@ const helperBuild = spawnSync(bun, ["run", "scripts/build-browser-helper.ts"], {
 if (helperBuild.error) throw helperBuild.error;
 if (helperBuild.status !== 0) process.exit(helperBuild.status ?? 1);
 
+const helperWatcher = spawn(bun, ["run", "scripts/build-browser-helper.ts", "--watch"], {
+  cwd: path.resolve(root, ".."),
+  env: process.env,
+  stdio: "inherit",
+  detached: DETACH_OWNED_CHILD,
+  windowsHide: true,
+});
+
 const vite = spawn(process.execPath, [viteBin], {
   cwd: root,
   stdio: "inherit",
@@ -29,6 +41,12 @@ const stop = () => {
   stopped = true;
   electron?.kill("SIGTERM");
   vite.kill("SIGTERM");
+  try {
+    terminateOwnedProcessTree(helperWatcher);
+  } catch (error) {
+    console.error(`Browser helper watcher shutdown failed: ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+  }
 };
 
 const waitForVite = async () => {
@@ -75,6 +93,20 @@ vite.once("exit", (code) => {
     stop();
     process.exitCode = code ?? 1;
   }
+});
+
+helperWatcher.once("error", (error) => {
+  if (stopped) return;
+  console.error(`Browser helper watcher failed to start: ${error.message}`);
+  stop();
+  process.exitCode = 1;
+});
+
+helperWatcher.once("exit", (code) => {
+  if (stopped) return;
+  console.error(`Browser helper watcher exited with code ${code ?? 1}`);
+  stop();
+  process.exitCode = code === 0 ? 1 : code ?? 1;
 });
 
 process.once("SIGINT", stop);

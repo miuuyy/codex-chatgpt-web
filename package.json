@@ -46,7 +46,7 @@
     "verify": "bun run scripts/verify.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "chromium-bidi": "12.1.0",
     "fflate": "^0.8.2",
     "playwright-core": "^1.62.0",
@@ -64,6 +64,8 @@
   },
   "overrides": {
     "@hono/node-server": "2.0.12",
+    "fast-uri": "3.1.5",
+    "hono": "4.13.0",
     "zod-to-json-schema": "3.25.1"
   },
   "keywords": [

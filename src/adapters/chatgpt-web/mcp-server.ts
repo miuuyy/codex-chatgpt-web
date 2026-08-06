@@ -8,11 +8,11 @@ import { callTurnBroker, type BrokerToolResult } from "./turn-broker";
 
 interface ClaimedTurn {
   bindingId: string;
-  environment: ChatGptTurnEnvironment & { expiresAt: number };
+  environment: ChatGptTurnEnvironment;
 }
 
 interface ResolvedTurn {
-  environment: ChatGptTurnEnvironment & { expiresAt: number };
+  environment: ChatGptTurnEnvironment;
 }
 
 const bindingSchema = z.string().min(20).max(256).describe("Opaque binding_id returned by codex_bind_turn.");
@@ -70,10 +70,6 @@ function namedTool(environment: ChatGptTurnEnvironment, requestedWireName: strin
   return tool;
 }
 
-function invocationTimeout(environment: ChatGptTurnEnvironment & { expiresAt: number }): number {
-  return Math.max(1, environment.expiresAt - Date.now());
-}
-
 function asMcpResult(value: BrokerToolResult) {
   return {
     content: value.content as never,
@@ -102,8 +98,40 @@ function execGatewayProgram(
   payload: { arguments?: Record<string, unknown>; input?: string },
 ): string {
   const nestedInput = freeform ? payload.input ?? "" : payload.arguments ?? {};
+  const commandInput = !freeform && nestedToolName === "exec_command"
+    ? JSON.parse(JSON.stringify(nestedInput)) as Record<string, unknown>
+    : null;
+  const outerControls: Record<string, unknown> = {};
+  if (commandInput) {
+    for (const key of ["yield" + "_time_ms", "max_output_tokens"]) {
+      if (Object.hasOwn(commandInput, key)) outerControls[key] = commandInput[key];
+    }
+  }
+  const invocation = commandInput
+    ? [
+        ...(Object.keys(outerControls).length > 0
+          ? [`// @exec: ${JSON.stringify(outerControls)}`]
+          : []),
+        `const commandInput = ${JSON.stringify(commandInput)};`,
+        'const commandName = ["exec_command", "shell_command"]',
+        '  .find(name => typeof tools[name] === "function");',
+        'if (!commandName) throw new Error("No compatible callable command tool");',
+        'if (commandName === "shell_command" && commandInput.tty === true) {',
+        '  throw new Error("shell_command fallback does not support tty or resumable sessions");',
+        '}',
+        'const commandArguments = commandName === "shell_command"',
+        '  ? {',
+        '      command: commandInput.cmd,',
+        '      ...(typeof commandInput.workdir === "string" ? { workdir: commandInput.workdir } : {}),',
+        '    }',
+        '  : commandInput;',
+        'const result = await tools[commandName](commandArguments);',
+      ]
+    : [
+        `const result = await tools[${JSON.stringify(gatewayNestedToolName(nestedToolName))}](${JSON.stringify(nestedInput)});`,
+      ];
   return [
-    `const result = await tools[${JSON.stringify(gatewayNestedToolName(nestedToolName))}](${JSON.stringify(nestedInput)});`,
+    ...invocation,
     "const emit = value => {",
     "  if (Array.isArray(value)) { for (const item of value) emit(item); return; }",
     "  if (value && typeof value === \"object\") {",
@@ -124,15 +152,14 @@ function execGatewayProgram(
 export async function runChatGptMcpServer(options: { brokerSocketPath: string }): Promise<void> {
   const server = new McpServer({ name: "codex-native", version: "3.0.0" });
 
-  const environment = async (bindingId: string): Promise<ChatGptTurnEnvironment & { expiresAt: number }> => {
+  const environment = async (bindingId: string): Promise<ChatGptTurnEnvironment> => {
     const resolved = await callTurnBroker<ResolvedTurn>(options.brokerSocketPath, { method: "resolve", bindingId });
-    if (resolved.environment.expiresAt <= Date.now()) throw new Error("Codex turn binding expired");
     return resolved.environment;
   };
 
   const invoke = async (
     bindingId: string,
-    bound: ChatGptTurnEnvironment & { expiresAt: number },
+    bound: ChatGptTurnEnvironment,
     tool: CodexTool,
     payload: { arguments?: Record<string, unknown>; input?: string },
   ) => {
@@ -142,13 +169,13 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
       wireName: wireName(tool),
       freeform: tool.freeform === true,
       ...(tool.freeform ? { input: payload.input ?? "" } : { arguments: payload.arguments ?? {} }),
-    }, invocationTimeout(bound));
+    }, null);
     return asMcpResult(response);
   };
 
   const invokeNative = (
     bindingId: string,
-    bound: ChatGptTurnEnvironment & { expiresAt: number },
+    bound: ChatGptTurnEnvironment,
     tool: CodexTool,
     payload: { arguments?: Record<string, unknown>; input?: string },
   ) => {
@@ -160,7 +187,7 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
 
   const invokeNestedNative = (
     bindingId: string,
-    bound: ChatGptTurnEnvironment & { expiresAt: number },
+    bound: ChatGptTurnEnvironment,
     nestedToolName: string,
     freeform: boolean,
     payload: { arguments?: Record<string, unknown>; input?: string },
@@ -195,7 +222,6 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
         roots: claimed.environment.roots,
         writable_roots: claimed.environment.writableRoots,
         sandbox: claimed.environment.sandboxPolicy.type,
-        expires_at: new Date(claimed.environment.expiresAt).toISOString(),
         tool_count: claimed.environment.tools.length,
         command_tool: commandTool ? wireName(commandTool) : gateway ? "exec_command" : null,
         outer_tool_gateway: gateway ? wireName(gateway) : null,
@@ -223,23 +249,34 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
       console.error(`[chatgpt-web-mcp] codex_exec scope=${requestScopeSummary(extra)}`);
       const bound = await environment(binding_id);
       const tool = exactTool(bound, "exec_command") ?? exactTool(bound, "shell_command");
-      const commandName = tool?.name ?? "exec_command";
-      const args = commandName === "exec_command"
+      const gateway = execGateway(bound);
+      const logicalArgs = {
+        cmd,
+        ...(workdir ? { workdir } : {}),
+        ...(yield_time_ms !== undefined ? { yield_time_ms } : {}),
+        ...(max_output_tokens !== undefined ? { max_output_tokens } : {}),
+        ...(tty !== undefined ? { tty } : {}),
+      };
+      if (gateway) {
+        return invoke(binding_id, bound, gateway, {
+          input: execGatewayProgram("exec_command", false, { arguments: logicalArgs }),
+        });
+      }
+      if (!tool) {
+        throw new Error("This Codex turn did not advertise a compatible command tool or the native exec gateway");
+      }
+      if (tool.name === "shell_command" && tty === true) {
+        throw new Error("shell_command does not support tty or resumable sessions");
+      }
+      const args = tool.name === "exec_command"
         ? {
-            cmd,
-            ...(workdir ? { workdir } : {}),
-            ...(yield_time_ms !== undefined ? { yield_time_ms } : {}),
-            ...(max_output_tokens !== undefined ? { max_output_tokens } : {}),
-            ...(tty !== undefined ? { tty } : {}),
+            ...logicalArgs,
           }
         : {
             command: cmd,
             ...(workdir ? { workdir } : {}),
-            ...(yield_time_ms !== undefined ? { timeout_ms: yield_time_ms } : {}),
           };
-      return tool
-        ? invokeNative(binding_id, bound, tool, { arguments: args })
-        : invokeNestedNative(binding_id, bound, commandName, false, { arguments: args });
+      return invoke(binding_id, bound, tool, { arguments: args });
     },
   );
 

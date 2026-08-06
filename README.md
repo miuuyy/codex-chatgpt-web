@@ -41,8 +41,8 @@ connects ChatGPT back to the tools of that same Codex task.
 
 - **A polished cross-platform launcher.** One command installs the native macOS, Windows, or Linux
   app. It keeps sign-in, setup, smoke testing, MCP guidance, runtime health, and local logs in one
-  place, while the embedded browser lets you watch every ChatGPT turn as it happens. Up to five
-  task-bound browser tabs can run in parallel; the cap avoids excessive parallel account traffic.
+  place, while the embedded browser lets you watch every ChatGPT turn as it happens. Task-bound
+  browser tabs have no fixed application limit and remain subject to machine and account capacity.
 - **ChatGPT is the selected model.** It runs as a native Codex model, not as a tool called by
   another host model. The original model picker, task lifecycle, streaming, tracing, and tool UI
   remain intact.
@@ -57,11 +57,13 @@ connects ChatGPT back to the tools of that same Codex task.
   custom MCP connector this bridge needs. Its native capabilities, including web search and
   research, remain available. Gather local workspace context with Instant through Extra High,
   switch to Pro, and Pro receives the complete accumulated Codex task for deeper analysis.
-- **Fail-closed transport.** Normal turns transport complete context inline. Dedicated compaction
-  turns keep their control instructions inline and upload the complete context as an in-memory
-  UTF-8 `codex-compaction-context.txt` attachment. The browser verifies every attachment tile and
-  send readiness before submission. UI drift, upload failure, and missing capabilities produce
-  explicit errors rather than silent fallbacks.
+- **Fail-closed transport.** Every turn carries the complete sanitized Codex task context as one
+  in-memory UTF-8 `codex-task-context.txt` attachment. The composer contains only the fixed
+  transport and capability bootstrap. Image bytes remain separate native attachments, with one of
+  ten attachment slots reserved for the context document and up to nine current images retained.
+  Before submission, the browser verifies the exact current attachment set, current bootstrap,
+  connector state when applicable, and current enabled Send control. UI drift, upload failure, and
+  missing capabilities produce explicit errors rather than silent fallbacks.
 
 Temporary Chat is a ChatGPT privacy mode, not anonymity or local-only inference: prompts are still
 processed by OpenAI and are subject to the account's settings and OpenAI's

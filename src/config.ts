@@ -1,8 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, openSync, closeSync, renameSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
-import { tmpdir } from "node:os";
+import { CHATGPT_WEB_CONTEXT_WINDOW } from "./chatgpt-web-limits";
 import type { CodexProviderConfig } from "./types";
 import { VERSION } from "./version";
 
@@ -115,7 +115,7 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     mode,
     host: "127.0.0.1",
     port: 17841,
-    contextWindow: 256_000,
+    contextWindow: CHATGPT_WEB_CONTEXT_WINDOW,
     appName: "Codex Native",
     browserHost: "managed-chrome",
     chromeExecutablePath: defaultChromeExecutable(),
@@ -158,15 +158,29 @@ export function installedBunExecutable({
     .map(part => part.trim().replace(/^"(.*)"$/, "$1"))
     .filter(Boolean)
     .map(part => join(part, executableName));
+  const win32KnownInstallations = platform === "win32"
+    ? [
+        join(process.env.APPDATA || "", "npm", "node_modules", "bun", "bin", "bun.exe"),
+        join(process.env.LOCALAPPDATA || "", "bun", "bin", "bun.exe"),
+        join(homedir(), ".bun", "bin", "bun.exe"),
+      ]
+    : [];
   const discovered = [
     process.env.CODEX_CHATGPT_WEB_BUN,
     process.env.CODEX_WEB_GPT_BUN,
     ...candidates,
+    ...win32KnownInstallations,
     ...pathCandidates,
     typeof Bun !== "undefined" ? Bun.which("bun") : undefined,
     process.execPath,
   ];
-  for (const candidate of discovered) {
+  const ordered = platform === "win32"
+    ? [...discovered].sort((a, b) => {
+        const isExe = (value?: string | null) => Boolean(value?.trim()) && /\.exe$/i.test(value!.trim());
+        return Number(isExe(b)) - Number(isExe(a));
+      })
+    : discovered;
+  for (const candidate of ordered) {
     if (!candidate?.trim()) continue;
     const executable = resolve(candidate.trim());
     try {

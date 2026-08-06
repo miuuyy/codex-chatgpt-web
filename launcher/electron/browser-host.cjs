@@ -24,7 +24,6 @@ const SMOKE_SUBMISSION_TIMEOUT_MS = 15_000;
 const SMOKE_RESPONSE_TIMEOUT_MS = 120_000;
 const SMOKE_COMPLETION_SETTLE_MS = 1_500;
 const MAX_BROWSER_VIEW_DIMENSION = 16_384;
-const MAX_BROWSER_TABS = 5;
 const CHATGPT_PARTITION = "persist:codex-web-gpt-chatgpt";
 const COMPOSER_SELECTOR = [
   '[data-testid="prompt-textarea"]',
@@ -39,6 +38,7 @@ const EFFORT_MENU_SELECTOR = [
   '[role="group"]:has([role="menuitemradio"])',
 ].join(", ");
 const COMPLETION_ACTION_SELECTOR = 'button[data-testid="copy-turn-action-button"]';
+const STOP_BUTTON_SELECTOR = '[data-testid="stop-button"], button[aria-label="Stop streaming"], button[aria-label="Stop answering"]';
 const ASSISTANT_TURN_SELECTOR = [
   '[data-testid^="conversation-turn-"][data-turn="assistant"]',
   '[data-testid^="conversation-turn-"][data-message-author-role="assistant"]',
@@ -114,6 +114,15 @@ function isTemporaryChatUrl(value) {
     && parsed.searchParams.get("temporary-chat") === "true";
 }
 
+function nextBrowserTabOrdinal(turnTabs) {
+  const used = new Set([...turnTabs.values()].map((tab) => tab.ordinal));
+  let ordinal = 1;
+  while (used.has(ordinal)) ordinal += 1;
+  return ordinal;
+}
+
+const { processRunning } = require("./process-tree.cjs");
+
 class BrowserHost {
   constructor({ window, descriptorPath, cdpPort, control, helper, logger, publishState }) {
     this.window = window;
@@ -172,7 +181,7 @@ class BrowserHost {
   }
 
   get activeTraceId() {
-    return [...this.turnTabs.values()].find((tab) => tab.status === "running")?.traceId || null;
+    return [...this.turnTabs.values()].find((tab) => tab.turnActive === true)?.traceId || null;
   }
 
   tabSnapshot(tab) {
@@ -191,17 +200,21 @@ class BrowserHost {
     return this.turnTabs.get(this.selectedTabId) || null;
   }
 
-  createTurnTab(traceId, helperPid) {
-    if (this.turnTabs.size >= MAX_BROWSER_TABS) {
-      throw new Error(
-        `ChatGPT Web already has ${MAX_BROWSER_TABS} browser tabs; close one before starting another turn to avoid excessive parallel traffic on the ChatGPT account`,
-      );
+  pruneClosedTurnOwners() {
+    if (!this.closedTurnOwners) return 0;
+    let pruned = 0;
+    for (const [traceId, helperPid] of this.closedTurnOwners) {
+      if (processRunning(helperPid)) continue;
+      this.closedTurnOwners.delete(traceId);
+      pruned += 1;
     }
+    return pruned;
+  }
+
+  createTurnTab(traceId, helperPid) {
     const id = randomBytes(12).toString("base64url");
     const surfaceId = randomBytes(24).toString("base64url");
-    const ordinal = Array.from({ length: MAX_BROWSER_TABS }, (_unused, index) => index + 1)
-      .find(candidate => ![...this.turnTabs.values()].some(tab => tab.ordinal === candidate));
-    if (!ordinal) throw new Error("ChatGPT Web browser tab allocation is inconsistent");
+    const ordinal = nextBrowserTabOrdinal(this.turnTabs);
     const view = new WebContentsView({
       webPreferences: {
         partition: CHATGPT_PARTITION,
@@ -218,6 +231,7 @@ class BrowserHost {
       traceId,
       helperPid,
       view,
+      turnActive: true,
       status: "running",
       ordinal,
       label: `ChatGPT ${ordinal}`,
@@ -397,7 +411,6 @@ class BrowserHost {
             ...[...this.turnTabs.values()].map((tab) => this.tabSnapshot(tab)),
           ]
         : [homeTab],
-      maxTabs: MAX_BROWSER_TABS,
     };
   }
 
@@ -462,8 +475,9 @@ class BrowserHost {
     const tab = this.turnTabs.get(tabId);
     if (!tab) throw new Error("Browser tab does not exist");
     this.turnTabs.delete(tabId);
-    if (tab.status === "running") {
+    if (tab.turnActive === true) {
       this.closedTurnOwners.set(tab.traceId, tab.helperPid);
+      tab.turnActive = false;
       tab.status = "aborted";
     }
     try { this.window.contentView.removeChildView(tab.view); } catch {}
@@ -625,15 +639,23 @@ class BrowserHost {
   }
 
   beginTurn(traceId, reveal, helperPid) {
+    this.pruneClosedTurnOwners();
     if (this.manualOperation) {
       throw new Error(`ChatGPT browser is busy with ${this.manualOperation}`);
     }
     const existing = [...this.turnTabs.values()].find((tab) => tab.traceId === traceId);
     if (existing) {
-      if (existing.status === "running" && existing.helperPid !== helperPid) {
-        throw new Error(`ChatGPT browser turn ${traceId} is owned by another helper process`);
+      if (existing.turnActive === true && existing.helperPid !== helperPid) {
+        // The daemon restarted after a crash (e.g. Bun segfault) and its new helper must resume the
+        // turn. A stale helper that is still alive still owns the tab; a dead one belongs to a
+        // previous generation and must release the claim so the new turn can proceed.
+        if (processRunning(existing.helperPid)) {
+          throw new Error(`ChatGPT browser turn ${traceId} is owned by another helper process`);
+        }
+        this.logger.warn("browser.tab_stale_owner_reclaimed", { tabId: existing.id, traceId });
       }
       existing.helperPid = helperPid;
+      existing.turnActive = true;
       existing.status = "running";
       existing.loading = true;
       existing.message = "ChatGPT is working";
@@ -657,6 +679,47 @@ class BrowserHost {
     return { surfaceId: tab.surfaceId, tabId: tab.id };
   }
 
+  async stopTurnGeneration(tab, timeoutMs = 2_000) {
+    const contents = tab?.view?.webContents;
+    if (!contents || contents.isDestroyed()) return false;
+    const deadline = Date.now() + timeoutMs;
+    let inspectionError;
+    while (Date.now() < deadline) {
+      const focused = await contents.executeJavaScript(`(() => {
+        const button = ${visibleElementScript(STOP_BUTTON_SELECTOR)};
+        if (!button) return false;
+        button.focus({ preventScroll: true });
+        return document.activeElement === button;
+      })()`, true).catch((error) => {
+        inspectionError = error;
+        return false;
+      });
+      if (inspectionError) break;
+      if (focused) {
+        try {
+          await this.dispatchTrustedKey({ debuggerClient: contents.debugger, key: "Enter" });
+          return true;
+        } catch (error) {
+          this.logger?.warn?.("browser.tab_stop_failed", {
+            tabId: tab.id,
+            traceId: tab.traceId,
+            message: error instanceof Error ? error.message : String(error),
+          });
+          return false;
+        }
+      }
+      await sleep(100);
+    }
+    if (inspectionError) {
+      this.logger?.warn?.("browser.tab_stop_failed", {
+        tabId: tab.id,
+        traceId: tab.traceId,
+        message: inspectionError instanceof Error ? inspectionError.message : String(inspectionError),
+      });
+    }
+    return false;
+  }
+
   async endTurn(traceId, helperPid, status, hideAfterTurn, message) {
     const tab = [...this.turnTabs.values()].find((candidate) => candidate.traceId === traceId);
     if (!tab) {
@@ -672,6 +735,11 @@ class BrowserHost {
         `Browser helper ownership mismatch: expected ${tab.helperPid}, received ${helperPid}`,
       );
     }
+    const wasActive = tab.turnActive === true;
+    if (status !== "completed" && wasActive) {
+      await this.stopTurnGeneration(tab);
+    }
+    tab.turnActive = false;
     tab.status = status === "completed" ? "ready" : status === "aborted" ? "aborted" : "error";
     tab.message = status === "completed" ? "Task completed" : message || `ChatGPT turn ${status}`;
     tab.loading = false;
@@ -1379,6 +1447,7 @@ class BrowserHost {
       if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
     }
     this.turnTabs.clear();
+    this.closedTurnOwners.clear();
     if (this.view && !this.view.webContents.isDestroyed()) this.view.webContents.close();
   }
 }
@@ -1389,5 +1458,6 @@ module.exports = {
   CHATGPT_VIEWPORT_CSS,
   IDLE_BROWSER_URL,
   isTemporaryChatUrl,
+  nextBrowserTabOrdinal,
   TEMPORARY_CHAT_URL,
 };

@@ -95,6 +95,22 @@ describe("native /models augmentation", () => {
     expect(web.every(model => (model.supported_reasoning_levels as unknown[]).length === 1)).toBe(true);
   });
 
+  test("derives Web model limits from the configured ChatGPT Web window", () => {
+    const config = defaultConfig("browser-only");
+    config.contextWindow = 272_000;
+
+    const result = augmentNativeModelCatalog(source(), config);
+    const web = (result.models as Array<Record<string, unknown>>)
+      .filter(model => String(model.slug).startsWith("chatgpt-web/"));
+
+    expect(web).not.toHaveLength(0);
+    for (const model of web) {
+      expect(model.context_window).toBe(272_000);
+      expect(model.max_context_window).toBe(272_000);
+      expect(model.auto_compact_token_limit).toBe(236_000);
+    }
+  });
+
   test("honors an explicit Codex context override without replacing or reordering native models", () => {
     const native = source();
     const nativeSnapshot = structuredClone(native);

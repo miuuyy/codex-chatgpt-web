@@ -1,8 +1,14 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { notifyLauncherTurn, readLauncherBrowserHostDescriptor } from "../../launcher-browser-host";
 import type { CompiledChatGptWebPrompt } from "./prompt";
 import type { BrowserTurn, ResolvedBrowserConfig } from "./browser-worker";
+import {
+  CHATGPT_TRANSIENT_LIMIT_ERROR_CODE,
+  ChatGptTransientLimitError,
+} from "./transient-limit-error";
 
 interface PendingTurn {
   turn: BrowserTurn;
@@ -12,13 +18,31 @@ interface PendingTurn {
   sent?: boolean;
 }
 
+function browserHelperArtifactFingerprint(executable: string, script: string): string {
+  return createHash("sha256")
+    .update(executable)
+    .update("\0")
+    .update(script)
+    .update("\0")
+    .update(readFileSync(script))
+    .digest("hex");
+}
+
 type HelperMessage =
   | { type: "ready" }
   | { type: "event"; id: string; event: "heartbeat" | "reasoning" | "commentary" | "text"; text?: string; continuation?: boolean }
   | { type: "result"; id: string; text: string }
-  | { type: "error"; id: string; name?: string; message: string };
+  | {
+    type: "error";
+    id: string;
+    name?: string;
+    message: string;
+    code?: typeof CHATGPT_TRANSIENT_LIMIT_ERROR_CODE;
+    stage?: string;
+    dismissals?: number;
+  };
 
-function parseHelperMessage(line: string): HelperMessage {
+export function parseLauncherBrowserHelperMessage(line: string): HelperMessage {
   const value = JSON.parse(line) as unknown;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Launcher browser helper message is not an object");
@@ -59,9 +83,33 @@ function parseHelperMessage(line: string): HelperMessage {
   if (message.type === "error") {
     const errorMessage = message.message;
     const errorName = message.name;
+    const errorCode = message.code;
+    const stage = message.stage;
+    const dismissals = message.dismissals;
     if (typeof errorMessage !== "string"
-      || (errorName !== undefined && typeof errorName !== "string")) {
+      || (errorName !== undefined && typeof errorName !== "string")
+      || (errorCode !== undefined && typeof errorCode !== "string")) {
       throw new Error("Launcher browser helper error payload is invalid");
+    }
+    if (errorCode === CHATGPT_TRANSIENT_LIMIT_ERROR_CODE) {
+      if (typeof stage !== "string"
+        || stage.trim().length === 0
+        || !Number.isSafeInteger(dismissals)
+        || (dismissals as number) < 0) {
+        throw new Error("Launcher browser helper transient-limit payload is invalid");
+      }
+      return {
+        type: "error",
+        id: message.id,
+        message: errorMessage,
+        ...(errorName !== undefined ? { name: errorName as string } : {}),
+        code: CHATGPT_TRANSIENT_LIMIT_ERROR_CODE,
+        stage,
+        dismissals: dismissals as number,
+      };
+    }
+    if (stage !== undefined || dismissals !== undefined) {
+      throw new Error("Launcher browser helper error metadata is invalid");
     }
     return {
       type: "error",
@@ -75,6 +123,13 @@ function parseHelperMessage(line: string): HelperMessage {
 
 export class LauncherBrowserHelperClient {
   private child?: ChildProcessWithoutNullStreams;
+  private childFingerprint?: string;
+  private requestedFingerprint?: string;
+  private recyclePromise?: Promise<void>;
+  private recycleDrainResolve?: () => void;
+  private dispatchTail: Promise<void> = Promise.resolve();
+  private closePromise?: Promise<void>;
+  private closing = false;
   private ready?: Promise<void>;
   private readyResolve?: () => void;
   private readyReject?: (error: Error) => void;
@@ -83,94 +138,138 @@ export class LauncherBrowserHelperClient {
   constructor(private readonly config: ResolvedBrowserConfig) {}
 
   async run(turn: BrowserTurn): Promise<string> {
-    if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
+    if (this.closing || turn.abortSignal?.aborted) {
+      throw new DOMException("ChatGPT web turn aborted", "AbortError");
+    }
     const prepared = await turn.prepare();
     try {
-      await this.ensureChild();
-      if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
-      return await new Promise<string>((resolveResult, rejectResult) => {
-        if (this.pending.has(turn.traceId)) {
-          rejectResult(new Error(`Duplicate launcher browser turn: ${turn.traceId}`));
-          return;
+      const { result } = await this.withDispatchLock(async () => {
+        if (this.closing) throw new DOMException("Launcher browser helper is closing", "AbortError");
+        await this.ensureChild();
+        if (this.closing || turn.abortSignal?.aborted) {
+          throw new DOMException("ChatGPT web turn aborted", "AbortError");
         }
-        const pending: PendingTurn = { turn, resolve: resolveResult, reject: rejectResult };
-        this.pending.set(turn.traceId, pending);
-        if (turn.abortSignal) {
-          const abortListener = () => {
-            if (!pending.sent) {
-              this.finishWithError(
-                turn.traceId,
-                new DOMException("ChatGPT web turn aborted", "AbortError"),
-              );
+        return {
+          result: new Promise<string>((resolveResult, rejectResult) => {
+            if (this.pending.has(turn.traceId)) {
+              rejectResult(new Error(`Duplicate launcher browser turn: ${turn.traceId}`));
               return;
             }
-            void this.send({ type: "abort", id: turn.traceId }).catch(error => {
-              this.finishWithError(
-                turn.traceId,
-                error instanceof Error ? error : new Error(String(error)),
-              );
-            });
-          };
-          pending.abortListener = abortListener;
-          turn.abortSignal.addEventListener("abort", abortListener, { once: true });
-          if (turn.abortSignal.aborted) {
-            abortListener();
-            return;
-          }
-        }
-        // Setting this before the synchronous write call makes an abort either prevent dispatch or
-        // queue an `abort` after the `run` frame; it can never overtake the run frame in the pipe.
-        pending.sent = true;
-        void this.send({
-          type: "run",
-          id: turn.traceId,
-          config: {
-            appName: this.config.appName,
-            browserHostDescriptorPath: this.config.browserHostDescriptorPath!,
-            turnTimeoutMs: this.config.turnTimeoutMs,
-            autoApproveToolCalls: this.config.autoApproveToolCalls,
-          },
-          turn: {
-            traceId: turn.traceId,
-            modelId: turn.modelId,
-            reasoning: turn.reasoning,
-            capabilities: turn.capabilities,
-            prepared: {
-              text: prepared.text,
-              images: prepared.images,
-              contextAttachment: prepared.contextAttachment,
-            } satisfies CompiledChatGptWebPrompt,
-          },
-        }).catch(error => this.finishWithError(turn.traceId, error instanceof Error ? error : new Error(String(error))));
+            const pending: PendingTurn = { turn, resolve: resolveResult, reject: rejectResult };
+            this.pending.set(turn.traceId, pending);
+            if (turn.abortSignal) {
+              const abortListener = () => {
+                if (!pending.sent) {
+                  this.finishWithError(
+                    turn.traceId,
+                    new DOMException("ChatGPT web turn aborted", "AbortError"),
+                  );
+                  return;
+                }
+                void this.send({ type: "abort", id: turn.traceId }).catch(error => {
+                  this.finishWithError(
+                    turn.traceId,
+                    error instanceof Error ? error : new Error(String(error)),
+                  );
+                });
+              };
+              pending.abortListener = abortListener;
+              turn.abortSignal.addEventListener("abort", abortListener, { once: true });
+              if (turn.abortSignal.aborted) {
+                abortListener();
+                return;
+              }
+            }
+            // Setting this before the synchronous write call makes an abort either prevent dispatch or
+            // queue an `abort` after the `run` frame; it can never overtake the run frame in the pipe.
+            pending.sent = true;
+            void this.send({
+              type: "run",
+              id: turn.traceId,
+              config: {
+                appName: this.config.appName,
+                browserHostDescriptorPath: this.config.browserHostDescriptorPath!,
+                autoApproveToolCalls: this.config.autoApproveToolCalls,
+              },
+              turn: {
+                traceId: turn.traceId,
+                modelId: turn.modelId,
+                reasoning: turn.reasoning,
+                capabilities: turn.capabilities,
+                prepared: {
+                  text: prepared.text,
+                  images: prepared.images,
+                  contextAttachment: prepared.contextAttachment,
+                } satisfies CompiledChatGptWebPrompt,
+              },
+            }).catch(error => this.finishWithError(turn.traceId, error instanceof Error ? error : new Error(String(error))));
+          }),
+        };
       });
+      return await result;
     } finally {
       prepared.release();
     }
   }
 
   async close(): Promise<void> {
-    const child = this.child;
-    this.child = undefined;
-    this.ready = undefined;
-    this.readyResolve = undefined;
-    this.readyReject = undefined;
+    this.closePromise ??= this.closeNow();
+    await this.closePromise;
+  }
+
+  private async closeNow(): Promise<void> {
+    this.closing = true;
     for (const id of [...this.pending.keys()]) {
       this.finishWithError(id, new DOMException("Launcher browser helper is closing", "AbortError"));
     }
+    await this.dispatchTail;
+    await this.recyclePromise?.catch(() => {});
+    const child = this.child;
+    this.child = undefined;
+    this.childFingerprint = undefined;
+    this.requestedFingerprint = undefined;
+    this.recycleDrainResolve = undefined;
+    this.ready = undefined;
+    this.readyResolve = undefined;
+    this.readyReject = undefined;
     if (!child) return;
     await this.sendTo(child, { type: "shutdown" }).catch(() => {});
     await this.terminateChild(child, 2_000);
   }
 
+  private async withDispatchLock<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.dispatchTail;
+    let release!: () => void;
+    this.dispatchTail = new Promise<void>(resolveRelease => { release = resolveRelease; });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
   private async ensureChild(): Promise<void> {
+    if (this.closing) throw new DOMException("Launcher browser helper is closing", "AbortError");
+    await this.recyclePromise;
+    if (this.closing) throw new DOMException("Launcher browser helper is closing", "AbortError");
+    const descriptor = readLauncherBrowserHostDescriptor(this.config.browserHostDescriptorPath!);
+    const fingerprint = browserHelperArtifactFingerprint(
+      descriptor.helper.executable,
+      descriptor.helper.script,
+    );
     if (this.child
       && !this.child.killed
       && this.child.exitCode === null
       && this.child.signalCode === null
       && this.ready) {
+      if (this.childFingerprint !== fingerprint) {
+        this.requestedFingerprint = fingerprint;
+        await this.beginStaleRecycle(this.child);
+        return this.ensureChild();
+      }
       return this.ready;
     }
-    const descriptor = readLauncherBrowserHostDescriptor(this.config.browserHostDescriptorPath!);
     const child = spawn(descriptor.helper.executable, [descriptor.helper.script], {
       env: {
         ...process.env,
@@ -181,6 +280,8 @@ export class LauncherBrowserHelperClient {
       windowsHide: true,
     });
     this.child = child;
+    this.childFingerprint = fingerprint;
+    this.requestedFingerprint = undefined;
     this.ready = new Promise<void>((resolveReady, rejectReady) => {
       this.readyResolve = resolveReady;
       this.readyReject = rejectReady;
@@ -215,6 +316,7 @@ export class LauncherBrowserHelperClient {
     } catch (error) {
       if (this.child === child) {
         this.child = undefined;
+        this.childFingerprint = undefined;
         this.ready = undefined;
         this.readyResolve = undefined;
         this.readyReject = undefined;
@@ -232,10 +334,39 @@ export class LauncherBrowserHelperClient {
     }
   }
 
+  private beginStaleRecycle(child: ChildProcessWithoutNullStreams): Promise<void> {
+    if (this.recyclePromise) return this.recyclePromise;
+    const drain = this.pending.size === 0
+      ? Promise.resolve()
+      : new Promise<void>(resolveDrain => { this.recycleDrainResolve = resolveDrain; });
+    const recycle = drain
+      .then(() => this.recycleIdleChild(child))
+      .finally(() => {
+        if (this.recyclePromise === recycle) this.recyclePromise = undefined;
+        this.recycleDrainResolve = undefined;
+      });
+    this.recyclePromise = recycle;
+    return recycle;
+  }
+
+  private async recycleIdleChild(child: ChildProcessWithoutNullStreams): Promise<void> {
+    if (this.child !== child || this.pending.size > 0) return;
+    await this.sendTo(child, { type: "shutdown" }).catch(() => {});
+    await this.terminateChild(child, 2_000);
+    if (this.child === child) {
+      this.child = undefined;
+      this.childFingerprint = undefined;
+      this.requestedFingerprint = undefined;
+      this.ready = undefined;
+      this.readyResolve = undefined;
+      this.readyReject = undefined;
+    }
+  }
+
   private handleLine(child: ChildProcessWithoutNullStreams, line: string): void {
     if (this.child !== child) return;
     let message: HelperMessage;
-    try { message = parseHelperMessage(line); }
+    try { message = parseLauncherBrowserHelperMessage(line); }
     catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       this.handleExit(child, new Error(`Launcher browser helper emitted invalid protocol data: ${detail}`));
@@ -265,9 +396,11 @@ export class LauncherBrowserHelperClient {
       this.finish(message.id);
       pending.resolve(message.text);
     } else if (message.type === "error") {
-      const error = message.name === "AbortError"
-        ? new DOMException(message.message, "AbortError")
-        : new Error(message.message);
+      const error = message.code === CHATGPT_TRANSIENT_LIMIT_ERROR_CODE
+        ? new ChatGptTransientLimitError(message.stage!, message.dismissals!)
+        : message.name === "AbortError"
+          ? new DOMException(message.message, "AbortError")
+          : new Error(message.message);
       this.finish(message.id);
       pending.reject(error);
     }
@@ -280,6 +413,10 @@ export class LauncherBrowserHelperClient {
       pending.turn.abortSignal.removeEventListener("abort", pending.abortListener);
     }
     this.pending.delete(id);
+    if (this.pending.size === 0) {
+      this.recycleDrainResolve?.();
+      this.recycleDrainResolve = undefined;
+    }
   }
 
   private finishWithError(id: string, error: Error): void {
@@ -296,6 +433,8 @@ export class LauncherBrowserHelperClient {
     this.readyResolve = undefined;
     this.ready = undefined;
     this.child = undefined;
+    this.childFingerprint = undefined;
+    this.requestedFingerprint = undefined;
     for (const id of [...this.pending.keys()]) {
       void notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
         phase: "end",

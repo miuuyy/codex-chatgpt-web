@@ -1,16 +1,17 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
+import { CHATGPT_WEB_CONTEXT_WINDOW } from "../../chatgpt-web-limits";
 import { defaultBrokerEndpoint, expandUserPath, resolveBrokerEndpoint } from "../../config";
 import { namespacedToolName, type AdapterEvent, type CodexContentPart, type CodexParsedRequest, type CodexProviderConfig, type CodexToolResultMessage, type CodexUsage } from "../../types";
 import type { ProviderAdapter } from "../base";
 import { parseDataUrl } from "../image";
-import { ChatGptBrowserWorker, DEFAULT_CHATGPT_TURN_TIMEOUT_MS } from "./browser-worker";
+import { ChatGptBrowserWorker, isChatGptTransientLimitError } from "./browser-worker";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "./environment";
 import { resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt";
 import { TurnBroker, type BrokerToolRequest, type BrokerToolResult } from "./turn-broker";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptTurnExecutionKey, chatGptTurnSessions, type ChatGptBrowserOutcome, type ChatGptTraceEvent, type ChatGptTurnRuntime, type ChatGptTurnSession } from "./turn-execution";
-import { estimateChatGptWebUsage } from "./usage";
+import { estimateChatGptWebUsage, assertCompactionFitsContext } from "./usage";
 import { ChatGptThreadEnvironmentStore } from "./thread-environment";
 
 function brokerSocketPath(provider: CodexProviderConfig): string {
@@ -155,7 +156,6 @@ function validateBatchTools(parsed: CodexParsedRequest, requests: BrokerToolRequ
 export function createChatGptWebAdapter(provider: CodexProviderConfig): ProviderAdapter {
   const worker = ChatGptBrowserWorker.forProvider(provider);
   const broker = TurnBroker.forSocket(brokerSocketPath(provider));
-  const timeoutMs = provider.chatgptWeb?.turnTimeoutMs ?? DEFAULT_CHATGPT_TURN_TIMEOUT_MS;
   const capabilities: ChatGptWebCapabilities = {
     localToolsEnabled: provider.chatgptWeb?.localToolsEnabled === true,
     proAvailable: provider.chatgptWeb?.proAvailable === true,
@@ -209,7 +209,7 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
       reasoning: parsed.options.reasoning,
       capabilities,
       prepare: async () => {
-        const turnToken = await broker.register(environment, timeoutMs + 60_000, traceId);
+        const turnToken = await broker.register(environment, traceId);
         activeToken = turnToken;
         tokenSettled = true;
         token.resolve(turnToken);
@@ -256,6 +256,11 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
         );
       }
       const mode = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
+      assertCompactionFitsContext(
+        parsed,
+        capabilities,
+        provider.contextWindow ?? CHATGPT_WEB_CONTEXT_WINDOW,
+      );
       let environment: ReturnType<typeof extractChatGptTurnEnvironment> | undefined;
       if (mode.localTools) {
         try {
@@ -410,6 +415,18 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
         session.cancel();
         if (session.runtime.mode === "tools") {
           void session.runtime.token.then(turnToken => broker.revoke(turnToken)).catch(() => {});
+        }
+        if (isChatGptTransientLimitError(error)) {
+          emit({
+            type: "error",
+            message: error.message,
+            status: 429,
+            errorType: "rate_limit_error",
+            code: "rate_limit_exceeded",
+            retryable: true,
+          });
+          chatGptTurnSessions.evict(executionKey);
+          return;
         }
         throw error;
       } finally {

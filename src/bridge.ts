@@ -148,11 +148,18 @@ export function bridgeToResponsesSSE(
   // otherwise surfaced as proxy-side stream noise on every client disconnect.
   let closed = false;
   let clientCancelled = false;
+  let terminalEmitted = false;
   let terminalReported = false;
+  let upstreamCancelSent = false;
+  const cancelUpstreamOnce = () => {
+    if (upstreamCancelSent) return;
+    upstreamCancelSent = true;
+    try { onCancel?.(); } catch { /* cancellation must not block iterator cleanup */ }
+  };
   const reportTerminal = (status: ResponsesTerminalStatus) => {
     if (terminalReported || clientCancelled || closed) return;
     terminalReported = true;
-    options?.onTerminal?.(status);
+    try { options?.onTerminal?.(status); } catch { /* observers must not alter stream lifecycle */ }
   };
   // RC3 keep-alive: Codex's idle timer is timeout(idle_timeout, stream.next()) over an
   // eventsource_stream; ANY received event re-arms it, while an unknown type is ignored
@@ -164,15 +171,36 @@ export function bridgeToResponsesSSE(
   let emittedFrames = 0;
   let gated = false;
   let stepping = false;
-  const emit = (name: string, data: Record<string, unknown>) => {
-        if (closed) return;
+  let returnIterator = () => {};
+  const closeTransport = () => {
+    if (closed) return;
+    closed = true;
+    if (beat) { clearInterval(beat); beat = undefined; }
+    cancelUpstreamOnce();
+    returnIterator();
+  };
+  const emit = (name: string, data: Record<string, unknown>): boolean => {
+        if (closed) return false;
         activity = true;
         try {
           controller.enqueue(encoder.encode(sseEvent(name, { type: name, sequence_number: seq++, ...data })));
           emittedFrames++;
+          return true;
         } catch {
-          closed = true;
+          closeTransport();
+          return false;
         }
+      };
+      const emitTerminal = (
+        name: "response.completed" | "response.failed" | "response.incomplete",
+        data: Record<string, unknown>,
+        status: ResponsesTerminalStatus,
+      ): boolean => {
+        if (!emit(name, data)) return false;
+        // Latch delivery before observers can synchronously tear down the reader.
+        terminalEmitted = true;
+        reportTerminal(status);
+        return true;
       };
       const emitDone = () => {
         if (closed) return;
@@ -409,7 +437,7 @@ export function bridgeToResponsesSSE(
       let iteratorStarted = false;
       let iteratorReturned = false;
       let upstreamDone = false;
-      const returnIterator = () => {
+      returnIterator = () => {
         if (iteratorReturned) return;
         iteratorReturned = true;
         const finishReturn = () => {
@@ -442,6 +470,7 @@ export function bridgeToResponsesSSE(
         while (!terminated && !closed && emittedFrames === emittedAtStart) {
           iteratorStarted = true;
           const next = await it.next();
+          if (closed || terminated) break;
           if (next.done) { upstreamDone = true; break; }
           const event = next.value;
           let terminalEvent = false;
@@ -674,15 +703,13 @@ export function bridgeToResponsesSSE(
                 // Cache max-output partials so previous_response_id replay can continue them;
                 // rememberResponseState rejects content-filtered incomplete responses.
                 options?.onCompletedResponse?.(response, event.providerState);
-                emit("response.incomplete", { response });
-                reportTerminal("incomplete");
+                emitTerminal("response.incomplete", { response }, "incomplete");
               } else {
                 const response = { ...responseSnapshot("completed", finishedItems, event.endTurn), usage: responsesUsage(event.usage) };
                 options?.onCompletedResponse?.(response, event.providerState);
-                emit("response.completed", {
+                emitTerminal("response.completed", {
                   response,
-                });
-                reportTerminal("completed");
+                }, "completed");
               }
               terminalEvent = true;
               break;
@@ -695,7 +722,7 @@ export function bridgeToResponsesSSE(
               if (currentToolCall) closeCurrentToolCall();
               if (currentWebSearch) closeCurrentWebSearch("failed", []);
               flushHiddenReasoningEnvelope();
-              emit("response.incomplete", {
+              emitTerminal("response.incomplete", {
                 response: {
                   ...responseSnapshot("incomplete", finishedItems, event.endTurn),
                   usage: responsesUsage(event.usage),
@@ -705,8 +732,7 @@ export function bridgeToResponsesSSE(
                     ...(event.retryable !== undefined ? { retryable: event.retryable } : {}),
                   },
                 },
-              });
-              reportTerminal("incomplete");
+              }, "incomplete");
               terminalEvent = true;
               break;
             }
@@ -718,7 +744,7 @@ export function bridgeToResponsesSSE(
               if (currentToolCall) closeCurrentToolCall();
               if (currentWebSearch) closeCurrentWebSearch("failed", []);
               const failure = adapterFailureFromEvent(event);
-              emit("response.failed", {
+              emitTerminal("response.failed", {
                 response: {
                   ...responseSnapshot("failed", finishedItems),
                   // Partial consumption from a mid-stream upstream failure: surfaced so the request
@@ -728,32 +754,36 @@ export function bridgeToResponsesSSE(
                   last_error: failure.error,
                   ...(event.retryable !== undefined ? { retryable: event.retryable } : {}),
                 },
-              });
-              reportTerminal("failed");
+              }, "failed");
               terminalEvent = true;
               break;
             }
           }
           if (terminalEvent) {
-            onCancel?.();
+            // A terminal adapter event is upstream completion, including a normal tool-use round.
+            // `onCancel` is reserved for downstream disconnects and bridge failures; invoking it
+            // here aborts the shared ChatGPT browser before Codex can return the tool result.
             terminated = true;
             returnIterator();
             break;
           }
         }
       } catch (err) {
+        if (closed || clientCancelled) {
+          returnIterator();
+          return;
+        }
         if (!terminated) {
           flushHiddenRawReasoning();
           if (currentWebSearch) closeCurrentWebSearch("failed", []);
-          emit("response.failed", {
+          emitTerminal("response.failed", {
             response: {
               ...responseSnapshot("failed", finishedItems),
               error: responseError(500, "proxy_error", err instanceof Error ? err.message : String(err)),
               last_error: responseError(500, "proxy_error", err instanceof Error ? err.message : String(err)),
             },
-          });
-          reportTerminal("failed");
-          onCancel?.();
+          }, "failed");
+          cancelUpstreamOnce();
           terminated = true;
           returnIterator();
         }
@@ -775,14 +805,13 @@ export function bridgeToResponsesSSE(
         flushHiddenRawReasoning();
         if (currentToolCall) closeCurrentToolCall();
         if (currentWebSearch) closeCurrentWebSearch("failed", []);
-        emit("response.incomplete", {
+        emitTerminal("response.incomplete", {
           response: {
             ...responseSnapshot("incomplete", finishedItems),
             usage: responsesUsage(undefined),
             incomplete_details: { reason: "adapter_eof" },
           },
-        });
-        reportTerminal("incomplete");
+        }, "incomplete");
         terminated = true;
       }
 
@@ -798,7 +827,7 @@ export function bridgeToResponsesSSE(
       };
 
       const startStream = () => {
-        emit("response.created", { response: responseSnapshot("in_progress", []) });
+        if (!emit("response.created", { response: responseSnapshot("in_progress", []) })) return;
         gated = true;
         beat = setInterval(() => {
           if (closed || gated) return;
@@ -810,14 +839,13 @@ export function bridgeToResponsesSSE(
             flushHiddenRawReasoning();
             if (currentToolCall) closeCurrentToolCall();
             if (currentWebSearch) closeCurrentWebSearch("failed", []);
-            emit("response.incomplete", {
+            emitTerminal("response.incomplete", {
               response: {
                 ...responseSnapshot("incomplete", finishedItems),
                 incomplete_details: { reason: "upstream_stall_timeout" },
               },
-            });
-            reportTerminal("incomplete");
-            onCancel?.();
+            }, "incomplete");
+            cancelUpstreamOnce();
             terminated = true;
             returnIterator();
             emitDone();
@@ -831,7 +859,7 @@ export function bridgeToResponsesSSE(
             controller.enqueue(heartbeatFrame);
             emittedFrames++;
           } catch {
-            closed = true;
+            closeTransport();
           }
         }, heartbeatMs);
       };
@@ -852,11 +880,14 @@ export function bridgeToResponsesSSE(
 
   const cancelStream = () => {
     // Client (Codex) disconnected. Stop emitting and let the caller abort the upstream fetch so a
-    // cancelled turn does not leak the upstream stream or keep draining tokens (RC2).
-    clientCancelled = true;
+    // cancelled turn does not leak the upstream stream or keep draining tokens (RC2). Once a
+    // terminal Responses event has been emitted, a reader closing the finished body is normal
+    // teardown, not cancellation of the shared upstream browser turn.
+    clientCancelled = !terminalEmitted;
     closed = true;
+    terminated = true;
     if (beat) clearInterval(beat);
-    onCancel?.();
+    if (!terminalEmitted) cancelUpstreamOnce();
     returnIterator();
   };
 
@@ -872,7 +903,7 @@ export function bridgeToResponsesSSE(
           if (closed) return;
           closed = true;
           if (beat) clearInterval(beat);
-          onCancel?.();
+          cancelUpstreamOnce();
           returnIterator();
           try { controller.error(error); } catch { /* already closed */ }
         });

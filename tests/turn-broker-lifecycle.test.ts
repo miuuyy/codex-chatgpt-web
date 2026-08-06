@@ -3,6 +3,7 @@ import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSessions } from "../src/a
 import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { createServer } from "node:net";
 import { callTurnBroker, TurnBroker } from "../src/adapters/chatgpt-web/turn-broker";
 import { defaultBrokerEndpoint, isWindowsPipeEndpoint } from "../src/config";
 
@@ -51,7 +52,7 @@ test("session cache expiry never cancels a still-active long browser turn", asyn
   sessions.clear();
 });
 
-test("five active turns coexist and a sixth fails closed", () => {
+test("active browser turns exceed the former replay-retention boundary without a concurrency cap", () => {
   const sessions = new ChatGptTurnSessions();
   let cancelled = 0;
   const runtime = () => ({
@@ -62,19 +63,56 @@ test("five active turns coexist and a sixth fails closed", () => {
     cancel: () => { cancelled += 1; },
   });
 
-  const active = Array.from({ length: 5 }, (_unused, index) => (
+  const active = Array.from({ length: 300 }, (_unused, index) => (
     sessions.getOrCreate(`turn-${index + 1}`, runtime)
   ));
-  expect(sessions.activeCount()).toBe(5);
+  expect(sessions.activeCount()).toBe(300);
   expect(cancelled).toBe(0);
-  expect(() => sessions.getOrCreate("turn-6", runtime)).toThrow("at most 5 simultaneous browser turns");
 
-  expect(sessions.getOrCreate("turn-3", () => {
+  expect(sessions.getOrCreate("turn-213", () => {
     throw new Error("an in-flight turn must be reused");
-  })).toBe(active[2]);
+  })).toBe(active[212]);
   expect(cancelled).toBe(0);
   sessions.clear();
-  expect(cancelled).toBe(5);
+  expect(cancelled).toBe(300);
+});
+
+test("settled replay retention stays bounded without limiting active turns", async () => {
+  const sessions = new ChatGptTurnSessions(60_000, 2);
+  const releases = new Map<string, () => void>();
+  let restarts = 0;
+  const runtime = (key: string) => ({
+    mode: "read-only" as const,
+    browser: new Promise<string>(resolve => releases.set(key, () => resolve(key))),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    cancel: () => {},
+  });
+
+  const active = Array.from({ length: 4 }, (_unused, index) => {
+    const key = `turn-${index + 1}`;
+    return sessions.getOrCreate(key, () => runtime(key));
+  });
+  expect(sessions.activeCount()).toBe(4);
+  for (const release of releases.values()) release();
+  await Promise.all(active.map(session => session.browserOutcome));
+  expect(sessions.activeCount()).toBe(0);
+
+  sessions.getOrCreate("turn-1", () => {
+    restarts += 1;
+    return {
+      mode: "read-only",
+      browser: Promise.resolve("restarted"),
+      trace: new ChatGptTraceFeed(),
+      text: new ChatGptTextFeed(),
+      cancel: () => {},
+    };
+  });
+  sessions.getOrCreate("turn-4", () => {
+    throw new Error("the newest settled replay must remain cached");
+  });
+  expect(restarts).toBe(1);
+  sessions.clear();
 });
 
 test("settled replay sessions expire from their last use instead of their creation time", async () => {
@@ -100,6 +138,34 @@ test("settled replay sessions expire from their last use instead of their creati
   sessions.clear();
 });
 
+test("replay TTL starts when a long-running browser turn settles", async () => {
+  const sessions = new ChatGptTurnSessions(50);
+  let resolveBrowser!: (answer: string) => void;
+  let starts = 0;
+  const start = () => {
+    starts += 1;
+    return {
+      mode: "read-only" as const,
+      browser: new Promise<string>(resolve => { resolveBrowser = resolve; }),
+      trace: new ChatGptTraceFeed(),
+      text: new ChatGptTextFeed(),
+      cancel: () => {},
+    };
+  };
+
+  const first = sessions.getOrCreate("long-replay", start);
+  await Bun.sleep(70);
+  resolveBrowser("done");
+  await first.browserOutcome;
+
+  expect(sessions.getOrCreate("long-replay", start)).toBe(first);
+  expect(starts).toBe(1);
+  await Bun.sleep(70);
+  expect(sessions.getOrCreate("long-replay", start)).not.toBe(first);
+  expect(starts).toBe(2);
+  sessions.clear();
+});
+
 test("turn broker creates its private runtime directory on a cold start", async () => {
   const root = mkdtempSync(join(tmpdir(), "cgw-broker-"));
   const socketPath = defaultBrokerEndpoint(root);
@@ -111,7 +177,7 @@ test("turn broker creates its private runtime directory on a cold start", async 
       writableRoots: [root],
       sandboxPolicy: { type: "dangerFullAccess" },
       tools: [],
-    }, 10_000);
+    });
     if (process.platform === "win32") {
       expect(isWindowsPipeEndpoint(socketPath)).toBe(true);
     } else {
@@ -135,7 +201,7 @@ test("turn broker names the finished turn that owns a replayed handle", async ()
       writableRoots: [root],
       sandboxPolicy: { type: "dangerFullAccess" },
       tools: [],
-    }, 60_000, "turn-alpha");
+    }, "turn-alpha");
     const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
     broker.revoke(token);
 
@@ -165,9 +231,56 @@ test("turn broker names the finished turn that owns a replayed handle", async ()
       bindingId: "binding_never-issued",
       wireName: "exec_command",
     });
-    expect(unknownBinding).toBe("binding id is invalid or expired");
+    expect(unknownBinding).toBe("binding id is invalid or revoked");
   } finally {
     await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("turn broker capabilities do not expire with wall-clock age", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cgw-broker-age-"));
+  const socketPath = defaultBrokerEndpoint(root);
+  const broker = TurnBroker.forSocket(socketPath);
+  const originalNow = Date.now;
+  try {
+    const token = await broker.register({
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: [],
+    });
+    const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
+    const startedAt = originalNow();
+    Date.now = () => startedAt + 24 * 60 * 60_000;
+    const resolved = await callTurnBroker<{ environment: { cwd: string } }>(socketPath, {
+      method: "resolve",
+      bindingId: claimed.bindingId,
+    });
+    expect(resolved.environment.cwd).toBe(root);
+  } finally {
+    Date.now = originalNow;
+    await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an unlimited broker call rejects when its connection closes without a response", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cgw-broker-eof-"));
+  const socketPath = defaultBrokerEndpoint(root);
+  const server = createServer(socket => {
+    socket.once("data", () => socket.end());
+  });
+  try {
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once("error", rejectListen);
+      server.listen(socketPath, resolveListen);
+    });
+    await expect(callTurnBroker(socketPath, { method: "claim", token: "turn_never_returns_1234567890" }, null))
+      .rejects.toThrow("closed before returning");
+  } finally {
+    await new Promise<void>(resolveClose => server.close(() => resolveClose()));
     rmSync(root, { recursive: true, force: true });
   }
 });

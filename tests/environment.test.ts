@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { extractChatGptTurnEnvironment } from "../src/adapters/chatgpt-web/environment";
 import { ChatGptThreadEnvironmentStore } from "../src/adapters/chatgpt-web/thread-environment";
@@ -54,6 +54,157 @@ function currentWire(options: { workspace?: string; sandbox?: string; includeIds
     },
   };
 }
+
+function projectlessWire(): CodexParsedRequest {
+  const turnMetadata = {
+    thread_id: "thread_projectless",
+    turn_id: "turn_projectless",
+    sandbox: "none",
+    workspace_kind: "projectless",
+  };
+  return {
+    modelId: "gpt-5.6-sol",
+    stream: true,
+    context: {
+      messages: [
+        { role: "developer", content: "You are Codex Desktop.", timestamp: 1 },
+        { role: "user", content: "No project attached", timestamp: 2 },
+      ],
+    },
+    options: { reasoning: "high" },
+    _rawBody: {
+      client_metadata: { "x-codex-turn-metadata": JSON.stringify(turnMetadata) },
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "No project attached" }] }],
+    },
+  };
+}
+
+function projectWire(workspace = root): CodexParsedRequest {
+  const turnMetadata = {
+    thread_id: "thread_project",
+    turn_id: "turn_project",
+    sandbox: "none",
+    workspace_kind: "project",
+    workspaces: { [workspace]: { has_changes: true } },
+  };
+  return {
+    modelId: "gpt-5.6-sol",
+    stream: true,
+    context: {
+      messages: [
+        { role: "developer", content: "You are Codex Desktop.", timestamp: 1 },
+        { role: "user", content: "Inspect the project", timestamp: 2 },
+      ],
+    },
+    options: { reasoning: "high" },
+    _rawBody: {
+      client_metadata: { "x-codex-turn-metadata": JSON.stringify(turnMetadata) },
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "Inspect the project" }] }],
+    },
+  };
+}
+
+describe("projectful Codex Desktop turns without an envelope", () => {
+  test("fabricates a trusted environment from workspace metadata", () => {
+    expect(extractChatGptTurnEnvironment(projectWire())).toEqual({
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: [],
+    });
+  });
+
+  test("rejects workspace metadata without absolute roots", () => {
+    const wire = projectWire();
+    wire._rawBody = {
+      client_metadata: {
+        "x-codex-turn-metadata": JSON.stringify({
+          thread_id: "thread_project",
+          turn_id: "turn_project",
+          sandbox: "none",
+          workspace_kind: "project",
+          workspaces: { "relative/path": { has_changes: true } },
+        }),
+      },
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "Inspect" }] }],
+    };
+    expect(() => extractChatGptTurnEnvironment(wire)).toThrow("missing cwd");
+  });
+});
+
+describe("projectless Codex Desktop turns", () => {
+  test("fabricates a synthetic trusted environment keyed to the user home", () => {
+    expect(extractChatGptTurnEnvironment(projectlessWire())).toEqual({
+      cwd: homedir(),
+      roots: [homedir()],
+      writableRoots: [homedir()],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: [],
+    });
+  });
+
+  test("persists the synthetic authority so follow-up turns reuse it", () => {
+    const stateRoot = mkdtempSync(join(tmpdir(), "codex-chatgpt-projectless-"));
+    temporaryRoots.push(stateRoot);
+    const statePath = join(stateRoot, "thread-environments.json");
+    const first = projectlessWire();
+    const firstTools: CodexTool[] = [{ name: "read", description: "read", parameters: { type: "object" } }];
+    first.context.tools = firstTools;
+    expect(new ChatGptThreadEnvironmentStore(statePath).resolve(first).tools).toEqual(firstTools);
+
+    const next = projectlessWire();
+    const nextTools: CodexTool[] = [{ name: "read", description: "read", parameters: { type: "object" } }];
+    next.context.tools = nextTools;
+    expect(new ChatGptThreadEnvironmentStore(statePath).resolve(next)).toEqual({
+      cwd: homedir(),
+      roots: [homedir()],
+      writableRoots: [homedir()],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: nextTools,
+    });
+  });
+
+  test("trusts a projectless native env block without workspace metadata", () => {
+    const cwd = join(homedir(), "Documents", "Codex");
+    const envXml = `<environment_context>
+  <cwd>${cwd}</cwd>
+  <shell>powershell</shell>
+  <current_date>2026-08-03</current_date>
+  <timezone>Asia/Riyadh</timezone>
+  <filesystem><workspace_roots><root>${cwd}</root></workspace_roots><permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile></filesystem>
+  <sandbox_mode>danger-full-access</sandbox_mode>
+</environment_context>`;
+    const wire = projectlessWire();
+    wire._rawBody = {
+      client_metadata: {
+        "x-codex-turn-metadata": JSON.stringify({
+          thread_id: "thread_p_blank",
+          turn_id: "turn_p_blank",
+          sandbox: "none",
+          workspace_kind: "projectless",
+        }),
+      },
+      input: [
+        {
+          type: "message",
+          id: "msg_env",
+          role: "user",
+          content: [{ type: "input_text", text: "<app-context>native</app-context>" }, { type: "input_text", text: envXml }],
+        },
+        { type: "message", role: "developer", id: "msg_dev", content: [{ type: "input_text", text: "tool result" }] },
+        { type: "message", role: "user", id: "msg_active", content: [{ type: "input_text", text: "hi" }] },
+      ],
+    };
+    expect(extractChatGptTurnEnvironment(wire)).toEqual({
+      cwd,
+      roots: [cwd],
+      writableRoots: [cwd],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: [],
+    });
+  });
+});
 
 describe("trusted current Codex environment envelope", () => {
   test("accepts the v0.146 split envelope when workspace and sandbox metadata agree", () => {

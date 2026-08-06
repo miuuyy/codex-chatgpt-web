@@ -331,6 +331,7 @@ function installRoute(
   text: string,
   installedUrl: string,
   replaceExistingRoute: boolean,
+  preservePrevious?: Record<ManagedAssignmentKey, PreviousAssignment>,
 ): { text: string; previous: CodexIntegrationJournal["previous"] } {
   const document = parseDocument(text);
   const previous = assignments(document.lines);
@@ -346,7 +347,12 @@ function installRoute(
 
   for (const key of ["model_provider", "model_catalog_json"] as const) {
     const location = findTopLevelAssignment(document.lines, key);
-    if (location.index !== undefined) removeDocumentLine(document, location.index);
+    if (location.index === undefined) continue;
+    const previousValue = preservePrevious?.[key];
+    if (previousValue?.present && previousValue.value === location.value) {
+      continue;
+    }
+    removeDocumentLine(document, location.index);
   }
   const currentBaseUrl = findTopLevelAssignment(document.lines, "openai_base_url");
   if (currentBaseUrl.index !== undefined) {
@@ -366,7 +372,12 @@ function verifyInstalledRoute(text: string, journal: ManagedRouteJournal): void 
   if (current.openai_base_url.value !== journal.installed.openai_base_url) {
     throw new Error("Codex openai_base_url changed after setup; refusing to overwrite the user's newer value");
   }
-  if (current.model_provider.present || current.model_catalog_json.present) {
+  const preservedOverlay = (key: "model_provider" | "model_catalog_json") =>
+    current[key].present
+    && journal.previous[key].present
+    && current[key].value === journal.previous[key].value;
+  if ((current.model_provider.present && !preservedOverlay("model_provider"))
+    || (current.model_catalog_json.present && !preservedOverlay("model_catalog_json"))) {
     throw new Error("Codex model_provider or model_catalog_json changed after setup; refusing to overwrite the user's newer value");
   }
   if (!lines.includes(MANAGED_COMMENT)) {
@@ -421,6 +432,12 @@ function restoreManagedRoute(text: string, journal: ManagedRouteJournal): string
     .filter(item => item.previous.present)
     .sort((left, right) => (left.previous.index ?? Number.MAX_SAFE_INTEGER) - (right.previous.index ?? Number.MAX_SAFE_INTEGER));
   for (const item of removedAssignments) {
+    const existing = findTopLevelAssignment(document.lines, item.key);
+    if (existing.present) {
+      // The user restored the same assignment after setup (a preserved overlay);
+      // keep it in place instead of inserting a duplicate line.
+      continue;
+    }
     if (!item.previous.rawLine) throw new Error(`Codex integration journal is missing the prior ${item.key} line`);
     const index = Math.min(item.previous.index ?? firstTableIndex(document.lines), firstTableIndex(document.lines));
     insertDocumentLine(document, index, item.previous.rawLine);
@@ -529,7 +546,7 @@ export function installCodexIntegration(
     let installedText: string;
     if (existing.version === 4 && !existing.active) {
       verifyRestoredRoute(currentText, existing);
-      const patched = installRoute(currentText, installedUrl, true);
+      const patched = installRoute(currentText, installedUrl, true, existing.previous);
       assertPreservedPreviousAssignments(patched.previous, existing.previous);
       installedText = patched.text;
     } else {
@@ -616,7 +633,7 @@ export function activateCodexIntegration(): SetCodexIntegrationActiveResult {
     return { changed: false, active: true };
   }
   verifyRestoredRoute(current, existing);
-  const patched = installRoute(current, existing.installed.openai_base_url, true);
+  const patched = installRoute(current, existing.installed.openai_base_url, true, existing.previous);
   assertPreservedPreviousAssignments(patched.previous, existing.previous);
   const connected: CodexIntegrationJournal = { ...existing, active: true };
   writeFilesWithCompensation([

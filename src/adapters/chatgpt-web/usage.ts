@@ -1,3 +1,6 @@
+import {
+  CHATGPT_COMPACTION_OUTPUT_RESERVE_TOKENS,
+} from "../../chatgpt-web-limits";
 import { estimateTokens } from "../../lib/token-estimate";
 import type { CodexParsedRequest, CodexUsage } from "../../types";
 import type { CompiledChatGptWebPrompt } from "./prompt";
@@ -16,6 +19,8 @@ const CHATGPT_IMAGE_RESERVE_TOKENS = 4_096;
 const CHATGPT_ORIGINAL_IMAGE_RESERVE_TOKENS = 8_192;
 const CHATGPT_WEB_CHARS_PER_TOKEN = 3;
 
+export { CHATGPT_COMPACTION_OUTPUT_RESERVE_TOKENS };
+
 export interface ChatGptWebRoundEvidence {
   answer?: string;
   reasoning?: string[];
@@ -33,9 +38,7 @@ export function estimateCompiledChatGptWebInputTokens(
   compiled: CompiledChatGptWebPrompt,
   modelId: string,
 ): number {
-  const inputText = compiled.contextAttachment
-    ? `${compiled.text}\n${compiled.contextAttachment.text}`
-    : compiled.text;
+  const inputText = [compiled.text, compiled.contextAttachment.text].join("\n");
   const imageTokens = compiled.images.reduce(
     (total, image) => total + (image.detail === "original"
       ? CHATGPT_ORIGINAL_IMAGE_RESERVE_TOKENS
@@ -56,6 +59,28 @@ export function estimateChatGptWebInputTokens(
     compileChatGptWebPrompt(parsed, capabilities, mode.localTools ? ESTIMATE_TURN_TOKEN : undefined),
     parsed.modelId,
   );
+}
+
+/**
+ * The compaction summary has to reconstruct the full prior context in one response. If the replay
+ * alone saturates the model window, ChatGPT truncates or the transport stall observed in production;
+ * reject the compaction before any browser work instead.
+ */
+export function assertCompactionFitsContext(
+  parsed: CodexParsedRequest,
+  capabilities: ChatGptWebCapabilities,
+  contextWindowTokens: number,
+): void {
+  if (parsed._compactionRequest !== true) return;
+  const estimated = estimateChatGptWebInputTokens(parsed, capabilities);
+  const maxInput = contextWindowTokens - CHATGPT_COMPACTION_OUTPUT_RESERVE_TOKENS;
+  if (estimated > maxInput) {
+    throw new Error(
+      `ChatGPT web compaction context is too large for the ${contextWindowTokens}-token window: `
+      + `the replay alone is estimated at ${estimated} input tokens, leaving less than the `
+      + `${CHATGPT_COMPACTION_OUTPUT_RESERVE_TOKENS}-token output reserve required for the checkpoint summary.`,
+    );
+  }
 }
 
 function roundEvidenceText(evidence: ChatGptWebRoundEvidence): string {

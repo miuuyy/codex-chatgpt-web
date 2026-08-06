@@ -31,6 +31,49 @@ import type { CodexProviderConfig } from "./types";
 import type { ProviderAdapter } from "./adapters/base";
 import { VERSION } from "./version";
 
+const CODEX_TURN_METADATA_KEY = "x-codex-turn-metadata";
+
+function isCompactionTurnMetadata(value: unknown): boolean {
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return false;
+    }
+  }
+  return Boolean(
+    value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && (value as { request_kind?: unknown }).request_kind === "compaction",
+  );
+}
+
+function hasCompactionTurnMetadata(raw: unknown): boolean {
+  const clientMetadata = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? (raw as { client_metadata?: unknown }).client_metadata
+    : undefined;
+  const canonical = clientMetadata && typeof clientMetadata === "object" && !Array.isArray(clientMetadata)
+    ? (clientMetadata as Record<string, unknown>)[CODEX_TURN_METADATA_KEY]
+    : undefined;
+  return isCompactionTurnMetadata(canonical);
+}
+
+function withCanonicalTurnMetadata(raw: Record<string, unknown>, headers: Headers): Record<string, unknown> {
+  const clientMetadata = raw.client_metadata && typeof raw.client_metadata === "object" && !Array.isArray(raw.client_metadata)
+    ? raw.client_metadata as Record<string, unknown>
+    : {};
+  const headerMetadata = headers.get(CODEX_TURN_METADATA_KEY);
+  if (clientMetadata[CODEX_TURN_METADATA_KEY] !== undefined || !headerMetadata) return raw;
+  return {
+    ...raw,
+    client_metadata: {
+      ...clientMetadata,
+      [CODEX_TURN_METADATA_KEY]: headerMetadata,
+    },
+  };
+}
+
 export class HttpTurnCounter {
   private active = 0;
 
@@ -199,6 +242,7 @@ export async function responseRequest(
   req: Request,
   config: AppConfig,
   adapterFactory: ChatGptWebAdapterFactory = createChatGptWebAdapter,
+  forceCompaction = false,
 ): Promise<Response> {
   const nativeRequest = req.clone();
   let raw: unknown;
@@ -227,8 +271,13 @@ export async function responseRequest(
   const expanded = expandPreviousResponseInput(raw);
   let parsed: CodexParsedRequest;
   let route: ChatGptWebModelRoute;
+  let remoteCompaction = false;
   try {
     parsed = parseRequest(expanded);
+    remoteCompaction = forceCompaction || parsed._compactionRequest === true;
+    if (remoteCompaction || hasCompactionTurnMetadata(raw)) {
+      parsed._compactionRequest = true;
+    }
     route = routeChatGptWebRequest(parsed, config);
   } catch (error) {
     return formatErrorResponse(400, "invalid_request_error", error instanceof Error ? error.message : String(error));
@@ -249,7 +298,9 @@ export async function responseRequest(
     delete parsed.context.tools;
     delete parsed.options.toolChoice;
     delete parsed.options.parallelToolCalls;
-    parsed.context.messages.push({ role: "user", content: COMPACT_PROMPT, timestamp: Date.now() });
+    if (remoteCompaction) {
+      parsed.context.messages.push({ role: "user", content: COMPACT_PROMPT, timestamp: Date.now() });
+    }
   }
 
   const adapterProvider = providerConfig(config);
@@ -285,7 +336,7 @@ export async function responseRequest(
       2_000,
       {
         hideThinkingSummary: parsed.options.hideThinkingSummary,
-        ...(compaction ? { compaction: true } : {
+        ...(remoteCompaction ? { compaction: true } : compaction ? {} : {
           onCompletedResponse: (response: Record<string, unknown>) => rememberResponseState(parsed._rawBody, response, { force: true }),
         }),
       },
@@ -307,7 +358,7 @@ export async function responseRequest(
     toolNsMap: maps.toolNsMap,
     freeformToolNames: maps.freeformToolNames,
     toolSearchToolNames: maps.toolSearchToolNames,
-    ...(compaction ? { compaction: true } : {}),
+    ...(remoteCompaction ? { compaction: true } : {}),
   });
   if (!compaction) rememberResponseState(parsed._rawBody, json, { force: true });
   return Response.json(json);
@@ -352,10 +403,10 @@ export async function compactRequest(
   const internal = new Request("http://127.0.0.1/v1/responses", {
     method: "POST",
     headers,
-    body: JSON.stringify({ ...raw, stream: false, input: [...input, { type: "compaction_trigger" }] }),
+    body: JSON.stringify({ ...withCanonicalTurnMetadata(raw, req.headers), stream: false }),
     signal: req.signal,
   });
-  const response = await responseRequest(internal, config, adapterFactory);
+  const response = await responseRequest(internal, config, adapterFactory, true);
   if (!response.ok) return response;
   let body: { output?: unknown[]; status?: unknown; error?: unknown };
   try {

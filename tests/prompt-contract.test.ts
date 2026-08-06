@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import {
-  CHATGPT_COMPACTION_CONTEXT_FILENAME,
   CHATGPT_INTERNAL_COMPACTION_MARKER,
+  CHATGPT_COMPACTION_CONTEXT_FILENAME,
   compileChatGptWebPrompt,
 } from "../src/adapters/chatgpt-web/prompt";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
@@ -22,19 +22,19 @@ function request(reasoning: "low" | "high" | "max"): CodexParsedRequest {
   };
 }
 
-test("tool-capable prompts resume the mandatory bind contract after the complete context envelope", () => {
+test("tool-capable prompts keep bind capability in the bootstrap while context is attached", () => {
   const token = "turn_12345678901234567890123456789012";
   const compiled = compileChatGptWebPrompt(
     request("high"),
     { localToolsEnabled: true, proAvailable: true },
     token,
   );
-  const envelopeEnd = compiled.text.indexOf("</codex_context_json>");
-  const resume = compiled.text.indexOf("<codex_transport_resume>", envelopeEnd);
+  const resume = compiled.text.indexOf("<codex_transport_resume>");
   const finalToken = compiled.text.lastIndexOf(token);
 
-  expect(envelopeEnd).toBeGreaterThan(0);
-  expect(resume).toBeGreaterThan(envelopeEnd);
+  expect(compiled.text).not.toContain("<codex_context_json>");
+  expect(compiled.contextAttachment.text).toContain("<codex_context_json>");
+  expect(resume).toBeGreaterThan(0);
   expect(finalToken).toBeGreaterThan(resume);
   expect(compiled.text.slice(resume)).toContain("first action now must be the actual Codex Native codex_bind_turn call");
   expect(compiled.text).toContain(CHATGPT_INTERNAL_COMPACTION_MARKER);
@@ -70,16 +70,22 @@ test("compaction prompts are isolated summarization turns without local or nativ
   expect(compiled.text).toContain("Produce the requested checkpoint summary now without calling tools.");
   expect(compiled.text).not.toContain("codex_bind_turn");
   expect(compiled.text).not.toContain("web search, browsing, research");
-  expect(compiled.text).not.toContain("missing local-computer bridge");
-  expect(compiled.text).toContain(`attached UTF-8 document named ${CHATGPT_COMPACTION_CONTEXT_FILENAME}`);
-  expect(compiled.text).toContain("Read the complete attached document before acting.");
+expect(compiled.text).not.toContain("missing local-computer bridge");
+  expect(compiled.text).toContain(`attached ZIP archive named ${CHATGPT_COMPACTION_CONTEXT_FILENAME}`);
+  expect(compiled.text).toContain("You must open or extract the archive yourself");
+  expect(compiled.text).toContain("Do not refuse, skip the archive, or ask the user to unpack it for you.");
+  expect(compiled.text).toContain("Read the complete text document inside the attached archive before acting.");
   expect(compiled.text).not.toContain("<codex_context_json>");
   expect(compiled.contextAttachment).toMatchObject({
     name: CHATGPT_COMPACTION_CONTEXT_FILENAME,
-    mimeType: "text/plain",
+    mimeType: "application/zip",
   });
-  const encoded = compiled.contextAttachment!.text.match(/^<codex_context_json>\n(.+)\n<\/codex_context_json>$/s)?.[1];
-  expect(JSON.parse(encoded!)).toEqual({
+  const attachmentText = compiled.contextAttachment.text;
+  const encoded = attachmentText.slice(
+    attachmentText.indexOf("<codex_context_json>") + "<codex_context_json>".length,
+    attachmentText.lastIndexOf("</codex_context_json>"),
+  );
+  expect(JSON.parse(encoded)).toEqual({
     version: 3,
     system: ["preserve-system"],
     messages: [
@@ -108,7 +114,7 @@ test("assigns prior assistant output to the model and never attributes Codex con
     attributed,
     { localToolsEnabled: true, proAvailable: true },
   );
-  const encoded = compiled.text.match(/<codex_context_json>\n(.+)\n<\/codex_context_json>/s)?.[1];
+  const encoded = compiled.contextAttachment.text.match(/<codex_context_json>\n(.+)\n<\/codex_context_json>/s)?.[1];
   const envelope = JSON.parse(encoded!) as { messages: Array<Record<string, unknown>> };
 
   expect(envelope.messages[1]).toEqual({
@@ -148,11 +154,11 @@ test("a long task keeps the newest images and drops the overflow instead of fail
   );
 
   expect(compiled.images.map(entry => entry.imageUrl)).toEqual(
-    markers.slice(-10).map(marker => `data:image/png;base64,${marker}`),
+    markers.slice(-9).map(marker => `data:image/png;base64,${marker}`),
   );
-  expect(compiled.text).toContain("older image not attached");
-  expect(compiled.text).toContain("step 1");
-  expect(compiled.text).toContain("step 13");
+  expect(compiled.contextAttachment.text).toContain("older image not attached");
+  expect(compiled.contextAttachment.text).toContain("step 1");
+  expect(compiled.contextAttachment.text).toContain("step 13");
 });
 
 test("compaction reserves one attachment slot and keeps the newest nine images", () => {
@@ -183,12 +189,12 @@ test("compaction reserves one attachment slot and keeps the newest nine images",
   expect(compiled.images.map(entry => entry.imageUrl)).toEqual(
     markers.slice(-9).map(marker => `data:image/png;base64,${marker}`),
   );
-  expect(compiled.contextAttachment?.text).toContain("only 9 image slots are available for this message");
-  expect(compiled.contextAttachment?.text.match(/older image not attached/g)).toHaveLength(4);
-  expect(compiled.contextAttachment?.text.match(/"type":"image_attachment"/g)).toHaveLength(9);
-  expect(compiled.contextAttachment?.text).not.toContain("data:image");
-  for (const marker of markers) expect(compiled.contextAttachment?.text).not.toContain(marker);
-  expect(compiled.text).not.toContain("older image not attached");
+  const attachmentText = compiled.contextAttachment.text;
+  expect(attachmentText).toContain("only 9 image slots are available for this message");
+  expect(attachmentText.match(/older image not attached/g)).toHaveLength(4);
+  expect(attachmentText.match(/"type":"image_attachment"/g)).toHaveLength(9);
+  expect(attachmentText).not.toContain("data:image");
+  for (const marker of markers) expect(attachmentText).not.toContain(marker);
 });
 
 test("the replayed context never carries a finished turn's broker handles", () => {
@@ -222,13 +228,13 @@ test("the replayed context never carries a finished turn's broker handles", () =
 
   const compiled = compileChatGptWebPrompt(replayed, { localToolsEnabled: true, proAvailable: true }, token);
 
-  expect(compiled.text).not.toContain(staleToken);
-  expect(compiled.text).not.toContain(staleBinding);
-  expect(compiled.text).toContain("[retired turn handle]");
-  expect(compiled.text).toContain("[retired binding handle]");
+  expect(compiled.contextAttachment.text).not.toContain(staleToken);
+  expect(compiled.contextAttachment.text).not.toContain(staleBinding);
+  expect(compiled.contextAttachment.text).toContain("[retired turn handle]");
+  expect(compiled.contextAttachment.text).toContain("[retired binding handle]");
   expect(compiled.text).toContain(token);
-  expect(compiled.text).toContain("keep working");
-  const envelope = compiled.text.split("<codex_context_json>")[1]!.split("</codex_context_json>")[0]!.trim();
+  expect(compiled.contextAttachment.text).toContain("keep working");
+  const envelope = compiled.contextAttachment.text.split("<codex_context_json>")[1]!.split("</codex_context_json>")[0]!.trim();
   expect(() => JSON.parse(envelope) as unknown).not.toThrow();
 });
 
@@ -253,7 +259,7 @@ test("uses the public Instant name without leaking the browser menu alias into t
   expect(compiled.text).not.toContain("Instant 5.5");
 });
 
-test("keeps large contexts intact in the inline text envelope", () => {
+test("keeps large normal contexts intact in the mandatory attachment", () => {
   const token = "turn_12345678901234567890123456789012";
   const largeContent = "x".repeat(600_000);
   const large = request("high");
@@ -271,17 +277,18 @@ test("keeps large contexts intact in the inline text envelope", () => {
     token,
   );
 
-  expect(compiled.text.length).toBeGreaterThan(600_000);
-  expect(compiled.text).toContain(largeContent);
+  expect(compiled.text.length).toBeLessThan(10_000);
+  expect(compiled.contextAttachment.text.length).toBeGreaterThan(600_000);
+  expect(compiled.contextAttachment.text).toContain(largeContent);
   expect(compiled.text).toContain(token);
-  expect(compiled.text).toContain(`<codex_context_json>`);
-  expect(compiled.contextAttachment).toBeNull();
+  expect(compiled.text).not.toContain(`<codex_context_json>`);
+  expect(compiled.contextAttachment.text).toContain(`<codex_context_json>`);
   expect(compiled.text).not.toContain(`<codex_context_attachment>`);
   expect(compiled.text).not.toContain("sha256");
   expect(compiled.text).not.toContain("SHA-256");
 });
 
-test("moves a large compaction envelope into one exact text attachment without duplication", () => {
+test("keeps a large compaction envelope intact in the context attachment", () => {
   const beginning = "unique-compaction-beginning";
   const middle = "unique-compaction-middle";
   const ending = "unique-compaction-ending";
@@ -303,22 +310,17 @@ test("moves a large compaction envelope into one exact text attachment without d
   );
 
   expect(compiled.text.length).toBeLessThan(10_000);
-  expect(compiled.text).not.toContain(beginning);
-  expect(compiled.text).not.toContain(middle);
-  expect(compiled.text).not.toContain(ending);
-  expect(compiled.text).not.toContain("<codex_context_json>");
-  expect(compiled.contextAttachment).toMatchObject({
-    name: CHATGPT_COMPACTION_CONTEXT_FILENAME,
-    mimeType: "text/plain",
-  });
-  const attachment = compiled.contextAttachment!.text;
-  expect(attachment.startsWith("<codex_context_json>\n")).toBe(true);
-  expect(attachment.endsWith("\n</codex_context_json>")).toBe(true);
-  expect(attachment.match(new RegExp(beginning, "g"))).toHaveLength(1);
-  expect(attachment.match(new RegExp(middle, "g"))).toHaveLength(1);
-  expect(attachment.match(new RegExp(ending, "g"))).toHaveLength(1);
-  expect(attachment).not.toContain("turn_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
-  expect(attachment).toContain("[retired turn handle]");
-  const encoded = attachment.slice("<codex_context_json>\n".length, -"\n</codex_context_json>".length);
+  const attachmentText = compiled.contextAttachment.text;
+  expect(attachmentText.length).toBeGreaterThan(600_000);
+  expect(attachmentText).toContain("<codex_context_json>");
+  expect(attachmentText.match(new RegExp(beginning, "g"))).toHaveLength(1);
+  expect(attachmentText.match(new RegExp(middle, "g"))).toHaveLength(1);
+  expect(attachmentText.match(new RegExp(ending, "g"))).toHaveLength(1);
+  expect(attachmentText).not.toContain("turn_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+  expect(attachmentText).toContain("[retired turn handle]");
+  const encoded = attachmentText.slice(
+    attachmentText.indexOf("<codex_context_json>") + "<codex_context_json>".length,
+    attachmentText.lastIndexOf("</codex_context_json>"),
+  );
   expect(() => JSON.parse(encoded) as unknown).not.toThrow();
 });

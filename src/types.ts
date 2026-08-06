@@ -24,10 +24,12 @@ export interface CodexParsedRequest {
    */
   _structuredOutput?: boolean;
   /**
-   * True when the input carried `{type:"compaction_trigger"}` — Codex remote compaction v2 asking
-   * this turn to produce a `{type:"compaction"}` output item. Routed adapters can't natively;
-   * the server runs the model as a summarizer and the bridge emits a synthetic compaction item
-   * (see src/responses/compaction.ts).
+   * True for any Codex compaction turn. Remote v2 is identified by
+   * `{type:"compaction_trigger"}`; local manual/automatic compaction is
+   * identified by Codex turn metadata. The server uses this flag to run a
+   * tool-free summarization turn and apply the Responses compaction output
+   * contract. All ChatGPT Web turns carry their complete context in the
+   * mandatory task-context attachment.
    */
   _compactionRequest?: boolean;
   /**
@@ -315,8 +317,6 @@ export interface CodexProviderConfig {
     brokerSocketPath?: string;
     /** Persisted, trusted Codex task authority used for follow-up turns that omit the envelope. */
     threadEnvironmentStatePath?: string;
-    /** Maximum duration of one complete browser response. */
-    turnTimeoutMs?: number;
     /** Keep the single controlled browser visible. */
     headed?: boolean;
     /** Attach the turn-bound Codex MCP capability for non-Pro efforts. */

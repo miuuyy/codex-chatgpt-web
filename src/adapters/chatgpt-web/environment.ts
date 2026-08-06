@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { CodexContentPart, CodexParsedRequest, CodexTool } from "../../types";
 
@@ -114,32 +115,38 @@ function workspaceMetadataEnvironmentBeforeUser(
   if (userIndex <= 0 || !metadata) return undefined;
   const workspaces = record(metadata.workspaces);
   const metadataSandbox = sandboxTypeFromMetadata(metadata.sandbox);
-  if (!workspaces || !metadataSandbox) return undefined;
-  const metadataRoots = Object.keys(workspaces);
-  if (metadataRoots.length === 0 || metadataRoots.some(path => !isAbsolute(path))) return undefined;
+  if (!metadataSandbox) return undefined;
+  const metadataRoots = workspaces ? Object.keys(workspaces) : [];
+  if (metadataRoots.some(path => !isAbsolute(path))) return undefined;
   const normalizedMetadataRoots = [...new Set(metadataRoots.map(pathIdentity))];
 
   const user = record(input[userIndex]);
-  const candidate = record(input[userIndex - 1]);
   if (user?.type !== "message" || user.role !== "user" || typeof user.id !== "string") return undefined;
-  if (candidate?.type !== "message" || candidate.role !== "user" || typeof candidate.id !== "string") return undefined;
 
-  const content = Array.isArray(candidate.content) ? candidate.content : [];
-  for (const part of content) {
-    const text = record(part)?.text;
-    if (typeof text !== "string") continue;
-    const trimmed = text.trim();
-    if (!/^<environment_context>[\s\S]*<\/environment_context>$/.test(trimmed)) continue;
+  for (let index = userIndex - 1; index >= 0; index -= 1) {
+    const candidate = record(input[index]);
+    if (candidate?.type !== "message" || candidate.role !== "user" || typeof candidate.id !== "string") continue;
 
-    const cwdMatches = [...trimmed.matchAll(/<cwd>([^<]+)<\/cwd>/g)].map(match => decodeXmlText(match[1]!.trim()));
-    if (cwdMatches.length !== 1 || !isAbsolute(cwdMatches[0]!)) continue;
-    const rootMatches = [...trimmed.matchAll(/<workspace_roots>[\s\S]*?<\/workspace_roots>/g)]
-      .flatMap(section => [...section[0].matchAll(/<root>([^<]+)<\/root>/g)].map(match => decodeXmlText(match[1]!.trim())));
-    const declaredRoots = [...new Set((rootMatches.length > 0 ? rootMatches : cwdMatches).map(pathIdentity))];
-    if (declaredRoots.some(path => !normalizedMetadataRoots.includes(path))) continue;
-    if (!normalizedMetadataRoots.some(root => matchesPath(root, pathIdentity(cwdMatches[0]!)))) continue;
-    if (sandboxTypeFromEnvironment(trimmed) !== metadataSandbox) continue;
-    return trimmed;
+    const content = Array.isArray(candidate.content) ? candidate.content : [];
+    for (const part of content) {
+      const text = record(part)?.text;
+      if (typeof text !== "string") continue;
+      const trimmed = text.trim();
+      if (!/^<environment_context>[\s\S]*<\/environment_context>$/.test(trimmed)) continue;
+
+      const cwdMatches = [...trimmed.matchAll(/<cwd>([^<]+)<\/cwd>/g)].map(match => decodeXmlText(match[1]!.trim()));
+      if (cwdMatches.length !== 1 || !isAbsolute(cwdMatches[0]!)) continue;
+      const cwd = pathIdentity(cwdMatches[0]!);
+      if (normalizedMetadataRoots.length > 0 && !normalizedMetadataRoots.some(root => matchesPath(root, cwd))) continue;
+
+      const declaredRoots = [...trimmed.matchAll(/<workspace_roots>[\s\S]*?<\/workspace_roots>/g)]
+        .flatMap(section => [...section[0].matchAll(/<root>([^<]+)<\/root>/g)].map(match => decodeXmlText(match[1]!.trim())))
+        .map(path => resolve(path))
+        .map(pathIdentity);
+      if (declaredRoots.length > 0 && !declaredRoots.some(root => matchesPath(root, cwd))) continue;
+      if (sandboxTypeFromEnvironment(trimmed) !== metadataSandbox) continue;
+      return trimmed;
+    }
   }
   return undefined;
 }
@@ -152,6 +159,24 @@ function hasAssistantOutputBetween(input: unknown[], startIndex: number, endInde
     if (item.type === "function_call" || item.type === "reasoning") return true;
   }
   return false;
+}
+
+function hasAnyEnvironmentContext(parsed: CodexParsedRequest): boolean {
+  const body = record(parsed._rawBody);
+  const input = Array.isArray(body?.input) ? body.input : [];
+  for (const item of input) {
+    const content = record(item)?.content;
+    if (!Array.isArray(content)) continue;
+    for (const part of content) {
+      const text = record(part)?.text;
+      if (typeof text === "string" && text.includes("<environment_context>")) return true;
+    }
+  }
+  const system = parsed.context.systemPrompt ?? [];
+  const developer = parsed.context.messages
+    .filter(message => message.role === "developer")
+    .map(message => contentText(message.content));
+  return [...system, ...developer].some(text => text.includes("<environment_context>"));
 }
 
 function rawEnvironmentText(parsed: CodexParsedRequest): string | undefined {
@@ -232,8 +257,49 @@ function matchesPath(root: string, path: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+function metadataFallbackEnvironment(parsed: CodexParsedRequest): ChatGptTurnEnvironment | undefined {
+  const metadata = clientTurnMetadata(parsed);
+  if (!metadata) return undefined;
+  const sandbox = sandboxTypeFromMetadata(metadata.sandbox);
+  if (!sandbox) return undefined;
+
+  const workspaces = record(metadata.workspaces);
+  let cwd: string;
+  let roots: string[];
+  if (workspaces) {
+    const candidateRoots = Object.keys(workspaces).filter(path => isAbsolute(path));
+    if (candidateRoots.length === 0) return undefined;
+    const unique = new Map<string, string>();
+    for (const path of candidateRoots.map(path => resolve(path))) {
+      if (!unique.has(pathIdentity(path))) unique.set(pathIdentity(path), path);
+    }
+    roots = [...unique.values()];
+    cwd = roots[0]!;
+  } else if (metadata.workspace_kind === "projectless") {
+    cwd = homedir();
+    roots = [cwd];
+  } else {
+    return undefined;
+  }
+
+  const tools = parsed.context.tools ?? [];
+  if (sandbox === "workspaceWrite") {
+    return { cwd, roots, writableRoots: roots, sandboxPolicy: { type: "workspaceWrite", writableRoots: roots, networkAccess: false }, tools };
+  }
+  if (sandbox === "readOnly") {
+    return { cwd, roots, writableRoots: [], sandboxPolicy: { type: "readOnly", networkAccess: false }, tools };
+  }
+  return { cwd, roots, writableRoots: roots, sandboxPolicy: { type: "dangerFullAccess" }, tools };
+}
+
 export function extractChatGptTurnEnvironment(parsed: CodexParsedRequest): ChatGptTurnEnvironment {
+  if (!hasAnyEnvironmentContext(parsed)) {
+    const fallback = metadataFallbackEnvironment(parsed);
+    if (fallback) return fallback;
+  }
+
   const text = trustedEnvironmentText(parsed);
+
   const cwdMatches = [...text.matchAll(/<cwd>([^<]+)<\/cwd>/g)].map(match => match[1] ?? "");
   const cwdCandidates = uniqueAbsolutePaths(cwdMatches, "cwd");
   if (cwdCandidates.length !== 1) throw new Error("ChatGPT web turn has conflicting trusted Codex cwd values");

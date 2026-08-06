@@ -53,6 +53,30 @@ test("launcher retains the native shell and owned browser surface structure", ()
   assert.equal(styles.includes(".sidebar-resize-handle"), false);
 });
 
+test("browser tabs remain clickable beneath the frameless window chrome", () => {
+  assert.match(appSource, /className="app-titlebar draggable"/);
+  assert.match(
+    styles,
+    /\.app-shell:has\(\.browser-surface\) \.app-titlebar\s*\{[^}]*-webkit-app-region:\s*no-drag/s,
+  );
+  assert.match(appSource, /className="browser-tab-drag draggable"/);
+  assert.match(appSource, /className="browser-tab-strip"/);
+  assert.match(appSource, /role="tablist"/);
+  assert.match(appSource, /tabIndex=\{tab\.active \? 0 : -1\}/);
+});
+
+test("browser tabs remain reachable when the strip contains many sessions", () => {
+  assert.match(styles, /\.browser-tab-strip\s*\{[^}]*overflow-x:\s*auto/s);
+  assert.match(styles, /\.browser-tab-strip\s*\{[^}]*overflow-y:\s*hidden/s);
+  assert.match(appSource, /activeRight - tabStrip\.clientWidth/);
+  assert.match(appSource, /new ResizeObserver\(revealActiveTab\)/);
+  assert.match(appSource, /event\.key === "ArrowLeft"/);
+  assert.match(appSource, /event\.key === "ArrowRight"/);
+  assert.match(appSource, /event\.key === "Home"/);
+  assert.match(appSource, /event\.key === "End"/);
+  assert.match(appSource, /tabIndex=\{tab\.active \? 0 : -1\}\s+title=\{copy\.hideTab\}/);
+});
+
 test("embedded ChatGPT is measured after its animated surface mounts", () => {
   assert.match(appSource, /const \[browserSlot, setBrowserSlot\] = useState<HTMLDivElement \| null>\(null\)/);
   assert.match(appSource, /setBrowserSurfaceActive\(browserSurfaceActive\)\.then\(\(\) => \{/);

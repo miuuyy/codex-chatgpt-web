@@ -64,15 +64,33 @@ ChatGPT DOM and labels are not a stable API. Selectors are narrow and completion
 completed-turn evidence. UI drift fails the turn; it never chooses another model, starts another
 transport, or returns a fabricated success.
 
+### Task-context attachment integrity
+
+Every browser turn requires exactly one in-memory task-context document. Normal, read-only, and
+tool-capable turns bind a UTF-8 `codex-task-context.txt` file (`text/plain`), while context-compaction
+turns bind a `codex-compaction-context.zip` archive (`application/zip`) built in memory. Both the
+daemon and launcher-helper boundaries validate the exact per-variant filename, MIME type, envelope
+version, and schema. A prepared prompt that omits the document, adds unexpected attachment fields,
+duplicates the context inline, exceeds the ten-file message limit, or produces duplicate file names
+fails before Send.
+
+The stable repeated filename is safe because every outer task opens a fresh Temporary Chat and
+attachment readiness is scoped to the current active composer form. The documents are uploaded from
+memory and are not persisted in the workspace, repository, planning paths, or a durable temporary
+file. Attachment mounting can replace the composer subtree, so the browser revalidates the current
+bootstrap, exact file evidence, connector selection when applicable, and enabled Send control after
+the upload completes.
+
 ### Cross-turn data leakage
 
-Browser turns use at most five independent task-bound tabs in one private login partition. Every
-outer Codex task owns a fresh Temporary Chat document and an exact launcher surface lease; chats are
-never reused across tasks. Closing a running tab destroys its page and terminates that turn. The
-five-tab limit bounds parallel account traffic. Tool calls remain in the same ChatGPT response. The
-bounded local continuation cache is private, expires, and exists only to implement Codex
-`previous_response_id` replay. ChatGPT Web context compaction remains inside the active browser
-response; the bridge does not fabricate or install a Codex history checkpoint.
+Browser turns use independent task-bound tabs in one private login partition, with no fixed
+application-level tab maximum. Every outer Codex task owns a fresh Temporary Chat document and an
+exact launcher surface lease; chats are never reused across tasks. Closing a running tab destroys
+its page and terminates that turn. Parallel traffic remains subject to machine resources and
+ChatGPT account-side controls. Tool calls remain in the same ChatGPT response. The bounded local
+continuation cache is private, expires, and exists only to implement Codex `previous_response_id`
+replay. ChatGPT Web context compaction remains inside the active browser response; the bridge does
+not fabricate or install a Codex history checkpoint.
 
 ## Network exposure
 

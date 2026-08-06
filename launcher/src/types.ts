@@ -35,7 +35,6 @@ export interface BrowserState {
   canGoBack: boolean;
   canGoForward: boolean;
   activeTabId: string;
-  maxTabs: number;
   tabs: BrowserTabState[];
 }
 

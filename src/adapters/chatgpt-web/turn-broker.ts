@@ -5,10 +5,6 @@ import { dirname } from "node:path";
 import { isWindowsPipeEndpoint } from "../../config";
 import type { ChatGptTurnEnvironment } from "./environment";
 
-interface PendingTurn extends ChatGptTurnEnvironment {
-  expiresAt: number;
-}
-
 export interface BrokerToolRequest {
   callId: string;
   wireName: string;
@@ -39,7 +35,7 @@ interface ToolWaiter {
 
 interface TurnChannel {
   traceId: string;
-  environment: PendingTurn;
+  environment: ChatGptTurnEnvironment;
   bindingId?: string;
   queuedCallIds: string[];
   invocations: Map<string, PendingInvocation>;
@@ -133,13 +129,12 @@ export class TurnBroker {
     await this.start();
   }
 
-  async register(environment: ChatGptTurnEnvironment, ttlMs: number, traceId = "unknown"): Promise<string> {
+  async register(environment: ChatGptTurnEnvironment, traceId = "unknown"): Promise<string> {
     await this.start();
-    this.prune();
     const token = opaqueId("turn");
     const channel: TurnChannel = {
       traceId,
-      environment: { ...environment, expiresAt: Date.now() + ttlMs },
+      environment: { ...environment },
       queuedCallIds: [],
       invocations: new Map(),
       waiters: new Set(),
@@ -150,19 +145,17 @@ export class TurnBroker {
   }
 
   updateEnvironment(token: string, environment: ChatGptTurnEnvironment): void {
-    this.prune();
     const channel = this.channels.get(token);
-    if (!channel) throw new Error("turn token is invalid or expired");
+    if (!channel) throw new Error("turn token is invalid or revoked");
     if (environmentIdentity(channel.environment) !== environmentIdentity(environment)) {
       throw new Error("Codex turn environment changed during an active ChatGPT tool loop");
     }
-    channel.environment = { ...environment, expiresAt: channel.environment.expiresAt };
+    channel.environment = { ...environment };
   }
 
   async nextToolBatch(token: string, signal?: AbortSignal): Promise<BrokerToolRequest[]> {
-    this.prune();
     const channel = this.channels.get(token);
-    if (!channel) throw new Error("turn token is invalid or expired");
+    if (!channel) throw new Error("turn token is invalid or revoked");
     const ready = this.takeQueued(channel);
     if (ready.length > 0) return ready;
     if (signal?.aborted) throw new DOMException("tool wait aborted", "AbortError");
@@ -180,9 +173,8 @@ export class TurnBroker {
   }
 
   completeTool(token: string, callId: string, result: BrokerToolResult): void {
-    this.prune();
     const channel = this.channels.get(token);
-    if (!channel) throw new Error("turn token is invalid or expired");
+    if (!channel) throw new Error("turn token is invalid or revoked");
     const invocation = channel.invocations.get(callId);
     if (!invocation) throw new Error(`tool call is not pending: ${callId}`);
     if (channel.queuedCallIds.includes(callId)) throw new Error(`tool call was completed before it was delivered: ${callId}`);
@@ -363,7 +355,6 @@ export class TurnBroker {
   }
 
   private dispatch(request: BrokerRequest): unknown | Promise<unknown> {
-    this.prune();
     if (request.method === "claim") {
       const token = request.token?.trim();
       if (!token) throw new Error("turn token is required");
@@ -377,7 +368,7 @@ export class TurnBroker {
         throw new Error(retiredTurn !== undefined
           ? `This turn_token was issued for ${retiredTurnLabel(retiredTurn)}, which has already finished.`
           + " Use the turn_token supplied with the current task context instead of one from earlier context."
-          : "turn token is invalid, expired, or revoked");
+          : "turn token is invalid or revoked");
       }
       if (channel.bindingId) {
         const existing = this.bindings.get(channel.bindingId);
@@ -405,7 +396,7 @@ export class TurnBroker {
       throw new Error(retiredTurn !== undefined
         ? `This binding_id belongs to ${retiredTurnLabel(retiredTurn)}, which has already finished.`
         + " Call codex_bind_turn with the current turn_token and use the binding_id it returns."
-        : "binding id is invalid or expired");
+        : "binding id is invalid or revoked");
     }
     if (request.method === "release") {
       this.revoke(binding.token);
@@ -478,35 +469,45 @@ export class TurnBroker {
     channel.queuedCallIds = [];
   }
 
-  private prune(): void {
-    const now = Date.now();
-    for (const [token, channel] of this.channels) {
-      if (channel.environment.expiresAt > now) continue;
-      this.revoke(token);
-    }
-  }
 }
 
 export async function callTurnBroker<T>(
   socketPath: string,
   request: Omit<BrokerRequest, "id">,
-  timeoutMs = 5_000,
+  timeoutMs: number | null = 5_000,
 ): Promise<T> {
+  if (timeoutMs !== null && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
+    throw new Error("ChatGPT web turn broker timeout must be positive or null");
+  }
   const id = opaqueId("request");
   return new Promise<T>((resolveCall, rejectCall) => {
     const socket = createConnection(socketPath);
     let buffered = "";
     let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const clearTimer = () => {
+      if (!timer) return;
+      clearTimeout(timer);
+      timer = undefined;
+    };
     const finishError = (error: Error) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      clearTimer();
       socket.destroy();
       rejectCall(error);
     };
-    const timer = setTimeout(() => finishError(new Error("ChatGPT web turn broker timed out")), timeoutMs);
+    if (timeoutMs !== null) {
+      timer = setTimeout(() => finishError(new Error("ChatGPT web turn broker timed out")), timeoutMs);
+    }
     socket.setEncoding("utf8");
     socket.once("error", error => finishError(new Error(`ChatGPT web turn broker unavailable: ${error.message}`)));
+    socket.once("end", () => {
+      if (!settled) finishError(new Error("ChatGPT web turn broker closed before returning a complete response"));
+    });
+    socket.once("close", () => {
+      if (!settled) finishError(new Error("ChatGPT web turn broker connection closed before returning a response"));
+    });
     socket.once("connect", () => socket.write(`${JSON.stringify({ id, ...request })}\n`));
     socket.on("data", chunk => {
       if (settled) return;
@@ -529,7 +530,7 @@ export async function callTurnBroker<T>(
         return;
       }
       settled = true;
-      clearTimeout(timer);
+      clearTimer();
       socket.end();
       if (response.error) rejectCall(new Error(response.error));
       else resolveCall(response.result as T);

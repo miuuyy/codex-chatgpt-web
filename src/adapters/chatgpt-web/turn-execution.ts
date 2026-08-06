@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import type { AdapterEvent, CodexParsedRequest } from "../../types";
 import type { BrokerToolRequest } from "./turn-broker";
 import { extractChatGptTurnIdentity } from "./environment";
-import { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 
 export type ChatGptBrowserOutcome =
   | { type: "final"; answer: string }
@@ -154,9 +153,10 @@ export class ChatGptTurnSession {
       .then(answer => ({ type: "final", answer }) as ChatGptBrowserOutcome)
       .catch(error => ({ type: "error", error: error instanceof Error ? error : new Error(String(error)) }) as ChatGptBrowserOutcome)
       .then(outcome => {
-      this.settledBrowserOutcome = outcome;
-      return outcome;
-    });
+        this.settledBrowserOutcome = outcome;
+        this.touch();
+        return outcome;
+      });
   }
 
   runExclusive<T>(task: () => Promise<T>): Promise<T> {
@@ -245,7 +245,7 @@ export class ChatGptTurnSessions {
 
   constructor(
     private readonly ttlMs = 30 * 60_000,
-    private readonly maxEntries = 256,
+    private readonly maxSettledEntries = 256,
   ) {}
 
   getOrCreate(key: string, start: () => ChatGptTurnRuntime): ChatGptTurnSession {
@@ -255,13 +255,6 @@ export class ChatGptTurnSessions {
       existing.touch();
       return existing;
     }
-    const active = [...this.entries.values()].filter(session => session.isActive()).length;
-    if (active >= MAX_CHATGPT_BROWSER_TABS) {
-      throw new Error(
-        `ChatGPT Web supports at most ${MAX_CHATGPT_BROWSER_TABS} simultaneous browser turns; close or finish a browser tab before starting another`,
-      );
-    }
-    if (this.entries.size >= this.maxEntries) throw new Error(`ChatGPT web session registry is full (${this.maxEntries} entries)`);
     const session = new ChatGptTurnSession(start());
     this.entries.set(key, session);
     return session;
@@ -274,6 +267,14 @@ export class ChatGptTurnSessions {
     return cancelled;
   }
 
+  evict(key: string): boolean {
+    const session = this.entries.get(key);
+    if (!session) return false;
+    session.cancel();
+    this.entries.delete(key);
+    return true;
+  }
+
   activeCount(): number {
     this.prune();
     let active = 0;
@@ -283,8 +284,18 @@ export class ChatGptTurnSessions {
 
   private prune(): void {
     const cutoff = Date.now() - this.ttlMs;
+    const settled: Array<[string, ChatGptTurnSession]> = [];
     for (const [key, session] of this.entries) {
-      if (session.isActive() || session.lastUsedAt() >= cutoff) continue;
+      if (session.isActive()) continue;
+      if (session.lastUsedAt() < cutoff) {
+        session.cancel();
+        this.entries.delete(key);
+        continue;
+      }
+      settled.push([key, session]);
+    }
+    settled.sort((left, right) => left[1].lastUsedAt() - right[1].lastUsedAt());
+    for (const [key, session] of settled.slice(0, Math.max(0, settled.length - this.maxSettledEntries))) {
       session.cancel();
       this.entries.delete(key);
     }

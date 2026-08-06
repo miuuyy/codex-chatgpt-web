@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent,
   type ReactNode,
 } from "react";
 import { copyFor, type Copy } from "./i18n";
@@ -596,6 +597,28 @@ function BrowserSurface({
 }) {
   const visible = browser?.visible === true;
   const navigationLocked = browser?.status === "running" || browser?.status === "testing";
+  const tabs = browser?.tabs ?? [];
+  const tabStripRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const activeTabId = browser?.activeTabId;
+    const tabStrip = tabStripRef.current;
+    if (!activeTabId || !tabStrip) return;
+    const revealActiveTab = () => {
+      const activeTab = [...tabStrip.querySelectorAll<HTMLElement>("[data-browser-tab-id]")]
+        .find(tab => tab.dataset.browserTabId === activeTabId);
+      if (!activeTab) return;
+      const activeLeft = activeTab.offsetLeft;
+      const activeRight = activeLeft + activeTab.offsetWidth;
+      const visibleLeft = tabStrip.scrollLeft;
+      const visibleRight = visibleLeft + tabStrip.clientWidth;
+      if (activeLeft < visibleLeft) tabStrip.scrollLeft = activeLeft;
+      else if (activeRight > visibleRight) tabStrip.scrollLeft = activeRight - tabStrip.clientWidth;
+    };
+    revealActiveTab();
+    const observer = new ResizeObserver(revealActiveTab);
+    observer.observe(tabStrip);
+    return () => observer.disconnect();
+  }, [browser?.activeTabId, tabs.length]);
   const navigate = async (action: "back" | "forward" | "reload") => {
     try {
       await api!.navigateBrowser(action);
@@ -625,17 +648,53 @@ function BrowserSurface({
       setError(messageOf(cause));
     }
   };
+  const focusTab = (tabId: string) => {
+    const tabStrip = tabStripRef.current;
+    if (!tabStrip) return;
+    const tab = [...tabStrip.querySelectorAll<HTMLElement>("[data-browser-tab-id]")]
+      .find(candidate => candidate.dataset.browserTabId === tabId);
+    tab?.focus();
+  };
+  const handleTabKeyDown = (event: KeyboardEvent<HTMLDivElement>, index: number) => {
+    if (event.target !== event.currentTarget) return;
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      void selectTab(tabs[index].id);
+      return;
+    }
+    let nextIndex: number;
+    if (event.key === "ArrowLeft") nextIndex = Math.max(0, index - 1);
+    else if (event.key === "ArrowRight") nextIndex = Math.min(tabs.length - 1, index + 1);
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = tabs.length - 1;
+    else return;
+    event.preventDefault();
+    const nextTab = tabs[nextIndex];
+    if (!nextTab) return;
+    focusTab(nextTab.id);
+    void selectTab(nextTab.id);
+  };
 
   return (
     <section className="browser-surface">
-      <div className="browser-tab-strip" title={copy.browserTabLimit}>
-        {(browser?.tabs ?? []).map((tab) => (
+      <div
+        aria-label={copy.browser}
+        className="browser-tab-strip"
+        ref={tabStripRef}
+        role="tablist"
+        title={copy.browserTabLimit}
+      >
+        {tabs.map((tab, index) => (
           <div
+            aria-label={browserTabTitleFromTitle(tab.title, copy)}
+            aria-selected={tab.active}
             className={`browser-tab${tab.active ? " is-active" : ""}`}
+            data-browser-tab-id={tab.id}
             key={tab.id}
             onClick={() => void selectTab(tab.id)}
+            onKeyDown={(event) => handleTabKeyDown(event, index)}
             role="tab"
-            aria-selected={tab.active}
+            tabIndex={tab.active ? 0 : -1}
           >
             <BrandMark small />
             <span title={tab.traceId ? `${tab.title} · ${tab.traceId}` : tab.title}>
@@ -649,6 +708,7 @@ function BrowserSurface({
                   event.stopPropagation();
                   void closeTab(tab.id);
                 }}
+                tabIndex={tab.active ? 0 : -1}
                 title={copy.hideTab}
                 type="button"
               >
