@@ -5,6 +5,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildResponseJSON } from "../src/bridge";
+import { ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-error";
 import { ChatGptCompletionTracker, chatGptImageFilePayloads, chatGptPromptFilePayloads, chatGptTurnIsComplete } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "../src/adapters/chatgpt-web/environment";
@@ -454,6 +455,118 @@ describe("ChatGPT outer-native harness v3", () => {
     expect(starts).toBe(2);
     expect(cancellations).toBe(1);
     sessions.clear();
+  });
+
+  test("a client disconnect does not poison the turn session for the next native retry", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-h3-abort-retry-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: "browser://chatgpt-abort-retry-test",
+      chatgptWeb: { brokerSocketPath: socketPath, localToolsEnabled: false, proAvailable: true },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    let browserStarts = 0;
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = turn => {
+      browserStarts += 1;
+      if (browserStarts === 1) {
+        return new Promise<string>((_resolve, reject) => {
+          turn.abortSignal?.addEventListener("abort", () => {
+            reject(new DOMException("ChatGPT web turn aborted", "AbortError"));
+          }, { once: true });
+        });
+      }
+      const answer = "Recovered after disconnect";
+      turn.onTextDelta(answer);
+      return Promise.resolve(answer);
+    };
+    try {
+      const adapter = createChatGptWebAdapter(provider);
+      const disconnect = new AbortController();
+      const first = adapter.runTurn!(
+        rawWireRequest(environmentXml),
+        { headers: new Headers(), abortSignal: disconnect.signal },
+        () => {},
+      );
+      await new Promise(resolveWait => setTimeout(resolveWait, 50));
+      disconnect.abort();
+      await expect(first).rejects.toThrow("ChatGPT web turn aborted");
+
+      const events: AdapterEvent[] = [];
+      await createChatGptWebAdapter(provider).runTurn!(rawWireRequest(environmentXml), { headers: new Headers() }, event => events.push(event));
+      expect(browserStarts).toBe(2);
+      expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
+
+  test("an unclassified browser failure does not poison the turn session for the next native retry", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-h3-plain-error-retry-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: "browser://chatgpt-plain-error-retry-test",
+      chatgptWeb: { brokerSocketPath: socketPath, localToolsEnabled: false, proAvailable: true },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    let browserStarts = 0;
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+      browserStarts += 1;
+      if (browserStarts === 1) throw new Error("ChatGPT browser stage timed out: browser_page");
+      const answer = "Recovered after stage timeout";
+      turn.onTextDelta(answer);
+      return answer;
+    };
+    try {
+      const adapter = createChatGptWebAdapter(provider);
+      await expect(
+        adapter.runTurn!(rawWireRequest(environmentXml), { headers: new Headers() }, () => {}),
+      ).rejects.toThrow("stage timed out");
+
+      const events: AdapterEvent[] = [];
+      await createChatGptWebAdapter(provider).runTurn!(rawWireRequest(environmentXml), { headers: new Headers() }, event => events.push(event));
+      expect(browserStarts).toBe(2);
+      expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
+
+  test("a non-retryable ChatGPT failure stays cached so a replayed turn cannot burn another browser attempt", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-h3-nonretryable-cache-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: "browser://chatgpt-nonretryable-cache-test",
+      chatgptWeb: { brokerSocketPath: socketPath, localToolsEnabled: false, proAvailable: true },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    let browserStarts = 0;
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async () => {
+      browserStarts += 1;
+      throw new ChatGptWebAdapterError("This task exceeds the model context window.", {
+        status: 400,
+        errorType: "invalid_request_error",
+        code: "context_length_exceeded",
+        retryable: false,
+      });
+    };
+    try {
+      const first: AdapterEvent[] = [];
+      await createChatGptWebAdapter(provider).runTurn!(rawWireRequest(environmentXml), { headers: new Headers() }, event => first.push(event));
+      expect(first.at(-1)).toMatchObject({ type: "error", code: "context_length_exceeded", retryable: false });
+
+      const second: AdapterEvent[] = [];
+      await createChatGptWebAdapter(provider).runTurn!(rawWireRequest(environmentXml), { headers: new Headers() }, event => second.push(event));
+      expect(second.at(-1)).toMatchObject({ type: "error", code: "context_length_exceeded", retryable: false });
+      expect(browserStarts).toBe(1);
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      await TurnBroker.forSocket(socketPath).close();
+    }
   });
 
   test("waits for one shared browser retirement before starting the compacted continuation", async () => {

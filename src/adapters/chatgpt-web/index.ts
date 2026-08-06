@@ -424,13 +424,15 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
           }
         });
       } catch (error) {
-        if (error instanceof ChatGptWebAdapterError && error.retryable) {
-          // Reconnects must replay an active/successful browser turn, but retryable terminal
-          // ChatGPT failures need a genuinely new Temporary Chat. Retaining a failed session here
-          // made every native retry replay the same cached error for the registry's full TTL.
-          chatGptTurnSessions.retire(executionKey, session);
-        } else {
+        if (error instanceof ChatGptWebAdapterError && !error.retryable) {
+          // Reconnects must replay an active/successful browser turn, and a non-retryable
+          // ChatGPT failure stays cached so a replayed turn cannot burn another browser attempt.
+          // Every other failure - retryable ChatGPT failures, client disconnects, and
+          // unclassified browser errors - retires the session, because retaining it made every
+          // native retry replay the same cached error for the registry's full TTL.
           session.cancel();
+        } else {
+          chatGptTurnSessions.retire(executionKey, session);
         }
         if (session.runtime.mode === "tools") {
           void session.runtime.token.then(turnToken => broker.revoke(turnToken)).catch(() => {});
