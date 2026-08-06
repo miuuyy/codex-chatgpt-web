@@ -268,6 +268,9 @@ test("smoke effort selection uses trusted input and semantic checked state", asy
   assert.match(source, /\[role="menu"\]:has\(\[role="menuitemradio"\]\)/);
   assert.match(source, /\[role="group"\]:has\(\[role="menuitemradio"\]\)/);
   assert.match(source, /\[role="menuitemradio"\]/);
+assert.match(source, /advanced-effort-picker-read/);
+  assert.match(source, /effort-control|effortValueFound/);
+  assert.match(source, /effort-value/);
   assert.match(cdpSource, /Input\.dispatchKeyEvent/);
   assert.match(cdpSource, /debuggerClient/);
   assert.doesNotMatch(source, /:popover-open/);
@@ -402,6 +405,78 @@ test("effort selection waits for an already-open menu to hydrate instead of clos
     { type: "keyDown", keyCode: "Escape" },
     { type: "keyUp", keyCode: "Escape" },
   ]);
+});
+
+test("smoke effort selection uses Advanced then the matching Effort option in the new picker", async () => {
+  let pickerOpen = false;
+  let advancedOpen = false;
+  let effortOpen = false;
+  let effortSelected = false;
+  let controlFocused = false;
+  let focused;
+  const trustedKeys = [];
+  const browserKeys = [];
+  const fixture = {
+    waitForEffortControl: async () => ({ found: true, expanded: "false" }),
+    readEffortControl: async () => ({ found: true, expanded: pickerOpen ? "true" : "false" }),
+    focusEffortControl: async () => {
+      controlFocused = true;
+      return true;
+    },
+    readEffortMenu: async () => pickerOpen
+      ? { open: true, count: 3, target: { label: "Pro", checked: "false" } }
+      : { open: false, count: 0, target: null },
+    waitForEffortMenu: BrowserHost.prototype.waitForEffortMenu,
+    readAdvancedEffortPicker: async (target = "", effortLabel = "") => {
+      const advancedFound = pickerOpen && !advancedOpen;
+      const effortControlFound = pickerOpen && advancedOpen && !effortOpen && !effortSelected;
+      const effortValueFound = pickerOpen && advancedOpen && effortOpen;
+      const available = target === "advanced"
+        ? advancedFound
+        : target === "effort-control"
+          ? effortControlFound
+          : target === "effort-value"
+            ? effortValueFound
+            : false;
+      if (target && available) focused = target;
+      return {
+        pickerOpen,
+        advancedFound,
+        effortControlFound,
+        effortValueFound,
+        effortValueSelected: effortValueFound ? effortSelected : null,
+        controlMatchesEffort: effortSelected,
+        focused: Boolean(target && available),
+      };
+    },
+    selectHighEffortAdvanced: BrowserHost.prototype.selectHighEffortAdvanced,
+    pressTrustedBrowserKey: async (key) => {
+      trustedKeys.push(key);
+      if (key === "Enter" && controlFocused && !pickerOpen) pickerOpen = true;
+      if (key === "Enter" && focused === "advanced") advancedOpen = true;
+      if (key === "Enter" && focused === "effort-control") effortOpen = true;
+      if (key === "Enter" && focused === "effort-value") {
+        effortSelected = true;
+        effortOpen = false;
+      }
+    },
+    pressBrowserKey: (key) => {
+      browserKeys.push(key);
+      if (key === "Escape") pickerOpen = false;
+    },
+  };
+
+  const result = await BrowserHost.prototype.selectHighEffort.call(fixture, {
+    readyTimeoutMs: 20,
+    optionTimeoutMs: 2,
+    confirmTimeoutMs: 20,
+    pollMs: 1,
+  });
+
+  assert.deepEqual(result, { effort: "High", changed: true });
+  assert.equal(effortSelected, true);
+  assert.deepEqual(trustedKeys, ["Enter", "Enter", "Enter", "Enter"]);
+  assert.deepEqual(browserKeys, ["Escape"]);
 });
 
 test("smoke submission focuses the send button before trusted Enter and waits for an accepted user turn", async () => {

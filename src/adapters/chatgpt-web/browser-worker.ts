@@ -25,6 +25,8 @@ import {
   CHATGPT_EFFORT_CONTROL_SELECTOR,
   CHATGPT_EFFORT_ITEM_SELECTOR,
   CHATGPT_EFFORT_MENU_SELECTOR,
+  CHATGPT_MODEL_PICKER_OPTION_SELECTOR,
+  CHATGPT_MODEL_PICKER_ROOT_SELECTOR,
   CHATGPT_STOP_BUTTON_SELECTOR,
   CHATGPT_TEMPORARY_CHAT_URL,
   CHATGPT_USER_TURN_SELECTOR,
@@ -413,6 +415,19 @@ type ChatGptTransientLimitDialogInspection =
   | { kind: "ambiguous"; diagnostic: string };
 
 type ChatGptPickerResyncMode = "defer" | "open" | "close" | "best-effort-close";
+
+type ChatGptAdvancedPickerFocus = "advanced" | "effort-control" | "effort-value";
+
+interface ChatGptAdvancedPickerState {
+  pickerOpen: boolean;
+  advancedFound: boolean;
+  effortControlFound: boolean;
+  effortValueFound: boolean;
+  effortValueSelected: boolean | null;
+  controlMatchesEffort: boolean;
+  focused: boolean;
+  activated?: boolean;
+}
 
 type ChatGptSubmissionWaitResult = ChatGptSubmissionEvidence | "transient_interruption";
 
@@ -909,6 +924,318 @@ export class ChatGptBrowserWorker {
     }
   }
 
+private async advancedPickerState(
+    page: Page,
+    effortLabel: string,
+    focus?: ChatGptAdvancedPickerFocus,
+    click = false,
+  ): Promise<ChatGptAdvancedPickerState> {
+    return await page.evaluate((input) => {
+      const visible = (element: Element): element is HTMLElement => {
+        const candidate = element as HTMLElement;
+        const style = window.getComputedStyle(candidate);
+        return style.display !== "none"
+          && style.visibility !== "hidden"
+          && candidate.getClientRects().length > 0;
+      };
+      const normalize = (value: string | null | undefined): string => (
+        (value ?? "").replace(/\s+/g, " ").trim()
+      );
+      const accessibleName = (element: HTMLElement): string => normalize(
+        element.getAttribute("aria-label") ?? element.innerText ?? element.textContent,
+      );
+const hasWord = (value: string, word: string): boolean => (
+        value.toLocaleLowerCase().split(/[^\p{L}\p{N}]+/u).includes(word.toLocaleLowerCase())
+      );
+      const tokensOf = (value: string): Set<string> => new Set(
+        value.toLocaleLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean),
+      );
+      const desiredTokens = tokensOf(input.effortLabel);
+      const matchesDesiredLabel = (value: string): boolean => {
+        if (desiredTokens.size === 0) return false;
+        const tokens = tokensOf(value);
+        for (const token of desiredTokens) {
+          if (!tokens.has(token)) return false;
+        }
+        return true;
+      };
+      const semanticSelection = (element: HTMLElement | undefined): boolean | null => {
+        if (!element) return null;
+        const value = element.getAttribute("aria-checked")
+          ?? element.getAttribute("aria-selected")
+          ?? element.getAttribute("data-state");
+        if (value === "true" || value === "checked" || value === "on") return true;
+        if (value === "false" || value === "unchecked" || value === "off") return false;
+        return null;
+      };
+      const unique = <T extends Element>(values: T[]): T[] => [...new Set(values)];
+
+      const composers = Array.from(document.querySelectorAll<HTMLElement>(input.composerSelector)).filter(visible);
+      const composer = composers.at(-1);
+      const form = composer?.closest("form");
+      const controls = Array.from(form?.querySelectorAll<HTMLElement>(input.controlSelector) ?? []).filter(visible);
+      const control = controls.at(-1);
+      const roots: HTMLElement[] = [];
+      const addRoot = (candidate: Element | null): void => {
+        if (candidate instanceof HTMLElement && visible(candidate) && !roots.includes(candidate)) roots.push(candidate);
+      };
+      const controlledId = control?.getAttribute("aria-controls");
+      if (controlledId) addRoot(document.getElementById(controlledId));
+      for (const candidate of document.querySelectorAll<HTMLElement>(input.rootSelector)) addRoot(candidate);
+
+const interactive = unique([
+        ...roots.flatMap(root => (
+          Array.from(root.querySelectorAll<HTMLElement>(input.optionSelector)).filter(visible)
+        )),
+        ...Array.from(document.querySelectorAll<HTMLElement>(input.optionSelector)).filter(visible),
+      ]);
+      const semanticRoles = new Set(["menuitemradio", "menuitem", "radio", "option"]);
+      const textElements = unique([
+        ...roots,
+        ...roots.flatMap(root => (
+          Array.from(root.querySelectorAll<HTMLElement>("*")).filter(visible)
+        )),
+      ]).filter(element => element !== control);
+      const scoreValue = (element: HTMLElement): { element: HTMLElement; score: number; name: string } | null => {
+        const name = accessibleName(element);
+        const role = element.getAttribute("role") ?? "";
+        const popupControl = element.matches('[aria-haspopup="menu"], [aria-haspopup="listbox"], [role="combobox"]');
+        if (!matchesDesiredLabel(name)) return null;
+        if (popupControl && !semanticRoles.has(role)) return null;
+        const exact = name.toLocaleLowerCase() === input.effortLabel.toLocaleLowerCase();
+        const tokens = tokensOf(name);
+        const score = (semanticRoles.has(role) ? 8 : 0)
+          + (exact ? 4 : 0)
+          + (element.hasAttribute("aria-checked") || element.hasAttribute("aria-selected") ? 2 : 0)
+          + (element.childElementCount === 0 ? 1 : 0)
+          - (tokens.size - desiredTokens.size);
+        return { element, name, score };
+      };
+      const advanced = unique([...interactive, ...textElements])
+        .map(element => ({ element, name: accessibleName(element) }))
+        .filter(candidate => hasWord(candidate.name, "Advanced"))
+        .sort((left, right) => {
+          const leftRole = left.element.getAttribute("role") ?? "";
+          const rightRole = right.element.getAttribute("role") ?? "";
+          return (rightRole ? 1 : 0) - (leftRole ? 1 : 0)
+            || left.name.length - right.name.length;
+        })[0]?.element;
+      const effortValue = unique([...interactive, ...textElements])
+        .map(scoreValue)
+        .filter((candidate): candidate is { element: HTMLElement; score: number; name: string } => candidate !== null)
+        .sort((left, right) => right.score - left.score)[0]?.element;
+      const effortControls = unique([
+        ...roots.flatMap(root => Array.from(root.querySelectorAll<HTMLElement>(
+          '[role="combobox"], button[aria-haspopup="menu"], button[aria-haspopup="listbox"]',
+        )).filter(visible)),
+        ...Array.from(document.querySelectorAll<HTMLElement>(
+          '[role="combobox"], button[aria-haspopup="menu"], button[aria-haspopup="listbox"]',
+        )).filter(visible),
+      ]);
+      const effortControl = effortControls
+        .map(element => ({ element, name: accessibleName(element) }))
+        .filter(candidate => candidate.element !== control
+          && candidate.element !== advanced
+          && candidate.element !== effortValue
+          && hasWord(candidate.name, "effort"))
+        .sort((left, right) => left.name.length - right.name.length)[0]?.element
+        ?? unique([...textElements, ...effortControls])
+          .map(element => ({ element, name: accessibleName(element) }))
+          .filter(candidate => candidate.element !== control
+            && candidate.element !== advanced
+            && candidate.element !== effortValue
+            && hasWord(candidate.name, "effort")
+            && (candidate.element.tagName === "BUTTON"
+              || ["button", "tab", "menuitem", "menuitemradio"].includes(candidate.element.getAttribute("role") ?? "")))
+          .sort((left, right) => left.name.length - right.name.length)[0]?.element;
+
+      const controlName = control ? accessibleName(control) : "";
+      const controlMatchesEffort = matchesDesiredLabel(controlName);
+
+const focusTarget = input.focus === "advanced"
+        ? advanced
+        : input.focus === "effort-control"
+          ? effortControl
+          : input.focus === "effort-value"
+            ? effortValue
+            : undefined;
+      if (focusTarget) {
+        if (input.click) {
+          focusTarget.click();
+        } else {
+          focusTarget.focus({ preventScroll: true });
+        }
+      }
+      const selected = semanticSelection(effortValue);
+      return {
+        pickerOpen: roots.length > 0 || control?.getAttribute("aria-expanded") === "true",
+        advancedFound: Boolean(advanced),
+        effortControlFound: Boolean(effortControl),
+        effortValueFound: Boolean(effortValue),
+        effortValueSelected: selected ?? (controlMatchesEffort ? true : null),
+        controlMatchesEffort,
+        focused: Boolean(focusTarget && !input.click && document.activeElement === focusTarget),
+        activated: Boolean(focusTarget && input.click),
+      };
+    }, {
+      composerSelector: CHATGPT_COMPOSER_SELECTOR,
+      controlSelector: CHATGPT_EFFORT_CONTROL_SELECTOR,
+      rootSelector: CHATGPT_MODEL_PICKER_ROOT_SELECTOR,
+      optionSelector: CHATGPT_MODEL_PICKER_OPTION_SELECTOR,
+      effortLabel,
+      focus,
+      click,
+    });
+  }
+
+private async waitForAdvancedPickerState(
+    page: Page,
+    effortLabel: string,
+    abortSignal: AbortSignal | undefined,
+    timeoutMs: number,
+    ready: (state: ChatGptAdvancedPickerState) => boolean,
+  ): Promise<ChatGptAdvancedPickerState | undefined> {
+    const deadline = Date.now() + timeoutMs;
+    let state: ChatGptAdvancedPickerState | undefined;
+    do {
+      assertChatGptTurnActive(page, abortSignal);
+      state = await this.advancedPickerState(page, effortLabel);
+      if (ready(state)) return state;
+      await abortableSleep(100, abortSignal);
+    } while (Date.now() < deadline);
+    return undefined;
+  }
+
+  private async activateAdvancedPickerTarget(
+    page: Page,
+    effortLabel: string,
+    focus: ChatGptAdvancedPickerFocus,
+    abortSignal?: AbortSignal,
+  ): Promise<void> {
+    assertChatGptTurnActive(page, abortSignal);
+    const state = await this.advancedPickerState(page, effortLabel, focus);
+    if (!state.focused) {
+      const clicked = await this.advancedPickerState(page, effortLabel, focus, true);
+      if (!clicked.activated) {
+        throw new Error(`ChatGPT Advanced picker ${focus} control could not receive focus`);
+      }
+      await settleChatGptUi();
+      return;
+    }
+    await page.keyboard.press("Enter");
+    await settleChatGptUi();
+  }
+
+  private async advancedPickerDiagnostics(
+    page: Page,
+    effortLabel: string,
+  ): Promise<string> {
+    try {
+      return await page.evaluate((input) => {
+        const visible = (element: Element): boolean => {
+          const candidate = element as HTMLElement;
+          const style = window.getComputedStyle(candidate);
+          return style.display !== "none"
+            && style.visibility !== "hidden"
+            && candidate.getClientRects().length > 0;
+        };
+        const options = Array.from(document.querySelectorAll<HTMLElement>(input.optionSelector))
+          .filter(visible)
+          .slice(-24)
+          .map(element => ({
+            role: element.getAttribute("role") ?? "",
+            checked: element.getAttribute("aria-checked"),
+            selected: element.getAttribute("aria-selected"),
+            state: element.getAttribute("data-state"),
+            popup: element.hasAttribute("aria-haspopup"),
+            name: (element.getAttribute("aria-label") ?? element.innerText ?? element.textContent ?? "")
+              .replace(/\s+/g, " ").trim().slice(0, 80),
+          }));
+        return JSON.stringify({
+          rootCount: Array.from(document.querySelectorAll<HTMLElement>(input.rootSelector))
+            .filter(visible).length,
+          options,
+        });
+      }, {
+        rootSelector: CHATGPT_MODEL_PICKER_ROOT_SELECTOR,
+        optionSelector: CHATGPT_MODEL_PICKER_OPTION_SELECTOR,
+        effortLabel,
+      });
+    } catch (error) {
+      return `diagnostics unavailable: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
+private async selectAdvancedModelAndEffort(
+    page: Page,
+    currentEffort: Locator,
+    mode: ChatGptWebModelMode,
+    abortSignal?: AbortSignal,
+  ): Promise<ChatGptWebModelMode> {
+    const effortLabel = mode.displayLabel;
+    let state = await this.advancedPickerState(page, effortLabel);
+    if (!state.pickerOpen) {
+      await currentEffort.press("Enter", { timeout: 5_000 });
+      state = await this.waitForAdvancedPickerState(
+        page,
+        effortLabel,
+        abortSignal,
+        5_000,
+        candidate => candidate.pickerOpen,
+      ) ?? state;
+    }
+    if (state.advancedFound) {
+      await this.activateAdvancedPickerTarget(page, effortLabel, "advanced", abortSignal);
+      state = await this.waitForAdvancedPickerState(
+        page,
+        effortLabel,
+        abortSignal,
+        5_000,
+        candidate => candidate.effortControlFound || candidate.effortValueFound,
+      ) ?? await this.advancedPickerState(page, effortLabel);
+    }
+    if (state.effortControlFound && !state.effortValueFound) {
+      await this.activateAdvancedPickerTarget(page, effortLabel, "effort-control", abortSignal);
+      state = await this.waitForAdvancedPickerState(
+        page,
+        effortLabel,
+        abortSignal,
+        5_000,
+        candidate => candidate.effortValueFound,
+      ) ?? state;
+    }
+    if (state.effortValueFound && state.effortValueSelected !== true) {
+      await this.activateAdvancedPickerTarget(page, effortLabel, "effort-value", abortSignal);
+      state = await this.waitForAdvancedPickerState(
+        page,
+        effortLabel,
+        abortSignal,
+        5_000,
+        candidate => candidate.controlMatchesEffort || candidate.effortValueSelected === true,
+      ) ?? await this.advancedPickerState(page, effortLabel);
+    }
+    if (!state.controlMatchesEffort && state.effortValueSelected !== true) {
+      const clicked = await this.advancedPickerState(page, effortLabel, "effort-value", true);
+      if (clicked.activated) {
+        state = await this.waitForAdvancedPickerState(
+          page,
+          effortLabel,
+          abortSignal,
+          5_000,
+          candidate => candidate.controlMatchesEffort || candidate.effortValueSelected === true,
+        ) ?? await this.advancedPickerState(page, effortLabel);
+      }
+    }
+    if (!state.controlMatchesEffort && state.effortValueSelected !== true) {
+      throw new Error(
+        `ChatGPT Advanced picker did not select effort ${effortLabel}:`
+        + ` ${await this.advancedPickerDiagnostics(page, effortLabel)}`,
+      );
+    }
+    if (state.pickerOpen) await page.keyboard.press("Escape");
+    return mode;
+  }
+
   private async selectModelAndEffort(
     page: Page,
     modelId: string,
@@ -1004,13 +1331,49 @@ export class ChatGptBrowserWorker {
         const recovered = recovery
           ? await this.recoverTransientLimitDialogs(page, recovery, abortSignal, "effort selection", "open")
           : false;
+const advanced = await this.advancedPickerState(
+          page,
+          mode.displayLabel,
+        );
+        if (advanced.advancedFound
+          || advanced.effortControlFound
+          || advanced.effortValueFound) {
+          const selectedMode = await this.selectAdvancedModelAndEffort(page, currentEffort, mode, abortSignal);
+          if (recovery) recovery.modelNeedsVerification = false;
+          return selectedMode;
+        }
         if (!recovered && Date.now() < effortReadyDeadline && !await pickerIsOpen()) {
           await this.resynchronizeEffortPicker(page, abortSignal, true, true);
         }
       }
     }
 
+    const advancedLayout = await this.advancedPickerState(
+      page,
+      mode.displayLabel,
+    );
+    if (advancedLayout.advancedFound
+      || advancedLayout.effortControlFound
+      || advancedLayout.effortValueFound) {
+      const selectedMode = await this.selectAdvancedModelAndEffort(page, currentEffort, mode, abortSignal);
+      if (recovery) recovery.modelNeedsVerification = false;
+      return selectedMode;
+    }
+
     let selected = await effortState();
+    if (selected.count === 0) {
+const advanced = await this.advancedPickerState(
+        page,
+        mode.displayLabel,
+      );
+      if (advanced.advancedFound
+        || advanced.effortControlFound
+        || advanced.effortValueFound) {
+        const selectedMode = await this.selectAdvancedModelAndEffort(page, currentEffort, mode, abortSignal);
+        if (recovery) recovery.modelNeedsVerification = false;
+        return selectedMode;
+      }
+    }
     for (let attempt = 0; attempt < 14 && selected.checked !== "true" && selected.checked !== "false"; attempt += 1) {
       abortIfRequested();
       if (recovery) {

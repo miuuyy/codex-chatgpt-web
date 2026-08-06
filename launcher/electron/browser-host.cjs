@@ -32,6 +32,31 @@ const COMPOSER_SELECTOR = [
   '[contenteditable="true"][role="textbox"]',
   "textarea",
 ].join(", ");
+const EFFORT_CONTROL_SELECTOR = [
+  'button[data-testid="model-switcher-dropdown-button"]',
+  'button[data-testid="composer-intelligence-picker-trigger"]',
+  'button[aria-haspopup="menu"][data-testid*="model" i]',
+  'button[aria-haspopup="menu"][aria-label*="model" i]',
+  'button[aria-haspopup="menu"][data-tone="neutral"]',
+].join(", ");
+const MODEL_PICKER_ROOT_SELECTOR = [
+  '[data-testid="composer-intelligence-picker-content"]',
+  '[data-testid*="model-picker" i]',
+  '[role="menu"]',
+  '[role="dialog"]',
+  '[role="listbox"]',
+  '[role="radiogroup"]',
+  '[data-state="open"]',
+].join(", ");
+const MODEL_PICKER_OPTION_SELECTOR = [
+  '[role="menuitemradio"]',
+  '[role="menuitem"]',
+  '[role="radio"]',
+  '[role="option"]',
+  '[role="tab"]',
+  '[role="button"]',
+  'button',
+].join(", ");
 const EFFORT_MENU_SELECTOR = [
   '[data-testid="composer-intelligence-picker-content"]:has([role="menuitemradio"])',
   '[role="menu"]:has([role="menuitemradio"])',
@@ -1106,7 +1131,7 @@ class BrowserHost {
       const composer = ${visibleElementScript(COMPOSER_SELECTOR)};
       const form = composer?.closest('form');
       const controls = Array.from(form?.querySelectorAll(
-        'button[aria-haspopup="menu"][data-tone="neutral"]'
+        ${JSON.stringify(EFFORT_CONTROL_SELECTOR)}
       ) || []).filter(visible);
       const control = controls.at(-1);
       if (!control) {
@@ -1141,7 +1166,7 @@ class BrowserHost {
       const composer = ${visibleElementScript(COMPOSER_SELECTOR)};
       const form = composer?.closest('form');
       const controls = Array.from(form?.querySelectorAll(
-        'button[aria-haspopup="menu"][data-tone="neutral"]'
+        ${JSON.stringify(EFFORT_CONTROL_SELECTOR)}
       ) || []).filter(visible);
       const control = controls.at(-1);
       if (!control) return false;
@@ -1178,7 +1203,7 @@ class BrowserHost {
         };
         const composer = ${visibleElementScript(COMPOSER_SELECTOR)};
         const control = Array.from(composer?.closest('form')?.querySelectorAll(
-          'button[aria-haspopup="menu"][data-tone="neutral"]'
+          ${JSON.stringify(EFFORT_CONTROL_SELECTOR)}
         ) || []).filter(visible).at(-1);
         const controlledId = control?.getAttribute('aria-controls');
         const controlled = controlledId ? document.getElementById(controlledId) : null;
@@ -1218,7 +1243,7 @@ class BrowserHost {
       };
       const composer = ${visibleElementScript(COMPOSER_SELECTOR)};
       const control = Array.from(composer?.closest('form')?.querySelectorAll(
-        'button[aria-haspopup="menu"][data-tone="neutral"]'
+        ${JSON.stringify(EFFORT_CONTROL_SELECTOR)}
       ) || []).filter(visible).at(-1);
       const controlledId = control?.getAttribute('aria-controls');
       const controlled = controlledId ? document.getElementById(controlledId) : null;
@@ -1272,6 +1297,232 @@ class BrowserHost {
     );
   }
 
+async readAdvancedEffortPicker(focus = '', effortLabel = 'High', click = false) {
+    return await this.evaluateBrowserPage(`(() => {
+      /* advanced-effort-picker-read */
+      const focusTarget = ${JSON.stringify(focus)};
+      const clickTarget = ${JSON.stringify(click)};
+      const effortLabel = ${JSON.stringify(effortLabel)};
+      const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+      const visible = (element) => {
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+      };
+      const name = (element) => normalize(element?.getAttribute('aria-label') || element?.innerText || element?.textContent);
+      const hasWord = (value, word) => value.toLocaleLowerCase().split(/[^\\p{L}\\p{N}]+/u).includes(word.toLocaleLowerCase());
+      const tokensOf = (value) => new Set(value.toLocaleLowerCase().split(/[^\\p{L}\\p{N}]+/u).filter(Boolean));
+      const desiredTokens = tokensOf(effortLabel);
+      const matchesDesiredLabel = (value) => {
+        if (desiredTokens.size === 0) return false;
+        const tokens = tokensOf(value);
+        for (const token of desiredTokens) {
+          if (!tokens.has(token)) return false;
+        }
+        return true;
+      };
+      const unique = (values) => [...new Set(values)];
+      const composer = ${visibleElementScript(COMPOSER_SELECTOR)};
+      const form = composer?.closest('form');
+      const control = Array.from(form?.querySelectorAll(${JSON.stringify(EFFORT_CONTROL_SELECTOR)}) || [])
+        .filter(visible).at(-1);
+      const roots = [];
+      const addRoot = (candidate) => {
+        if (candidate instanceof HTMLElement && visible(candidate) && !roots.includes(candidate)) roots.push(candidate);
+      };
+      const controlledId = control?.getAttribute('aria-controls');
+      if (controlledId) addRoot(document.getElementById(controlledId));
+      for (const candidate of document.querySelectorAll(${JSON.stringify(MODEL_PICKER_ROOT_SELECTOR)})) addRoot(candidate);
+      const interactive = unique([
+        ...roots.flatMap((root) => (
+          Array.from(root.querySelectorAll(${JSON.stringify(MODEL_PICKER_OPTION_SELECTOR)})).filter(visible)
+        )),
+        ...Array.from(document.querySelectorAll(${JSON.stringify(MODEL_PICKER_OPTION_SELECTOR)})).filter(visible),
+      ]);
+      const semanticRoles = new Set(['menuitemradio', 'menuitem', 'radio', 'option']);
+      const textElements = unique([
+        ...roots,
+        ...roots.flatMap((root) => (
+          Array.from(root.querySelectorAll('*')).filter(visible)
+        )),
+      ]).filter((element) => element !== control);
+      const effortControls = unique([
+        ...roots.flatMap((root) => Array.from(root.querySelectorAll(
+          '[role="combobox"], button[aria-haspopup="menu"], button[aria-haspopup="listbox"]'
+        )).filter(visible)),
+        ...Array.from(document.querySelectorAll(
+          '[role="combobox"], button[aria-haspopup="menu"], button[aria-haspopup="listbox"]'
+        )).filter(visible),
+      ]);
+      const advanced = unique([...interactive, ...textElements])
+        .map((element) => ({ element, label: name(element) }))
+        .filter((candidate) => hasWord(candidate.label, 'Advanced'))
+        .sort((left, right) => {
+          const leftRole = left.element.getAttribute('role') || '';
+          const rightRole = right.element.getAttribute('role') || '';
+          return (rightRole ? 1 : 0) - (leftRole ? 1 : 0)
+            || left.label.length - right.label.length;
+        })[0]?.element;
+      const scoreValue = (element) => {
+        const label = name(element);
+        const role = element.getAttribute('role') || '';
+        const popupControl = element.matches('[aria-haspopup="menu"], [aria-haspopup="listbox"], [role="combobox"]');
+        if (!matchesDesiredLabel(label)) return null;
+        if (popupControl && !semanticRoles.has(role)) return null;
+        const exact = label.toLocaleLowerCase() === effortLabel.toLocaleLowerCase();
+        const tokens = tokensOf(label);
+        const score = (semanticRoles.has(role) ? 8 : 0)
+          + (exact ? 4 : 0)
+          + (element.hasAttribute('aria-checked') || element.hasAttribute('aria-selected') ? 2 : 0)
+          + (element.childElementCount === 0 ? 1 : 0)
+          - (tokens.size - desiredTokens.size);
+        return { element, label, score };
+      };
+      const effortValue = unique([...interactive, ...textElements])
+        .map((element) => scoreValue(element))
+        .filter((candidate) => candidate !== null)
+        .sort((left, right) => right.score - left.score)[0]?.element;
+      const effortControl = effortControls
+        .map((element) => ({ element, label: name(element) }))
+        .filter((candidate) => candidate.element !== control && candidate.element !== advanced && candidate.element !== effortValue)
+        .filter((candidate) => hasWord(candidate.label, 'effort'))
+        .sort((left, right) => left.label.length - right.label.length)[0]?.element
+        ?? unique([...textElements, ...effortControls])
+          .map((element) => ({ element, label: name(element) }))
+          .filter((candidate) => candidate.element !== control && candidate.element !== advanced && candidate.element !== effortValue)
+          .filter((candidate) => hasWord(candidate.label, 'effort')
+            && (candidate.element.tagName === 'BUTTON'
+              || ['button', 'tab', 'menuitem', 'menuitemradio'].includes(candidate.element.getAttribute('role') || '')))
+          .sort((left, right) => left.label.length - right.label.length)[0]?.element;
+      const controlName = control ? name(control) : '';
+      const controlMatchesEffort = matchesDesiredLabel(controlName);
+      const target = focusTarget === 'advanced'
+        ? advanced
+        : focusTarget === 'effort-control'
+          ? effortControl
+          : focusTarget === 'effort-value'
+            ? effortValue
+            : null;
+      if (target) {
+        if (clickTarget) {
+          target.click();
+        } else {
+          target.focus({ preventScroll: true });
+        }
+      }
+      const selectedValue = effortValue?.getAttribute('aria-checked')
+        || effortValue?.getAttribute('aria-selected')
+        || effortValue?.getAttribute('data-state');
+      const selected = ['true', 'checked', 'on'].includes(selectedValue)
+        ? true
+        : ['false', 'unchecked', 'off'].includes(selectedValue)
+          ? false
+          : null;
+      return {
+        pickerOpen: roots.length > 0 || control?.getAttribute('aria-expanded') === 'true',
+        advancedFound: Boolean(advanced),
+        effortControlFound: Boolean(effortControl),
+        effortValueFound: Boolean(effortValue),
+        effortValueSelected: selected ?? (controlMatchesEffort ? true : null),
+        controlMatchesEffort,
+        focused: Boolean(target && !clickTarget && document.activeElement === target),
+        activated: Boolean(target && clickTarget),
+      };
+    })()`);
+  }
+
+  async selectHighEffortAdvanced(initialState, {
+    optionTimeoutMs,
+    confirmTimeoutMs,
+    pollMs,
+  }) {
+    const effortLabel = 'High';
+    const waitFor = async (timeoutMs, ready) => {
+      const deadline = Date.now() + timeoutMs;
+      let state = initialState;
+      do {
+        state = await this.readAdvancedEffortPicker('', effortLabel);
+        if (ready(state)) return state;
+        await sleep(pollMs);
+      } while (Date.now() < deadline);
+      return state;
+    };
+    const activate = async (target) => {
+      const activated = await this.readAdvancedEffortPicker(target, effortLabel);
+      if (!activated.focused) {
+        const clicked = await this.readAdvancedEffortPicker(target, effortLabel, true);
+        if (!clicked.activated) {
+          throw new Error(`ChatGPT Advanced picker ${target} control could not receive focus`);
+        }
+        await sleep(250);
+        return;
+      }
+      await this.pressTrustedBrowserKey('Enter');
+      await sleep(250);
+    };
+
+    let state = initialState;
+    if (state.advancedFound) {
+      await activate('advanced');
+      state = await waitFor(optionTimeoutMs, candidate => (
+        candidate.effortControlFound || candidate.effortValueFound
+      ));
+    }
+    if (state.effortControlFound && !state.effortValueFound) {
+      await activate('effort-control');
+      state = await waitFor(optionTimeoutMs, candidate => candidate.effortValueFound);
+    }
+    if (state.effortValueFound && state.effortValueSelected !== true) {
+      await activate('effort-value');
+      state = await waitFor(confirmTimeoutMs, candidate => (
+        candidate.controlMatchesEffort || candidate.effortValueSelected === true
+      ));
+    }
+    if (state.controlMatchesEffort !== true && state.effortValueSelected !== true) {
+      const clicked = await this.readAdvancedEffortPicker('effort-value', effortLabel, true);
+      if (clicked.activated) {
+        state = await waitFor(confirmTimeoutMs, candidate => (
+          candidate.controlMatchesEffort === true || candidate.effortValueSelected === true
+        ));
+      }
+    }
+    if (state.controlMatchesEffort !== true && state.effortValueSelected !== true) {
+      throw new Error(
+        `ChatGPT Advanced picker did not select effort ${effortLabel}:`
+        + ` ${await this.advancedEffortPickerDiagnostics()}`,
+      );
+    }
+    this.pressBrowserKey('Escape');
+    return { effort: 'High', changed: true };
+  }
+
+  async advancedEffortPickerDiagnostics() {
+    return await this.evaluateBrowserPage(`(() => {
+      const visible = (element) => {
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+      };
+      const options = Array.from(document.querySelectorAll(${JSON.stringify(MODEL_PICKER_OPTION_SELECTOR)}))
+        .filter(visible)
+        .slice(-24)
+        .map((element) => ({
+          role: element.getAttribute('role') || '',
+          checked: element.getAttribute('aria-checked'),
+          selected: element.getAttribute('aria-selected'),
+          state: element.getAttribute('data-state'),
+          popup: element.hasAttribute('aria-haspopup'),
+          name: String(element.getAttribute('aria-label') || element.innerText || element.textContent || '')
+            .replace(/\\s+/g, ' ').trim().slice(0, 80),
+        }));
+      return JSON.stringify({
+        rootCount: Array.from(document.querySelectorAll(${JSON.stringify(MODEL_PICKER_ROOT_SELECTOR)}))
+          .filter(visible).length,
+        options,
+      });
+    })()`);
+  }
+
   async selectHighEffort({
     readyTimeoutMs = 70_000,
     optionTimeoutMs = 70_000,
@@ -1281,10 +1532,38 @@ class BrowserHost {
     const targetIndex = 2;
     const control = await this.waitForEffortControl(readyTimeoutMs, pollMs);
     let menu = await this.readEffortMenu(targetIndex);
+    const readAdvanced = typeof this.readAdvancedEffortPicker === "function"
+      ? () => this.readAdvancedEffortPicker()
+      : async () => null;
+const isAdvanced = (state) => Boolean(state && (
+      state.advancedFound || state.effortControlFound || state.effortValueFound
+    ));
+    let advanced = await readAdvanced();
+    if (isAdvanced(advanced)) {
+      return await this.selectHighEffortAdvanced(advanced, { optionTimeoutMs, confirmTimeoutMs, pollMs });
+    }
     if (!menu.target) {
-      menu = menu.open || control.expanded === "true"
-        ? await this.waitForEffortMenu(targetIndex, optionTimeoutMs, pollMs)
-        : await this.openEffortMenu(targetIndex, optionTimeoutMs, pollMs, control);
+      if (!menu.open && control.expanded !== "true") {
+        if (!await this.focusEffortControl()) {
+          throw new Error("ChatGPT effort control could not receive focus");
+        }
+        await this.pressTrustedBrowserKey("Enter");
+      }
+      const legacyProbeMs = Math.min(2_500, optionTimeoutMs);
+      try {
+        menu = await this.waitForEffortMenu(targetIndex, legacyProbeMs, pollMs);
+      } catch (error) {
+        advanced = await readAdvanced();
+        if (isAdvanced(advanced)) {
+          return await this.selectHighEffortAdvanced(advanced, { optionTimeoutMs, confirmTimeoutMs, pollMs });
+        }
+        if (legacyProbeMs >= optionTimeoutMs) throw error;
+        menu = await this.waitForEffortMenu(targetIndex, optionTimeoutMs - legacyProbeMs, pollMs);
+      }
+    }
+    advanced = await readAdvanced();
+    if (isAdvanced(advanced)) {
+      return await this.selectHighEffortAdvanced(advanced, { optionTimeoutMs, confirmTimeoutMs, pollMs });
     }
     if (menu.target.checked !== "true" && menu.target.checked !== "false") {
       throw new Error(`ChatGPT effort item index ${targetIndex} has no semantic checked state`);

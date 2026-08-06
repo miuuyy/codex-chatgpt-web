@@ -1,0 +1,1 @@
+Fixed: the picker flow now goes composer picker control → Advanced → effort value click, with no slider dependency. Changes are located in `src/adapters/chatgpt-web/browser-worker.ts`, `src/chatgptSession.ts`, `launcher/electron/browser-host.docs`, `launcher/electron/browser-host.cjs`, and `tests/browser-worker-contract.test.ts`.

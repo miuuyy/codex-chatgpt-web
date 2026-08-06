@@ -6,7 +6,31 @@ export const CHATGPT_COMPOSER_SELECTOR = [
   "#prompt-textarea",
   '[contenteditable="true"][data-lexical-editor="true"]',
 ].join(", ");
-export const CHATGPT_EFFORT_CONTROL_SELECTOR = 'button[aria-haspopup="menu"][data-tone="neutral"]';
+export const CHATGPT_EFFORT_CONTROL_SELECTOR = [
+  'button[data-testid="model-switcher-dropdown-button"]',
+  'button[data-testid="composer-intelligence-picker-trigger"]',
+  'button[aria-haspopup="menu"][data-testid*="model" i]',
+  'button[aria-haspopup="menu"][aria-label*="model" i]',
+  'button[aria-haspopup="menu"][data-tone="neutral"]',
+].join(", ");
+export const CHATGPT_MODEL_PICKER_ROOT_SELECTOR = [
+  '[data-testid="composer-intelligence-picker-content"]',
+  '[data-testid*="model-picker" i]',
+  '[role="menu"]',
+  '[role="dialog"]',
+  '[role="listbox"]',
+  '[role="radiogroup"]',
+  '[data-state="open"]',
+].join(", ");
+export const CHATGPT_MODEL_PICKER_OPTION_SELECTOR = [
+  '[role="menuitemradio"]',
+  '[role="menuitem"]',
+  '[role="radio"]',
+  '[role="option"]',
+  '[role="tab"]',
+  '[role="button"]',
+  'button',
+].join(", ");
 export const CHATGPT_EFFORT_MENU_SELECTOR = [
   '[data-testid="composer-intelligence-picker-content"]:has([role="menuitemradio"])',
   '[role="menu"]:has([role="menuitemradio"])',
@@ -57,13 +81,25 @@ export async function detectChatGptProCapability(page: Page): Promise<boolean> {
   const effortButton = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).last();
   await effortButton.waitFor({ state: "visible", timeout: 30_000 });
   const menu = page.locator(CHATGPT_EFFORT_MENU_SELECTOR).last();
+  const pickerRoot = page.locator(CHATGPT_MODEL_PICKER_ROOT_SELECTOR).filter({ visible: true }).last();
   const menuVisible = await menu.isVisible().catch(() => false);
   const menuExpanded = await effortButton.getAttribute("aria-expanded").catch(() => null);
-  if (!menuVisible && menuExpanded !== "true") await effortButton.click();
+  if (!menuVisible && menuExpanded !== "true") await effortButton.press("Enter");
   try {
     const efforts = menu.locator(CHATGPT_EFFORT_ITEM_SELECTOR);
-    await efforts.first().waitFor({ state: "visible", timeout: 70_000 });
-    return await efforts.count() >= 5;
+    const deadline = Date.now() + 70_000;
+    while (Date.now() < deadline) {
+      if (await efforts.first().isVisible().catch(() => false)) {
+        if (await efforts.count() >= 5) return true;
+      }
+      const pro = pickerRoot.locator(CHATGPT_MODEL_PICKER_OPTION_SELECTOR).filter({
+        hasText: /^\s*Pro(?:\s|$)/i,
+        visible: true,
+      });
+      if (await pro.count() > 0) return true;
+      await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
+    }
+    return false;
   } finally {
     await page.keyboard.press("Escape").catch(() => {});
   }

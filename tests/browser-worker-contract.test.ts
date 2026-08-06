@@ -1472,6 +1472,15 @@ async function runEffortPickerScenario(options: {
   };
   const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
     activeComposer: async () => composer,
+advancedPickerState: async () => ({
+      pickerOpen: false,
+      advancedFound: false,
+      effortControlFound: false,
+      effortValueFound: false,
+      effortValueSelected: null,
+      controlMatchesEffort: false,
+      focused: false,
+    }),
     resynchronizeEffortPicker: async () => {
       if (controller.signal.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
       await currentEffort.press("Enter");
@@ -1559,6 +1568,110 @@ test("effort selection re-resolves a picker replaced after visibility", async ()
   expect(result.controlPresses).toBe(2);
   expect(result.pointerClicks).toBe(0);
   expect(result.keyboardPresses).toEqual(["Escape"]);
+});
+
+test("effort selection uses Advanced then the matching Effort option in the new picker", async () => {
+  let pickerOpen = false;
+  let advancedOpen = false;
+  let effortOpen = false;
+  let effortSelected = false;
+  let focused: "advanced" | "effort-control" | "effort-value" | undefined;
+  let controlPresses = 0;
+  const keyboardPresses: string[] = [];
+
+  const effortMenu = {
+    locator: () => ({
+      nth: () => ({ waitFor: async () => {} }),
+    }),
+  };
+  const effortMenus = {
+    filter: () => ({ last: () => effortMenu }),
+    evaluateAll: async () => ({
+      open: pickerOpen,
+      checked: pickerOpen ? "false" : null,
+      count: pickerOpen ? 3 : 0,
+      focused: false,
+    }),
+  };
+  const currentEffort = {
+    waitFor: async () => {},
+    getAttribute: async () => pickerOpen ? "true" : "false",
+    press: async (key: string) => {
+      expect(key).toBe("Enter");
+      controlPresses += 1;
+      pickerOpen = true;
+    },
+  };
+  const composer = {
+    locator: () => ({ locator: () => ({ last: () => currentEffort }) }),
+  };
+  const page = {
+    isClosed: () => false,
+    locator: () => effortMenus,
+    keyboard: {
+      press: async (key: string) => {
+        keyboardPresses.push(key);
+        if (key === "Enter" && focused === "advanced") advancedOpen = true;
+        if (key === "Enter" && focused === "effort-control") effortOpen = true;
+        if (key === "Enter" && focused === "effort-value") {
+          effortSelected = true;
+          effortOpen = false;
+        }
+        if (key === "Escape") pickerOpen = false;
+      },
+    },
+  };
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    activeComposer: async () => composer,
+    advancedPickerState: async (
+      _page: unknown,
+      effortLabel: string,
+      focus?: "advanced" | "effort-control" | "effort-value",
+    ) => {
+      expect(effortLabel).toBe("High");
+      const advancedFound = pickerOpen && !advancedOpen;
+      const effortControlFound = pickerOpen && advancedOpen && !effortOpen && !effortSelected;
+      const effortValueFound = pickerOpen && advancedOpen && effortOpen;
+      const focusAvailable = focus === "advanced"
+        ? advancedFound
+        : focus === "effort-control"
+          ? effortControlFound
+          : focus === "effort-value"
+            ? effortValueFound
+            : false;
+      if (focus && focusAvailable) focused = focus;
+      return {
+        pickerOpen,
+        advancedFound,
+        effortControlFound,
+        effortValueFound,
+        effortValueSelected: effortValueFound ? effortSelected : null,
+        controlMatchesEffort: effortSelected,
+        focused: Boolean(focus && focusAvailable),
+      };
+    },
+  });
+  const selectModelAndEffort = (ChatGptBrowserWorker.prototype as unknown as {
+    selectModelAndEffort(
+      page: unknown,
+      modelId: string,
+      reasoning: string,
+      capabilities: { localToolsEnabled: boolean; proAvailable: boolean },
+    ): Promise<{ uiEffortIndex: number }>;
+  }).selectModelAndEffort;
+
+  const result = await selectModelAndEffort.call(
+    worker,
+    page,
+    "gpt-5.6-sol",
+    "high",
+    { localToolsEnabled: false, proAvailable: true },
+  );
+
+  expect(result.uiEffortIndex).toBe(2);
+  expect(effortSelected).toBe(true);
+  expect(controlPresses).toBe(1);
+  expect(keyboardPresses).toEqual(["Enter", "Enter", "Enter", "Escape"]);
 });
 
 test("effort selection uses structural menu indices instead of localized labels", () => {
