@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createServer } from "node:net";
-import { callTurnBroker, TurnBroker } from "../src/adapters/chatgpt-web/turn-broker";
+import { callTurnBroker, TurnBroker, type BrokerToolResult } from "../src/adapters/chatgpt-web/turn-broker";
 import { defaultBrokerEndpoint, isWindowsPipeEndpoint } from "../src/config";
 
 test("explicit browser-turn cancellation aborts and removes every registered session", async () => {
@@ -349,6 +349,37 @@ test("turn broker capabilities do not expire with wall-clock age", async () => {
     expect(resolved.environment.cwd).toBe(root);
   } finally {
     Date.now = originalNow;
+    await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("turn broker invocation deadlines clean up and ignore late tool results", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cgw-broker-timeout-"));
+  const socketPath = defaultBrokerEndpoint(root);
+  const broker = TurnBroker.forSocket(socketPath);
+  try {
+    const token = await broker.register({
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: [],
+    });
+    const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
+    const invocation = callTurnBroker<BrokerToolResult>(socketPath, {
+      method: "invoke",
+      bindingId: claimed.bindingId,
+      wireName: "exec_command",
+      invocationTimeoutMs: 30,
+    }, 1_000);
+    const [request] = await broker.nextToolBatch(token);
+    expect(request?.wireName).toBe("exec_command");
+    await expect(invocation).rejects.toThrow("Native Codex tool timed out after 30ms: exec_command");
+
+    expect(() => broker.completeTool(token, request!.callId, { content: [] })).not.toThrow();
+    expect(() => broker.completeTool(token, "call_never_pending", { content: [] })).toThrow("tool call is not pending");
+  } finally {
     await broker.close();
     rmSync(root, { recursive: true, force: true });
   }

@@ -24,6 +24,8 @@ interface PendingInvocation {
   request: BrokerToolRequest;
   resolve: (result: BrokerToolResult) => void;
   reject: (error: Error) => void;
+  timeoutMs?: number;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 interface ToolWaiter {
@@ -39,6 +41,7 @@ interface TurnChannel {
   bindingId?: string;
   queuedCallIds: string[];
   invocations: Map<string, PendingInvocation>;
+  timedOutCallIds: Set<string>;
   waiters: Set<ToolWaiter>;
   batchTimer?: ReturnType<typeof setTimeout>;
 }
@@ -52,6 +55,7 @@ interface BrokerRequest {
   freeform?: boolean;
   arguments?: Record<string, unknown>;
   input?: string;
+  invocationTimeoutMs?: number;
 }
 
 interface BrokerResponse {
@@ -63,6 +67,7 @@ interface BrokerResponse {
 const brokers = new Map<string, TurnBroker>();
 const MAX_BROKER_LINE_CHARS = 67_108_864;
 const MAX_RETIRED_TURN_HANDLES = 64;
+const MAX_RETIRED_TOOL_CALLS = 64;
 
 export async function closeTurnBrokers(): Promise<void> {
   const active = [...brokers.values()];
@@ -137,6 +142,7 @@ export class TurnBroker {
       environment: { ...environment },
       queuedCallIds: [],
       invocations: new Map(),
+      timedOutCallIds: new Set(),
       waiters: new Set(),
     };
     this.channels.set(token, channel);
@@ -157,7 +163,10 @@ export class TurnBroker {
     const channel = this.channels.get(token);
     if (!channel) throw new Error("turn token is invalid or revoked");
     const ready = this.takeQueued(channel);
-    if (ready.length > 0) return ready;
+    if (ready.length > 0) {
+      this.rearmDeliveredDeadlines(channel, ready);
+      return ready;
+    }
     if (signal?.aborted) throw new DOMException("tool wait aborted", "AbortError");
     return new Promise<BrokerToolRequest[]>((resolveWait, rejectWait) => {
       const waiter: ToolWaiter = { resolve: resolveWait, reject: rejectWait, ...(signal ? { signal } : {}) };
@@ -176,9 +185,16 @@ export class TurnBroker {
     const channel = this.channels.get(token);
     if (!channel) throw new Error("turn token is invalid or revoked");
     const invocation = channel.invocations.get(callId);
-    if (!invocation) throw new Error(`tool call is not pending: ${callId}`);
+    if (!invocation) {
+      if (channel.timedOutCallIds.delete(callId)) {
+        console.warn(`[chatgpt-web] broker trace=${channel.traceId} ignored late completion call=${callId.slice(0, 17)}`);
+        return;
+      }
+      throw new Error(`tool call is not pending: ${callId}`);
+    }
     if (channel.queuedCallIds.includes(callId)) throw new Error(`tool call was completed before it was delivered: ${callId}`);
     channel.invocations.delete(callId);
+    if (invocation.timer) clearTimeout(invocation.timer);
     console.info(`[chatgpt-web] broker trace=${channel.traceId} completed call=${callId.slice(0, 17)} pending=${channel.invocations.size}`);
     invocation.resolve(result);
   }
@@ -352,6 +368,10 @@ export class TurnBroker {
     if (request.method !== "claim" && request.method !== "resolve" && request.method !== "release" && request.method !== "invoke") {
       throw new Error("turn broker method is invalid");
     }
+    if (request.invocationTimeoutMs !== undefined
+      && (!Number.isFinite(request.invocationTimeoutMs) || request.invocationTimeoutMs <= 0)) {
+      throw new Error("turn broker invocation timeout must be positive when provided");
+    }
   }
 
   private dispatch(request: BrokerRequest): unknown | Promise<unknown> {
@@ -414,13 +434,67 @@ export class TurnBroker {
       ...(request.freeform === true ? { input: request.input ?? "" } : { arguments: request.arguments ?? {} }),
     };
     return new Promise<BrokerToolResult>((resolveInvoke, rejectInvoke) => {
-      binding.channel.invocations.set(callId, { request: toolRequest, resolve: resolveInvoke, reject: rejectInvoke });
+      const invocation: PendingInvocation = {
+        request: toolRequest,
+        resolve: resolveInvoke,
+        reject: rejectInvoke,
+        ...(request.invocationTimeoutMs !== undefined ? { timeoutMs: request.invocationTimeoutMs } : {}),
+      };
+      binding.channel.invocations.set(callId, invocation);
       binding.channel.queuedCallIds.push(callId);
       console.info(
-        `[chatgpt-web] broker trace=${binding.channel.traceId} queued call=${callId.slice(0, 17)} tool=${wireName} waiters=${binding.channel.waiters.size}`,
+        `[chatgpt-web] broker trace=${binding.channel.traceId} queued call=${callId.slice(0, 17)} tool=${wireName}`
+        + ` timeout=${request.invocationTimeoutMs ?? "none"} waiters=${binding.channel.waiters.size}`,
       );
       this.scheduleToolWaiters(binding.channel);
+      this.startInvocationDeadline(binding.channel, callId, invocation);
     });
+  }
+
+  private startInvocationDeadline(channel: TurnChannel, callId: string, invocation: PendingInvocation): void {
+    const timeoutMs = invocation.timeoutMs;
+    if (timeoutMs === undefined || invocation.timer) return;
+    invocation.timer = setTimeout(() => {
+      invocation.timer = undefined;
+      if (channel.invocations.get(callId) !== invocation) return;
+      channel.invocations.delete(callId);
+      const queuedIndex = channel.queuedCallIds.indexOf(callId);
+      if (queuedIndex >= 0) channel.queuedCallIds.splice(queuedIndex, 1);
+      this.rememberTimedOutCall(channel, callId);
+      console.warn(
+        `[chatgpt-web] broker trace=${channel.traceId} timed out call=${callId.slice(0, 17)}`
+        + ` tool=${invocation.request.wireName} after=${timeoutMs}ms`,
+      );
+      invocation.reject(new Error(`Native Codex tool timed out after ${timeoutMs}ms: ${invocation.request.wireName}`));
+    }, timeoutMs);
+  }
+
+  private rearmDeliveredDeadlines(channel: TurnChannel, requests: BrokerToolRequest[]): void {
+    const delivered = requests.flatMap(request => {
+      const invocation = channel.invocations.get(request.callId);
+      if (!invocation?.timeoutMs) return [];
+      if (invocation.timer) clearTimeout(invocation.timer);
+      invocation.timer = undefined;
+      return [[request.callId, invocation] as const];
+    });
+    if (delivered.length === 0) return;
+    // Bun on Windows can leave an older timer dormant after the batching timer fires. Re-arm the
+    // deadline from a fresh microtask once delivery has completed so a lost native result still
+    // wakes the broker without requiring unrelated event-loop activity.
+    queueMicrotask(() => {
+      for (const [callId, invocation] of delivered) {
+        if (channel.invocations.get(callId) === invocation) this.startInvocationDeadline(channel, callId, invocation);
+      }
+    });
+  }
+
+  private rememberTimedOutCall(channel: TurnChannel, callId: string): void {
+    channel.timedOutCallIds.add(callId);
+    while (channel.timedOutCallIds.size > MAX_RETIRED_TOOL_CALLS) {
+      const oldest = channel.timedOutCallIds.values().next();
+      if (oldest.done) return;
+      channel.timedOutCallIds.delete(oldest.value);
+    }
   }
 
   private takeQueued(channel: TurnChannel): BrokerToolRequest[] {
@@ -449,6 +523,7 @@ export class TurnBroker {
     if (first) {
       if (first.signal && first.onAbort) first.signal.removeEventListener("abort", first.onAbort);
       first.resolve(batch);
+      this.rearmDeliveredDeadlines(channel, batch);
     }
     for (const waiter of waiters) {
       if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener("abort", waiter.onAbort);
@@ -464,8 +539,12 @@ export class TurnBroker {
       waiter.reject(error);
     }
     channel.waiters.clear();
-    for (const invocation of channel.invocations.values()) invocation.reject(error);
+    for (const invocation of channel.invocations.values()) {
+      if (invocation.timer) clearTimeout(invocation.timer);
+      invocation.reject(error);
+    }
     channel.invocations.clear();
+    channel.timedOutCallIds.clear();
     channel.queuedCallIds = [];
   }
 

@@ -1220,7 +1220,19 @@ test("every turn uploads one context file and reserves the tenth slot", () => {
     gatewayOnlyEnvironment.tools = gatewayOnlyEnvironment.tools.filter(tool => (
       tool.name === "exec" || tool.name === "search_openai_docs"
     ));
+    const directEnvironment = extractChatGptTurnEnvironment(parsed(environmentXml));
+    const directWithoutContinuationEnvironment = extractChatGptTurnEnvironment(parsed(environmentXml));
+    directWithoutContinuationEnvironment.tools = directWithoutContinuationEnvironment.tools.filter(tool => tool.name !== "write_stdin");
+    const shellEnvironment = extractChatGptTurnEnvironment(parsed(environmentXml));
+    shellEnvironment.tools = [
+      { name: "exec", description: "Run nested Codex tools", parameters: {}, freeform: true },
+      { name: "shell_command", description: "Run shell command", parameters: { type: "object" } },
+      { name: "write_stdin", description: "Continue command", parameters: { type: "object" } },
+    ];
     const token = await broker.register(gatewayOnlyEnvironment);
+    const directToken = await broker.register(directEnvironment);
+    const directWithoutContinuationToken = await broker.register(directWithoutContinuationEnvironment);
+    const shellToken = await broker.register(shellEnvironment);
     const transport = new StdioClientTransport({
       command: process.execPath,
       args: ["src/cli.ts", "mcp", "--broker-socket", socketPath],
@@ -1242,13 +1254,21 @@ test("every turn uploads one context file and reserves the tenth slot", () => {
         "codex_view_image",
         "codex_write_stdin",
       ]);
+      const listedExec = listed.tools.find(tool => tool.name === "codex_exec") as {
+        annotations?: Record<string, unknown>;
+      } | undefined;
+      expect(listedExec?.annotations?.readOnlyHint).toBeUndefined();
+      expect(listedExec?.annotations?.destructiveHint).toBeUndefined();
 
       const bound = await call("codex_bind_turn", { turn_token: token });
       const bindingId = (bound.structuredContent as { binding_id?: string } | undefined)?.binding_id;
       expect(bindingId).toStartWith("binding_");
       expect((bound.structuredContent as { execution: string }).execution).toBe("outer_codex_native");
       expect((bound.structuredContent as { outer_tool_gateway: string }).outer_tool_gateway).toBe("exec");
-      expect((bound.structuredContent as { command_tool: string }).command_tool).toBe("exec_command");
+      expect((bound.structuredContent as { command_tool: string | null }).command_tool).toBeNull();
+      expect((bound.structuredContent as { resumable_sessions: boolean }).resumable_sessions).toBe(false);
+      expect((bound.structuredContent as { continuation_tool: string | null }).continuation_tool).toBeNull();
+      expect((bound.structuredContent as { capabilities: string[] }).capabilities).not.toContain("resumable_exec_sessions");
 
       const inventory = await call("codex_tool_inventory", { binding_id: bindingId, query: "docs" });
       const discovered = (inventory.structuredContent as { tools: Array<{ wire_name: string }> }).tools;
@@ -1265,13 +1285,13 @@ test("every turn uploads one context file and reserves the tenth slot", () => {
       expect(execRequest).toMatchObject({ wireName: "exec", freeform: true });
       const pragma = execRequest?.input?.split("\n", 1)[0]?.replace("// @exec: ", "");
       expect(JSON.parse(pragma!)).toEqual({
-        ["yield" + "_time_ms"]: 1_000,
+        ["yield" + "_time_ms"]: 25_000,
         max_output_tokens: 40_000,
       });
-      expect(execRequest?.input).toContain('["exec_command", "shell_command"]');
+      expect(execRequest?.input).toContain('["shell_command", "exec_command"]');
       expect(execRequest?.input).toContain('typeof tools[name] === "function"');
       expect(execRequest?.input).toContain('command: commandInput.cmd');
-      expect(execRequest?.input).not.toContain('timeout_ms');
+      expect(execRequest?.input).toContain('timeout_ms: 20000');
       const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
       const generated = new AsyncFunction(
         "tools",
@@ -1295,7 +1315,7 @@ test("every turn uploads one context file and reserves the tenth slot", () => {
         () => {},
         () => {},
       );
-      expect(shellArguments).toEqual({ command: "pwd", workdir: tempRoot });
+      expect(shellArguments).toEqual({ command: "pwd", workdir: tempRoot, timeout_ms: 20_000 });
       expect(shellOutput).toEqual(["shell-ok"]);
       let execArguments: unknown;
       await generated(
@@ -1303,9 +1323,6 @@ test("every turn uploads one context file and reserves the tenth slot", () => {
           exec_command: async (args: unknown) => {
             execArguments = args;
             return "exec-ok";
-          },
-          shell_command: async () => {
-            throw new Error("exec_command should be preferred");
           },
         },
         () => {},
@@ -1316,9 +1333,37 @@ test("every turn uploads one context file and reserves the tenth slot", () => {
       expect(execArguments).toEqual({
         cmd: "pwd",
         workdir: tempRoot,
-        ["yield" + "_time_ms"]: 1_000,
         max_output_tokens: 40_000,
       });
+      await expect(generated(
+        { shell_command: async () => ({ session_id: 7 }) },
+        () => {},
+        () => {},
+        () => {},
+        () => {},
+      )).rejects.toThrow("cannot return a resumable session");
+      const generatedWithImmediateTimer = new AsyncFunction(
+        "tools",
+        "text",
+        "image",
+        "audio",
+        "generatedImage",
+        "setTimeout",
+        "clearTimeout",
+        execRequest!.input!,
+      );
+      await expect(generatedWithImmediateTimer(
+        { shell_command: async () => new Promise(() => {}) },
+        () => {},
+        () => {},
+        () => {},
+        () => {},
+        (callback: () => void) => {
+          queueMicrotask(callback);
+          return 1;
+        },
+        () => {},
+      )).rejects.toThrow("Gateway-only command execution timed out after 20000ms");
       await expect(generated(
         {},
         () => {},
@@ -1329,38 +1374,26 @@ test("every turn uploads one context file and reserves the tenth slot", () => {
       broker.completeTool(token, execRequest!.callId, toolResult({ output: tempRoot, exit_code: 0 }));
       expect((await execPromise).structuredContent).toEqual({ output: tempRoot, exit_code: 0 });
 
-      const ttyPromise = call("codex_exec", {
+      const ttyResult = await call("codex_exec", {
         binding_id: bindingId,
         cmd: "interactive",
         workdir: tempRoot,
         tty: true,
       });
-      const [ttyRequest] = await broker.nextToolBatch(token);
-      expect(ttyRequest).toMatchObject({ wireName: "exec", freeform: true });
-      const ttyGenerated = new AsyncFunction(
-        "tools",
-        "text",
-        "image",
-        "audio",
-        "generatedImage",
-        ttyRequest!.input!,
-      );
-      let ttyShellCalls = 0;
-      await expect(ttyGenerated(
-        {
-          shell_command: async () => {
-            ttyShellCalls += 1;
-            return "unreachable";
-          },
-        },
-        () => {},
-        () => {},
-        () => {},
-        () => {},
-      )).rejects.toThrow("shell_command fallback does not support tty or resumable sessions");
-      expect(ttyShellCalls).toBe(0);
-      broker.completeTool(token, ttyRequest!.callId, toolResult({ output: "not-run", exit_code: 1 }));
-      await ttyPromise;
+      expect(ttyResult.isError).toBe(true);
+      expect(ttyResult.content).toContainEqual({
+        type: "text",
+        text: "Gateway-only command execution does not support tty or resumable sessions",
+      });
+      const writeResult = await call("codex_write_stdin", {
+        binding_id: bindingId,
+        session_id: 1,
+      });
+      expect(writeResult.isError).toBe(true);
+      expect(writeResult.content).toContainEqual({
+        type: "text",
+        text: "This Codex turn does not support resumable command sessions because write_stdin is unavailable",
+      });
 
       const patchText = "*** Begin Patch\n*** Add File: test.txt\n+ok\n*** End Patch";
       const patchPromise = call("codex_apply_patch", { binding_id: bindingId, patch: patchText });
@@ -1376,13 +1409,116 @@ test("every turn uploads one context file and reserves the tenth slot", () => {
         arguments: { query: "Responses API" },
       });
       const [docsRequest] = await broker.nextToolBatch(token);
-      expect(docsRequest).toMatchObject({ wireName: "exec", freeform: true });
-      expect(docsRequest?.input).toContain('tools["mcp__openaiDeveloperDocs__search_openai_docs"]({"query":"Responses API"})');
+      expect(docsRequest).toMatchObject({
+        wireName: "mcp__openaiDeveloperDocs__search_openai_docs",
+        freeform: false,
+        arguments: { query: "Responses API" },
+      });
       broker.completeTool(token, docsRequest!.callId, toolResult({ hits: 3 }));
       expect((await docsPromise).structuredContent).toEqual({ hits: 3 });
+
+      const directBound = await call("codex_bind_turn", { turn_token: directToken });
+      const directBindingId = (directBound.structuredContent as { binding_id: string }).binding_id;
+      expect((directBound.structuredContent as { command_tool: string }).command_tool).toBe("exec_command");
+      expect((directBound.structuredContent as { outer_tool_gateway: string }).outer_tool_gateway).toBe("exec");
+      expect((directBound.structuredContent as { resumable_sessions: boolean }).resumable_sessions).toBe(true);
+      expect((directBound.structuredContent as { continuation_tool: string }).continuation_tool).toBe("write_stdin");
+      expect((directBound.structuredContent as { capabilities: string[] }).capabilities).toContain("resumable_exec_sessions");
+
+      const directExecPromise = call("codex_exec", {
+        binding_id: directBindingId,
+        cmd: "pwd",
+        workdir: tempRoot,
+        yield_time_ms: 1_000,
+      });
+      const [directExecRequest] = await broker.nextToolBatch(directToken);
+      expect(directExecRequest).toMatchObject({
+        wireName: "exec_command",
+        freeform: false,
+        arguments: { cmd: "pwd", workdir: tempRoot, yield_time_ms: 1_000 },
+      });
+      broker.completeTool(directToken, directExecRequest!.callId, toolResult({ output: tempRoot, exit_code: 0 }));
+      await directExecPromise;
+
+      const directWritePromise = call("codex_write_stdin", {
+        binding_id: directBindingId,
+        session_id: 42,
+        chars: "x",
+        yield_time_ms: 1_000,
+      });
+      const [directWriteRequest] = await broker.nextToolBatch(directToken);
+      expect(directWriteRequest).toMatchObject({
+        wireName: "write_stdin",
+        freeform: false,
+        arguments: { session_id: 42, chars: "x", yield_time_ms: 1_000 },
+      });
+      broker.completeTool(directToken, directWriteRequest!.callId, toolResult({ output: "continued" }));
+      await directWritePromise;
+
+      const directWithoutContinuationBound = await call("codex_bind_turn", { turn_token: directWithoutContinuationToken });
+      const directWithoutContinuationBindingId = (directWithoutContinuationBound.structuredContent as { binding_id: string }).binding_id;
+      expect((directWithoutContinuationBound.structuredContent as { command_tool: string | null }).command_tool).toBeNull();
+      expect((directWithoutContinuationBound.structuredContent as { outer_tool_gateway: string }).outer_tool_gateway).toBe("exec");
+      expect((directWithoutContinuationBound.structuredContent as { resumable_sessions: boolean }).resumable_sessions).toBe(false);
+      expect((directWithoutContinuationBound.structuredContent as { capabilities: string[] }).capabilities).not.toContain("resumable_exec_sessions");
+      const directWithoutContinuationExec = call("codex_exec", {
+        binding_id: directWithoutContinuationBindingId,
+        cmd: "pwd",
+        workdir: tempRoot,
+        yield_time_ms: 250,
+      });
+      const [directWithoutContinuationRequest] = await broker.nextToolBatch(directWithoutContinuationToken);
+      expect(directWithoutContinuationRequest).toMatchObject({ wireName: "exec", freeform: true });
+      expect(directWithoutContinuationRequest?.input).toContain('["shell_command", "exec_command"]');
+      broker.completeTool(directWithoutContinuationToken, directWithoutContinuationRequest!.callId, toolResult({ output: tempRoot, exit_code: 0 }));
+      await directWithoutContinuationExec;
+
+      const directPatchPromise = call("codex_apply_patch", { binding_id: directBindingId, patch: patchText });
+      const [directPatchRequest] = await broker.nextToolBatch(directToken);
+      expect(directPatchRequest).toMatchObject({ wireName: "apply_patch", freeform: true, input: patchText });
+      broker.completeTool(directToken, directPatchRequest!.callId, toolResult({ applied: true }));
+      await directPatchPromise;
+
+      const directImagePromise = call("codex_view_image", {
+        binding_id: directBindingId,
+        path: `${tempRoot}/image.png`,
+        detail: "high",
+      });
+      const [directImageRequest] = await broker.nextToolBatch(directToken);
+      expect(directImageRequest).toMatchObject({
+        wireName: "view_image",
+        freeform: false,
+        arguments: { path: `${tempRoot}/image.png`, detail: "high" },
+      });
+      broker.completeTool(directToken, directImageRequest!.callId, toolResult({ viewed: true }));
+      await directImagePromise;
+
+      const shellBound = await call("codex_bind_turn", { turn_token: shellToken });
+      const shellBindingId = (shellBound.structuredContent as { binding_id: string }).binding_id;
+      expect((shellBound.structuredContent as { command_tool: string }).command_tool).toBe("shell_command");
+      expect((shellBound.structuredContent as { outer_tool_gateway: string }).outer_tool_gateway).toBe("exec");
+      expect((shellBound.structuredContent as { resumable_sessions: boolean }).resumable_sessions).toBe(false);
+      expect((shellBound.structuredContent as { continuation_tool: string }).continuation_tool).toBe("write_stdin");
+      expect((shellBound.structuredContent as { capabilities: string[] }).capabilities).not.toContain("resumable_exec_sessions");
+      const shellExecPromise = call("codex_exec", {
+        binding_id: shellBindingId,
+        cmd: "pwd",
+        workdir: tempRoot,
+      });
+      const [shellExecRequest] = await broker.nextToolBatch(shellToken);
+      expect(shellExecRequest).toMatchObject({
+        wireName: "shell_command",
+        freeform: false,
+        arguments: { command: "pwd", workdir: tempRoot },
+      });
+      broker.completeTool(shellToken, shellExecRequest!.callId, toolResult({ output: tempRoot, exit_code: 0 }));
+      await shellExecPromise;
     } finally {
       await client.close().catch(() => {});
       broker.revoke(token);
+      broker.revoke(directToken);
+      broker.revoke(directWithoutContinuationToken);
+      broker.revoke(shellToken);
       await broker.close();
     }
   }, 30_000);

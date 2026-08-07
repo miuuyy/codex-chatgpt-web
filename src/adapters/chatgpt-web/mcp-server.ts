@@ -17,6 +17,15 @@ interface ResolvedTurn {
 
 const bindingSchema = z.string().min(20).max(256).describe("Opaque binding_id returned by codex_bind_turn.");
 const jsonArgumentsSchema = z.record(z.string(), z.unknown()).default({});
+const DEFAULT_COMMAND_YIELD_MS = 10_000;
+const COMMAND_INVOCATION_GRACE_MS = 10_000;
+const BROKER_BACKSTOP_GRACE_MS = 5_000;
+const GATEWAY_COMMAND_TIMEOUT_MS = 20_000;
+const GATEWAY_OUTER_YIELD_MS = GATEWAY_COMMAND_TIMEOUT_MS + 5_000;
+
+function commandInvocationTimeoutMs(yieldTimeMs = DEFAULT_COMMAND_YIELD_MS): number {
+  return yieldTimeMs + COMMAND_INVOCATION_GRACE_MS;
+}
 
 function scopeHash(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);
@@ -103,9 +112,8 @@ function execGatewayProgram(
     : null;
   const outerControls: Record<string, unknown> = {};
   if (commandInput) {
-    for (const key of ["yield" + "_time_ms", "max_output_tokens"]) {
-      if (Object.hasOwn(commandInput, key)) outerControls[key] = commandInput[key];
-    }
+    outerControls["yield" + "_time_ms"] = GATEWAY_OUTER_YIELD_MS;
+    if (Object.hasOwn(commandInput, "max_output_tokens")) outerControls.max_output_tokens = commandInput.max_output_tokens;
   }
   const invocation = commandInput
     ? [
@@ -113,19 +121,33 @@ function execGatewayProgram(
           ? [`// @exec: ${JSON.stringify(outerControls)}`]
           : []),
         `const commandInput = ${JSON.stringify(commandInput)};`,
-        'const commandName = ["exec_command", "shell_command"]',
+        'if (commandInput.tty === true) {',
+        '  throw new Error("Gateway-only command execution does not support tty or resumable sessions");',
+        '}',
+        'const commandName = ["shell_command", "exec_command"]',
         '  .find(name => typeof tools[name] === "function");',
         'if (!commandName) throw new Error("No compatible callable command tool");',
-        'if (commandName === "shell_command" && commandInput.tty === true) {',
-        '  throw new Error("shell_command fallback does not support tty or resumable sessions");',
-        '}',
         'const commandArguments = commandName === "shell_command"',
         '  ? {',
         '      command: commandInput.cmd,',
         '      ...(typeof commandInput.workdir === "string" ? { workdir: commandInput.workdir } : {}),',
+        `      timeout_ms: ${GATEWAY_COMMAND_TIMEOUT_MS},`,
         '    }',
-        '  : commandInput;',
-        'const result = await tools[commandName](commandArguments);',
+        '  : {',
+        '      cmd: commandInput.cmd,',
+        '      ...(typeof commandInput.workdir === "string" ? { workdir: commandInput.workdir } : {}),',
+        '      ...(typeof commandInput.max_output_tokens === "number" ? { max_output_tokens: commandInput.max_output_tokens } : {}),',
+        '    };',
+        'let commandTimer;',
+        'const result = await Promise.race([',
+        '  tools[commandName](commandArguments),',
+        '  new Promise((_, reject) => {',
+        `    commandTimer = setTimeout(() => reject(new Error("Gateway-only command execution timed out after ${GATEWAY_COMMAND_TIMEOUT_MS}ms")), ${GATEWAY_COMMAND_TIMEOUT_MS});`,
+        '  }),',
+        ']).finally(() => clearTimeout(commandTimer));',
+        'if (result && typeof result === "object" && ("session_id" in result || "sessionId" in result)) {',
+        '  throw new Error("Gateway-only command execution cannot return a resumable session because write_stdin is unavailable");',
+        '}',
       ]
     : [
         `const result = await tools[${JSON.stringify(gatewayNestedToolName(nestedToolName))}](${JSON.stringify(nestedInput)});`,
@@ -162,6 +184,7 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
     bound: ChatGptTurnEnvironment,
     tool: CodexTool,
     payload: { arguments?: Record<string, unknown>; input?: string },
+    invocationTimeoutMs?: number,
   ) => {
     const response = await callTurnBroker<BrokerToolResult>(options.brokerSocketPath, {
       method: "invoke",
@@ -169,7 +192,8 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
       wireName: wireName(tool),
       freeform: tool.freeform === true,
       ...(tool.freeform ? { input: payload.input ?? "" } : { arguments: payload.arguments ?? {} }),
-    }, null);
+      ...(invocationTimeoutMs !== undefined ? { invocationTimeoutMs } : {}),
+    }, invocationTimeoutMs !== undefined ? invocationTimeoutMs + BROKER_BACKSTOP_GRACE_MS : null);
     return asMcpResult(response);
   };
 
@@ -179,10 +203,7 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
     tool: CodexTool,
     payload: { arguments?: Record<string, unknown>; input?: string },
   ) => {
-    const gateway = execGateway(bound);
-    return gateway && gateway !== tool
-      ? invoke(bindingId, bound, gateway, { input: execGatewayProgram(wireName(tool), tool.freeform === true, payload) })
-      : invoke(bindingId, bound, tool, payload);
+    return invoke(bindingId, bound, tool, payload);
   };
 
   const invokeNestedNative = (
@@ -212,8 +233,12 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
     async ({ turn_token }, extra) => {
       console.error(`[chatgpt-web-mcp] codex_bind_turn scope=${requestScopeSummary(extra)}`);
       const claimed = await callTurnBroker<ClaimedTurn>(options.brokerSocketPath, { method: "claim", token: turn_token });
-      const commandTool = exactTool(claimed.environment, "exec_command") ?? exactTool(claimed.environment, "shell_command");
+      const execCommandTool = exactTool(claimed.environment, "exec_command");
+      const shellCommandTool = exactTool(claimed.environment, "shell_command");
+      const continuationTool = exactTool(claimed.environment, "write_stdin");
       const gateway = execGateway(claimed.environment);
+      const resumableSessions = Boolean(execCommandTool && continuationTool);
+      const commandTool = resumableSessions ? execCommandTool : shellCommandTool;
       return result({
         binding_id: claimed.bindingId,
         harness_version: 3,
@@ -223,9 +248,19 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
         writable_roots: claimed.environment.writableRoots,
         sandbox: claimed.environment.sandboxPolicy.type,
         tool_count: claimed.environment.tools.length,
-        command_tool: commandTool ? wireName(commandTool) : gateway ? "exec_command" : null,
+        command_tool: commandTool ? wireName(commandTool) : null,
         outer_tool_gateway: gateway ? wireName(gateway) : null,
-        capabilities: ["native_tool_loop", "session_history", "exec", "apply_patch", "images", "tool_registry"],
+        resumable_sessions: resumableSessions,
+        continuation_tool: continuationTool ? wireName(continuationTool) : null,
+        capabilities: [
+          "native_tool_loop",
+          "session_history",
+          ...((commandTool || gateway) ? ["exec"] : []),
+          "apply_patch",
+          "images",
+          "tool_registry",
+          ...(resumableSessions ? ["resumable_exec_sessions"] : []),
+        ],
       });
     },
   );
@@ -234,7 +269,7 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
     "codex_exec",
     {
       title: "Run a native Codex command",
-      description: "Invoke the command tool advertised by the current outer Codex harness. A long-running command returns its native session_id.",
+      description: "Invoke the command tool advertised by the current outer Codex harness. Long-running sessions are resumable only when codex_bind_turn advertises write_stdin support.",
       inputSchema: {
         binding_id: bindingSchema,
         cmd: z.string().min(1).max(100_000),
@@ -243,12 +278,14 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
         max_output_tokens: z.number().int().min(1).max(1_000_000).optional(),
         tty: z.boolean().optional(),
       },
-      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+      annotations: { idempotentHint: false, openWorldHint: false },
     },
     async ({ binding_id, cmd, workdir, yield_time_ms, max_output_tokens, tty }, extra) => {
       console.error(`[chatgpt-web-mcp] codex_exec scope=${requestScopeSummary(extra)}`);
       const bound = await environment(binding_id);
-      const tool = exactTool(bound, "exec_command") ?? exactTool(bound, "shell_command");
+      const execCommand = exactTool(bound, "exec_command");
+      const shellCommand = exactTool(bound, "shell_command");
+      const continuationTool = exactTool(bound, "write_stdin");
       const gateway = execGateway(bound);
       const logicalArgs = {
         cmd,
@@ -257,26 +294,28 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
         ...(max_output_tokens !== undefined ? { max_output_tokens } : {}),
         ...(tty !== undefined ? { tty } : {}),
       };
+      if (execCommand && continuationTool) {
+        return invoke(binding_id, bound, execCommand, { arguments: logicalArgs }, commandInvocationTimeoutMs(yield_time_ms));
+      }
+      if (shellCommand) {
+        if (tty === true) throw new Error("shell_command does not support tty or resumable sessions");
+        return invoke(binding_id, bound, shellCommand, { arguments: {
+          command: cmd,
+          ...(workdir ? { workdir } : {}),
+        } }, commandInvocationTimeoutMs(Math.max(yield_time_ms ?? 0, GATEWAY_COMMAND_TIMEOUT_MS)));
+      }
       if (gateway) {
+        if (tty === true) {
+          throw new Error("Gateway-only command execution does not support tty or resumable sessions");
+        }
         return invoke(binding_id, bound, gateway, {
           input: execGatewayProgram("exec_command", false, { arguments: logicalArgs }),
-        });
+        }, commandInvocationTimeoutMs(GATEWAY_OUTER_YIELD_MS));
       }
-      if (!tool) {
-        throw new Error("This Codex turn did not advertise a compatible command tool or the native exec gateway");
+      if (execCommand) {
+        throw new Error("This Codex turn advertises exec_command without write_stdin and no bounded non-resumable command fallback is available");
       }
-      if (tool.name === "shell_command" && tty === true) {
-        throw new Error("shell_command does not support tty or resumable sessions");
-      }
-      const args = tool.name === "exec_command"
-        ? {
-            ...logicalArgs,
-          }
-        : {
-            command: cmd,
-            ...(workdir ? { workdir } : {}),
-          };
-      return invoke(binding_id, bound, tool, { arguments: args });
+      throw new Error("This Codex turn did not advertise a compatible command tool or the native exec gateway");
     },
   );
 
@@ -297,15 +336,16 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
     async ({ binding_id, session_id, chars, yield_time_ms, max_output_tokens }) => {
       const bound = await environment(binding_id);
       const tool = exactTool(bound, "write_stdin");
+      if (!tool) {
+        throw new Error("This Codex turn does not support resumable command sessions because write_stdin is unavailable");
+      }
       const payload = { arguments: {
         session_id,
         ...(chars !== undefined ? { chars } : {}),
         ...(yield_time_ms !== undefined ? { yield_time_ms } : {}),
         ...(max_output_tokens !== undefined ? { max_output_tokens } : {}),
       } };
-      return tool
-        ? invokeNative(binding_id, bound, tool, payload)
-        : invokeNestedNative(binding_id, bound, "write_stdin", false, payload);
+      return invoke(binding_id, bound, tool, payload, commandInvocationTimeoutMs(yield_time_ms));
     },
   );
 
