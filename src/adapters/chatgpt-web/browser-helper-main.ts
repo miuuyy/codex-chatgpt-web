@@ -6,6 +6,7 @@ import type { ChatGptWebCapabilities } from "./model";
 import { validateBrowserHelperPreparedPrompt } from "./browser-helper-prompt";
 import { createProcessLineWriter } from "./process-line-writer";
 import type { CompiledChatGptWebPrompt } from "./prompt";
+import { isChatGptCapacityError } from "./capacity-error";
 import { isChatGptTransientLimitError } from "./transient-limit-error";
 
 interface RunMessage {
@@ -60,6 +61,9 @@ const writeProtocolError = (id: string, error: unknown): void => {
       code: error.code,
       stage: error.stage,
       dismissals: error.dismissals,
+    } : isChatGptCapacityError(error) ? {
+      code: error.code,
+      stage: error.stage,
     } : {}),
   });
 };

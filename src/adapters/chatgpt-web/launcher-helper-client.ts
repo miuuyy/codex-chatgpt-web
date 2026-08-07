@@ -6,6 +6,10 @@ import { notifyLauncherTurn, readLauncherBrowserHostDescriptor } from "../../lau
 import type { CompiledChatGptWebPrompt } from "./prompt";
 import type { BrowserTurn, ResolvedBrowserConfig } from "./browser-worker";
 import {
+  CHATGPT_CAPACITY_ERROR_CODE,
+  ChatGptCapacityError,
+} from "./capacity-error";
+import {
   CHATGPT_TRANSIENT_LIMIT_ERROR_CODE,
   ChatGptTransientLimitError,
 } from "./transient-limit-error";
@@ -37,7 +41,7 @@ type HelperMessage =
     id: string;
     name?: string;
     message: string;
-    code?: typeof CHATGPT_TRANSIENT_LIMIT_ERROR_CODE;
+    code?: typeof CHATGPT_TRANSIENT_LIMIT_ERROR_CODE | typeof CHATGPT_CAPACITY_ERROR_CODE;
     stage?: string;
     dismissals?: number;
   };
@@ -106,6 +110,19 @@ export function parseLauncherBrowserHelperMessage(line: string): HelperMessage {
         code: CHATGPT_TRANSIENT_LIMIT_ERROR_CODE,
         stage,
         dismissals: dismissals as number,
+      };
+    }
+    if (errorCode === CHATGPT_CAPACITY_ERROR_CODE) {
+      if (typeof stage !== "string" || stage.trim().length === 0 || dismissals !== undefined) {
+        throw new Error("Launcher browser helper capacity payload is invalid");
+      }
+      return {
+        type: "error",
+        id: message.id,
+        message: errorMessage,
+        ...(errorName !== undefined ? { name: errorName as string } : {}),
+        code: CHATGPT_CAPACITY_ERROR_CODE,
+        stage,
       };
     }
     if (stage !== undefined || dismissals !== undefined) {
@@ -398,9 +415,11 @@ export class LauncherBrowserHelperClient {
     } else if (message.type === "error") {
       const error = message.code === CHATGPT_TRANSIENT_LIMIT_ERROR_CODE
         ? new ChatGptTransientLimitError(message.stage!, message.dismissals!)
-        : message.name === "AbortError"
-          ? new DOMException(message.message, "AbortError")
-          : new Error(message.message);
+        : message.code === CHATGPT_CAPACITY_ERROR_CODE
+          ? new ChatGptCapacityError(message.stage!)
+          : message.name === "AbortError"
+            ? new DOMException(message.message, "AbortError")
+            : new Error(message.message);
       this.finish(message.id);
       pending.reject(error);
     }

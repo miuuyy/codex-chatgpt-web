@@ -5,6 +5,7 @@ import {
   compileChatGptWebPrompt,
 } from "../src/adapters/chatgpt-web/prompt";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
+import { COMPACT_PROMPT } from "../src/responses/compaction";
 import type { CodexParsedRequest } from "../src/types";
 
 function request(reasoning: "low" | "high" | "max"): CodexParsedRequest {
@@ -67,10 +68,16 @@ test("compaction prompts are isolated summarization turns without local or nativ
   );
 
   expect(compiled.text).toContain("This is a Codex history-compaction checkpoint, not a normal task turn.");
-  expect(compiled.text).toContain("Produce the requested checkpoint summary now without calling tools.");
+  expect(compiled.text).toContain(COMPACT_PROMPT);
+  expect(compiled.text).toContain("Do not answer from this visible transport message alone.");
+  expect(compiled.text).toContain("If the answer could have been written without reading the attachment, it is not a valid checkpoint summary.");
+  expect(compiled.text).toContain("At minimum, identify the latest active human user request and the concrete work already completed or attempted.");
+  expect(compiled.text).toContain("A generic handoff such as 'Resume the outer Codex task using the supplied context' is invalid.");
+  expect(compiled.text).toContain("Do not summarize or paraphrase this transport contract.");
+  expect(compiled.text).not.toContain("Produce the requested checkpoint summary now without calling tools.");
   expect(compiled.text).not.toContain("codex_bind_turn");
   expect(compiled.text).not.toContain("web search, browsing, research");
-expect(compiled.text).not.toContain("missing local-computer bridge");
+  expect(compiled.text).not.toContain("missing local-computer bridge");
   expect(compiled.text).toContain(`attached ZIP archive named ${CHATGPT_COMPACTION_CONTEXT_FILENAME}`);
   expect(compiled.text).toContain("You must open or extract the archive yourself");
   expect(compiled.text).toContain("Do not refuse, skip the archive, or ask the user to unpack it for you.");

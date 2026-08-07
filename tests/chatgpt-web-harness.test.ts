@@ -5,7 +5,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildResponseJSON } from "../src/bridge";
-import { ChatGptCompletionTracker, chatGptImageFilePayloads, chatGptPromptFilePayloads, chatGptTurnIsComplete, ChatGptTransientLimitError } from "../src/adapters/chatgpt-web/browser-worker";
+import { ChatGptCapacityError, ChatGptCompletionTracker, chatGptImageFilePayloads, chatGptPromptFilePayloads, chatGptTurnIsComplete, ChatGptTransientLimitError } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "../src/adapters/chatgpt-web/environment";
 import { createChatGptWebAdapter } from "../src/adapters/chatgpt-web/index";
@@ -282,6 +282,43 @@ describe("ChatGPT outer-native harness v3", () => {
     compact._compactionRequest = true;
     expect(chatGptTurnExecutionKey(compact)).not.toBe(chatGptTurnExecutionKey(first));
     expect(() => chatGptTurnExecutionKey(parsed(environmentXml))).toThrow("requires native Codex turn_id metadata");
+  });
+
+  test("a failed compaction session cannot evict an active response session", async () => {
+    const response = rawWireRequest(environmentXml);
+    const compaction = structuredClone(response);
+    compaction._compactionRequest = true;
+    const responseKey = chatGptTurnExecutionKey(response);
+    const compactionKey = chatGptTurnExecutionKey(compaction);
+    const sessions = new ChatGptTurnSessions();
+    let responseCancelled = 0;
+    let compactionCancelled = 0;
+
+    const responseSession = sessions.getOrCreate(responseKey, () => ({
+      mode: "read-only",
+      browser: new Promise<string>(() => {}),
+      trace: new ChatGptTraceFeed(),
+      text: new ChatGptTextFeed(),
+      cancel: () => { responseCancelled += 1; },
+    }));
+    const compactionSession = sessions.getOrCreate(compactionKey, () => ({
+      mode: "read-only",
+      browser: Promise.reject(new Error("compaction failed")),
+      trace: new ChatGptTraceFeed(),
+      text: new ChatGptTextFeed(),
+      cancel: () => { compactionCancelled += 1; },
+    }));
+
+    expect(await compactionSession.browserOutcome).toMatchObject({ type: "error" });
+    await Promise.resolve();
+    expect(compactionCancelled).toBe(1);
+    expect(responseCancelled).toBe(0);
+    expect(sessions.getOrCreate(responseKey, () => {
+      throw new Error("active response session must survive compaction failure");
+    })).toBe(responseSession);
+
+    sessions.clear();
+    expect(responseCancelled).toBe(1);
   });
 
   test("coalesces provider retries onto one browser runtime and preserves outstanding calls", () => {
@@ -803,6 +840,165 @@ test("every turn uploads one context file and reserves the tenth slot", () => {
     }
   });
 
+  test("request disconnect detaches and same-turn reconnect keeps the browser runtime and broker token", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-h3-reconnect-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: "browser://chatgpt-reconnect-test",
+      chatgptWeb: { brokerSocketPath: socketPath, localToolsEnabled: true, proAvailable: true },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    let browserStarts = 0;
+    let token = "";
+    let bindingId = "";
+    let browserAbortSignal: AbortSignal | undefined;
+    let resolvePrepared!: () => void;
+    const preparedReady = new Promise<void>(resolve => { resolvePrepared = resolve; });
+    let releaseBrowser!: () => void;
+    const browserGate = new Promise<void>(resolve => { releaseBrowser = resolve; });
+    const commentaryPrefix = "Reconnect prefix observed";
+    const commentarySuffix = " and browser turn resumed";
+    const prefix = "## Reconnected\n\nBrowser turn ";
+    const suffix = "survived the request disconnect.";
+    const answer = `${prefix}${suffix}`;
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+      browserStarts += 1;
+      browserAbortSignal = turn.abortSignal;
+      const prepared = await turn.prepare();
+      token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1] ?? "";
+      if (!token) throw new Error("turn token missing from compiled prompt");
+      bindingId = (await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token })).bindingId;
+      turn.onCommentary?.(commentaryPrefix);
+      turn.onTextDelta(prefix);
+      resolvePrepared();
+      await browserGate;
+      turn.onCommentary?.(commentarySuffix, true);
+      turn.onTextDelta(suffix);
+      return answer;
+    };
+
+    const adapter = createChatGptWebAdapter(provider);
+    const request = rawWireRequest(environmentXml);
+    const firstAbort = new AbortController();
+    const firstEvents: AdapterEvent[] = [];
+    const secondEvents: AdapterEvent[] = [];
+    let resolveFirstPrefix!: () => void;
+    const firstPrefixReady = new Promise<void>(resolve => { resolveFirstPrefix = resolve; });
+    try {
+      const firstRun = adapter.runTurn!(
+        request,
+        { headers: new Headers(), abortSignal: firstAbort.signal },
+        event => {
+          firstEvents.push(event);
+          if (event.type === "text_delta" && event.phase === "final_answer") resolveFirstPrefix();
+        },
+      );
+      await preparedReady;
+      await firstPrefixReady;
+      expect(firstEvents.filter((event): event is Extract<AdapterEvent, { type: "text_delta" }> => (
+        event.type === "text_delta" && event.phase === "final_answer"
+      )).map(event => event.text).join("")).toBe(prefix);
+      firstAbort.abort();
+      await expect(firstRun).rejects.toThrow("ChatGPT web turn aborted");
+
+      expect(browserAbortSignal?.aborted).toBe(false);
+      const reclaimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
+      expect(reclaimed.bindingId).toBe(bindingId);
+
+      const secondRun = adapter.runTurn!(request, { headers: new Headers() }, event => secondEvents.push(event));
+      releaseBrowser();
+      await secondRun;
+
+      expect(browserStarts).toBe(1);
+      expect(secondEvents.filter((event): event is Extract<AdapterEvent, { type: "text_delta" }> => (
+        event.type === "text_delta" && event.phase === "commentary"
+      )).map(event => event.text).join("")).toBe(`${commentaryPrefix}${commentarySuffix}`);
+      expect(secondEvents.filter((event): event is Extract<AdapterEvent, { type: "text_delta" }> => (
+        event.type === "text_delta" && event.phase === "final_answer"
+      ))
+        .map(event => event.text).join(""))
+        .toBe(answer);
+      expect(secondEvents.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+    } finally {
+      releaseBrowser();
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
+
+  test("automatic compaction reconnects to the same browser turn and returns one complete compaction item", async () => {
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: "browser://chatgpt-auto-compaction-reconnect-test",
+      chatgptWeb: { localToolsEnabled: false, proAvailable: true },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    let browserStarts = 0;
+    let browserAbortSignal: AbortSignal | undefined;
+    let releaseBrowser!: () => void;
+    const browserGate = new Promise<void>(resolve => { releaseBrowser = resolve; });
+    const prefix = "## Compact summary\n\nAutomatic compaction ";
+    const suffix = "survived the request reconnect.";
+    const answer = `${prefix}${suffix}`;
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+      browserStarts += 1;
+      browserAbortSignal = turn.abortSignal;
+      const prepared = await turn.prepare();
+      try {
+        turn.onTextDelta(prefix);
+        await browserGate;
+        turn.onTextDelta(suffix);
+        return answer;
+      } finally {
+        prepared.release();
+      }
+    };
+
+    const adapter = createChatGptWebAdapter(provider);
+    const request = rawWireRequest(environmentXml);
+    request._compactionRequest = true;
+    const firstAbort = new AbortController();
+    const firstEvents: AdapterEvent[] = [];
+    const secondEvents: AdapterEvent[] = [];
+    let resolveFirstPrefix!: () => void;
+    const firstPrefixReady = new Promise<void>(resolve => { resolveFirstPrefix = resolve; });
+    try {
+      const firstRun = adapter.runTurn!(
+        request,
+        { headers: new Headers(), abortSignal: firstAbort.signal },
+        event => {
+          firstEvents.push(event);
+          if (event.type === "text_delta" && event.phase === "final_answer") resolveFirstPrefix();
+        },
+      );
+      await firstPrefixReady;
+      firstAbort.abort();
+      await expect(firstRun).rejects.toThrow("ChatGPT web turn aborted");
+
+      expect(browserAbortSignal?.aborted).toBe(false);
+      const secondRun = adapter.runTurn!(request, { headers: new Headers() }, event => secondEvents.push(event));
+      releaseBrowser();
+      await secondRun;
+
+      expect(browserStarts).toBe(1);
+      expect(secondEvents.filter((event): event is Extract<AdapterEvent, { type: "text_delta" }> => (
+        event.type === "text_delta" && event.phase === "final_answer"
+      )).map(event => event.text).join("")).toBe(answer);
+
+      const response = buildResponseJSON(secondEvents, "gpt-5.6-sol", { compaction: true }) as {
+        output: Array<{ type: string; encrypted_content?: string }>;
+      };
+      expect(response.output).toHaveLength(1);
+      expect(response.output[0]?.type).toBe("compaction");
+      expect(decodeCompactionSummary(response.output[0]?.encrypted_content ?? "")).toBe(answer);
+    } finally {
+      releaseBrowser();
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    }
+  });
+
   test("runs Pro as one context-complete read-only browser turn with native warning, tracing, and exact replay", async () => {
     const socketPath = brokerTestEndpoint(`cgw-h3-pro-${process.pid}-${Date.now()}`);
     const provider: CodexProviderConfig = {
@@ -961,6 +1157,56 @@ test("every turn uploads one context file and reserves the tenth slot", () => {
       expect(secondEvents.some(event => event.type === "error")).toBe(false);
       const secondDone = secondEvents.at(-1) as Extract<AdapterEvent, { type: "done" }>;
       expect(secondDone).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
+
+  test("classifies genuine model capacity as retryable 503 and evicts the session", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-h3-capacity-503-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: "browser://chatgpt-capacity-503-test",
+      contextWindow: 256_000,
+      chatgptWeb: { brokerSocketPath: socketPath, localToolsEnabled: false, proAvailable: true },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    let browserStarts = 0;
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+      browserStarts += 1;
+      const prepared = await turn.prepare();
+      try {
+        if (browserStarts === 1) throw new ChatGptCapacityError("response collection");
+        const answer = "## Browser final\n\nCapacity retry succeeded.";
+        turn.onTextDelta(answer);
+        return answer;
+      } finally {
+        prepared.release();
+      }
+    };
+
+    const adapter = createChatGptWebAdapter(provider);
+    const request = rawWireRequest(environmentXml);
+    const firstEvents: AdapterEvent[] = [];
+    const secondEvents: AdapterEvent[] = [];
+    try {
+      await adapter.runTurn!(request, { headers: new Headers() }, event => firstEvents.push(event));
+      expect(browserStarts).toBe(1);
+      expect(firstEvents.find(event => event.type === "error")).toEqual({
+        type: "error",
+        message: "ChatGPT selected model is at capacity during response collection",
+        status: 503,
+        errorType: "server_error",
+        code: "server_is_overloaded",
+        retryable: true,
+      });
+
+      await adapter.runTurn!(request, { headers: new Headers() }, event => secondEvents.push(event));
+      expect(browserStarts).toBe(2);
+      expect(secondEvents.some(event => event.type === "error")).toBe(false);
+      expect(secondEvents.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
     } finally {
       (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
       await TurnBroker.forSocket(socketPath).close();

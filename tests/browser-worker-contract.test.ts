@@ -992,7 +992,7 @@ test("transient dialog recognition accepts the observed unfocused single-action 
   }
 });
 
-test("transient dialog recognition rejects an unrelated focused single-action dialog", async () => {
+test("transient dialog recognition rejects unrelated and capacity single-action dialogs", async () => {
   const inspectTransientLimitDialog = (ChatGptBrowserWorker.prototype as unknown as {
     inspectTransientLimitDialog(page: unknown): Promise<{ kind: string; diagnostic?: string }>;
   }).inspectTransientLimitDialog;
@@ -1039,6 +1039,15 @@ test("transient dialog recognition rejects an unrelated focused single-action di
     expect(result.kind).toBe("ambiguous");
     expect(result.diagnostic).toContain('"activeOnOnlyButton":true');
     expect(result.diagnostic).toContain('"rateLimitText":false');
+
+    dialog.innerText = "Selected model is at capacity. Please try a different model.";
+    const capacityResult = await inspectTransientLimitDialog.call({
+      locator: () => dialogLocator,
+    }, {
+      locator: () => dialogLocator,
+    });
+    expect(capacityResult.kind).toBe("ambiguous");
+    expect(capacityResult.diagnostic).toContain('"rateLimitText":false');
   } finally {
     for (const [name, descriptor] of Object.entries(saved)) {
       if (descriptor) Object.defineProperty(globalThis, name, descriptor);

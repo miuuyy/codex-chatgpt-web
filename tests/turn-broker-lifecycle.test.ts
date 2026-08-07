@@ -115,6 +115,94 @@ test("settled replay retention stays bounded without limiting active turns", asy
   sessions.clear();
 });
 
+test("detached browser turns reattach during the reconnect grace window", async () => {
+  const sessions = new ChatGptTurnSessions(60_000, 256, 50);
+  let cancelled = 0;
+  let starts = 0;
+  const start = () => {
+    starts += 1;
+    return {
+      mode: "read-only" as const,
+      browser: new Promise<string>(() => {}),
+      trace: new ChatGptTraceFeed(),
+      text: new ChatGptTextFeed(),
+      cancel: () => { cancelled += 1; },
+    };
+  };
+
+  const first = sessions.getOrCreate("reattach", start);
+  sessions.detach("reattach", first);
+  await Bun.sleep(10);
+
+  expect(sessions.getOrCreate("reattach", start)).toBe(first);
+  await Bun.sleep(60);
+  expect(starts).toBe(1);
+  expect(cancelled).toBe(0);
+  sessions.clear();
+});
+
+test("detached browser turns cancel and evict when nobody reconnects", async () => {
+  const sessions = new ChatGptTurnSessions(60_000, 256, 20);
+  let cancelled = 0;
+  let starts = 0;
+  const start = () => {
+    starts += 1;
+    return {
+      mode: "read-only" as const,
+      browser: new Promise<string>(() => {}),
+      trace: new ChatGptTraceFeed(),
+      text: new ChatGptTextFeed(),
+      cancel: () => { cancelled += 1; },
+    };
+  };
+
+  const first = sessions.getOrCreate("orphan", start);
+  sessions.detach("orphan", first);
+  await Bun.sleep(40);
+
+  expect(cancelled).toBe(1);
+  expect(sessions.getOrCreate("orphan", start)).not.toBe(first);
+  expect(starts).toBe(2);
+  sessions.clear();
+});
+
+test("terminal browser errors are evicted instead of poisoning same-turn retries", async () => {
+  const sessions = new ChatGptTurnSessions();
+  let starts = 0;
+  let cancelled = 0;
+  let rejectFirst!: (error: Error) => void;
+  const first = sessions.getOrCreate("failed-turn", () => {
+    starts += 1;
+    return {
+      mode: "read-only" as const,
+      browser: new Promise<string>((_resolve, reject) => { rejectFirst = reject; }),
+      trace: new ChatGptTraceFeed(),
+      text: new ChatGptTextFeed(),
+      cancel: () => { cancelled += 1; },
+    };
+  });
+
+  rejectFirst(new Error("browser failed"));
+  expect(await first.browserOutcome).toMatchObject({ type: "error" });
+  await Promise.resolve();
+
+  const second = sessions.getOrCreate("failed-turn", () => {
+    starts += 1;
+    return {
+      mode: "read-only" as const,
+      browser: Promise.resolve("restarted"),
+      trace: new ChatGptTraceFeed(),
+      text: new ChatGptTextFeed(),
+      cancel: () => { cancelled += 1; },
+    };
+  });
+
+  expect(second).not.toBe(first);
+  expect(starts).toBe(2);
+  expect(cancelled).toBe(1);
+  sessions.clear();
+});
+
 test("settled replay sessions expire from their last use instead of their creation time", async () => {
   const sessions = new ChatGptTurnSessions(50);
   let starts = 0;

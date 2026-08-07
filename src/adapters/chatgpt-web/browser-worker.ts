@@ -37,6 +37,11 @@ import { LauncherBrowserHelperClient } from "./launcher-helper-client";
 import { ChatGptTransientLimitError } from "./transient-limit-error";
 
 export {
+  CHATGPT_CAPACITY_ERROR_CODE,
+  ChatGptCapacityError,
+  isChatGptCapacityError,
+} from "./capacity-error";
+export {
   CHATGPT_TRANSIENT_LIMIT_ERROR_CODE,
   ChatGptTransientLimitError,
   isChatGptTransientLimitError,

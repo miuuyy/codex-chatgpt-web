@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LauncherBrowserHelperClient, parseLauncherBrowserHelperMessage } from "../src/adapters/chatgpt-web/launcher-helper-client";
 import { validateBrowserHelperPreparedPrompt } from "../src/adapters/chatgpt-web/browser-helper-prompt";
-import { isChatGptTransientLimitError, type BrowserTurn, type ResolvedBrowserConfig } from "../src/adapters/chatgpt-web/browser-worker";
+import { isChatGptCapacityError, isChatGptTransientLimitError, type BrowserTurn, type ResolvedBrowserConfig } from "../src/adapters/chatgpt-web/browser-worker";
 import { CHATGPT_TASK_CONTEXT_FILENAME } from "../src/adapters/chatgpt-web/prompt";
 import { LAUNCHER_BROWSER_HOST_KIND } from "../src/launcher-browser-host";
 
@@ -114,7 +114,7 @@ contextAttachment: {
   }
 });
 
-test("launcher helper preserves transient-limit identity and rejects malformed tagged errors", async () => {
+test("launcher helper preserves typed retryable failures and rejects malformed tagged errors", async () => {
   const root = mkdtempSync(join(tmpdir(), "codex-launcher-helper-errors-"));
   roots.push(root);
   const helper = join(root, "helper.cjs");
@@ -136,7 +136,16 @@ test("launcher helper preserves transient-limit identity and rejects malformed t
           stage: "response collection",
           dismissals: 3,
         });
-      } else if (message.id === "unknown_wire_2") {
+      } else if (message.id === "capacity_wire_2") {
+        send({
+          type: "error",
+          id: message.id,
+          name: "ChatGptCapacityError",
+          message: "wire capacity message",
+          code: "CHATGPT_CAPACITY",
+          stage: "response collection",
+        });
+      } else if (message.id === "unknown_wire_3") {
         send({ type: "error", id: message.id, message: "generic helper failure", code: "UNKNOWN_HELPER_ERROR" });
       }
     });
@@ -191,8 +200,17 @@ test("launcher helper preserves transient-limit identity and rejects malformed t
       dismissals: 3,
     });
 
+    let capacity: unknown;
+    try { await client.run(turn("capacity_wire_2")); }
+    catch (error) { capacity = error; }
+    expect(isChatGptCapacityError(capacity)).toBe(true);
+    expect(capacity).toMatchObject({
+      code: "CHATGPT_CAPACITY",
+      stage: "response collection",
+    });
+
     let generic: unknown;
-    try { await client.run(turn("unknown_wire_2")); }
+    try { await client.run(turn("unknown_wire_3")); }
     catch (error) { generic = error; }
     expect(generic).toBeInstanceOf(Error);
     expect((generic as Error).message).toBe("generic helper failure");
@@ -206,6 +224,12 @@ test("launcher helper preserves transient-limit identity and rejects malformed t
       stage: "response collection",
       dismissals: "3",
     }))).toThrow("Launcher browser helper transient-limit payload is invalid");
+    expect(() => parseLauncherBrowserHelperMessage(JSON.stringify({
+      type: "error",
+      id: "malformed_capacity_4",
+      message: "malformed capacity failure",
+      code: "CHATGPT_CAPACITY",
+    }))).toThrow("Launcher browser helper capacity payload is invalid");
   } finally {
     await client.close();
   }

@@ -5,7 +5,7 @@ import { defaultBrokerEndpoint, expandUserPath, resolveBrokerEndpoint } from "..
 import { namespacedToolName, type AdapterEvent, type CodexContentPart, type CodexParsedRequest, type CodexProviderConfig, type CodexToolResultMessage, type CodexUsage } from "../../types";
 import type { ProviderAdapter } from "../base";
 import { parseDataUrl } from "../image";
-import { ChatGptBrowserWorker, isChatGptTransientLimitError } from "./browser-worker";
+import { ChatGptBrowserWorker, isChatGptCapacityError, isChatGptTransientLimitError } from "./browser-worker";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "./environment";
 import { resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt";
@@ -31,6 +31,10 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reje
 
 function abortError(): DOMException {
   return new DOMException("ChatGPT web turn aborted", "AbortError");
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
 }
 
 function withAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
@@ -276,6 +280,8 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
       const executionKey = `${executionNamespace}:${chatGptTurnExecutionKey(parsed)}`;
       const traceId = createHash("sha256").update(executionKey).digest("hex").slice(0, 12);
       const session = chatGptTurnSessions.getOrCreate(executionKey, () => startRuntime(parsed, environment, traceId));
+      const consumedTrace: ChatGptTraceEvent[] = [];
+      const consumedText: string[] = [];
       const heartbeat = setInterval(() => emit({ type: "heartbeat" }), 10_000);
       try {
         emit({ type: "heartbeat" });
@@ -295,9 +301,12 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
               };
               if (!parsed._compactionRequest) emitProContextWarning(parsed, capabilities, emitCaptured);
               const trace = session.runtime.trace.drain();
+              consumedTrace.push(...trace);
               reasoning = trace.map(event => event.text);
               emitTraceEvents(trace, emitCaptured);
-              emitTextDeltas(session.runtime.text.drain(), emitCaptured);
+              const text = session.runtime.text.drain();
+              consumedText.push(...text);
+              emitTextDeltas(text, emitCaptured);
               if (session.runtime.text.value() !== settled.answer) {
                 throw new Error("ChatGPT browser Markdown stream did not reproduce the completed answer");
               }
@@ -344,10 +353,14 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
               emit(event);
             };
             const emitNewTrace = (trace: ChatGptTraceEvent[]) => {
+              consumedTrace.push(...trace);
               roundReasoning.push(...trace.map(event => event.text));
               emitTraceEvents(trace, emitRound);
             };
-            const emitNewText = (deltas: string[]) => emitTextDeltas(deltas, emitRound);
+            const emitNewText = (deltas: string[]) => {
+              consumedText.push(...deltas);
+              emitTextDeltas(deltas, emitRound);
+            };
             if (!parsed._compactionRequest) emitProContextWarning(parsed, capabilities, emitRound);
             emitNewTrace(session.runtime.trace.drain());
             emitNewText(session.runtime.text.drain());
@@ -412,10 +425,13 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
           }
         });
       } catch (error) {
-        session.cancel();
-        if (session.runtime.mode === "tools") {
-          void session.runtime.token.then(turnToken => broker.revoke(turnToken)).catch(() => {});
+        if (incoming.abortSignal?.aborted && isAbortError(error)) {
+          session.runtime.trace.restore(consumedTrace);
+          session.runtime.text.restore(consumedText);
+          chatGptTurnSessions.detach(executionKey, session);
+          throw error;
         }
+        chatGptTurnSessions.evict(executionKey);
         if (isChatGptTransientLimitError(error)) {
           emit({
             type: "error",
@@ -425,7 +441,17 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
             code: "rate_limit_exceeded",
             retryable: true,
           });
-          chatGptTurnSessions.evict(executionKey);
+          return;
+        }
+        if (isChatGptCapacityError(error)) {
+          emit({
+            type: "error",
+            message: error.message,
+            status: 503,
+            errorType: "server_error",
+            code: "server_is_overloaded",
+            retryable: true,
+          });
           return;
         }
         throw error;

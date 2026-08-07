@@ -1,5 +1,5 @@
 import type { CodexAssistantContentPart, CodexContentPart, CodexMessage, CodexParsedRequest } from "../../types";
-import { isReadableCompactionSummaryText } from "../../responses/compaction";
+import { COMPACT_PROMPT, isReadableCompactionSummaryText } from "../../responses/compaction";
 import { resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 
 export const CHATGPT_INTERNAL_COMPACTION_MARKER = "[[CODEX_INTERNAL_CONTEXT_COMPACTED]]";
@@ -264,7 +264,11 @@ export function compileChatGptWebPrompt(
   const transportContract = isCompactionRequest
     ? [
       "This is a Codex history-compaction checkpoint, not a normal task turn.",
-      "Opening or extracting the attached archive and reading its text entry is mandatory input handling, not a prohibited tool action. Do not call local or ChatGPT-native tools for any other purpose. Summarize only the supplied task context according to the final compaction instruction.",
+      "The attached task context is the source of truth for this checkpoint. Open or extract the archive and read its text entry completely before drafting any answer. Do not answer from this visible transport message alone.",
+      `Follow this checkpoint instruction after reading the attachment:\n${COMPACT_PROMPT}`,
+      "The checkpoint summary must contain concrete task state learned from the attached context. Do not merely restate transport directions such as preserving instruction priority, resuming the latest request, or reading attachments. If the answer could have been written without reading the attachment, it is not a valid checkpoint summary.",
+      "At minimum, identify the latest active human user request and the concrete work already completed or attempted. If no work has happened yet, say so explicitly while still naming that request. A generic handoff such as 'Resume the outer Codex task using the supplied context' is invalid.",
+      "Opening or extracting the attached archive and reading its text entry is mandatory input handling, not a prohibited tool action. Do not call local or ChatGPT-native tools for any unrelated purpose.",
       "Return only the checkpoint summary that the next model needs to resume the task.",
     ]
     : mode.localTools
@@ -289,7 +293,8 @@ export function compileChatGptWebPrompt(
   const transportResume = isCompactionRequest
     ? [
       "<codex_transport_resume>",
-      "The attached task context is complete. Produce the requested checkpoint summary now without calling tools.",
+      `Open or extract ${CHATGPT_COMPACTION_CONTEXT_FILENAME}, read ${CHATGPT_TASK_CONTEXT_ENTRY_FILENAME} completely, and only then write the checkpoint summary from that task content.`,
+      "Do not summarize or paraphrase this transport contract. The final answer must be the task handoff itself, with concrete progress, decisions, constraints, remaining work, and critical references from the attachment.",
       "</codex_transport_resume>",
     ]
     : mode.localTools

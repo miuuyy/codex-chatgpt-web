@@ -7,6 +7,8 @@ export type ChatGptBrowserOutcome =
   | { type: "final"; answer: string }
   | { type: "error"; error: Error };
 
+export const CHATGPT_TURN_RECONNECT_GRACE_MS = 5_000;
+
 export interface ChatGptTraceEvent {
   kind: "reasoning" | "commentary";
   text: string;
@@ -21,7 +23,7 @@ interface TraceWaiter {
 }
 
 export class ChatGptTraceFeed {
-  private readonly queued: ChatGptTraceEvent[] = [];
+  private queued: ChatGptTraceEvent[] = [];
   private readonly waiters = new Set<TraceWaiter>();
 
   push(event: ChatGptTraceEvent): void {
@@ -40,6 +42,10 @@ export class ChatGptTraceFeed {
 
   drain(): ChatGptTraceEvent[] {
     return this.queued.splice(0);
+  }
+
+  restore(events: ChatGptTraceEvent[]): void {
+    if (events.length > 0) this.queued = [...events, ...this.queued];
   }
 
   next(signal?: AbortSignal): Promise<ChatGptTraceEvent> {
@@ -69,7 +75,7 @@ interface TextWaiter {
 
 /** Append-only browser Markdown feed. Waiters are notifications; `drain` owns consumption. */
 export class ChatGptTextFeed {
-  private readonly queued: string[] = [];
+  private queued: string[] = [];
   private readonly waiters = new Set<TextWaiter>();
   private text = "";
 
@@ -86,6 +92,10 @@ export class ChatGptTextFeed {
 
   drain(): string[] {
     return this.queued.splice(0);
+  }
+
+  restore(deltas: string[]): void {
+    if (deltas.length > 0) this.queued = [...deltas, ...this.queued];
   }
 
   value(): string {
@@ -242,26 +252,52 @@ export class ChatGptTurnSession {
 
 export class ChatGptTurnSessions {
   private readonly entries = new Map<string, ChatGptTurnSession>();
+  private readonly detachTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(
     private readonly ttlMs = 30 * 60_000,
     private readonly maxSettledEntries = 256,
+    private readonly reconnectGraceMs = CHATGPT_TURN_RECONNECT_GRACE_MS,
   ) {}
 
   getOrCreate(key: string, start: () => ChatGptTurnRuntime): ChatGptTurnSession {
     this.prune();
     const existing = this.entries.get(key);
     if (existing) {
+      this.clearDetachTimer(key);
+      if (existing.settledOutcome()?.type === "error") {
+        this.remove(key, existing);
+        return this.getOrCreate(key, start);
+      }
       existing.touch();
       return existing;
     }
     const session = new ChatGptTurnSession(start());
     this.entries.set(key, session);
+    void session.browserOutcome.then(outcome => {
+      if (outcome.type === "error" && this.entries.get(key) === session) this.remove(key, session);
+    });
     return session;
+  }
+
+  detach(key: string, session: ChatGptTurnSession): void {
+    if (this.entries.get(key) !== session) return;
+    this.clearDetachTimer(key);
+    session.touch();
+    const timer = setTimeout(() => {
+      this.detachTimers.delete(key);
+      if (this.entries.get(key) !== session) return;
+      if (session.settledOutcome()?.type === "final") return;
+      this.remove(key, session);
+    }, this.reconnectGraceMs);
+    (timer as { unref?: () => void }).unref?.();
+    this.detachTimers.set(key, timer);
   }
 
   clear(): number {
     const cancelled = this.entries.size;
+    for (const timer of this.detachTimers.values()) clearTimeout(timer);
+    this.detachTimers.clear();
     for (const session of this.entries.values()) session.cancel();
     this.entries.clear();
     return cancelled;
@@ -270,8 +306,7 @@ export class ChatGptTurnSessions {
   evict(key: string): boolean {
     const session = this.entries.get(key);
     if (!session) return false;
-    session.cancel();
-    this.entries.delete(key);
+    this.remove(key, session);
     return true;
   }
 
@@ -288,17 +323,29 @@ export class ChatGptTurnSessions {
     for (const [key, session] of this.entries) {
       if (session.isActive()) continue;
       if (session.lastUsedAt() < cutoff) {
-        session.cancel();
-        this.entries.delete(key);
+        this.remove(key, session);
         continue;
       }
       settled.push([key, session]);
     }
     settled.sort((left, right) => left[1].lastUsedAt() - right[1].lastUsedAt());
     for (const [key, session] of settled.slice(0, Math.max(0, settled.length - this.maxSettledEntries))) {
-      session.cancel();
-      this.entries.delete(key);
+      this.remove(key, session);
     }
+  }
+
+  private clearDetachTimer(key: string): void {
+    const timer = this.detachTimers.get(key);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.detachTimers.delete(key);
+  }
+
+  private remove(key: string, session: ChatGptTurnSession): void {
+    if (this.entries.get(key) !== session) return;
+    this.clearDetachTimer(key);
+    session.cancel();
+    this.entries.delete(key);
   }
 }
 
