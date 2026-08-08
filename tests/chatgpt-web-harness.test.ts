@@ -1,10 +1,12 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { createHash } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildResponseJSON } from "../src/bridge";
+import { ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-error";
 import { ChatGptCompletionTracker, chatGptImageFilePayloads, chatGptPromptFilePayloads, chatGptTurnIsComplete } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "../src/adapters/chatgpt-web/environment";
@@ -129,7 +131,16 @@ function toolResult(value: Record<string, unknown>): BrokerToolResult {
   };
 }
 
-describe("ChatGPT outer-native harness v5", () => {
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+describe("ChatGPT outer-native harness v4", () => {
   test("rejects an opaque MultiAgent V2 child payload before starting the browser", async () => {
     const request = parseRequest({
       model: "chatgpt-web/pro",
@@ -456,6 +467,134 @@ describe("ChatGPT outer-native harness v5", () => {
     sessions.clear();
   });
 
+  test("a client disconnect retires its browser session before the next native retry", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-h4-abort-retry-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: "browser://chatgpt-abort-retry-test",
+      chatgptWeb: { brokerSocketPath: socketPath, localToolsEnabled: false, solAvailable: true, proAvailable: true },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    let browserStarts = 0;
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = turn => {
+      browserStarts += 1;
+      if (browserStarts === 1) {
+        return new Promise<string>((_resolve, reject) => {
+          turn.abortSignal?.addEventListener("abort", () => {
+            reject(new DOMException("ChatGPT web turn aborted", "AbortError"));
+          }, { once: true });
+        });
+      }
+      const answer = "Recovered after disconnect";
+      turn.onTextDelta(answer);
+      return Promise.resolve(answer);
+    };
+    try {
+      const disconnect = new AbortController();
+      const first = createChatGptWebAdapter(provider).runTurn!(
+        rawWireRequest(environmentXml),
+        { headers: new Headers(), abortSignal: disconnect.signal },
+        () => {},
+      );
+      await new Promise(resolveWait => setTimeout(resolveWait, 50));
+      disconnect.abort();
+      await expect(first).rejects.toThrow("ChatGPT web turn aborted");
+
+      const events: AdapterEvent[] = [];
+      await createChatGptWebAdapter(provider).runTurn!(
+        rawWireRequest(environmentXml),
+        { headers: new Headers() },
+        event => events.push(event),
+      );
+      expect(browserStarts).toBe(2);
+      expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
+
+  test("an unclassified browser failure retires its session before the next native retry", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-h4-error-retry-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: "browser://chatgpt-error-retry-test",
+      chatgptWeb: { brokerSocketPath: socketPath, localToolsEnabled: false, solAvailable: true, proAvailable: true },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    let browserStarts = 0;
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+      browserStarts += 1;
+      if (browserStarts === 1) throw new Error("ChatGPT browser stage timed out: browser_page");
+      const answer = "Recovered after stage failure";
+      turn.onTextDelta(answer);
+      return answer;
+    };
+    try {
+      await expect(
+        createChatGptWebAdapter(provider).runTurn!(
+          rawWireRequest(environmentXml),
+          { headers: new Headers() },
+          () => {},
+        ),
+      ).rejects.toThrow("stage timed out");
+
+      const events: AdapterEvent[] = [];
+      await createChatGptWebAdapter(provider).runTurn!(
+        rawWireRequest(environmentXml),
+        { headers: new Headers() },
+        event => events.push(event),
+      );
+      expect(browserStarts).toBe(2);
+      expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
+
+  test("a non-retryable browser failure remains replayable without starting another browser turn", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-h4-nonretryable-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: "browser://chatgpt-nonretryable-test",
+      chatgptWeb: { brokerSocketPath: socketPath, localToolsEnabled: false, solAvailable: true, proAvailable: true },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    let browserStarts = 0;
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async () => {
+      browserStarts += 1;
+      throw new ChatGptWebAdapterError("This task exceeds the model context window.", {
+        status: 400,
+        errorType: "invalid_request_error",
+        code: "context_length_exceeded",
+        retryable: false,
+      });
+    };
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const events: AdapterEvent[] = [];
+        await createChatGptWebAdapter(provider).runTurn!(
+          rawWireRequest(environmentXml),
+          { headers: new Headers() },
+          event => events.push(event),
+        );
+        expect(events.at(-1)).toMatchObject({
+          type: "error",
+          code: "context_length_exceeded",
+          retryable: false,
+        });
+      }
+      expect(browserStarts).toBe(1);
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
+
   test("waits for one shared browser retirement before starting the compacted continuation", async () => {
     const sessions = new ChatGptTurnSessions();
     let finishBrowser!: (answer: string) => void;
@@ -504,13 +643,11 @@ describe("ChatGPT outer-native harness v5", () => {
     expect(compiled.text).not.toContain(imageUrl);
     expect(compiled.text).toContain('"attachment_ref":"codex-input-image-1"');
     expect(compiled.text).toContain('"version":3');
-    expect(compiled.text).toContain("Reading files, listing directories, searching source text, inspecting logs and repository metadata");
-    expect(compiled.text).toContain("codex_tool_inventory and codex_tool_call");
-    expect(compiled.text).toContain("Never invent, rename, or substitute an unavailable tool");
-    expect(compiled.text).not.toContain("codex_inspect");
-    expect(compiled.text).toContain("codex_exec");
-    expect(compiled.text).toContain("a final answer is invalid until a relevant Codex Native call returns a real result");
-    expect(compiled.text).toContain("Never claim that Codex, a runtime, an executor, a sandbox, a security layer, or a permission gate blocked local access");
+    expect(compiled.text).toContain("use the attached Codex Native tools directly according to their declared descriptions and schemas");
+    expect(compiled.text).toContain("Use actual Codex Native results as evidence");
+    expect(compiled.text.match(/turn_123456789012345678901234/g)).toHaveLength(1);
+    expect(compiled.text).not.toContain("codex_bind_turn");
+    expect(compiled.text).not.toContain("binding_id");
     const files = chatGptImageFilePayloads(compiled.images);
     expect(files[0]?.name).toBe("codex-input-image-1.png");
     expect(files[0]?.mimeType).toBe("image/png");
@@ -1277,9 +1414,11 @@ describe("ChatGPT outer-native harness v5", () => {
     const socketPath = brokerTestEndpoint(`cgw-h3-mcp-${process.pid}-${Date.now()}`);
     const broker = TurnBroker.forSocket(socketPath);
     const gatewayOnlyEnvironment = extractChatGptTurnEnvironment(parsed(environmentXml));
-    gatewayOnlyEnvironment.tools = gatewayOnlyEnvironment.tools.filter(tool => (
-      tool.name === "exec" || tool.name === "search_openai_docs"
-    ));
+    gatewayOnlyEnvironment.tools = [
+      { name: "exec", description: "Run nested Codex tools, including exec_command", parameters: {}, freeform: true },
+      { name: "wait", description: "Wait for an exec cell", parameters: { type: "object" } },
+      { name: "request_user_input", description: "Request user input", parameters: { type: "object" } },
+    ];
     const token = await broker.register(gatewayOnlyEnvironment, 60_000);
     const transport = new StdioClientTransport({
       command: process.execPath,
@@ -1295,13 +1434,54 @@ describe("ChatGPT outer-native harness v5", () => {
       const listed = await client.listTools();
       expect(listed.tools.map(tool => tool.name).sort()).toEqual([
         "codex_apply_patch",
-        "codex_bind_turn",
         "codex_exec",
         "codex_tool_call",
         "codex_tool_inventory",
         "codex_view_image",
         "codex_write_stdin",
       ]);
+      const publicConnectorAbi = listed.tools.map(tool => ({
+        name: tool.name,
+        title: tool.title ?? null,
+        description: tool.description ?? null,
+        inputSchema: tool.inputSchema,
+        outputSchema: tool.outputSchema ?? null,
+        annotations: tool.annotations ?? null,
+      }));
+      // ChatGPT caches the complete tools/list contract under a connector identity.
+      // An intentional hash change therefore requires an explicit connector refresh or identity migration.
+      expect(createHash("sha256").update(canonicalJson(publicConnectorAbi)).digest("hex"))
+        .toBe("5cb59b378c7d1939e260a2b4a60f58e22da31208fe09c2cc17a2cf31eb5ff3ad");
+      for (const tool of listed.tools) {
+        const properties = tool.inputSchema.properties as Record<string, unknown>;
+        expect(properties.turn_token).toEqual({ type: "string", minLength: 20, maxLength: 256 });
+        expect(properties).not.toHaveProperty("binding_id");
+        expect(tool.outputSchema).toBeUndefined();
+      }
+      expect(listed.tools.find(tool => tool.name === "codex_exec")?.annotations).toMatchObject({
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      });
+      expect(listed.tools.find(tool => tool.name === "codex_write_stdin")?.annotations).toMatchObject({
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      });
+      expect(listed.tools.find(tool => tool.name === "codex_apply_patch")?.annotations).toMatchObject({
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      });
+      expect(listed.tools.find(tool => tool.name === "codex_view_image")?.annotations).toMatchObject({
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      });
       expect(listed.tools.find(tool => tool.name === "codex_tool_inventory")?.annotations).toMatchObject({
         readOnlyHint: true,
         destructiveHint: false,
@@ -1315,39 +1495,212 @@ describe("ChatGPT outer-native harness v5", () => {
         openWorldHint: true,
       });
 
-      const bound = await call("codex_bind_turn", { turn_token: token });
-      const bindingId = (bound.structuredContent as { binding_id?: string } | undefined)?.binding_id;
-      expect(bindingId).toStartWith("binding_");
-      expect((bound.structuredContent as { execution: string }).execution).toBe("outer_codex_native");
-      expect((bound.structuredContent as { outer_tool_gateway: string }).outer_tool_gateway).toBe("exec");
-      expect((bound.structuredContent as { command_tool: string }).command_tool).toBe("exec");
-      expect((bound.structuredContent as { harness_version: number }).harness_version).toBe(3);
+      const firstExec = call("codex_exec", { turn_token: token, cmd: "pwd", workdir: tempRoot });
+      const secondExec = call("codex_exec", { turn_token: token, cmd: "git status --short", workdir: tempRoot });
+      const execRequests = await broker.nextToolBatch(token);
+      expect(execRequests).toHaveLength(2);
+      expect(execRequests.every(request => request.wireName === "exec" && request.freeform)).toBe(true);
+      expect(execRequests.some(request => request.input?.includes(JSON.stringify({ cmd: "pwd", workdir: tempRoot })))).toBe(true);
+      expect(execRequests.some(request => request.input?.includes(JSON.stringify({ cmd: "git status --short", workdir: tempRoot })))).toBe(true);
+      for (const request of execRequests) {
+        expect(request.input).toContain('tools["exec_command"]');
+        const output = request.input?.includes('git status --short') ? "clean" : tempRoot;
+        broker.completeTool(token, request.callId, toolResult({ output, exit_code: 0 }));
+      }
+      expect((await firstExec).structuredContent).toEqual({ output: tempRoot, exit_code: 0 });
+      expect((await secondExec).structuredContent).toEqual({ output: "clean", exit_code: 0 });
 
-      const execPromise = call("codex_exec", { binding_id: bindingId, cmd: "pwd", workdir: tempRoot });
-      const [execRequest] = await broker.nextToolBatch(token);
-      expect(execRequest).toMatchObject({ wireName: "exec", freeform: true });
-      expect(execRequest?.input).toContain('tools["shell_command"]');
-      expect(execRequest?.input).toContain(JSON.stringify({ command: "pwd", workdir: tempRoot }));
-      broker.completeTool(token, execRequest!.callId, toolResult({ output: tempRoot, exit_code: 0 }));
-      expect((await execPromise).structuredContent).toEqual({ output: tempRoot, exit_code: 0 });
-
-      const docsPromise = call("codex_tool_call", {
-        binding_id: bindingId,
-        wire_name: "mcp__openaiDeveloperDocs__search_openai_docs",
-        arguments: { query: "Responses API" },
+      const waitPromise = call("codex_tool_call", {
+        turn_token: token,
+        wire_name: "wait",
+        arguments: { cell_id: "cell_test", yield_time_ms: 10_000 },
       });
-      const [docsRequest] = await broker.nextToolBatch(token);
-      expect(docsRequest).toMatchObject({
-        wireName: "exec",
-        freeform: true,
+      const [waitRequest] = await broker.nextToolBatch(token);
+      expect(waitRequest).toMatchObject({
+        wireName: "wait",
+        freeform: false,
+        arguments: { cell_id: "cell_test", yield_time_ms: 10_000 },
       });
-      expect(docsRequest?.input).toContain('tools["mcp__openaiDeveloperDocs__search_openai_docs"]');
-      expect(docsRequest?.input).toContain(JSON.stringify({ query: "Responses API" }));
-      broker.completeTool(token, docsRequest!.callId, toolResult({ hits: 3 }));
-      expect((await docsPromise).structuredContent).toEqual({ hits: 3 });
+      expect(waitRequest?.input).toBeUndefined();
+      broker.completeTool(token, waitRequest!.callId, toolResult({ output: "completed" }));
+      expect((await waitPromise).structuredContent).toEqual({ output: "completed" });
     } finally {
       await client.close().catch(() => {});
       broker.revoke(token);
+      await broker.close();
+    }
+  }, 30_000);
+
+  test("routes every dedicated direct-token bridge to its exact top-level Codex tool", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-h4-mcp-direct-${process.pid}-${Date.now()}`);
+    const broker = TurnBroker.forSocket(socketPath);
+    const directEnvironment = extractChatGptTurnEnvironment(parsed(environmentXml));
+    directEnvironment.tools = [
+      { name: "exec_command", description: "Run a command", parameters: { type: "object" } },
+      { name: "write_stdin", description: "Continue a command", parameters: { type: "object" } },
+      { name: "apply_patch", description: "Apply a patch", parameters: {}, freeform: true },
+      { name: "view_image", description: "View an image", parameters: { type: "object" } },
+    ];
+    const token = await broker.register(directEnvironment, 60_000);
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: ["src/cli.ts", "mcp", "--broker-socket", socketPath],
+      cwd: process.cwd(),
+      stderr: "pipe",
+    });
+    const client = new Client({ name: "codex-chatgpt-web-direct-tools-test", version: "1.0.0" });
+    const call = (name: string, args: Record<string, unknown>) => client.callTool({ name, arguments: args });
+
+    try {
+      await client.connect(transport);
+
+      const inventory = await call("codex_tool_inventory", {
+        turn_token: token,
+        query: "exec_command",
+        include_schema: false,
+      });
+      expect(inventory.structuredContent).toMatchObject({
+        total: 1,
+        tools: [{ wire_name: "exec_command", kind: "function" }],
+      });
+      expect(JSON.stringify(inventory)).not.toContain("binding_");
+
+      const exec = call("codex_exec", {
+        turn_token: token,
+        cmd: "pwd",
+        workdir: tempRoot,
+        yield_time_ms: 2_000,
+        max_output_tokens: 4_000,
+        tty: false,
+      });
+      const [execRequest] = await broker.nextToolBatch(token);
+      expect(execRequest).toEqual(expect.objectContaining({
+        wireName: "exec_command",
+        freeform: false,
+        arguments: {
+          cmd: "pwd",
+          workdir: tempRoot,
+          yield_time_ms: 2_000,
+          max_output_tokens: 4_000,
+          tty: false,
+        },
+      }));
+      expect(execRequest?.input).toBeUndefined();
+      broker.completeTool(token, execRequest!.callId, toolResult({ output: tempRoot, exit_code: 0, session_id: 42 }));
+      expect((await exec).structuredContent).toMatchObject({ session_id: 42 });
+
+      const write = call("codex_write_stdin", {
+        turn_token: token,
+        session_id: 42,
+        chars: "y\n",
+        yield_time_ms: 5_000,
+        max_output_tokens: 2_000,
+      });
+      const [writeRequest] = await broker.nextToolBatch(token);
+      expect(writeRequest).toEqual(expect.objectContaining({
+        wireName: "write_stdin",
+        freeform: false,
+        arguments: {
+          session_id: 42,
+          chars: "y\n",
+          yield_time_ms: 5_000,
+          max_output_tokens: 2_000,
+        },
+      }));
+      broker.completeTool(token, writeRequest!.callId, toolResult({ output: "continued" }));
+      expect((await write).structuredContent).toEqual({ output: "continued" });
+
+      const patch = "*** Begin Patch\n*** Add File: direct-token.txt\n+ok\n*** End Patch";
+      const apply = call("codex_apply_patch", { turn_token: token, patch });
+      const [applyRequest] = await broker.nextToolBatch(token);
+      expect(applyRequest).toMatchObject({ wireName: "apply_patch", freeform: true, input: patch });
+      expect(applyRequest?.arguments).toBeUndefined();
+      broker.completeTool(token, applyRequest!.callId, toolResult({ output: "Done!" }));
+      expect((await apply).structuredContent).toEqual({ output: "Done!" });
+
+      const view = call("codex_view_image", {
+        turn_token: token,
+        path: "/private/tmp/direct-token.png",
+        detail: "original",
+      });
+      const [viewRequest] = await broker.nextToolBatch(token);
+      expect(viewRequest).toEqual(expect.objectContaining({
+        wireName: "view_image",
+        freeform: false,
+        arguments: { path: "/private/tmp/direct-token.png", detail: "original" },
+      }));
+      broker.completeTool(token, viewRequest!.callId, toolResult({ output: "image-ready" }));
+      expect((await view).structuredContent).toEqual({ output: "image-ready" });
+    } finally {
+      await client.close().catch(() => {});
+      broker.revoke(token);
+      await broker.close();
+    }
+  }, 30_000);
+
+  test("keeps simultaneous direct-token MCP actions isolated by outer Codex turn", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-h4-mcp-isolation-${process.pid}-${Date.now()}`);
+    const broker = TurnBroker.forSocket(socketPath);
+    const firstEnvironment = extractChatGptTurnEnvironment(parsed(environmentXml));
+    firstEnvironment.cwd = "/workspace/first";
+    firstEnvironment.roots = [firstEnvironment.cwd];
+    firstEnvironment.writableRoots = [firstEnvironment.cwd];
+    firstEnvironment.tools = [
+      { name: "exec_command", description: "Run a Codex command", parameters: { type: "object" } },
+    ];
+    const secondEnvironment = extractChatGptTurnEnvironment(parsed(environmentXml));
+    secondEnvironment.cwd = "/workspace/second";
+    secondEnvironment.roots = [secondEnvironment.cwd];
+    secondEnvironment.writableRoots = [secondEnvironment.cwd];
+    secondEnvironment.tools = [
+      { name: "shell_command", description: "Run a legacy Codex command", parameters: { type: "object" } },
+    ];
+    const firstToken = await broker.register(firstEnvironment, 60_000, "first-turn");
+    const secondToken = await broker.register(secondEnvironment, 60_000, "second-turn");
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: ["src/cli.ts", "mcp", "--broker-socket", socketPath],
+      cwd: process.cwd(),
+      stderr: "pipe",
+    });
+    const client = new Client({ name: "codex-chatgpt-web-turn-isolation-test", version: "1.0.0" });
+
+    try {
+      await client.connect(transport);
+      const firstCall = client.callTool({
+        name: "codex_exec",
+        arguments: { turn_token: firstToken, cmd: "pwd", workdir: firstEnvironment.cwd, yield_time_ms: 1_000 },
+      });
+      const secondCall = client.callTool({
+        name: "codex_exec",
+        arguments: { turn_token: secondToken, cmd: "pwd", workdir: secondEnvironment.cwd, yield_time_ms: 2_000 },
+      });
+      const [[firstRequest], [secondRequest]] = await Promise.all([
+        broker.nextToolBatch(firstToken),
+        broker.nextToolBatch(secondToken),
+      ]);
+
+      expect(firstRequest).toMatchObject({
+        wireName: "exec_command",
+        arguments: { cmd: "pwd", workdir: "/workspace/first", yield_time_ms: 1_000 },
+      });
+      expect(secondRequest).toMatchObject({
+        wireName: "shell_command",
+        arguments: { command: "pwd", workdir: "/workspace/second", timeout_ms: 2_000 },
+      });
+      expect(JSON.stringify(firstRequest)).not.toContain(firstToken);
+      expect(JSON.stringify(firstRequest)).not.toContain(secondToken);
+      expect(JSON.stringify(secondRequest)).not.toContain(firstToken);
+      expect(JSON.stringify(secondRequest)).not.toContain(secondToken);
+
+      broker.completeTool(firstToken, firstRequest!.callId, toolResult({ output: "first" }));
+      broker.completeTool(secondToken, secondRequest!.callId, toolResult({ output: "second" }));
+      expect((await firstCall).structuredContent).toEqual({ output: "first" });
+      expect((await secondCall).structuredContent).toEqual({ output: "second" });
+    } finally {
+      await client.close().catch(() => {});
+      broker.revoke(firstToken);
+      broker.revoke(secondToken);
       await broker.close();
     }
   }, 30_000);
@@ -1356,9 +1709,11 @@ describe("ChatGPT outer-native harness v5", () => {
     const socketPath = brokerTestEndpoint(`cgw-h3-mcp-no-ttl-${process.pid}-${Date.now()}`);
     const broker = TurnBroker.forSocket(socketPath);
     const gatewayOnlyEnvironment = extractChatGptTurnEnvironment(parsed(environmentXml));
-    gatewayOnlyEnvironment.tools = gatewayOnlyEnvironment.tools.filter(tool => (
-      tool.name === "exec" || tool.name === "search_openai_docs"
-    ));
+    gatewayOnlyEnvironment.tools = [
+      { name: "exec", description: "Run nested Codex tools, including exec_command", parameters: {}, freeform: true },
+      { name: "wait", description: "Wait for an exec cell", parameters: { type: "object" } },
+      { name: "request_user_input", description: "Request user input", parameters: { type: "object" } },
+    ];
     const token = await broker.register(gatewayOnlyEnvironment);
     const transport = new StdioClientTransport({
       command: process.execPath,
@@ -1372,32 +1727,13 @@ describe("ChatGPT outer-native harness v5", () => {
     try {
       await client.connect(transport);
 
-      const bound = await call("codex_bind_turn", { turn_token: token });
-      expect(bound.content).toEqual([{ type: "text", text: expect.stringContaining("binding_") }]);
-      expect(bound.isError).not.toBe(true);
-      const binding = bound.structuredContent as {
-        binding_id: string;
-        binding_status: string;
-        valid_until: string;
-        expires_at: string | null;
-        next_action: string;
-      };
-      expect(binding.binding_id).toStartWith("binding_");
-      expect(binding.binding_status).toBe("active");
-      expect(binding.valid_until).toBe("outer_turn_end");
-      expect(binding.expires_at).toBeNull();
-      expect(binding.next_action).toContain("outer_tool_gateway");
-      expect(binding.next_action).toContain("codex_exec");
-
-      const confused = await call("codex_tool_call", {
-        binding_id: token,
-        wire_name: "exec",
-        input: "text(true);",
+      const invalid = await call("codex_tool_inventory", {
+        turn_token: "turn_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       });
-      expect(confused.isError).toBe(true);
-      expect(JSON.stringify(confused.content)).toContain("never pass turn_token here");
+      expect(invalid.isError).toBe(true);
+      expect(JSON.stringify(invalid.content)).toContain("turn token is invalid, expired, or revoked");
 
-      const execPromise = call("codex_exec", { binding_id: binding.binding_id, cmd: "pwd", workdir: tempRoot });
+      const execPromise = call("codex_exec", { turn_token: token, cmd: "pwd", workdir: tempRoot });
       const [execRequest] = await Promise.race([
         broker.nextToolBatch(token),
         execPromise.then(response => {
@@ -1405,8 +1741,8 @@ describe("ChatGPT outer-native harness v5", () => {
         }),
       ]);
       expect(execRequest).toMatchObject({ wireName: "exec", freeform: true });
-      expect(execRequest?.input).toContain('tools["shell_command"]');
-      expect(execRequest?.input).toContain(JSON.stringify({ command: "pwd", workdir: tempRoot }));
+      expect(execRequest?.input).toContain('tools["exec_command"]');
+      expect(execRequest?.input).toContain(JSON.stringify({ cmd: "pwd", workdir: tempRoot }));
       broker.completeTool(token, execRequest!.callId, toolResult({ output: tempRoot, exit_code: 0 }));
       expect((await execPromise).structuredContent).toEqual({ output: tempRoot, exit_code: 0 });
     } finally {

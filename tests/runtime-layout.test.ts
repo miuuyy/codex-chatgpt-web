@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   assertDurableRuntimeCommand,
+  CHATGPT_CONNECTOR_NAME,
   defaultBrokerEndpoint,
   defaultConfig,
   expandUserPath,
@@ -13,6 +14,7 @@ import {
   loadConfigForSetup,
   providerConfig,
   resolveBrokerEndpoint,
+  resolveSetupConnectorName,
   runtimeCommandForProcess,
 } from "../src/config";
 import { removeLegacyRuntimeArtifacts } from "../src/service";
@@ -82,6 +84,15 @@ test("permission-denied process probes preserve ownership evidence", () => {
 test("user-home expansion accepts native Unix and Windows separators", () => {
   expect(expandUserPath("~/runtime")).toBe(join(homedir(), "runtime"));
   expect(expandUserPath("~\\runtime")).toBe(join(homedir(), "runtime"));
+});
+
+test("the direct-turn connector identity migrates known legacy setup without overwriting custom names", () => {
+  expect(defaultConfig("full").appName).toBe(CHATGPT_CONNECTOR_NAME);
+  expect(resolveSetupConnectorName("Codex Native")).toBe("Codex Native2");
+  expect(resolveSetupConnectorName("Team Codex Harness")).toBe("Team Codex Harness");
+  expect(resolveSetupConnectorName(undefined, "Team Codex Harness")).toBe("Team Codex Harness");
+  expect(() => resolveSetupConnectorName(undefined, "Codex Native"))
+    .toThrow(/requires a newly created connector named "Codex Native2"/);
 });
 
 test("setup explicitly migrates v1 pro-only config to v3 managed browser-only", () => {

@@ -123,13 +123,16 @@ bun run app
 2. 在启动器中打开 **MCP**。请在将使用 ChatGPT 连接器的同一个 OpenAI 账户中创建 Tunnel
    和普通 API 密钥；创建密钥本身免费，也不会消耗模型 API 额度。
 3. 粘贴 Tunnel ID 和 API 密钥，然后点击 **连接 Harness**。
-4. 在 ChatGPT 设置中启用 **开发者模式**。创建连接器时选择 **Tunnel**，选择刚创建的
-   Tunnel，将 **身份验证** 设为 **无**，并将连接器准确命名为 `Codex Native`。
-5. 扫描工具，选择需要的操作权限，然后运行 **验证运行时**。验证过程会逐字输入并确认完整的
-   `@Codex Native` mention，然后检查连接器 pill。
+4. 在 ChatGPT 设置中启用 **开发者模式**。新建连接器时选择 **Tunnel**，选择刚创建的
+   Tunnel，将 **身份验证** 设为 **无**，并将名称准确设置为 **Codex Native2**。
+5. 如果已有旧的 **Codex Native** 连接器，请保持其不变。不要重命名或刷新它：ChatGPT 会按
+   连接器身份缓存公开 MCP 合约，而此版本使用新的直接 turn-token 合约。在 **Codex Native2**
+   的 **权限** 中选择 **允许所有操作**；**允许低风险操作** 会在命令和补丁到达本地运行时前将其
+   拦截。外层 Codex harness 仍会执行沙箱和审批规则。
+6. 运行 **验证运行时**。它只会准确选择 **Codex Native2**。如果只找到 **Codex Native**，
+   验证会返回明确的迁移错误，而不会接受旧连接器。
 
-写入/修改操作需要 ChatGPT 工作区及管理员政策允许。OpenAI 目前仅为 Business 和
-Enterprise/Edu 工作区说明了这些操作；个人 Pro 账户仅限 read/fetch MCP 权限。请参阅
+写入/修改操作还需要 ChatGPT 工作区及其管理员政策允许。请参阅
 [开发者模式和 MCP 应用](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt)。
 除非显式启用 `--auto-approve-tool-calls`，否则意外的审批提示会直接失败；该选项只会点击
 **Allow once**，绝不会授予永久权限。

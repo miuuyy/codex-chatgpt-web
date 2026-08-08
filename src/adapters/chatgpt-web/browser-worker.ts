@@ -2,7 +2,16 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright-core";
-import { atomicWriteFile, defaultChromeExecutable, expandUserPath, getConfigDir } from "../../config";
+import {
+  atomicWriteFile,
+  CHATGPT_CONNECTOR_NAME,
+  defaultChromeExecutable,
+  expandUserPath,
+  getConfigDir,
+  isLegacyChatGptConnectorName,
+  legacyChatGptConnectorMigrationMessage,
+  LEGACY_CHATGPT_CONNECTOR_NAMES,
+} from "../../config";
 import type { CodexProviderConfig } from "../../types";
 import { parseDataUrl } from "../image";
 import { ChatGptMarkdownBuffer, type ChatGptMarkdownSegment } from "./markdown";
@@ -629,6 +638,7 @@ class ChatGptBrowserDiagnostics {
 
 export function resolveBrowserConfig(provider: CodexProviderConfig): ResolvedBrowserConfig {
   const configured = provider.chatgptWeb ?? {};
+  const appName = configured.appName?.trim() || CHATGPT_CONNECTOR_NAME;
   const browserHost = configured.browserHost ?? "managed-chrome";
   const browserHostDescriptorPath = configured.browserHostDescriptorPath?.trim();
   const turnTimeoutMs = configured.turnTimeoutMs;
@@ -639,8 +649,11 @@ export function resolveBrowserConfig(provider: CodexProviderConfig): ResolvedBro
     && (!Number.isFinite(turnTimeoutMs) || turnTimeoutMs <= 0)) {
     throw new Error("ChatGPT Web turnTimeoutMs must be a positive finite number");
   }
+  if (isLegacyChatGptConnectorName(appName)) {
+    throw new Error(legacyChatGptConnectorMigrationMessage(appName));
+  }
   return {
-    appName: configured.appName?.trim() || "Codex Native",
+    appName,
     browserHost,
     ...(browserHostDescriptorPath ? { browserHostDescriptorPath: resolve(expandUserPath(browserHostDescriptorPath)) } : {}),
     storageStatePath: resolve(expandUserPath(configured.storageStatePath?.trim() || join(getConfigDir(), "browser", "storage-state.json"))),
@@ -1160,8 +1173,13 @@ export class ChatGptBrowserWorker {
     if (titles.length === 0) {
       return `ChatGPT connector menu did not open after ${triggerAttempts} complete mention trigger attempt(s)`;
     }
+    if (this.config.appName === CHATGPT_CONNECTOR_NAME && !titles.includes(CHATGPT_CONNECTOR_NAME)) {
+      const legacyName = LEGACY_CHATGPT_CONNECTOR_NAMES.find(name => titles.includes(name));
+      if (legacyName) return legacyChatGptConnectorMigrationMessage(legacyName);
+    }
     return `ChatGPT connector menu opened but exposed no row named ${JSON.stringify(this.config.appName)}`
       + ` after ${triggerAttempts} complete mention trigger attempt(s)`
+      + `; create a connector with that exact name before retrying`
       + `; visible rows: ${titles.map(title => JSON.stringify(title)).join(", ")}`;
   }
 

@@ -8,6 +8,9 @@ const appSource = fs.readFileSync(path.join(launcherRoot, "src", "App.tsx"), "ut
 const styles = fs.readFileSync(path.join(launcherRoot, "src", "styles.css"), "utf8");
 const electronMain = fs.readFileSync(path.join(launcherRoot, "electron", "main.cjs"), "utf8");
 const browserHostSource = fs.readFileSync(path.join(launcherRoot, "electron", "browser-host.cjs"), "utf8");
+const connectorIdentitySource = fs.readFileSync(path.join(launcherRoot, "electron", "connector-identity.cjs"), "utf8");
+const runtimeSource = fs.readFileSync(path.join(launcherRoot, "electron", "runtime.cjs"), "utf8");
+const runtimeConfigSource = fs.readFileSync(path.join(launcherRoot, "..", "src", "config.ts"), "utf8");
 const preloadSource = fs.readFileSync(path.join(launcherRoot, "electron", "preload.cjs"), "utf8");
 const i18nSource = fs.readFileSync(path.join(launcherRoot, "src", "i18n.ts"), "utf8");
 
@@ -157,6 +160,11 @@ test("MCP copy includes every required account, key, and connector instruction",
   assert.match(i18nSource, /只有此步骤成功且 Tunnel 正在运行后/);
   assert.match(appSource, /className="mcp-step-two-hint"/);
   assert.match(i18nSource, /enable Developer Mode[\s\S]*?choose Tunnel[\s\S]*?set Authentication to None/);
+  assert.match(i18nSource, /create a new connector[\s\S]*?exact connector name shown below/);
+  assert.match(i18nSource, /Leave the old connector untouched and create Codex Native2 as a new connector/);
+  assert.match(i18nSource, /Do not rename or refresh Codex Native/);
+  assert.match(i18nSource, /choose Allow all actions[\s\S]*?blocks command and patch calls/);
+  assert.match(i18nSource, /outer Codex harness still enforces its sandbox and approvals/);
   assert.match(appSource, /<NoticeRow icon="alert" tone="warning">/);
   assert.doesNotMatch(appSource, /icon="spark"/);
 });
@@ -195,6 +203,23 @@ test("MCP verification has one primary action and exposes live progress", () => 
     browserHostSource,
     /querySelectorAll\('\[role="group"\], \[role="option"\], \[role="menuitem"\]'\)/,
   );
+});
+
+test("launcher migrates and verifies the explicit direct-turn connector identity", () => {
+  assert.match(electronMain, /connectorName:\s*runtimeHost\.browserConnectorName\(\)/);
+  assert.match(electronMain, /getConnectorName:\s*\(\) => runtimeHost\.browserConnectorName\(\)/);
+  assert.match(appSource, /<code>\{snapshot\.connectorName\}<\/code>/);
+  assert.match(connectorIdentitySource, /CURRENT_CONNECTOR_NAME = "Codex Native2"/);
+  assert.match(connectorIdentitySource, /LEGACY_CONNECTOR_NAMES = Object\.freeze\(\["Codex Native"\]\)/);
+  assert.match(runtimeConfigSource, /CHATGPT_CONNECTOR_NAME = "Codex Native2"/);
+  assert.match(runtimeConfigSource, /LEGACY_CHATGPT_CONNECTOR_NAMES = \["Codex Native"\]/);
+  assert.match(runtimeSource, /connectorMigrationRequired[\s\S]*?isLegacyConnectorName/);
+  assert.match(runtimeSource, /requireCurrentRuntimeConnectorName/);
+  assert.match(i18nSource, /Do not rename or refresh Codex Native/);
+  assert.match(appSource, /copy\.connectorMigrationNotice/);
+  for (const source of [electronMain, browserHostSource, appSource]) {
+    assert.doesNotMatch(source, /Codex Native2/);
+  }
 });
 
 test("launcher refreshes persisted ChatGPT authentication before presenting setup", () => {

@@ -1108,9 +1108,10 @@ function McpSurface({
             {step === 1 ? <p className="mcp-step-two-hint">{copy.mcpStepTwoHint}</p> : null}
             {step === 2 ? (
               <div className="connector-actions">
+                <NoticeRow icon="alert" tone="warning">{copy.connectorMigrationNotice}</NoticeRow>
                 <div className="connector-name">
                   <span>{copy.connectorName}</span>
-                  <code>Codex Native2</code>
+                  <code>{snapshot.connectorName}</code>
                 </div>
                 <div className="inline-actions">
                   <SecondaryButton

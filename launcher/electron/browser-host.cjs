@@ -7,7 +7,7 @@ const {
   runBrowserHelperOperation,
   verifyConnectorWithBrowserHelper,
 } = require("./browser-helper-verifier.cjs");
-const { EXPECTED_CONNECTOR_NAME } = require("./runtime.cjs");
+const { validateConnectorName } = require("./connector-identity.cjs");
 const { processRunning } = require("./process-tree.cjs");
 const {
   browserViewVisible,
@@ -144,11 +144,15 @@ function isChatGptCloudflareChallengeResponse(details) {
 }
 
 class BrowserHost {
-  constructor({ window, descriptorPath, cdpPort, control, helper, logger, publishState }) {
+  constructor({ window, descriptorPath, cdpPort, control, getConnectorName, helper, logger, publishState }) {
+    if (typeof getConnectorName !== "function") {
+      throw new Error("Browser host connector-name resolver is unavailable");
+    }
     this.window = window;
     this.descriptorPath = descriptorPath;
     this.cdpPort = cdpPort;
     this.control = control;
+    this.getConnectorName = getConnectorName;
     this.helper = helper;
     this.logger = logger;
     this.publishState = publishState;
@@ -1182,7 +1186,15 @@ class BrowserHost {
     return await this.withManualOperation("browser smoke test", () => this.runSmokeTest());
   }
 
+  connectorName() {
+    if (typeof this.getConnectorName !== "function") {
+      throw new Error("Browser host connector-name resolver is unavailable");
+    }
+    return validateConnectorName(this.getConnectorName());
+  }
+
   async runSmokeTest() {
+    const connectorName = this.connectorName();
     this.show();
     await this.waitForSurfaceReady();
     this.setState({ status: "testing", message: "Running browser smoke test" });
@@ -1190,7 +1202,7 @@ class BrowserHost {
     const result = await this.runBrowserHelperOperation({
       helper: this.helper,
       descriptorPath: this.descriptorPath,
-      appName: EXPECTED_CONNECTOR_NAME,
+      appName: connectorName,
       operation: "smoke",
       logger: this.logger,
     });
@@ -1211,10 +1223,7 @@ class BrowserHost {
   }
 
   async runConnectorVerification(appName) {
-    if (typeof appName !== "string" || !appName.trim() || appName.length > 80) {
-      throw new Error("Connector name is invalid");
-    }
-    const connectorName = appName.trim();
+    const connectorName = validateConnectorName(appName);
     this.setState({ status: "testing", message: "Checking ChatGPT connector" });
     await this.refreshChatGptHomeDocument();
     const result = await this.verifyConnectorWithBrowserHelper({
@@ -1233,13 +1242,14 @@ class BrowserHost {
   }
 
   async runSessionInspection(detectCapabilities = false) {
+    const connectorName = this.connectorName();
     const initialUrl = this.view.webContents.getURL();
     const startedIdle = initialUrl === IDLE_BROWSER_URL;
     if (detectCapabilities) await this.refreshChatGptHomeDocument();
     const result = await this.runBrowserHelperOperation({
       helper: this.helper,
       descriptorPath: this.descriptorPath,
-      appName: EXPECTED_CONNECTOR_NAME,
+      appName: connectorName,
       operation: "inspect",
       payload: { detectCapabilities },
       logger: this.logger,

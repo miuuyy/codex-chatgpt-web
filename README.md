@@ -132,14 +132,18 @@ not expose a public IP, open an inbound port, or require router forwarding.
    that will use the ChatGPT connector; creating the key is free and does not consume model API
    credits.
 3. Paste the Tunnel ID and API key, then press **Connect harness**.
-4. Enable **Developer Mode** in ChatGPT settings. Create a connector using **Tunnel**, select that
-   exact Tunnel, set **Authentication** to **None**, and name it exactly `Codex Native`.
-5. Scan its tools, choose the intended action permissions, and run **Verify runtime**. Verification
-   types and accepts the full `@Codex Native` mention, then confirms the connector pill.
+4. Enable **Developer Mode** in ChatGPT settings. Create a **new** connector using **Tunnel**, select
+   that exact Tunnel, set **Authentication** to **None**, and name it exactly **Codex Native2**.
+5. If an older **Codex Native** connector exists, leave it untouched. Do not rename or refresh it:
+   ChatGPT caches the public MCP contract by connector identity, and this release uses a new direct
+   turn-token contract. Under **Permissions** on **Codex Native2**, choose **Allow all actions**;
+   **Allow low-risk actions** blocks commands and patches before they reach this runtime. The outer
+   Codex harness still enforces its sandbox and approvals.
+6. Run **Verify runtime**. It selects **Codex Native2** exactly. If only **Codex Native** is found,
+   verification fails with an explicit migration error instead of accepting the legacy connector.
 
-Write/modify actions require a ChatGPT workspace and admin policy that permit them. OpenAI
-currently documents those actions for Business and Enterprise/Edu workspaces; personal Pro is
-limited to read/fetch MCP permissions. See
+Write/modify actions also require the ChatGPT workspace and its administrator policy to permit
+them. See
 [developer mode and MCP apps](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt).
 Unexpected approval prompts fail closed unless `--auto-approve-tool-calls` is explicitly enabled;
 that option clicks **Allow once**, never a permanent grant.

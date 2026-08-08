@@ -376,8 +376,8 @@ export class TurnBroker {
   private dispatch(request: BrokerRequest): unknown | Promise<unknown> {
     this.prune();
     if (request.method === "claim") {
-      const token = request.token?.trim();
-      if (!token) throw new Error("turn token is required");
+      const token = request.token;
+      if (typeof token !== "string" || token.length === 0) throw new Error("turn token is required");
       const channel = this.channels.get(token);
       const retiredTurn = channel ? undefined : this.retiredTokens.get(token);
       console.error(
@@ -387,7 +387,7 @@ export class TurnBroker {
       if (!channel) {
         throw new Error(retiredTurn !== undefined
           ? `This turn_token was issued for ${retiredTurnLabel(retiredTurn)}, which has already finished.`
-          + " Use the turn_token supplied with the current task context instead of one from earlier context."
+          + " This Codex Native action can no longer run."
           : "turn token is invalid, expired, or revoked");
       }
       if (channel.bindingId) {
@@ -404,8 +404,8 @@ export class TurnBroker {
       return { bindingId, environment: channel.environment };
     }
 
-    const bindingId = request.bindingId?.trim();
-    if (!bindingId) throw new Error("binding id is required");
+    const bindingId = request.bindingId;
+    if (typeof bindingId !== "string" || bindingId.length === 0) throw new Error("binding id is required");
     const binding = this.bindings.get(bindingId);
     if (!binding) {
       const retiredTurn = this.retiredBindings.get(bindingId);
@@ -414,9 +414,8 @@ export class TurnBroker {
         + ` retiredTurn=${retiredTurn ?? "unknown"})`,
       );
       throw new Error(retiredTurn !== undefined
-        ? `This binding_id belongs to ${retiredTurnLabel(retiredTurn)}, which has already finished.`
-        + " Call codex_bind_turn with the current turn_token and use the binding_id it returns."
-        : "binding id is invalid or expired");
+        ? `${retiredTurnLabel(retiredTurn)} has already finished; this Codex Native action can no longer run.`
+        : "internal Codex turn binding is invalid or expired");
     }
     if (request.method === "release") {
       this.revoke(binding.token);

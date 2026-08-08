@@ -201,6 +201,8 @@ test("turn broker names the finished turn that owns a replayed handle", async ()
       sandboxPolicy: { type: "dangerFullAccess" },
       tools: [],
     }, 60_000, "turn-alpha");
+    await expect(callTurnBroker(socketPath, { method: "claim", token: ` ${token}` }))
+      .rejects.toThrow("turn token is invalid, expired, or revoked");
     const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
     broker.revoke(token);
 
@@ -219,18 +221,20 @@ test("turn broker names the finished turn that owns a replayed handle", async ()
       wireName: "exec_command",
     });
     expect(replayedBinding).toContain("turn-alpha");
-    expect(replayedBinding).toContain("codex_bind_turn");
+    expect(replayedBinding).toContain("has already finished");
+    expect(replayedBinding).not.toContain("codex_bind_turn");
 
     const replayedToken = await rejection({ method: "claim", token });
     expect(replayedToken).toContain("turn-alpha");
-    expect(replayedToken).toContain("current task context");
+    expect(replayedToken).toContain("can no longer run");
+    expect(replayedToken).not.toContain("current task context");
 
     const unknownBinding = await rejection({
       method: "invoke",
       bindingId: "binding_never-issued",
       wireName: "exec_command",
     });
-    expect(unknownBinding).toBe("binding id is invalid or expired");
+    expect(unknownBinding).toBe("internal Codex turn binding is invalid or expired");
   } finally {
     await broker.close();
     rmSync(root, { recursive: true, force: true });

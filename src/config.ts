@@ -9,6 +9,38 @@ import { VERSION } from "./version";
 export type RuntimeMode = "browser-only" | "full";
 export type BrowserHostMode = "managed-chrome" | "launcher";
 
+/**
+ * ChatGPT caches a connector's public MCP contract by connector identity. The direct turn-token
+ * contract therefore has a new identity instead of mutating the retired connector in place.
+ */
+export const CHATGPT_CONNECTOR_NAME = "Codex Native2";
+export const LEGACY_CHATGPT_CONNECTOR_NAMES = ["Codex Native"] as const;
+
+export function isLegacyChatGptConnectorName(value: string): boolean {
+  return (LEGACY_CHATGPT_CONNECTOR_NAMES as readonly string[]).includes(value);
+}
+
+export function legacyChatGptConnectorMigrationMessage(legacyName: string): string {
+  return `Legacy ChatGPT connector ${JSON.stringify(legacyName)} was found, but this release requires`
+    + ` a newly created connector named ${JSON.stringify(CHATGPT_CONNECTOR_NAME)}. Create`
+    + ` ${JSON.stringify(CHATGPT_CONNECTOR_NAME)} against the same tunnel with Authentication set to None;`
+    + ` do not rename or refresh ${JSON.stringify(legacyName)}.`;
+}
+
+export function resolveSetupConnectorName(existingName?: string, requestedName?: string): string {
+  if (requestedName !== undefined) {
+    const requested = requestedName.trim();
+    if (!requested || requested.length > 80) throw new Error("Connector name is invalid");
+    if (isLegacyChatGptConnectorName(requested)) {
+      throw new Error(legacyChatGptConnectorMigrationMessage(requested));
+    }
+    return requested;
+  }
+  const existing = existingName?.trim();
+  if (!existing || isLegacyChatGptConnectorName(existing)) return CHATGPT_CONNECTOR_NAME;
+  return existing;
+}
+
 export interface TunnelConfig {
   binaryPath: string;
   tunnelId: string;
@@ -117,7 +149,7 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     host: "127.0.0.1",
     port: 17841,
     contextWindow: 256_000,
-    appName: "Codex Native",
+    appName: CHATGPT_CONNECTOR_NAME,
     browserHost: "managed-chrome",
     chromeExecutablePath: defaultChromeExecutable(),
     storageStatePath: join(home, "browser", "storage-state.json"),

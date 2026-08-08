@@ -17,7 +17,7 @@ test("launcher verification delegates exact connector selection to the browser h
       const message = JSON.parse(line);
       if (message.type === "shutdown") process.exit(0);
       if (message.type !== "verify") return;
-      if (message.config.appName !== "Codex Native") process.exit(2);
+      if (message.config.appName !== "Codex Native2") process.exit(2);
       if (message.config.browserHostDescriptorPath !== "/runtime/launcher-browser.json") process.exit(3);
       send({ type: "result", id: message.id, text: message.config.appName });
     });
@@ -26,11 +26,11 @@ test("launcher verification delegates exact connector selection to the browser h
   const result = await verifyConnectorWithBrowserHelper({
     helper: { executable: process.execPath, script },
     descriptorPath: "/runtime/launcher-browser.json",
-    appName: "Codex Native",
+    appName: "Codex Native2",
     logger: { info() {} },
   });
 
-  assert.deepEqual(result, { ok: true, appName: "Codex Native" });
+  assert.deepEqual(result, { ok: true, appName: "Codex Native2" });
 });
 
 test("launcher verification consumes a helper input EOF after the result", async (context) => {
@@ -53,9 +53,9 @@ test("launcher verification consumes a helper input EOF after the result", async
   const result = await verifyConnectorWithBrowserHelper({
     helper: { executable: process.execPath, script },
     descriptorPath: "/runtime/launcher-browser.json",
-    appName: "Codex Native",
+    appName: "Codex Native2",
     logger: { info() {} },
   });
 
-  assert.deepEqual(result, { ok: true, appName: "Codex Native" });
+  assert.deepEqual(result, { ok: true, appName: "Codex Native2" });
 });

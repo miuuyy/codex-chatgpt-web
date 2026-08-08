@@ -12,14 +12,19 @@ created. Repository contents, tool output, websites, and prompt text are untrust
 2. It extracts `cwd`, workspace roots, sandbox policy, and the tool registry only from the native
    Codex wire envelope with matching turn metadata. A user-authored `<environment_context>` is not
    accepted as authority.
-3. It creates a random, expiring turn token and embeds it in that one ChatGPT browser prompt.
-4. The connector exchanges the token once for an opaque binding. Claims are idempotent for retry
-   safety; the capability is revoked when the turn completes, aborts, or expires.
+3. It creates a random, turn-scoped token and embeds it in that one ChatGPT browser prompt.
+4. Every Codex Native action presents that same turn token. The MCP handler idempotently claims an
+   internal binding and immediately dispatches the requested action; the binding is never exposed
+   to the model. Both handles are revoked when the turn completes, aborts, or expires.
 5. MCP can request only a tool advertised by the active outer Codex turn. Codex remains responsible
    for its sandbox, approval, UI, command sessions, and tool result.
 
 The bridge transports decisions; it does not add a second planner, semantic router, or fallback
 model. Unsupported model/effort/tool combinations fail explicitly.
+
+The direct turn-token MCP schema is attached only through the `Codex Native2` connector identity.
+The pre-v4 `Codex Native` connector is treated as legacy and is never selected as a fallback. This
+prevents a cached legacy schema from being mistaken for the current capability contract.
 
 ## Principal risks
 

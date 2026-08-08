@@ -32,8 +32,16 @@ launcher-owned codex-chatgpt-web daemon
 - Exposes the same fixed models; Instant through Extra High are tool-capable, while Pro remains
   read-only.
 - ChatGPT uses a custom MCP connector backed by `openai/tunnel-client`.
-- Every connector call is bound to one outer Codex turn capability.
+- Every connector call presents one outer Codex turn capability; the MCP server keeps the derived
+  binding private and dispatches the requested action immediately.
 - Tool calls and results remain in the same ChatGPT response while Codex executes them locally.
+
+The ChatGPT connector name is also the public MCP ABI identity. The direct turn-token contract uses
+`Codex Native2`; the retired `Codex Native` identity is never selected or refreshed in place. Setup
+migrates known legacy local configuration to the new name, clears prior verification state, and
+requires the user to create the new connector. Browser verification accepts the exact new identity,
+reports a specific migration error when only the legacy identity is visible, and never falls back to
+the legacy connector. Future public schema changes require another explicit connector identity.
 
 ## Browser lifecycle
 
@@ -59,9 +67,9 @@ that still exceeds the proven hard ceiling fails explicitly before any browser t
 
 Routed compaction v1/v2 runs as a dedicated read-only browser summarization turn with no broker or
 local tools, then returns the native replacement-history shape expected by Codex. A prompt-level
-checkpoint marker is translated into a visible Codex trace item; tool-capable turns re-bind the
-same capability after that checkpoint. Visible ChatGPT status rows become reasoning summaries,
-while stable prose between rows becomes native Codex commentary.
+checkpoint marker is translated into a visible Codex trace item; every later tool action in the
+same turn continues to present the current turn capability. Visible ChatGPT status rows become
+reasoning summaries, while stable prose between rows becomes native Codex commentary.
 
 ## Installation and service lifecycle
 

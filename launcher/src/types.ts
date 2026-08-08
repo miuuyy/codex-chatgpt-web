@@ -84,6 +84,7 @@ export type UpdateState =
 export interface LauncherSnapshot {
   state: LauncherState;
   browser: BrowserState | null;
+  connectorName: string;
   mcpCredentialsConfigured: boolean;
   logs: LogRecord[];
   urls: {

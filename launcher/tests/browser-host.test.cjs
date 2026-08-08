@@ -124,9 +124,10 @@ test("smoke preserves an already-hydrated Temporary Chat page", () => {
 
 test("session inspection delegates navigation and capability detection to the shared browser helper", async () => {
   const calls = [];
-  const fixture = {
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
     helper: { executable: "/runtime/electron", script: "/runtime/browser-helper.cjs" },
     descriptorPath: "/runtime/launcher-browser.json",
+    getConnectorName: () => "Codex Native2",
     logger: { info() {} },
     view: { webContents: { getURL: () => "https://chatgpt.com/" } },
     refreshChatGptHomeDocument: async () => calls.push({ operation: "refresh" }),
@@ -143,7 +144,7 @@ test("session inspection delegates navigation and capability detection to the sh
         },
       };
     },
-  };
+  });
 
   const inspected = await BrowserHost.prototype.runSessionInspection.call(fixture, true);
 
@@ -157,13 +158,15 @@ test("session inspection delegates navigation and capability detection to the sh
   assert.equal(calls.length, 2);
   assert.equal(calls[0].operation, "refresh");
   assert.equal(calls[1].operation, "inspect");
+  assert.equal(calls[1].appName, "Codex Native2");
   assert.deepEqual(calls[1].payload, { detectCapabilities: true });
 });
 
 test("session inspection fails closed on incomplete shared-helper capability evidence", async () => {
-  const fixture = {
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
     helper: {},
     descriptorPath: "/runtime/launcher-browser.json",
+    getConnectorName: () => "Codex Native",
     logger: { info() {} },
     view: { webContents: { getURL: () => "https://chatgpt.com/?temporary-chat=true" } },
     refreshChatGptHomeDocument: async () => {},
@@ -171,7 +174,7 @@ test("session inspection fails closed on incomplete shared-helper capability evi
       type: "result",
       value: { authenticated: true, temporary: true, url: "https://chatgpt.com/?temporary-chat=true" },
     }),
-  };
+  });
   await assert.rejects(
     BrowserHost.prototype.runSessionInspection.call(fixture, true),
     /incomplete ChatGPT capability evidence/,
@@ -486,9 +489,10 @@ test("launcher delegates every ChatGPT model and turn operation to the shared br
   assert.match(workerSource, /runBrowserTurn/);
 
   const calls = [];
-  const fixture = {
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
     helper: { executable: "/runtime/electron", script: "/runtime/browser-helper.cjs" },
     descriptorPath: "/runtime/launcher-browser.json",
+    getConnectorName: () => "Codex Native2",
     logger: { info: (...args) => calls.push(["log", ...args]) },
     show: () => calls.push(["show"]),
     waitForSurfaceReady: async () => calls.push(["ready"]),
@@ -497,14 +501,30 @@ test("launcher delegates every ChatGPT model and turn operation to the shared br
       calls.push(["helper", options]);
       return { type: "result", value: { effort: "High", response: "CODEX WEB GPT READY" } };
     },
-  };
+  });
 
   assert.deepEqual(await BrowserHost.prototype.runSmokeTest.call(fixture), {
     ok: true,
     effort: "High",
     response: "CODEX WEB GPT READY",
   });
-  assert.equal(calls.find(call => call[0] === "helper")[1].operation, "smoke");
+  const helperCall = calls.find(call => call[0] === "helper")[1];
+  assert.equal(helperCall.operation, "smoke");
+  assert.equal(helperCall.appName, "Codex Native2");
+});
+
+test("browser helper operations fail closed when the configured connector name is invalid", async () => {
+  let helperCalls = 0;
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    getConnectorName: () => "   ",
+    runBrowserHelperOperation: async () => { helperCalls += 1; },
+  });
+
+  await assert.rejects(
+    BrowserHost.prototype.runSmokeTest.call(fixture),
+    /Connector name is invalid/,
+  );
+  assert.equal(helperCalls, 0);
 });
 
 test("connector verification is effort-independent and works while the browser surface is hidden", async () => {
@@ -525,9 +545,9 @@ test("connector verification is effort-independent and works while the browser s
     },
   };
 
-  const result = await BrowserHost.prototype.runConnectorVerification.call(fixture, "Codex Native");
+  const result = await BrowserHost.prototype.runConnectorVerification.call(fixture, "Codex Native2");
 
-  assert.deepEqual(result, { ok: true, appName: "Codex Native" });
+  assert.deepEqual(result, { ok: true, appName: "Codex Native2" });
   assert.equal(calls.some(([type]) => type === "show"), false);
   assert.deepEqual(
     calls.filter(([type]) => ["refresh", "helper"].includes(type)),
@@ -536,7 +556,7 @@ test("connector verification is effort-independent and works while the browser s
       ["helper", {
         helper: fixture.helper,
         descriptorPath: fixture.descriptorPath,
-        appName: "Codex Native",
+        appName: "Codex Native2",
         logger: fixture.logger,
       }],
     ],
@@ -726,7 +746,7 @@ test("connector verification hard-refreshes an already hydrated Temporary Chat p
     },
   };
 
-  await BrowserHost.prototype.runConnectorVerification.call(fixture, "Codex Native");
+  await BrowserHost.prototype.runConnectorVerification.call(fixture, "Codex Native2");
 
   assert.equal(loaded, false);
   assert.equal(refreshed, true);

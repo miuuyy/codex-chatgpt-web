@@ -233,22 +233,8 @@ export function compileChatGptWebPrompt(
     ]
     : mode.localTools
     ? [
-      "For local files, commands, processes, images, user interaction, and configured MCP/apps, use the attached Codex Native plugin inside this same response.",
-      `Before commentary, an answer, or any other tool call, call codex_bind_turn with turn_token ${turnToken}. This bind is mandatory on every response, even when the request appears not to need a local operation.`,
-      "turn_token and binding_id are different values: copy the exact binding_ value returned by codex_bind_turn into every later Codex Native call, and never put the turn_ value in a binding_id field. Do not reveal either capability value in the answer.",
-      "A bind result with binding_status active and valid_until outer_turn_end has no time limit. Never report that it expired unless a real Codex Native call returns that exact error.",
-      "Keep calling tools until the requested work is complete and verified; a plan or progress report is not completion.",
-      "After codex_bind_turn, follow its exact command_tool and outer_tool_gateway fields. Call codex_exec for commands when command_tool is codex_exec or when command_tool equals the advertised outer_tool_gateway; in code-mode-only turns this is the supported shell_command route through the outer exec gateway.",
-      "Use codex_write_stdin for a session_id returned by codex_exec, codex_apply_patch for file patches, and codex_view_image for local images. Use codex_tool_inventory and codex_tool_call for other exact outer tools, or when bind explicitly says no dedicated bridge exists.",
-      "Never call or describe exec_command unless that exact wire name is present in the current binding/tool registry. The outer gateway name and the nested shell_command name are different levels of the contract.",
-      "Never invent, rename, or substitute an unavailable tool. The dedicated bridge tools and the exact inventory are authoritative.",
-      "For requests to answer, explain, review, diagnose, or plan, inspect the relevant local materials with non-mutating Codex Native calls and report the result; do not implement changes unless the request also asks for them.",
-      "Reading files, listing directories, searching source text, inspecting logs and repository metadata, and running non-mutating diagnostics are safe local actions already authorized when relevant to the request. Submit those calls without asking; the outer Codex harness enforces sandboxing, approvals, and permissions and returns the real result.",
-      "For requests to change, build, or fix, make the requested in-scope local changes and run relevant non-destructive validation. Require additional authority only for external writes, destructive actions, purchases, or a material expansion of scope.",
-      "A successful codex_bind_turn proves that the local capability is active, but it is not task evidence. When fresh local evidence is required, a final answer is invalid until a relevant Codex Native call returns a real result.",
-      "Never claim that Codex, a runtime, an executor, a sandbox, a security layer, or a permission gate blocked local access unless a real Codex Native call in this response returned that exact failure.",
-      "Codex Native synchronously bridges each plugin action into the same outer Codex turn; wait for its real result before continuing.",
-      "Never serialize a proposed tool call as assistant text. Make the actual MCP call and use its real result.",
+      "For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.",
+      "Use actual Codex Native results as evidence for local observations and effects, and keep calling tools until the requested work is complete and verified.",
     ]
     : [
       `This is ChatGPT Web ${mode.displayLabel} with no Codex Native bridge to the user's local computer attached to this response. This restriction applies only to local Codex files, commands, processes, and computer mutations.`,
@@ -276,8 +262,7 @@ export function compileChatGptWebPrompt(
     : mode.localTools
     ? [
       "<codex_transport_resume>",
-      `The task context is complete. Your first action now must be the actual Codex Native codex_bind_turn call with turn_token ${turnToken}; emit no commentary or answer before its real result.`,
-      "After binding, copy its exact binding_ result (not the turn_ token) into the binding_id field and follow command_tool/outer_tool_gateway from that result. Use the dedicated Codex Native bridge for local inspection and commands, then keep using that binding_id for every later call.",
+      `The task context is complete. Pass turn_token ${turnToken} unchanged to every Codex Native call in this response, including continuations after tool results; do not expose it in the answer. Execute the latest active user request now.`,
       "</codex_transport_resume>",
     ]
     : [
