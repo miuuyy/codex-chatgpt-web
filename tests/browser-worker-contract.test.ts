@@ -174,7 +174,7 @@ test("new ChatGPT chats select the requested effort and submit the first real tu
   expect(workerSource).not.toContain("CHATGPT_WARMUP_PROMPT");
   expect(workerSource).not.toContain('"warmup_effort_selection"');
   expect(workerSource).not.toContain('"chat_warmup"');
-  expect(workerSource).toContain("turn.modelId,\n          turn.reasoning");
+  expect(workerSource).toMatch(/turn\.modelId,\s+turn\.reasoning/);
   expect(requestedSelection).toBeGreaterThan(-1);
   expect(promptAttachment).toBeGreaterThan(requestedSelection);
 });
