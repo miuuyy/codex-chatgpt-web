@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { defaultConfig } from "../src/config";
-import { CHATGPT_WEB_MODEL_ROUTES, resolveChatGptWebContextLimits } from "../src/chatgpt-web-models";
+import { CHATGPT_WEB_LUNA_MODEL_ROUTE, CHATGPT_WEB_MODEL_ROUTES, resolveChatGptWebContextLimits } from "../src/chatgpt-web-models";
 import {
   augmentNativeModelCatalog,
   CHATGPT_WEB_MODEL_PRIORITY,
@@ -56,7 +56,7 @@ describe("native /models augmentation", () => {
     expect(web.map(model => model.display_name)).toEqual(CHATGPT_WEB_MODEL_ROUTES.map(route => route.displayName));
     for (const [index, model] of web.entries()) {
       const route = CHATGPT_WEB_MODEL_ROUTES[index]!;
-      const limits = resolveChatGptWebContextLimits(route.adapterEffort);
+      const limits = resolveChatGptWebContextLimits(route.backendModel, route.adapterEffort, config);
       expect(model).toMatchObject({
         slug: route.slug,
         display_name: route.displayName,
@@ -115,18 +115,35 @@ describe("native /models augmentation", () => {
       contextWindow: model.context_window,
       autoCompactTokenLimit: model.auto_compact_token_limit,
     }))).toEqual([
-      { contextWindow: 150_000, autoCompactTokenLimit: 135_000 },
-      { contextWindow: 150_000, autoCompactTokenLimit: 135_000 },
-      { contextWindow: 185_000, autoCompactTokenLimit: 166_500 },
+      { contextWindow: 41_000, autoCompactTokenLimit: 32_000 },
+      { contextWindow: 90_000, autoCompactTokenLimit: 80_000 },
+      { contextWindow: 90_000, autoCompactTokenLimit: 80_000 },
     ]);
+  });
+
+  test("publishes one Luna route when the account exposes no Sol selector", () => {
+    const config = defaultConfig("full");
+    config.solAvailable = false;
+    const models = augmentNativeModelCatalog(source(), config).models as Array<Record<string, unknown>>;
+    const web = models.filter(model => String(model.slug).startsWith("chatgpt-web/"));
+    expect(web).toHaveLength(1);
+    expect(web[0]).toMatchObject({
+      slug: CHATGPT_WEB_LUNA_MODEL_ROUTE.slug,
+      display_name: CHATGPT_WEB_LUNA_MODEL_ROUTE.displayName,
+      default_reasoning_level: "low",
+      supported_reasoning_levels: [{ effort: "low", description: CHATGPT_WEB_LUNA_MODEL_ROUTE.displayName }],
+      context_window: 1_050_000,
+      auto_compact_token_limit: 1_050_000,
+    });
   });
 
   test("honors an explicit Codex context override without replacing or reordering native models", () => {
     const native = source();
     const nativeSnapshot = structuredClone(native);
+    const config = defaultConfig("full");
     // model_context_window is one top-level Codex setting, so it must not depend on which model
     // the config's `model` line happens to name - that line can hold a ChatGPT Web slug.
-    const result = augmentNativeModelCatalog(native, defaultConfig("full"), {
+    const result = augmentNativeModelCatalog(native, config, {
       model: "chatgpt-web/medium",
       contextWindow: 371_851,
     });
@@ -142,7 +159,11 @@ describe("native /models augmentation", () => {
     expect(models[1]!.context_window).toBe(300_000);
     for (const [index, model] of models.slice(3).entries()) {
       const route = CHATGPT_WEB_MODEL_ROUTES[index]!;
-      const limits = resolveChatGptWebContextLimits(route.adapterEffort);
+      const limits = resolveChatGptWebContextLimits(
+        route.backendModel,
+        route.adapterEffort,
+        config,
+      );
       expect(model.context_window).toBe(limits.contextWindow);
       expect(model.max_context_window).toBe(limits.contextWindow);
       expect(model.auto_compact_token_limit).toBe(limits.autoCompactTokenLimit);

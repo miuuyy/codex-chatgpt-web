@@ -4,6 +4,10 @@ import { notifyLauncherTurn, readLauncherBrowserHostDescriptor } from "../../lau
 import { ChatGptWebAdapterError } from "./adapter-error";
 import type { CompiledChatGptWebPrompt } from "./prompt";
 import type { BrowserTurn, ResolvedBrowserConfig } from "./browser-worker";
+import {
+  parseChatGptLunaCheckpoint,
+  type ChatGptLunaCheckpoint,
+} from "./rolling-checkpoint";
 
 interface PendingTurn {
   turn: BrowserTurn;
@@ -16,6 +20,7 @@ interface PendingTurn {
 type HelperMessage =
   | { type: "ready" }
   | { type: "event"; id: string; event: "heartbeat" | "reasoning" | "commentary" | "text"; text?: string; continuation?: boolean }
+  | { type: "event"; id: string; event: "luna_checkpoint"; checkpoint: ChatGptLunaCheckpoint; answerHash: string }
   | { type: "result"; id: string; text: string }
   | {
       type: "error";
@@ -40,6 +45,18 @@ function parseHelperMessage(line: string): HelperMessage {
   }
   if (message.type === "event") {
     const event = message.event;
+    if (event === "luna_checkpoint") {
+      if (typeof message.answerHash !== "string" || !/^[a-f0-9]{64}$/.test(message.answerHash)) {
+        throw new Error("Launcher browser helper Luna checkpoint answer hash is invalid");
+      }
+      return {
+        type: "event",
+        id: message.id,
+        event,
+        checkpoint: parseChatGptLunaCheckpoint(message.checkpoint),
+        answerHash: message.answerHash,
+      };
+    }
     const text = message.text;
     const continuation = message.continuation;
     if (!["heartbeat", "reasoning", "commentary", "text"].includes(String(event))) {
@@ -170,6 +187,7 @@ export class LauncherBrowserHelperClient {
             reasoning: turn.reasoning,
             capabilities: turn.capabilities,
             prepared: { text: prepared.text, images: prepared.images } satisfies CompiledChatGptWebPrompt,
+            ...(turn.captureLunaCheckpoint ? { captureLunaCheckpoint: true } : {}),
           },
         }).catch(error => this.finishWithError(turn.traceId, error instanceof Error ? error : new Error(String(error))));
       });
@@ -284,6 +302,13 @@ export class LauncherBrowserHelperClient {
     if (!pending) return;
     if (message.type === "event") {
       if (message.event === "heartbeat") pending.turn.onHeartbeat?.();
+      else if (message.event === "luna_checkpoint") {
+        if (!pending.turn.captureLunaCheckpoint || !pending.turn.onLunaCheckpoint) {
+          this.finishWithError(message.id, new Error("Launcher browser helper emitted an unexpected Luna checkpoint"));
+          return;
+        }
+        pending.turn.onLunaCheckpoint({ checkpoint: message.checkpoint, answerHash: message.answerHash });
+      }
       else if (message.event === "reasoning" && message.text) {
         pending.turn.onReasoningSummary?.(message.text, message.continuation === true);
       }

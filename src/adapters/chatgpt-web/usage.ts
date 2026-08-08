@@ -1,19 +1,14 @@
 import { estimateTokens } from "../../lib/token-estimate";
 import type { CodexParsedRequest, CodexUsage } from "../../types";
-import type { CompiledChatGptWebPrompt } from "./prompt";
+import { estimateCompiledChatGptWebInputTokens } from "./input-tokens";
 import { compileChatGptWebPrompt } from "./prompt";
-import { resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
+import { extractChatGptTurnIdentity } from "./environment";
+import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import type { BrokerToolRequest } from "./turn-broker";
 
 // The real capability has the same length. Keeping it out of usage accounting would make
 // estimates differ slightly between the prepared browser prompt and later Codex tool rounds.
 const ESTIMATE_TURN_TOKEN = "turn_00000000000000000000000000000000";
-
-// ChatGPT's product system prompt and the fixed Codex Native MCP schemas are not present in the
-// visible composer text. Reserve them explicitly; over-counting fails safe by compacting earlier.
-const CHATGPT_PLATFORM_RESERVE_TOKENS = 8_192;
-const CHATGPT_IMAGE_RESERVE_TOKENS = 4_096;
-const CHATGPT_ORIGINAL_IMAGE_RESERVE_TOKENS = 8_192;
 
 export interface ChatGptWebRoundEvidence {
   answer?: string;
@@ -25,30 +20,21 @@ function conservativeTextTokens(text: string, modelId: string): number {
   return estimateTokens(text, modelId);
 }
 
-export function estimateCompiledChatGptWebInputTokens(
-  compiled: CompiledChatGptWebPrompt,
-  modelId: string,
-): number {
-  const imageTokens = compiled.images.reduce(
-    (total, image) => total + (image.detail === "original"
-      ? CHATGPT_ORIGINAL_IMAGE_RESERVE_TOKENS
-      : CHATGPT_IMAGE_RESERVE_TOKENS),
-    0,
-  );
-  return CHATGPT_PLATFORM_RESERVE_TOKENS
-    + conservativeTextTokens(compiled.text, modelId)
-    + imageTokens;
-}
-
 export function estimateChatGptWebInputTokens(
   parsed: CodexParsedRequest,
   capabilities: ChatGptWebCapabilities,
 ): number {
   const mode = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
+  const identity = extractChatGptTurnIdentity(parsed);
   const compiled = compileChatGptWebPrompt(
     parsed,
     capabilities,
     mode.localTools ? ESTIMATE_TURN_TOKEN : undefined,
+    {
+      captureLunaCheckpoint: parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID
+        && !parsed._compactionRequest
+        && Boolean(identity.threadId && identity.turnId),
+    },
   );
   return estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId);
 }

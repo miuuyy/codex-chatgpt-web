@@ -8,12 +8,14 @@ import {
   assertAuthenticatedChatGptPage,
   assertTemporaryChatPage,
   CHATGPT_TEMPORARY_CHAT_URL,
-  detectChatGptProCapability,
+  detectChatGptAccountCapabilities,
 } from "./chatgpt-session";
+import type { ChatGptWebAccountCapabilities } from "./chatgpt-web-models";
 
 export interface BrowserLoginResult {
   storageStatePath: string;
   accountSurfaceUrl: string;
+  solAvailable: boolean;
   proAvailable: boolean;
 }
 
@@ -21,6 +23,7 @@ interface LoginVerificationMarker {
   version: 1;
   authenticated: true;
   verifiedAt: string;
+  solAvailable?: boolean;
   proAvailable?: boolean;
 }
 
@@ -28,12 +31,15 @@ export function loginVerificationMarkerPath(storageStatePath: string): string {
   return `${storageStatePath}.verified.json`;
 }
 
-function writeVerificationMarker(storageStatePath: string, proAvailable: boolean): void {
+function writeVerificationMarker(
+  storageStatePath: string,
+  capabilities: ChatGptWebAccountCapabilities,
+): void {
   const marker: LoginVerificationMarker = {
     version: 1,
     authenticated: true,
     verifiedAt: new Date().toISOString(),
-    proAvailable,
+    ...capabilities,
   };
   atomicWriteFile(loginVerificationMarkerPath(storageStatePath), `${JSON.stringify(marker)}\n`);
 }
@@ -41,7 +47,7 @@ function writeVerificationMarker(storageStatePath: string, proAvailable: boolean
 async function inspectStoredState(
   config: AppConfig,
   storageState: NonNullable<BrowserContextOptions["storageState"]>,
-): Promise<{ proAvailable: boolean; url: string }> {
+): Promise<ChatGptWebAccountCapabilities & { url: string }> {
   const verifierBrowser = await chromium.launch({
     executablePath: config.chromeExecutablePath,
     headless: false,
@@ -56,7 +62,7 @@ async function inspectStoredState(
       await verifierPage.getByRole("textbox", { name: "Chat with ChatGPT" }).waitFor({ state: "visible", timeout: 60_000 });
       await assertAuthenticatedChatGptPage(verifierPage);
       await assertTemporaryChatPage(verifierPage);
-      return { proAvailable: await detectChatGptProCapability(verifierPage), url: verifierPage.url() };
+      return { ...await detectChatGptAccountCapabilities(verifierPage), url: verifierPage.url() };
     } finally {
       await verifierContext.close();
     }
@@ -65,18 +71,23 @@ async function inspectStoredState(
   }
 }
 
-export async function inspectBrowserLoginCapabilities(config: AppConfig): Promise<{ proAvailable: boolean }> {
+export async function inspectBrowserLoginCapabilities(config: AppConfig): Promise<ChatGptWebAccountCapabilities> {
   if (!browserLoginStateExists(config)) throw new Error("ChatGPT login state is missing or unverified");
   const inspected = await inspectStoredState(config, config.storageStatePath);
-  writeVerificationMarker(config.storageStatePath, inspected.proAvailable);
-  return { proAvailable: inspected.proAvailable };
+  writeVerificationMarker(config.storageStatePath, inspected);
+  return { solAvailable: inspected.solAvailable, proAvailable: inspected.proAvailable };
 }
 
-export function storedBrowserLoginCapabilities(config: AppConfig): { proAvailable?: boolean } {
+export function storedBrowserLoginCapabilities(
+  config: AppConfig,
+): Partial<ChatGptWebAccountCapabilities> {
   if (!browserLoginStateExists(config)) return {};
   try {
     const marker = JSON.parse(readFileSync(loginVerificationMarkerPath(config.storageStatePath), "utf8")) as Partial<LoginVerificationMarker>;
-    return typeof marker.proAvailable === "boolean" ? { proAvailable: marker.proAvailable } : {};
+    return {
+      ...(typeof marker.solAvailable === "boolean" ? { solAvailable: marker.solAvailable } : {}),
+      ...(typeof marker.proAvailable === "boolean" ? { proAvailable: marker.proAvailable } : {}),
+    };
   } catch {
     return {};
   }
@@ -137,8 +148,13 @@ export async function loginToChatGpt(
 
     const inspected = await inspectStoredState(config, state);
     atomicWriteFile(config.storageStatePath, `${JSON.stringify(state)}\n`);
-    writeVerificationMarker(config.storageStatePath, inspected.proAvailable);
-    return { storageStatePath: config.storageStatePath, accountSurfaceUrl: page.url(), proAvailable: inspected.proAvailable };
+    writeVerificationMarker(config.storageStatePath, inspected);
+    return {
+      storageStatePath: config.storageStatePath,
+      accountSurfaceUrl: page.url(),
+      solAvailable: inspected.solAvailable,
+      proAvailable: inspected.proAvailable,
+    };
   } finally {
     await context.close();
     if (browserLoginStateExists(config)) rmSync(profileDir, { recursive: true, force: true });

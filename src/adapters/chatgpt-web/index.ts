@@ -7,12 +7,16 @@ import { parseDataUrl } from "../image";
 import { ChatGptWebAdapterError } from "./adapter-error";
 import { ChatGptBrowserWorker } from "./browser-worker";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "./environment";
-import { resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
+import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt";
 import { TurnBroker, type BrokerToolRequest, type BrokerToolResult } from "./turn-broker";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptCompactionSourceExecutionKey, chatGptTurnExecutionKey, chatGptTurnSessions, type ChatGptBrowserOutcome, type ChatGptTraceEvent, type ChatGptTurnRuntime, type ChatGptTurnSession } from "./turn-execution";
 import { estimateChatGptWebUsage } from "./usage";
 import { ChatGptThreadEnvironmentStore } from "./thread-environment";
+import {
+  ChatGptLunaCheckpointStore,
+  type CapturedChatGptLunaCheckpoint,
+} from "./rolling-checkpoint";
 
 function brokerSocketPath(provider: CodexProviderConfig): string {
   const configured = provider.chatgptWeb?.brokerSocketPath?.trim();
@@ -134,6 +138,13 @@ function replayEvents(events: AdapterEvent[], emit: (event: AdapterEvent) => voi
   for (const event of events) emit(event);
 }
 
+function runtimeUsageInput(session: ChatGptTurnSession): CodexParsedRequest {
+  if (!session.runtime.usageInput) {
+    throw new Error("ChatGPT browser runtime is missing the exact prepared usage input");
+  }
+  return session.runtime.usageInput;
+}
+
 function currentToolResults(parsed: CodexParsedRequest, session: ChatGptTurnSession): CodexToolResultMessage[] {
   const byId = new Map<string, CodexToolResultMessage>();
   for (const message of parsed.context.messages) {
@@ -159,6 +170,7 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
   const timeoutMs = provider.chatgptWeb?.turnTimeoutMs;
   const configuredCapabilities: ChatGptWebCapabilities = {
     localToolsEnabled: provider.chatgptWeb?.localToolsEnabled === true,
+    solAvailable: provider.chatgptWeb?.solAvailable !== false,
     proAvailable: provider.chatgptWeb?.proAvailable === true,
   };
   const executionNamespace = createHash("sha256").update(JSON.stringify({
@@ -170,6 +182,11 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
       ? resolve(expandUserPath(provider.chatgptWeb.threadEnvironmentStatePath))
       : undefined,
   );
+  const lunaCheckpointStore = new ChatGptLunaCheckpointStore(
+    provider.chatgptWeb?.lunaCheckpointStatePath
+      ? resolve(expandUserPath(provider.chatgptWeb.lunaCheckpointStatePath))
+      : undefined,
+  );
 
   const startRuntime = (
     parsed: CodexParsedRequest,
@@ -178,26 +195,67 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
     turnCapabilities: ChatGptWebCapabilities,
   ): ChatGptTurnRuntime => {
     const mode = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, turnCapabilities);
+    const identity = extractChatGptTurnIdentity(parsed);
+    const captureLunaCheckpoint = parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID
+      && !parsed._compactionRequest
+      && Boolean(identity.threadId && identity.turnId);
+    const checkpointInput = captureLunaCheckpoint
+      ? lunaCheckpointStore.apply(parsed)
+      : { parsed, applied: false };
+    if (captureLunaCheckpoint) {
+      console.info(
+        `[chatgpt-web] Luna rolling checkpoint applied=${checkpointInput.applied}${checkpointInput.reason ? ` reason=${checkpointInput.reason}` : ""}`,
+      );
+    }
+    let capturedCheckpoint: CapturedChatGptLunaCheckpoint | undefined;
+    let checkpointCaptureError: Error | undefined;
+    const captureCheckpoint = (captured: CapturedChatGptLunaCheckpoint): void => {
+      if (capturedCheckpoint) {
+        checkpointCaptureError = new Error("ChatGPT Luna emitted more than one rolling checkpoint");
+        return;
+      }
+      capturedCheckpoint = captured;
+    };
+    const finalizeCheckpoint = (browser: Promise<string>): Promise<string> => browser.then(answer => {
+      if (!captureLunaCheckpoint) return answer;
+      if (checkpointCaptureError) throw checkpointCaptureError;
+      if (!capturedCheckpoint) throw new Error("ChatGPT Luna completed without a captured rolling checkpoint");
+      lunaCheckpointStore.commit(parsed, capturedCheckpoint, answer);
+      return answer;
+    });
     const browserAbort = new AbortController();
     const trace = new ChatGptTraceFeed();
     const text = new ChatGptTextFeed();
     if (!mode.localTools) {
-      const browser = worker.run({
+      const browser = finalizeCheckpoint(worker.run({
         traceId,
         modelId: parsed.modelId,
         reasoning: parsed.options.reasoning,
         capabilities: turnCapabilities,
-        prepare: async () => ({ ...compileChatGptWebPrompt(parsed, turnCapabilities), release: () => {} }),
+        prepare: async () => ({
+          ...compileChatGptWebPrompt(
+            checkpointInput.parsed,
+            turnCapabilities,
+            undefined,
+            { captureLunaCheckpoint },
+          ),
+          release: () => {},
+        }),
         abortSignal: browserAbort.signal,
         onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),
         onCommentary: (text, continuation) => trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) }),
         onTextDelta: delta => text.push(delta),
-      });
+        ...(captureLunaCheckpoint ? {
+          captureLunaCheckpoint: true,
+          onLunaCheckpoint: captureCheckpoint,
+        } : {}),
+      }));
       return {
         mode: "read-only",
         browser,
         trace,
         text,
+        usageInput: checkpointInput.parsed,
         cancel: () => browserAbort.abort(),
       };
     }
@@ -205,7 +263,7 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
     const token = deferred<string>();
     let tokenSettled = false;
     let activeToken: string | undefined;
-    const browser = worker.run({
+    const browser = finalizeCheckpoint(worker.run({
       traceId,
       modelId: parsed.modelId,
       reasoning: parsed.options.reasoning,
@@ -220,7 +278,12 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
         tokenSettled = true;
         token.resolve(turnToken);
         try {
-          const compiled = compileChatGptWebPrompt(parsed, turnCapabilities, turnToken);
+          const compiled = compileChatGptWebPrompt(
+            checkpointInput.parsed,
+            turnCapabilities,
+            turnToken,
+            { captureLunaCheckpoint },
+          );
           return { ...compiled, release: () => {} };
         } catch (error) {
           broker.revoke(turnToken);
@@ -231,7 +294,11 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
       onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),
       onCommentary: (text, continuation) => trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) }),
       onTextDelta: delta => text.push(delta),
-    });
+      ...(captureLunaCheckpoint ? {
+        captureLunaCheckpoint: true,
+        onLunaCheckpoint: captureCheckpoint,
+      } : {}),
+    }));
     void browser.catch(error => {
       if (!tokenSettled) {
         tokenSettled = true;
@@ -244,6 +311,7 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
       browser,
       trace,
       text,
+      usageInput: checkpointInput.parsed,
       cancel: () => {
         browserAbort.abort();
         if (activeToken) broker.revoke(activeToken);
@@ -316,7 +384,7 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
               session.setFinalReasoning(reasoning);
               session.setFinalEvents(events);
             }
-            emitBrowserCompletion(settled, estimateChatGptWebUsage(parsed, { answer: settled.answer, reasoning }, turnCapabilities), emit);
+            emitBrowserCompletion(settled, estimateChatGptWebUsage(runtimeUsageInput(session), { answer: settled.answer, reasoning }, turnCapabilities), emit);
             return;
           }
 
@@ -332,7 +400,7 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
               if (results.length === 0) {
                 const reasoning = session.reasoningForOutstandingReplay();
                 replayEvents(session.eventsForOutstandingReplay(), emit);
-                emitToolBatch(outstanding, estimateChatGptWebUsage(parsed, { reasoning, toolRequests: outstanding }, turnCapabilities), emit);
+                emitToolBatch(outstanding, estimateChatGptWebUsage(runtimeUsageInput(session), { reasoning, toolRequests: outstanding }, turnCapabilities), emit);
                 return;
               }
               if (results.length !== outstanding.length) {
@@ -401,7 +469,7 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
                 }
                 emitBrowserCompletion(
                   next.outcome,
-                  estimateChatGptWebUsage(parsed, { answer: next.outcome.answer, reasoning: roundReasoning }, turnCapabilities),
+                  estimateChatGptWebUsage(runtimeUsageInput(session), { answer: next.outcome.answer, reasoning: roundReasoning }, turnCapabilities),
                   emit,
                 );
                 return;
@@ -414,7 +482,7 @@ export function createChatGptWebAdapter(provider: CodexProviderConfig): Provider
               session.setOutstanding(next.requests, roundReasoning, roundEvents);
               emitToolBatch(
                 next.requests,
-                estimateChatGptWebUsage(parsed, { reasoning: roundReasoning, toolRequests: next.requests }, turnCapabilities),
+                estimateChatGptWebUsage(runtimeUsageInput(session), { reasoning: roundReasoning, toolRequests: next.requests }, turnCapabilities),
                 emit,
               );
               return;

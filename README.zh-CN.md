@@ -18,10 +18,10 @@
   <img src="https://img.shields.io/badge/Free_AI-no_API_fees-10a37f" alt="Free AI with no API fees">
 </p>
 
-在 Codex 原生模型选择器中选择 **ChatGPT Web — Instant**、**Medium**、**High**、
-**Extra High** 或 **Pro**。桥接程序会把完整的 Codex 任务上下文发送到一个全新的
-ChatGPT 临时聊天，附加图片，并将可见的推理过程、工具活动和 Markdown 流式传回同一个
-Codex 任务。
+Free 和 Go 账户会在 Codex 原生模型选择器中看到 **ChatGPT Web — Luna**。具有推理选择器的
+账户仍会按订阅权限看到 **Instant**、**Medium**、**High**、**Extra High** 和 **Pro**。
+桥接程序会把完整的 Codex 任务上下文发送到一个全新的 ChatGPT 临时聊天，附加图片，并将
+可见的推理过程、工具活动和 Markdown 流式传回同一个 Codex 任务。
 
 <p align="center">
   <img src="assets/demo.gif" alt="ChatGPT Web 在原生 Codex harness 中运行" width="960">
@@ -85,8 +85,9 @@ irm https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install
 2. 运行浏览器冒烟测试。
 3. 点击 **安装模型**，重启一次 Codex，然后选择一个 **ChatGPT Web — …** 模型。
 
-只有已登录账户支持 Pro 时，Pro 才会显示。独立的 **MCP** 页面是可选项，它会在不需要终端命令
-的情况下引导你完成完整 harness 设置。
+启动器会在设置期间检测当前账户的 ChatGPT 控件：Free/Go 账户只会显示 Luna；只有已登录账户
+支持 Pro 时，Pro 才会显示。独立的 **MCP** 页面是可选项，它会在不需要终端命令的情况下引导你
+完成完整 harness 设置。
 
 打包后的仅浏览器模式不需要 Google Chrome、模型 API 密钥、系统级 Node/Bun 或单独下载浏览器。
 
@@ -104,8 +105,8 @@ bun run app
 
 | 模式 | 模型 | 本地 Codex 工具 | 额外设置 |
 | --- | --- | --- | --- |
-| **仅浏览器** | Instant 到 Pro | 不可用；Codex 会显示警告 | 无 |
-| **完整 harness** | Instant 到 Pro | Instant–Extra High：可用；Pro：只读 | OpenAI 隧道 + ChatGPT 连接器 |
+| **仅浏览器** | Free/Go：Luna；Plus：Instant–High；Pro：增加 Extra High 和 Pro | 不可用；Codex 会显示警告 | 无 |
+| **完整 harness** | Free/Go：Luna；Plus：Instant–High；Pro：增加 Extra High 和 Pro | 非 Pro 模型：连接器可用时支持；Pro：只读 | OpenAI 隧道 + ChatGPT 连接器 |
 
 模型选择器中的每一项都对应一个固定的 ChatGPT 模式。Codex 仍会显示内置的 Effort 和 Speed
 选项，但更改它们不会在后台静默切换所选的浏览器模型。Pro 会收到 Codex 已经收集的完整上下文，

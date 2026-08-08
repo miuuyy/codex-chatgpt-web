@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, cpSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { VERSION } from "../src/version";
 
 const root = resolve(import.meta.dir, "..");
@@ -14,6 +14,22 @@ if (!packageManagerMatch) throw new Error("package.json must pin an exact Bun pa
 const expectedBunVersion = packageManagerMatch[1];
 if (Bun.version !== expectedBunVersion) {
   throw new Error(`Runtime bundle requires Bun ${expectedBunVersion}, received ${Bun.version}`);
+}
+
+function embeddedBunExecutable(): string {
+  const configured = process.env.CODEX_CHATGPT_WEB_EMBEDDED_BUN;
+  if (!configured) return realpathSync(process.execPath);
+  if (!isAbsolute(configured)) throw new Error("CODEX_CHATGPT_WEB_EMBEDDED_BUN must be an absolute path");
+  const executable = realpathSync(configured);
+  const version = Bun.spawnSync([executable, "--version"], { stdout: "pipe", stderr: "pipe" });
+  if (version.exitCode !== 0) {
+    throw new Error(`Embedded Bun validation failed: ${version.stderr.toString() || version.stdout.toString()}`);
+  }
+  const reported = version.stdout.toString().trim();
+  if (reported !== expectedBunVersion) {
+    throw new Error(`Embedded Bun must be ${expectedBunVersion}, received ${reported || "no version"}`);
+  }
+  return executable;
 }
 const output = resolve(process.argv[2] ?? join(root, "dist", "runtime"));
 const appDir = join(output, "app");
@@ -63,7 +79,7 @@ if (install.exitCode !== 0) {
   throw new Error(`Runtime dependencies failed to install: ${install.stderr.toString() || install.stdout.toString()}`);
 }
 const bunName = process.platform === "win32" ? "bun.exe" : "bun";
-cpSync(realpathSync(process.execPath), join(runtimeDir, bunName));
+cpSync(embeddedBunExecutable(), join(runtimeDir, bunName));
 if (process.platform !== "win32") chmodSync(join(runtimeDir, bunName), 0o755);
 
 const launcherName = process.platform === "win32" ? "codex-chatgpt-web.cmd" : "codex-chatgpt-web";

@@ -13,7 +13,7 @@ import { createHash } from "node:crypto";
 import { augmentNativeModelCatalog } from "./model-catalog";
 import { readCodexModelContextOverride, type CodexModelContextOverride } from "./codex-integration";
 import {
-  CHATGPT_WEB_BACKEND_MODEL,
+  CHATGPT_WEB_LUNA_BACKEND_MODEL,
   isChatGptWebModelSlug,
   requireChatGptWebModelRoute,
   type ChatGptWebModelRoute,
@@ -146,8 +146,8 @@ export class HttpTurnCounter {
 type ChatGptWebAdapterFactory = (provider: CodexProviderConfig) => ProviderAdapter;
 
 export function routeChatGptWebRequest(parsed: CodexParsedRequest, config: AppConfig): ChatGptWebModelRoute {
-  const route = requireChatGptWebModelRoute(parsed.modelId, config.proAvailable);
-  parsed.modelId = CHATGPT_WEB_BACKEND_MODEL;
+  const route = requireChatGptWebModelRoute(parsed.modelId, config);
+  parsed.modelId = route.backendModel;
   parsed.options.reasoning = route.adapterEffort;
   return route;
 }
@@ -254,6 +254,13 @@ export async function responseRequest(
   }
 
   const compaction = parsed._compactionRequest === true;
+  if (compaction && route.backendModel === CHATGPT_WEB_LUNA_BACKEND_MODEL) {
+    return formatErrorResponse(
+      409,
+      "invalid_request_error",
+      "ChatGPT Web Luna uses a rolling checkpoint on every completed browser turn; separate Codex compaction is disabled for this route.",
+    );
+  }
   if (compaction) {
     // History compaction is a dedicated summarization turn. It must never bind the active Codex
     // tool bridge or continue an in-flight MCP round; the returned summary becomes the next turn's
@@ -365,10 +372,18 @@ export async function compactRequest(
       return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
     }
   }
+  let route: ChatGptWebModelRoute;
   try {
-    requireChatGptWebModelRoute(raw.model, config.proAvailable);
+    route = requireChatGptWebModelRoute(raw.model, config);
   } catch (error) {
     return formatErrorResponse(400, "invalid_request_error", error instanceof Error ? error.message : String(error));
+  }
+  if (route.backendModel === CHATGPT_WEB_LUNA_BACKEND_MODEL) {
+    return formatErrorResponse(
+      409,
+      "invalid_request_error",
+      "ChatGPT Web Luna uses a rolling checkpoint on every completed browser turn; separate Codex compaction is disabled for this route.",
+    );
   }
   const input = Array.isArray(raw.input) ? raw.input : [];
   const headers = new Headers(req.headers);

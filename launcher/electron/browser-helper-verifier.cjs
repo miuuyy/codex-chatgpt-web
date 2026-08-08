@@ -2,7 +2,7 @@ const { spawn } = require("node:child_process");
 const { randomBytes } = require("node:crypto");
 const { createInterface } = require("node:readline");
 
-const VERIFY_TIMEOUT_MS = 60_000;
+const BROWSER_HELPER_OPERATION_TIMEOUT_MS = 90_000;
 
 function waitForExit(child, timeoutMs) {
   if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
@@ -47,14 +47,17 @@ async function stopChild(child) {
   }
 }
 
-async function verifyConnectorWithBrowserHelper({ helper, descriptorPath, appName, logger }) {
+async function runBrowserHelperOperation({ helper, descriptorPath, appName, operation, payload = {}, logger }) {
   if (!helper || typeof helper.executable !== "string" || typeof helper.script !== "string") {
     throw new Error("Browser helper verification command is invalid");
   }
   if (typeof descriptorPath !== "string" || !descriptorPath || typeof appName !== "string" || !appName) {
     throw new Error("Browser helper verification config is invalid");
   }
-  const id = `verify-${randomBytes(12).toString("hex")}`;
+  if (!["verify", "inspect", "smoke"].includes(operation)) {
+    throw new Error(`Unsupported browser helper operation: ${String(operation)}`);
+  }
+  const id = `${operation}-${randomBytes(12).toString("hex")}`;
   const child = spawn(helper.executable, [helper.script], {
     env: {
       ...process.env,
@@ -105,7 +108,8 @@ async function verifyConnectorWithBrowserHelper({ helper, descriptorPath, appNam
         }
         sent = true;
         void writeMessage(child, {
-          type: "verify",
+          ...payload,
+          type: operation,
           id,
           config: { appName, browserHostDescriptorPath: descriptorPath },
         }).catch(error => finish(error instanceof Error ? error : new Error(String(error))));
@@ -116,11 +120,7 @@ async function verifyConnectorWithBrowserHelper({ helper, descriptorPath, appNam
         return;
       }
       if (message.type === "result") {
-        if (message.text !== appName) {
-          finish(new Error("Browser helper verified a different ChatGPT connector"));
-          return;
-        }
-        finish(null, { ok: true, appName });
+        finish(null, message);
         return;
       }
       if (message.type === "error" && typeof message.message === "string") {
@@ -133,7 +133,10 @@ async function verifyConnectorWithBrowserHelper({ helper, descriptorPath, appNam
     child.once("exit", (code, signal) => finish(new Error(
       `Browser helper verification exited ${signal ? `from signal ${signal}` : `with status ${code ?? 1}`}`,
     )));
-    timer = setTimeout(() => finish(new Error("Browser helper connector verification timed out")), VERIFY_TIMEOUT_MS);
+    timer = setTimeout(
+      () => finish(new Error(`Browser helper ${operation} timed out`)),
+      BROWSER_HELPER_OPERATION_TIMEOUT_MS,
+    );
   });
 
   let value;
@@ -157,4 +160,12 @@ async function verifyConnectorWithBrowserHelper({ helper, descriptorPath, appNam
   return value;
 }
 
-module.exports = { verifyConnectorWithBrowserHelper };
+async function verifyConnectorWithBrowserHelper(options) {
+  const message = await runBrowserHelperOperation({ ...options, operation: "verify" });
+  if (message.text !== options.appName) {
+    throw new Error("Browser helper verified a different ChatGPT connector");
+  }
+  return { ok: true, appName: options.appName };
+}
+
+module.exports = { runBrowserHelperOperation, verifyConnectorWithBrowserHelper };

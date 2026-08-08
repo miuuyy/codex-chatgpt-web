@@ -875,18 +875,14 @@ function SetupSurface({
           title={copy.stepSmoke}
         />
         <SetupRow
-          action={snapshot.state.codexCatalogVerified
-            ? copy.installed
-            : snapshot.state.coreSetupComplete
-              ? copy.awaitingCodex
-              : copy.install}
+          action={snapshot.state.coreSetupComplete ? copy.reinstall : copy.install}
           complete={snapshot.state.codexCatalogVerified === true}
           description={copy.stepInstallBody}
           disabled={busy
-            || !snapshot.smokePassed
-            || (snapshot.state.coreSetupComplete === true && snapshot.state.codexCatalogVerified !== true)}
+            || (!snapshot.smokePassed && snapshot.state.coreSetupComplete !== true)}
           index={3}
           onAction={install}
+          repeatable
           title={copy.stepInstall}
         />
       </div>
@@ -1114,7 +1110,7 @@ function McpSurface({
               <div className="connector-actions">
                 <div className="connector-name">
                   <span>{copy.connectorName}</span>
-                  <code>Codex Native</code>
+                  <code>Codex Native2</code>
                 </div>
                 <div className="inline-actions">
                   <SecondaryButton
@@ -1402,6 +1398,7 @@ function SetupRow({
   disabled,
   index,
   onAction,
+  repeatable = false,
   title,
 }: {
   action: string;
@@ -1410,6 +1407,7 @@ function SetupRow({
   disabled: boolean;
   index: number;
   onAction: () => void;
+  repeatable?: boolean;
   title: string;
 }) {
   return (
@@ -1419,7 +1417,7 @@ function SetupRow({
         <strong>{title}</strong>
         <p>{description}</p>
       </div>
-      <SecondaryButton disabled={disabled || complete} onClick={onAction}>
+      <SecondaryButton disabled={disabled || (complete && !repeatable)} onClick={onAction}>
         {action}
       </SecondaryButton>
     </div>

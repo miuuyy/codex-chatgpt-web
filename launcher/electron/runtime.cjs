@@ -14,6 +14,8 @@ const CORE_SETUP_TIMEOUT_MS = 5 * 60_000;
 const MCP_SETUP_TIMEOUT_MS = 10 * 60_000;
 const UNINSTALL_TIMEOUT_MS = 2 * 60_000;
 const MAX_CHECKPOINT_FILE_BYTES = 16 * 1024 * 1024;
+// Temporary local test connector. Revert to "Codex Native" before committing.
+const EXPECTED_CONNECTOR_NAME = "Codex Native2";
 
 function collect(stream, chunks, onLine, onError) {
   let buffered = "";
@@ -623,10 +625,13 @@ class RuntimeHost {
     if (!config || config.mode !== "full") {
       throw new Error("The native MCP runtime is not configured");
     }
-    if (typeof config.appName !== "string" || !config.appName.trim() || config.appName.length > 80) {
-      throw new Error("The configured ChatGPT connector name is invalid");
+    if (config.appName !== EXPECTED_CONNECTOR_NAME) {
+      throw new Error(
+        `The native MCP runtime is configured for ${JSON.stringify(config.appName)}`
+        + ` but this launcher expects ${JSON.stringify(EXPECTED_CONNECTOR_NAME)}. Reconnect the harness once to synchronize it.`,
+      );
     }
-    return config.appName.trim();
+    return config.appName;
   }
 
   cancelBrowserTurns() {
@@ -693,9 +698,11 @@ class RuntimeHost {
       mode === "full" ? "--full" : "--browser-only",
       "--browser-host-descriptor",
       this.browserDescriptorPath,
+      "--refresh-account-capabilities",
       "--acknowledge-unofficial",
       "--restart-service",
     ];
+    if (mode === "full") args.push("--app-name", EXPECTED_CONNECTOR_NAME);
     const result = await this.runSetup("core-setup", args, {
       message: "Installing ChatGPT Web models into Codex",
       successMessage: "Codex integration installed",
@@ -750,6 +757,8 @@ class RuntimeHost {
       "--full",
       "--browser-host-descriptor",
       this.browserDescriptorPath,
+      "--app-name",
+      EXPECTED_CONNECTOR_NAME,
     ];
     if (reuseSavedCredentials) {
       args.push("--acknowledge-unofficial", "--restart-service");
@@ -850,4 +859,4 @@ class RuntimeHost {
   }
 }
 
-module.exports = { RuntimeHost };
+module.exports = { EXPECTED_CONNECTOR_NAME, RuntimeHost };

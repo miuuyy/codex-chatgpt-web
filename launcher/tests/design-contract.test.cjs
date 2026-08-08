@@ -93,6 +93,13 @@ test("closing the launcher follows the persisted background-runtime preference",
   assert.match(i18nSource, /keepRunningOnClose: "Keep server running when window closes"/);
 });
 
+test("normal launcher shutdown flushes the persistent ChatGPT session before closing its views", () => {
+  const persist = electronMain.indexOf("await browserHost?.persistSession()");
+  const destroy = electronMain.indexOf("browserHost?.destroy()", persist);
+  assert.ok(persist >= 0, "shutdown must persist the ChatGPT session");
+  assert.ok(destroy > persist, "browser views must close only after session persistence completes");
+});
+
 test("settings expose a persistent fail-closed Codex bridge switch and status indicator", () => {
   assert.match(appSource, /api!\.setBridgeEnabled\(enabled\)/);
   assert.match(appSource, /snapshot\.state\.bridgeEnabled \? "success" : "error"/);
@@ -194,6 +201,18 @@ test("launcher refreshes persisted ChatGPT authentication before presenting setu
   assert.match(electronMain, /browserHost\.refreshAuthentication\(\)/);
   assert.match(appSource, /browser\?\.status === "loading" \? copy\.checkingSignIn/);
   assert.match(i18nSource, /checkingSignIn: "Checking saved session"/);
+});
+
+test("completed model setup remains a repeatable account-capability probe", () => {
+  assert.match(appSource, /copy\.reinstall/);
+  assert.match(appSource, /<SetupRow[\s\S]*?onAction=\{install\}[\s\S]*?repeatable/);
+  assert.match(appSource, /complete && !repeatable/);
+  assert.match(i18nSource, /reinstall: "Reinstall models"/);
+  assert.match(i18nSource, /reinstall: "重新安装模型"/);
+  assert.match(
+    electronMain,
+    /!setupState\.coreSetupComplete[\s\S]*?smokePassedThisSession[\s\S]*?smokePassedForCurrentVersion\(setupState\)/,
+  );
 });
 
 test("launcher reminds authenticated users to refresh the private ChatGPT session every 48 hours", () => {

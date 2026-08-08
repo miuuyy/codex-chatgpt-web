@@ -19,11 +19,10 @@ if (!target?.webSocketDebuggerUrl) throw new Error("The launcher CDP endpoint ha
 const inspectExpression = `(() => {
   const visible = (candidate) => {
     const style = getComputedStyle(candidate);
-    const rect = candidate.getBoundingClientRect();
-    return style.display !== 'none'
+    return candidate.isConnected
+      && style.display !== 'none'
       && style.visibility !== 'hidden'
-      && rect.width > 0
-      && rect.height > 0;
+      && style.opacity !== '0';
   };
   const attributes = (candidate) => Object.fromEntries(
     Array.from(candidate.attributes)
@@ -116,47 +115,59 @@ const inspectExpression = `(() => {
 const controlStateExpression = `(() => {
   const visible = (candidate) => {
     const style = getComputedStyle(candidate);
-    const rect = candidate.getBoundingClientRect();
-    return style.display !== 'none'
+    return candidate.isConnected
+      && style.display !== 'none'
       && style.visibility !== 'hidden'
-      && rect.width > 0
-      && rect.height > 0;
+      && style.opacity !== '0';
   };
   const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
   const effortControl = Array.from(document.querySelectorAll('button[aria-haspopup="menu"][data-tone="neutral"]'))
     .filter(visible)
     .at(-1);
   if (!effortControl) return { control: null, menu: null };
-  const controlRect = effortControl.getBoundingClientRect();
   const menuSelector = '[data-testid="composer-intelligence-picker-content"][role="group"]';
   const menu = Array.from(document.querySelectorAll(menuSelector)).filter(visible).at(-1);
   const items = menu
     ? Array.from(menu.querySelectorAll('[role="menuitemradio"]')).filter(visible)
     : [];
   const target = items[2];
-  const targetRect = target?.getBoundingClientRect();
   return {
     control: {
       label: normalize(effortControl.innerText || effortControl.textContent),
-      point: { x: controlRect.x + controlRect.width / 2, y: controlRect.y + controlRect.height / 2 },
+      expanded: effortControl.getAttribute('aria-expanded'),
     },
     menu: menu ? {
       itemCount: items.length,
-      target: target && targetRect ? {
+      target: target ? {
         label: normalize(target.innerText || target.textContent),
-        point: { x: targetRect.x + targetRect.width / 2, y: targetRect.y + targetRect.height / 2 },
+        checked: target.getAttribute('aria-checked'),
       } : null,
     } : null,
   };
 })()`;
 
 type ControlState = {
-  control: { label: string; point: { x: number; y: number } } | null;
+  control: { label: string; expanded: string | null } | null;
   menu: {
     itemCount: number;
-    target: { label: string; point: { x: number; y: number } } | null;
+    target: { label: string; checked: string | null } | null;
   } | null;
 };
+
+const focusEffortControlExpression = `(() => {
+  const control = Array.from(document.querySelectorAll('button[aria-haspopup="menu"][data-tone="neutral"]')).at(-1);
+  if (!control) return false;
+  control.focus({ preventScroll: true });
+  return document.activeElement === control;
+})()`;
+
+const focusHighItemExpression = `(() => {
+  const menu = Array.from(document.querySelectorAll('[data-testid="composer-intelligence-picker-content"][role="group"]')).at(-1);
+  const target = menu?.querySelectorAll('[role="menuitemradio"]')[2];
+  if (!target) return false;
+  target.focus({ preventScroll: true });
+  return document.activeElement === target;
+})()`;
 
 const result = await new Promise<unknown>((resolveResult, rejectResult) => {
   const socket = new WebSocket(target.webSocketDebuggerUrl!);
@@ -183,21 +194,10 @@ const result = await new Promise<unknown>((resolveResult, rejectResult) => {
     if (response.exceptionDetails) throw new Error("CDP Runtime.evaluate raised an exception");
     return response.result?.value as T;
   };
-  const click = async (point: { x: number; y: number }) => {
-    await send("Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      x: point.x,
-      y: point.y,
-      button: "left",
-      clickCount: 1,
-    });
-    await send("Input.dispatchMouseEvent", {
-      type: "mouseReleased",
-      x: point.x,
-      y: point.y,
-      button: "left",
-      clickCount: 1,
-    });
+  const pressEnter = async () => {
+    const event = { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
+    await send("Input.dispatchKeyEvent", { ...event, type: "keyDown", text: "\r", unmodifiedText: "\r" });
+    await send("Input.dispatchKeyEvent", { ...event, type: "keyUp" });
   };
   const waitFor = async <T>(read: () => Promise<T>, accept: (value: T) => boolean, timeoutMs: number): Promise<T> => {
     const deadline = Date.now() + timeoutMs;
@@ -215,7 +215,8 @@ const result = await new Promise<unknown>((resolveResult, rejectResult) => {
       let state = await evaluate<ControlState>(controlStateExpression);
       if (!state.control) throw new Error("ChatGPT effort control not found");
       if (state.menu) {
-        await click(state.control.point);
+        if (!await evaluate<boolean>(focusEffortControlExpression)) throw new Error("ChatGPT effort control could not receive focus");
+        await pressEnter();
         state = await waitFor(
           () => evaluate<ControlState>(controlStateExpression),
           candidate => candidate.menu === null,
@@ -226,7 +227,8 @@ const result = await new Promise<unknown>((resolveResult, rejectResult) => {
 
       const openedAt = Date.now();
       if (!state.control) throw new Error("ChatGPT effort control disappeared");
-      await click(state.control.point);
+      if (!await evaluate<boolean>(focusEffortControlExpression)) throw new Error("ChatGPT effort control could not receive focus");
+      await pressEnter();
       state = await waitFor(
         () => evaluate<ControlState>(controlStateExpression),
         candidate => (candidate.menu?.itemCount ?? 0) >= 5 && candidate.menu?.target !== null,
@@ -238,7 +240,8 @@ const result = await new Promise<unknown>((resolveResult, rejectResult) => {
 
       const targetLabel = state.menu.target.label;
       const itemCount = state.menu.itemCount;
-      await click(state.menu.target.point);
+      if (!await evaluate<boolean>(focusHighItemExpression)) throw new Error("ChatGPT High item could not receive focus");
+      await pressEnter();
       state = await waitFor(
         () => evaluate<ControlState>(controlStateExpression),
         candidate => candidate.control?.label === targetLabel,

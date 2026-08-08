@@ -49,7 +49,7 @@ describe("tunnel status boundary", () => {
     );
   });
 
-  test("requires connect to prove running, healthy, and ready before accepting its profile", () => {
+  test("accepts a healthy managed launch while setup waits for control-plane readiness", () => {
     expect(tunnelConnectLaunchError(JSON.stringify({
       running: true,
       healthy: true,
@@ -60,7 +60,13 @@ describe("tunnel status boundary", () => {
       running: true,
       healthy: true,
       ready: false,
-    }))).toContain("running=true; healthy=true; ready=false");
+    }))).toBeUndefined();
+
+    expect(tunnelConnectLaunchError(JSON.stringify({
+      running: true,
+      healthy: false,
+      ready: false,
+    }))).toContain("running=true; healthy=false; ready=false");
 
     expect(tunnelConnectLaunchError("not json")).toBe("tunnel-client returned non-JSON connect output");
   });

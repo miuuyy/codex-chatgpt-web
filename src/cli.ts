@@ -48,6 +48,8 @@ Setup options:
   --chrome PATH                Google Chrome executable
   --browser-host-descriptor PATH
                                Use the embedded launcher browser described by this owner-only file
+  --refresh-account-capabilities
+                               Re-read the authenticated account's available Web models
   --app-name NAME              ChatGPT connector name (default: Codex Native)
   --tunnel-id ID               Existing OpenAI tunnel id (full mode)
   --runtime-key-file PATH      File containing a Tunnels Read+Use runtime key
@@ -131,6 +133,7 @@ async function setupCommand(args: string[]): Promise<void> {
   if (chrome && browserHostDescriptorPath) throw new Error("Choose either --chrome or --browser-host-descriptor, not both");
   if (chrome) options.chromeExecutablePath = chrome;
   if (browserHostDescriptorPath) options.browserHostDescriptorPath = browserHostDescriptorPath;
+  options.refreshAccountCapabilities = takeFlag(args, "--refresh-account-capabilities");
   if (appName) options.appName = appName;
   if (tunnelId) options.tunnelId = tunnelId;
   if (runtimeKeyFile) options.runtimeKeyFile = runtimeKeyFile;

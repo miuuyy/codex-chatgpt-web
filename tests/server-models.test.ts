@@ -52,11 +52,36 @@ test("proxies official /models auth and query, then appends the fixed ChatGPT We
   ]);
   expect(body.models[0]!.max_context_window).toBe(371_851);
   for (const [index, model] of body.models.slice(1).entries()) {
-    const limits = resolveChatGptWebContextLimits(CHATGPT_WEB_MODEL_ROUTES[index]!.adapterEffort);
+    const route = CHATGPT_WEB_MODEL_ROUTES[index]!;
+    const limits = resolveChatGptWebContextLimits(route.backendModel, route.adapterEffort, config);
     expect(model.context_window).toBe(limits.contextWindow);
     expect(model.max_context_window).toBe(limits.contextWindow);
     expect(model.auto_compact_token_limit).toBe(limits.autoCompactTokenLimit);
     expect(model.supported_in_api).toBe(true);
     expect(model.priority).toBe(CHATGPT_WEB_MODEL_PRIORITY);
   }
+});
+
+test("Luna-only account exposes no paid ChatGPT Web routes", async () => {
+  const config = defaultConfig("browser-only");
+  config.solAvailable = false;
+  const response = await modelsRequest(
+    new Request("http://127.0.0.1:17841/v1/models", {
+      headers: { authorization: "Bearer codex-oauth-token" },
+    }),
+    config,
+    async () => Response.json({
+      models: [{
+        slug: "gpt-5.6-sol",
+        display_name: "5.6 Sol",
+        visibility: "list",
+        supported_in_api: true,
+        supported_reasoning_levels: [{ effort: "low", description: "Low" }],
+        tool_mode: "code_mode_only",
+      }],
+    }),
+  );
+  const body = await response.json() as { models: Array<{ slug: string }> };
+  expect(body.models.filter(model => model.slug.startsWith("chatgpt-web/")).map(model => model.slug))
+    .toEqual(["chatgpt-web/luna"]);
 });

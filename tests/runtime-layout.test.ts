@@ -108,7 +108,12 @@ test("setup explicitly migrates v1 pro-only config to v3 managed browser-only", 
   })}\n`);
 
   expect(() => loadConfig()).toThrow("rerun setup to migrate");
-  expect(loadConfigForSetup()).toMatchObject({ version: 3, mode: "browser-only", browserHost: "managed-chrome" });
+  expect(loadConfigForSetup()).toMatchObject({
+    version: 3,
+    mode: "browser-only",
+    browserHost: "managed-chrome",
+    solAvailable: true,
+  });
 });
 
 test("legacy temp-path wrapper and vendor are removed only after runtime ownership changes", () => {
@@ -139,5 +144,16 @@ test("launcher browser ownership is explicit in provider configuration", () => {
   expect(providerConfig(config).chatgptWeb).toMatchObject({
     browserHost: "launcher",
     browserHostDescriptorPath: config.browserHostDescriptorPath,
+    solAvailable: true,
   });
+});
+
+test("Luna-only provider configuration exposes only the Luna backend", () => {
+  const config = defaultConfig("browser-only");
+  config.solAvailable = false;
+  const provider = providerConfig(config);
+  expect(provider.models).toEqual(["gpt-5.6-luna"]);
+  expect(provider.defaultModel).toBe("gpt-5.6-luna");
+  expect(provider.modelReasoningEfforts).toEqual({ "gpt-5.6-luna": ["low"] });
+  expect(provider.chatgptWeb).toMatchObject({ solAvailable: false, proAvailable: false });
 });

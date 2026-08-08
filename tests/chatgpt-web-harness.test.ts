@@ -3,7 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { buildResponseJSON } from "../src/bridge";
 import { ChatGptCompletionTracker, chatGptImageFilePayloads, chatGptPromptFilePayloads, chatGptTurnIsComplete } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
@@ -37,8 +37,8 @@ const environmentXml = `<environment_context>
   <cwd>${tempRoot}</cwd>
   <filesystem><workspace_roots><root>${tempRoot}</root></workspace_roots><permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile></filesystem>
 </environment_context>`;
-const toolCapabilities = { localToolsEnabled: true, proAvailable: true };
-const readOnlyCapabilities = { localToolsEnabled: false, proAvailable: true };
+const toolCapabilities = { localToolsEnabled: true, solAvailable: true, proAvailable: true };
+const readOnlyCapabilities = { localToolsEnabled: false, solAvailable: true, proAvailable: true };
 
 function brokerTestEndpoint(name: string): string {
   return process.platform === "win32"
@@ -129,7 +129,7 @@ function toolResult(value: Record<string, unknown>): BrokerToolResult {
   };
 }
 
-describe("ChatGPT outer-native harness v3", () => {
+describe("ChatGPT outer-native harness v5", () => {
   test("rejects an opaque MultiAgent V2 child payload before starting the browser", async () => {
     const request = parseRequest({
       model: "chatgpt-web/pro",
@@ -148,7 +148,7 @@ describe("ChatGPT outer-native harness v3", () => {
     const provider: CodexProviderConfig = {
       adapter: "chatgpt-web",
       baseUrl: "browser://chatgpt-v2-reject-test",
-      chatgptWeb: { brokerSocketPath: socketPath, localToolsEnabled: false, proAvailable: true },
+      chatgptWeb: { brokerSocketPath: socketPath, localToolsEnabled: false, solAvailable: true, proAvailable: true },
     };
     const worker = ChatGptBrowserWorker.forProvider(provider);
     const originalRun = worker.run.bind(worker);
@@ -219,7 +219,7 @@ describe("ChatGPT outer-native harness v3", () => {
     const provider: CodexProviderConfig = {
       adapter: "chatgpt-web",
       baseUrl: "browser://chatgpt-canonical-metadata-test",
-      chatgptWeb: { brokerSocketPath: socketPath, localToolsEnabled: true, proAvailable: true },
+      chatgptWeb: { brokerSocketPath: socketPath, localToolsEnabled: true, solAvailable: true, proAvailable: true },
     };
     const worker = ChatGptBrowserWorker.forProvider(provider);
     const originalRun = worker.run.bind(worker);
@@ -504,6 +504,13 @@ describe("ChatGPT outer-native harness v3", () => {
     expect(compiled.text).not.toContain(imageUrl);
     expect(compiled.text).toContain('"attachment_ref":"codex-input-image-1"');
     expect(compiled.text).toContain('"version":3');
+    expect(compiled.text).toContain("Reading files, listing directories, searching source text, inspecting logs and repository metadata");
+    expect(compiled.text).toContain("codex_tool_inventory and codex_tool_call");
+    expect(compiled.text).toContain("Never invent, rename, or substitute an unavailable tool");
+    expect(compiled.text).not.toContain("codex_inspect");
+    expect(compiled.text).toContain("codex_exec");
+    expect(compiled.text).toContain("a final answer is invalid until a relevant Codex Native call returns a real result");
+    expect(compiled.text).toContain("Never claim that Codex, a runtime, an executor, a sandbox, a security layer, or a permission gate blocked local access");
     const files = chatGptImageFilePayloads(compiled.images);
     expect(files[0]?.name).toBe("codex-input-image-1.png");
     expect(files[0]?.mimeType).toBe("image/png");
@@ -565,10 +572,12 @@ describe("ChatGPT outer-native harness v3", () => {
     });
     expect(() => resolveChatGptWebModelMode(CHATGPT_WEB_MODEL_ID, "max", {
       localToolsEnabled: false,
+      solAvailable: true,
       proAvailable: false,
     })).toThrow("Pro effort is not available");
     expect(() => resolveChatGptWebModelMode(CHATGPT_WEB_MODEL_ID, "xhigh", {
       localToolsEnabled: true,
+      solAvailable: true,
       proAvailable: false,
     })).toThrow("Extra High effort is not available");
     expect(() => resolveChatGptWebModelMode("unknown", "high", toolCapabilities)).toThrow("model is not supported");
@@ -945,7 +954,7 @@ describe("ChatGPT outer-native harness v3", () => {
     const provider: CodexProviderConfig = {
       adapter: "chatgpt-web",
       baseUrl: "browser://chatgpt",
-      chatgptWeb: { brokerSocketPath: socketPath, turnTimeoutMs: 30_000, localToolsEnabled: true, proAvailable: true },
+      chatgptWeb: { brokerSocketPath: socketPath, turnTimeoutMs: 30_000, localToolsEnabled: true, solAvailable: true, proAvailable: true },
     };
     const worker = ChatGptBrowserWorker.forProvider(provider);
     const originalRun = worker.run.bind(worker);
@@ -1164,7 +1173,7 @@ describe("ChatGPT outer-native harness v3", () => {
       adapter: "chatgpt-web",
       baseUrl: "browser://chatgpt-pro-test",
       contextWindow: 256_000,
-      chatgptWeb: { brokerSocketPath: socketPath, turnTimeoutMs: 30_000, localToolsEnabled: false, proAvailable: true },
+      chatgptWeb: { brokerSocketPath: socketPath, turnTimeoutMs: 30_000, localToolsEnabled: false, solAvailable: true, proAvailable: true },
     };
     const worker = ChatGptBrowserWorker.forProvider(provider);
     const originalRun = worker.run.bind(worker);
@@ -1293,32 +1302,34 @@ describe("ChatGPT outer-native harness v3", () => {
         "codex_view_image",
         "codex_write_stdin",
       ]);
+      expect(listed.tools.find(tool => tool.name === "codex_tool_inventory")?.annotations).toMatchObject({
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      });
+      expect(listed.tools.find(tool => tool.name === "codex_tool_call")?.annotations).toMatchObject({
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      });
 
       const bound = await call("codex_bind_turn", { turn_token: token });
       const bindingId = (bound.structuredContent as { binding_id?: string } | undefined)?.binding_id;
       expect(bindingId).toStartWith("binding_");
       expect((bound.structuredContent as { execution: string }).execution).toBe("outer_codex_native");
       expect((bound.structuredContent as { outer_tool_gateway: string }).outer_tool_gateway).toBe("exec");
-      expect((bound.structuredContent as { command_tool: string }).command_tool).toBe("exec_command");
-
-      const inventory = await call("codex_tool_inventory", { binding_id: bindingId, query: "docs" });
-      const discovered = (inventory.structuredContent as { tools: Array<{ wire_name: string }> }).tools;
-      expect(discovered.map(tool => tool.wire_name)).toEqual(["mcp__openaiDeveloperDocs__search_openai_docs"]);
+      expect((bound.structuredContent as { command_tool: string }).command_tool).toBe("exec");
+      expect((bound.structuredContent as { harness_version: number }).harness_version).toBe(3);
 
       const execPromise = call("codex_exec", { binding_id: bindingId, cmd: "pwd", workdir: tempRoot });
       const [execRequest] = await broker.nextToolBatch(token);
       expect(execRequest).toMatchObject({ wireName: "exec", freeform: true });
-      expect(execRequest?.input).toContain(`tools["exec_command"](${JSON.stringify({ cmd: "pwd", workdir: tempRoot })})`);
+      expect(execRequest?.input).toContain('tools["shell_command"]');
+      expect(execRequest?.input).toContain(JSON.stringify({ command: "pwd", workdir: tempRoot }));
       broker.completeTool(token, execRequest!.callId, toolResult({ output: tempRoot, exit_code: 0 }));
       expect((await execPromise).structuredContent).toEqual({ output: tempRoot, exit_code: 0 });
-
-      const patchText = "*** Begin Patch\n*** Add File: test.txt\n+ok\n*** End Patch";
-      const patchPromise = call("codex_apply_patch", { binding_id: bindingId, patch: patchText });
-      const [patchRequest] = await broker.nextToolBatch(token);
-      expect(patchRequest).toMatchObject({ wireName: "exec", freeform: true });
-      expect(patchRequest?.input).toContain(`tools["apply_patch"](${JSON.stringify(patchText)})`);
-      broker.completeTool(token, patchRequest!.callId, toolResult({ applied: true }));
-      expect((await patchPromise).isError).not.toBe(true);
 
       const docsPromise = call("codex_tool_call", {
         binding_id: bindingId,
@@ -1326,8 +1337,12 @@ describe("ChatGPT outer-native harness v3", () => {
         arguments: { query: "Responses API" },
       });
       const [docsRequest] = await broker.nextToolBatch(token);
-      expect(docsRequest).toMatchObject({ wireName: "exec", freeform: true });
-      expect(docsRequest?.input).toContain('tools["mcp__openaiDeveloperDocs__search_openai_docs"]({"query":"Responses API"})');
+      expect(docsRequest).toMatchObject({
+        wireName: "exec",
+        freeform: true,
+      });
+      expect(docsRequest?.input).toContain('tools["mcp__openaiDeveloperDocs__search_openai_docs"]');
+      expect(docsRequest?.input).toContain(JSON.stringify({ query: "Responses API" }));
       broker.completeTool(token, docsRequest!.callId, toolResult({ hits: 3 }));
       expect((await docsPromise).structuredContent).toEqual({ hits: 3 });
     } finally {
@@ -1371,9 +1386,14 @@ describe("ChatGPT outer-native harness v3", () => {
       expect(binding.binding_status).toBe("active");
       expect(binding.valid_until).toBe("outer_turn_end");
       expect(binding.expires_at).toBeNull();
-      expect(binding.next_action).toContain("Never put turn_token in binding_id");
+      expect(binding.next_action).toContain("outer_tool_gateway");
+      expect(binding.next_action).toContain("codex_exec");
 
-      const confused = await call("codex_exec", { binding_id: token, cmd: "pwd" });
+      const confused = await call("codex_tool_call", {
+        binding_id: token,
+        wire_name: "exec",
+        input: "text(true);",
+      });
       expect(confused.isError).toBe(true);
       expect(JSON.stringify(confused.content)).toContain("never pass turn_token here");
 
@@ -1385,7 +1405,8 @@ describe("ChatGPT outer-native harness v3", () => {
         }),
       ]);
       expect(execRequest).toMatchObject({ wireName: "exec", freeform: true });
-      expect(execRequest?.input).toContain(`tools["exec_command"](${JSON.stringify({ cmd: "pwd", workdir: tempRoot })})`);
+      expect(execRequest?.input).toContain('tools["shell_command"]');
+      expect(execRequest?.input).toContain(JSON.stringify({ command: "pwd", workdir: tempRoot }));
       broker.completeTool(token, execRequest!.callId, toolResult({ output: tempRoot, exit_code: 0 }));
       expect((await execPromise).structuredContent).toEqual({ output: tempRoot, exit_code: 0 });
     } finally {

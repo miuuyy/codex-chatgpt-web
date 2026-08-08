@@ -177,6 +177,59 @@ test("rejects an unknown routed compact model instead of treating it as ChatGPT 
   expect(body.error.message).toContain("model is not enabled");
 });
 
+test("Luna rejects separate native compaction instead of opening another browser turn", async () => {
+  const config = defaultConfig("browser-only");
+  config.solAvailable = false;
+  let adapterStarted = false;
+  const response = await compactRequest(new Request("http://127.0.0.1:17841/v1/responses/compact", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "chatgpt-web/luna", input: [] }),
+  }), config, () => {
+    adapterStarted = true;
+    return {
+      name: "must-not-start",
+      async runTurn() {
+        throw new Error("Luna compaction adapter must not start");
+      },
+    };
+  });
+
+  expect(response.status).toBe(409);
+  expect(adapterStarted).toBeFalse();
+  const body = await response.json() as { error: { message: string } };
+  expect(body.error.message).toContain("rolling checkpoint");
+  expect(body.error.message).toContain("separate Codex compaction is disabled");
+});
+
+test("Luna rejects a remote-v2 compaction trigger before opening another browser turn", async () => {
+  const config = defaultConfig("browser-only");
+  config.solAvailable = false;
+  let adapterStarted = false;
+  const response = await responseRequest(new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: "chatgpt-web/luna",
+      stream: false,
+      input: [{ type: "compaction_trigger" }],
+    }),
+  }), config, () => {
+    adapterStarted = true;
+    return {
+      name: "must-not-start-v2",
+      async runTurn() {
+        throw new Error("Luna v2 compaction adapter must not start");
+      },
+    };
+  });
+
+  expect(response.status).toBe(409);
+  expect(adapterStarted).toBeFalse();
+  const body = await response.json() as { error: { message: string } };
+  expect(body.error.message).toContain("rolling checkpoint");
+});
+
 test("rejects Pro-only routed models before opening a browser when the account has no Pro access", async () => {
   for (const [routedModel, label] of [
     ["chatgpt-web/extra-high", "Extra High"],

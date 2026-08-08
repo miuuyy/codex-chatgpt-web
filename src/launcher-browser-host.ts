@@ -216,10 +216,10 @@ export async function connectLauncherBrowserHost(
 
 export async function inspectLauncherBrowserHost(
   descriptorPath: string,
-  options: { detectPro?: boolean; timeoutMs?: number } = {},
-): Promise<{ proAvailable?: boolean; url: string }> {
+  options: { detectCapabilities?: boolean; timeoutMs?: number } = {},
+): Promise<{ solAvailable?: boolean; proAvailable?: boolean; url: string }> {
   const descriptor = readLauncherBrowserHostDescriptor(descriptorPath);
-  const timeoutMs = options.timeoutMs ?? (options.detectPro
+  const timeoutMs = options.timeoutMs ?? (options.detectCapabilities
     ? LAUNCHER_CAPABILITY_INSPECTION_TIMEOUT_MS
     : LAUNCHER_SESSION_INSPECTION_TIMEOUT_MS);
   const controller = new AbortController();
@@ -235,7 +235,7 @@ export async function inspectLauncherBrowserHost(
         authorization: `Bearer ${descriptor.control.token}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ detectPro: options.detectPro === true }),
+      body: JSON.stringify({ detectCapabilities: options.detectCapabilities === true }),
       signal: controller.signal,
     });
     const body = await response.json().catch(() => ({})) as Record<string, unknown>;
@@ -243,10 +243,20 @@ export async function inspectLauncherBrowserHost(
     if (body.authenticated !== true || body.temporary !== true || typeof body.url !== "string") {
       throw new Error("Launcher returned invalid ChatGPT session evidence");
     }
-    if (options.detectPro && typeof body.proAvailable !== "boolean") {
-      throw new Error("Launcher did not return ChatGPT Pro capability evidence");
+    if (options.detectCapabilities
+      && (typeof body.solAvailable !== "boolean" || typeof body.proAvailable !== "boolean")) {
+      throw new Error("Launcher did not return complete ChatGPT account capability evidence");
     }
-    return { url: body.url, ...(options.detectPro ? { proAvailable: body.proAvailable as boolean } : {}) };
+    if (options.detectCapabilities && body.proAvailable === true && body.solAvailable !== true) {
+      throw new Error("Launcher returned contradictory ChatGPT account capability evidence");
+    }
+    return {
+      url: body.url,
+      ...(options.detectCapabilities ? {
+        solAvailable: body.solAvailable as boolean,
+        proAvailable: body.proAvailable as boolean,
+      } : {}),
+    };
   } catch (error) {
     const detail = timedOut
       ? `session inspection timed out after ${timeoutMs}ms`
@@ -262,6 +272,7 @@ export const LAUNCHER_CAPABILITY_INSPECTION_TIMEOUT_MS = 120_000;
 
 export type LauncherTurnActivity =
   | { phase: "start"; traceId: string; helperPid: number }
+  | { phase: "heartbeat"; traceId: string; helperPid: number }
   | {
       phase: "end";
       traceId: string;
@@ -271,6 +282,8 @@ export type LauncherTurnActivity =
     };
 
 export const LAUNCHER_TURN_START_TIMEOUT_MS = 5_000;
+export const LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS = 10_000;
+export const LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS = 5_000;
 export const LAUNCHER_TURN_END_TIMEOUT_MS = 15_000;
 
 export async function notifyLauncherTurn(
@@ -278,7 +291,9 @@ export async function notifyLauncherTurn(
   activity: LauncherTurnActivity,
   timeoutMs = activity.phase === "end"
     ? LAUNCHER_TURN_END_TIMEOUT_MS
-    : LAUNCHER_TURN_START_TIMEOUT_MS,
+    : activity.phase === "heartbeat"
+      ? LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS
+      : LAUNCHER_TURN_START_TIMEOUT_MS,
 ): Promise<{ surfaceId?: string }> {
   const descriptor = readLauncherBrowserHostDescriptor(descriptorPath);
   const controller = new AbortController();

@@ -513,7 +513,9 @@ function registerIpc({ logger, stateStore }) {
   handle("launcher:setup-core", async () => {
     const browser = await browserHost.probeAuthentication();
     if (!browser.authenticated) throw new Error("Sign in to ChatGPT before installing the Codex integration");
-    if (!(smokePassedThisSession || smokePassedForCurrentVersion(stateStore.read()))) {
+    const setupState = stateStore.read();
+    if (!setupState.coreSetupComplete
+      && !(smokePassedThisSession || smokePassedForCurrentVersion(setupState))) {
       throw new Error("Run the browser smoke test before installing the Codex integration");
     }
     const result = await runtimeHost.setupCore();
@@ -608,6 +610,7 @@ async function requestQuit() {
     await runtimeSupervisor?.shutdown();
     stopCatalogVerificationMonitor();
     quitting = true;
+    await browserHost?.persistSession();
     browserHost?.destroy();
     await browserControl?.close();
     exitCommitted = true;
@@ -695,6 +698,7 @@ async function start() {
     logger,
     publishState: (state) => send("launcher:browser-state", state),
   });
+  await browserHost.ready();
   runtimeSupervisor = new RuntimeSupervisor({
     app,
     logger,

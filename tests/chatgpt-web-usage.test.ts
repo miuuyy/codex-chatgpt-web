@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { estimateChatGptWebInputTokens } from "../src/adapters/chatgpt-web/usage";
 import type { CodexParsedRequest } from "../src/types";
 
-const capabilities = { localToolsEnabled: false, proAvailable: true };
+const capabilities = { localToolsEnabled: false, solAvailable: true, proAvailable: true };
 
 function request(text: string): CodexParsedRequest {
   return {

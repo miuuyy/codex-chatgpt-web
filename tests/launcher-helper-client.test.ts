@@ -27,6 +27,20 @@ test("Bun daemon streams a prepared browser turn through the persistent Node hel
       send({ type: "event", id: message.id, event: "reasoning", text: "Reading project" });
       send({ type: "event", id: message.id, event: "reasoning", text: " files", continuation: true });
       send({ type: "event", id: message.id, event: "text", text: "done" });
+      if (message.turn.captureLunaCheckpoint) send({
+        type: "event",
+        id: message.id,
+        event: "luna_checkpoint",
+        answerHash: "a".repeat(64),
+        checkpoint: {
+          version: 1,
+          objective: "Finish the helper test.",
+          state: ["The answer streamed."],
+          evidence: ["The helper emitted a checkpoint event."],
+          decisions: [],
+          pending: [],
+        },
+      });
       send({ type: "result", id: message.id, text: "done" });
     });
   `, { mode: 0o700 });
@@ -58,6 +72,7 @@ test("Bun daemon streams a prepared browser turn through the persistent Node hel
   };
   const reasoning: Array<{ text: string; continuation: boolean }> = [];
   const deltas: string[] = [];
+  const checkpoints: unknown[] = [];
   let released = false;
   const client = new LauncherBrowserHelperClient(config);
   try {
@@ -65,10 +80,12 @@ test("Bun daemon streams a prepared browser turn through the persistent Node hel
       traceId: "abcdef123456",
       modelId: "gpt-5.6-sol",
       reasoning: "high",
-      capabilities: { localToolsEnabled: false, proAvailable: false },
+      capabilities: { localToolsEnabled: false, solAvailable: true, proAvailable: false },
       prepare: async () => ({ text: "inspect", images: [], release: () => { released = true; } }),
       onReasoningSummary: (text, continuation) => reasoning.push({ text, continuation: continuation === true }),
       onTextDelta: text => deltas.push(text),
+      captureLunaCheckpoint: true,
+      onLunaCheckpoint: checkpoint => checkpoints.push(checkpoint),
     });
     expect(result).toBe("done");
     expect(reasoning).toEqual([
@@ -76,6 +93,17 @@ test("Bun daemon streams a prepared browser turn through the persistent Node hel
       { text: " files", continuation: true },
     ]);
     expect(deltas).toEqual(["done"]);
+    expect(checkpoints).toEqual([{
+      answerHash: "a".repeat(64),
+      checkpoint: {
+        version: 1,
+        objective: "Finish the helper test.",
+        state: ["The answer streamed."],
+        evidence: ["The helper emitted a checkpoint event."],
+        decisions: [],
+        pending: [],
+      },
+    }]);
     expect(released).toBe(true);
   } finally {
     await client.close();
@@ -117,7 +145,7 @@ test("an abort dispatched during run submission cannot overtake the run frame", 
     traceId: "abort-order-123",
     modelId: "gpt-5.6-sol",
     reasoning: "high",
-    capabilities: { localToolsEnabled: false, proAvailable: false },
+    capabilities: { localToolsEnabled: false, solAvailable: true, proAvailable: false },
     abortSignal: controller.signal,
     prepare: async () => ({
       text: "inspect",
@@ -158,7 +186,7 @@ test("structured helper errors preserve the ChatGPT adapter failure contract", a
       turn: {
         traceId: "rate-limit-123",
         modelId: "chatgpt-web/medium",
-        capabilities: { localToolsEnabled: false, proAvailable: false },
+        capabilities: { localToolsEnabled: false, solAvailable: true, proAvailable: false },
         prepare: async () => ({ text: "inspect", images: [], release() {} }),
         onTextDelta() {},
       },

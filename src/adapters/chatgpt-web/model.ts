@@ -1,15 +1,22 @@
-export const CHATGPT_WEB_MODEL_ID = "gpt-5.6-sol";
+import {
+  CHATGPT_WEB_BACKEND_MODEL,
+  CHATGPT_WEB_LUNA_BACKEND_MODEL,
+} from "../../chatgpt-web-models";
+
+export const CHATGPT_WEB_MODEL_ID = CHATGPT_WEB_BACKEND_MODEL;
+export const CHATGPT_WEB_LUNA_MODEL_ID = CHATGPT_WEB_LUNA_BACKEND_MODEL;
 
 export interface ChatGptWebCapabilities {
   localToolsEnabled: boolean;
+  solAvailable: boolean;
   proAvailable: boolean;
 }
 
 export interface ChatGptWebModelMode {
   modelId: string;
   effort: "low" | "medium" | "high" | "xhigh" | "max";
-  displayLabel: "Instant" | "Medium" | "High" | "Extra High" | "Pro";
-  uiEffortIndex: 0 | 1 | 2 | 3 | 4;
+  displayLabel: "Luna" | "Instant" | "Medium" | "High" | "Extra High" | "Pro";
+  uiEffortIndex: 0 | 1 | 2 | 3 | 4 | null;
   localTools: boolean;
 }
 
@@ -18,8 +25,25 @@ export function resolveChatGptWebModelMode(
   reasoning: string | undefined,
   capabilities: ChatGptWebCapabilities,
 ): ChatGptWebModelMode {
+  if (modelId === CHATGPT_WEB_LUNA_MODEL_ID) {
+    if (capabilities.solAvailable) {
+      throw new Error("ChatGPT Luna is not available while the account exposes the Sol model selector");
+    }
+    const effort = reasoning ?? "low";
+    if (effort !== "low") throw new Error(`ChatGPT Luna effort is not supported: ${effort}`);
+    return {
+      modelId,
+      effort,
+      displayLabel: "Luna",
+      uiEffortIndex: null,
+      localTools: capabilities.localToolsEnabled,
+    };
+  }
   if (modelId !== CHATGPT_WEB_MODEL_ID) {
     throw new Error(`ChatGPT web model is not supported: ${modelId}`);
+  }
+  if (!capabilities.solAvailable) {
+    throw new Error("ChatGPT Sol modes are not available for this Luna-only account");
   }
   const effort = reasoning ?? "high";
   switch (effort) {

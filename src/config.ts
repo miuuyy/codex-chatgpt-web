@@ -32,6 +32,7 @@ export interface AppConfig {
   storageStatePath: string;
   brokerSocketPath: string;
   headed: boolean;
+  solAvailable: boolean;
   proAvailable: boolean;
   autoApproveToolCalls: boolean;
   controlToken: string;
@@ -122,6 +123,7 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     storageStatePath: join(home, "browser", "storage-state.json"),
     brokerSocketPath: defaultBrokerEndpoint(home),
     headed: true,
+    solAvailable: true,
     proAvailable: false,
     autoApproveToolCalls: false,
     controlToken: randomBytes(32).toString("base64url"),
@@ -337,7 +339,15 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (parsed.proAvailable !== undefined && typeof parsed.proAvailable !== "boolean") {
     throw new Error(`Invalid proAvailable in ${path}`);
   }
-  return { ...parsed, proAvailable: parsed.proAvailable === true } as AppConfig;
+  if (parsed.solAvailable !== undefined && typeof parsed.solAvailable !== "boolean") {
+    throw new Error(`Invalid solAvailable in ${path}`);
+  }
+  const solAvailable = parsed.solAvailable !== false;
+  const proAvailable = parsed.proAvailable === true;
+  if (proAvailable && !solAvailable) {
+    throw new Error(`Invalid ChatGPT account capabilities in ${path}: Pro requires Sol`);
+  }
+  return { ...parsed, solAvailable, proAvailable } as AppConfig;
 }
 
 export function saveConfig(config: AppConfig): void {
@@ -345,18 +355,21 @@ export function saveConfig(config: AppConfig): void {
 }
 
 export function providerConfig(config: AppConfig): CodexProviderConfig {
-  const models = ["gpt-5.6-sol"];
-  const efforts = ["low", "medium", "high", "xhigh", ...(config.proAvailable ? ["max"] : [])];
+  const model = config.solAvailable ? "gpt-5.6-sol" : "gpt-5.6-luna";
+  const models = [model];
+  const efforts = config.solAvailable
+    ? ["low", "medium", "high", "xhigh", ...(config.proAvailable ? ["max"] : [])]
+    : ["low"];
   return {
     adapter: "chatgpt-web",
     baseUrl: "https://chatgpt.com",
     models,
     liveModels: false,
-    defaultModel: "gpt-5.6-sol",
+    defaultModel: model,
     contextWindow: config.contextWindow,
     modelInputModalities: Object.fromEntries(models.map(model => [model, ["text", "image"]])),
-    modelReasoningEfforts: { "gpt-5.6-sol": efforts },
-    modelDefaultReasoningEfforts: { "gpt-5.6-sol": "high" },
+    modelReasoningEfforts: { [model]: efforts },
+    modelDefaultReasoningEfforts: { [model]: config.solAvailable ? "high" : "low" },
     noReasoningModels: [],
     chatgptWeb: {
       appName: config.appName,
@@ -366,8 +379,10 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       chromeExecutablePath: config.chromeExecutablePath,
       brokerSocketPath: config.brokerSocketPath,
       threadEnvironmentStatePath: join(getConfigDir(), "runtime", "thread-environments.json"),
+      lunaCheckpointStatePath: join(getConfigDir(), "runtime", "luna-checkpoints.json"),
       headed: config.headed,
       localToolsEnabled: config.mode === "full",
+      solAvailable: config.solAvailable,
       proAvailable: config.proAvailable,
       autoApproveToolCalls: config.autoApproveToolCalls,
     },

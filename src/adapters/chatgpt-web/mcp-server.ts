@@ -224,10 +224,16 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
         sandbox: claimed.environment.sandboxPolicy.type,
         expires_at: expiresAt,
         tool_count: claimed.environment.tools.length,
-        command_tool: commandTool ? wireName(commandTool) : gateway ? "exec_command" : null,
+        // `exec` is the actual code-mode-only outer route. It is not an
+        // `exec_command` tool and must never be advertised as one.
+        command_tool: commandTool ? "codex_exec" : gateway ? wireName(gateway) : null,
         outer_tool_gateway: gateway ? wireName(gateway) : null,
         capabilities: ["native_tool_loop", "session_history", "exec", "apply_patch", "images", "tool_registry"],
-        next_action: "Copy binding_id exactly into the binding_id field of the required Codex Native tool call. Never put turn_token in binding_id.",
+        next_action: commandTool
+          ? "Use codex_exec for commands. Use codex_tool_inventory and codex_tool_call for every other exact outer tool."
+          : gateway
+            ? "This turn exposes commands through outer_tool_gateway. Call codex_exec; it will dispatch the command through that exact gateway using the code-mode-only shell_command contract. Do not invent exec_command."
+            : "Use codex_tool_inventory and codex_tool_call with exact returned wire names; this turn exposes no command tool.",
       });
     },
   );
@@ -236,7 +242,7 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
     "codex_exec",
     {
       title: "Run a native Codex command",
-      description: "Invoke the command tool advertised by the current outer Codex harness. A long-running command returns its native session_id.",
+      description: "Run a command when codex_bind_turn returned command_tool=\"codex_exec\" or command_tool equal to outer_tool_gateway. In code-mode-only turns this dispatches through the exact outer exec gateway and its shell_command contract. A long-running command returns its native session_id.",
       inputSchema: {
         binding_id: bindingSchema,
         cmd: z.string().min(1).max(100_000),
@@ -251,23 +257,36 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
       console.error(`[chatgpt-web-mcp] codex_exec scope=${requestScopeSummary(extra)}`);
       const bound = await environment(binding_id);
       const tool = exactTool(bound, "exec_command") ?? exactTool(bound, "shell_command");
-      const commandName = tool?.name ?? "exec_command";
-      const args = commandName === "exec_command"
-        ? {
-            cmd,
-            ...(workdir ? { workdir } : {}),
-            ...(yield_time_ms !== undefined ? { yield_time_ms } : {}),
-            ...(max_output_tokens !== undefined ? { max_output_tokens } : {}),
-            ...(tty !== undefined ? { tty } : {}),
-          }
-        : {
+      if (tool) {
+        const args = tool.name === "exec_command"
+          ? {
+              cmd,
+              ...(workdir ? { workdir } : {}),
+              ...(yield_time_ms !== undefined ? { yield_time_ms } : {}),
+              ...(max_output_tokens !== undefined ? { max_output_tokens } : {}),
+              ...(tty !== undefined ? { tty } : {}),
+            }
+          : {
+              command: cmd,
+              ...(workdir ? { workdir } : {}),
+              ...(yield_time_ms !== undefined ? { timeout_ms: yield_time_ms } : {}),
+            };
+        return invokeNative(binding_id, bound, tool, { arguments: args });
+      }
+      const gateway = execGateway(bound);
+      if (!gateway) throw new Error("This Codex turn did not advertise a command tool or an exec gateway");
+      // ChatGPT Web code_mode_only exposes shell_command inside the outer
+      // exec gateway. This is the catalog contract, not a guessed top-level
+      // tool name; the gateway itself remains the authoritative dispatcher.
+      return invoke(binding_id, bound, gateway, {
+        input: execGatewayProgram("shell_command", false, {
+          arguments: {
             command: cmd,
             ...(workdir ? { workdir } : {}),
             ...(yield_time_ms !== undefined ? { timeout_ms: yield_time_ms } : {}),
-          };
-      return tool
-        ? invokeNative(binding_id, bound, tool, { arguments: args })
-        : invokeNestedNative(binding_id, bound, commandName, false, { arguments: args });
+          },
+        }),
+      });
     },
   );
 

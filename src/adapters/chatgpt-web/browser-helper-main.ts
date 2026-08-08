@@ -22,6 +22,7 @@ interface RunMessage {
     reasoning?: string;
     capabilities: ChatGptWebCapabilities;
     prepared: CompiledChatGptWebPrompt;
+    captureLunaCheckpoint?: boolean;
   };
 }
 
@@ -34,7 +35,21 @@ interface VerifyMessage {
   };
 }
 
-type InputMessage = RunMessage | VerifyMessage | { type: "abort"; id: string } | { type: "shutdown" };
+interface InspectMessage {
+  type: "inspect";
+  id: string;
+  config: VerifyMessage["config"];
+  detectCapabilities: boolean;
+}
+
+interface SmokeMessage {
+  type: "smoke";
+  id: string;
+  config: VerifyMessage["config"];
+}
+
+type MaintenanceMessage = VerifyMessage | InspectMessage | SmokeMessage;
+type InputMessage = RunMessage | MaintenanceMessage | { type: "abort"; id: string } | { type: "shutdown" };
 
 let outputFailure: Error | undefined;
 const handleOutputFailure = (error: Error): void => {
@@ -93,6 +108,9 @@ async function run(message: RunMessage): Promise<void> {
   if (!message.turn.prepared || typeof message.turn.prepared.text !== "string" || !Array.isArray(message.turn.prepared.images)) {
     throw new Error("Browser helper prompt is invalid");
   }
+  if (message.turn.captureLunaCheckpoint !== undefined && typeof message.turn.captureLunaCheckpoint !== "boolean") {
+    throw new Error("Browser helper Luna checkpoint flag is invalid");
+  }
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: "https://chatgpt.com",
@@ -123,6 +141,15 @@ async function run(message: RunMessage): Promise<void> {
     }),
     onCommentary: (text, continuation) => writeProtocol({ type: "event", id: message.id, event: "commentary", text, ...(continuation ? { continuation: true } : {}) }),
     onTextDelta: text => writeProtocol({ type: "event", id: message.id, event: "text", text }),
+    ...(message.turn.captureLunaCheckpoint ? {
+      captureLunaCheckpoint: true,
+      onLunaCheckpoint: captured => writeProtocol({
+        type: "event",
+        id: message.id,
+        event: "luna_checkpoint",
+        ...captured,
+      }),
+    } : {}),
   };
   try {
     const text = await ChatGptBrowserWorker.forProvider(provider).run(turn);
@@ -146,25 +173,8 @@ async function run(message: RunMessage): Promise<void> {
 }
 
 async function verify(message: VerifyMessage): Promise<void> {
-  if (!/^[A-Za-z0-9_-]{6,128}$/.test(message.id)) {
-    throw new Error("Browser helper verification identity is invalid");
-  }
-  const appName = message.config.appName?.trim();
-  const browserHostDescriptorPath = message.config.browserHostDescriptorPath?.trim();
-  if (!appName || appName.length > 80 || !browserHostDescriptorPath) {
-    throw new Error("Browser helper verification config is invalid");
-  }
-  const provider: CodexProviderConfig = {
-    adapter: "chatgpt-web",
-    baseUrl: "https://chatgpt.com",
-    chatgptWeb: {
-      appName,
-      browserHost: "launcher",
-      browserHostDescriptorPath,
-    },
-  };
   try {
-    const selected = await ChatGptBrowserWorker.forProvider(provider).verifyConnector();
+    const selected = await maintenanceWorker(message).verifyConnector();
     writeProtocol({ type: "result", id: message.id, text: selected });
   } catch (error) {
     writeProtocol({
@@ -173,6 +183,45 @@ async function verify(message: VerifyMessage): Promise<void> {
       name: error instanceof Error ? error.name : "Error",
       message: error instanceof Error ? error.message : String(error),
     });
+  }
+}
+
+function maintenanceWorker(message: MaintenanceMessage): ChatGptBrowserWorker {
+  if (!/^[A-Za-z0-9_-]{6,128}$/.test(message.id)) {
+    throw new Error("Browser helper maintenance identity is invalid");
+  }
+  const appName = message.config.appName?.trim();
+  const browserHostDescriptorPath = message.config.browserHostDescriptorPath?.trim();
+  if (!appName || appName.length > 80 || !browserHostDescriptorPath) {
+    throw new Error("Browser helper maintenance config is invalid");
+  }
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: "https://chatgpt.com",
+    chatgptWeb: { appName, browserHost: "launcher", browserHostDescriptorPath },
+  };
+  return ChatGptBrowserWorker.forProvider(provider);
+}
+
+async function maintain(message: InspectMessage | SmokeMessage): Promise<void> {
+  if (abortControllers.has(message.id)) throw new Error(`Browser helper maintenance operation already exists: ${message.id}`);
+  const abortController = new AbortController();
+  abortControllers.set(message.id, abortController);
+  try {
+    const worker = maintenanceWorker(message);
+    const value = message.type === "inspect"
+      ? await worker.inspectSession(message.detectCapabilities)
+      : await worker.smokeTest(abortController.signal);
+    writeProtocol({ type: "result", id: message.id, value });
+  } catch (error) {
+    writeProtocol({
+      type: "error",
+      id: message.id,
+      name: error instanceof Error ? error.name : "Error",
+      message: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    abortControllers.delete(message.id);
   }
 }
 
@@ -190,6 +239,12 @@ input.on("line", line => {
     void requestShutdown();
   } else if (message.type === "verify") {
     void verify(message).catch(error => writeProtocol({
+      type: "error",
+      id: message.id,
+      message: error instanceof Error ? error.message : String(error),
+    }));
+  } else if (message.type === "inspect" || message.type === "smoke") {
+    void maintain(message).catch(error => writeProtocol({
       type: "error",
       id: message.id,
       message: error instanceof Error ? error.message : String(error),

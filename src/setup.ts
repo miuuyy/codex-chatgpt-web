@@ -36,6 +36,7 @@ export interface SetupOptions {
   port?: number;
   chromeExecutablePath?: string;
   browserHostDescriptorPath?: string;
+  refreshAccountCapabilities?: boolean;
   appName?: string;
   forceLogin?: boolean;
   autoApproveToolCalls?: boolean;
@@ -62,8 +63,14 @@ export interface ExistingFullSetupCredentials {
   runtimeKey: boolean;
 }
 
-export function launcherCapabilityProbeRequired(existing: AppConfig | undefined): boolean {
-  return !(existing?.browserHost === "launcher" && typeof existing.proAvailable === "boolean");
+export function launcherCapabilityProbeRequired(
+  existing: AppConfig | undefined,
+  refreshAccountCapabilities = false,
+): boolean {
+  return refreshAccountCapabilities
+    || existing?.browserHost !== "launcher"
+    || typeof existing.solAvailable !== "boolean"
+    || typeof existing.proAvailable !== "boolean";
 }
 
 export function existingFullSetupCredentials(existing: AppConfig | undefined): ExistingFullSetupCredentials {
@@ -93,6 +100,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     storageStatePath: before.storageStatePath,
     brokerSocketPath: before.brokerSocketPath,
     headed: before.headed,
+    solAvailable: before.solAvailable,
     proAvailable: before.proAvailable,
     autoApproveToolCalls: before.autoApproveToolCalls,
     controlToken: before.controlToken,
@@ -111,6 +119,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     storageStatePath: after.storageStatePath,
     brokerSocketPath: after.brokerSocketPath,
     headed: after.headed,
+    solAvailable: after.solAvailable,
     proAvailable: after.proAvailable,
     autoApproveToolCalls: after.autoApproveToolCalls,
     controlToken: after.controlToken,
@@ -230,10 +239,12 @@ async function configureTunnel(config: AppConfig, existing: AppConfig | undefine
 async function bootstrapTunnelProfile(config: AppConfig): Promise<void> {
   let bootstrapError: unknown;
   try {
-    // `runtimes connect` writes the native profile and returns success only after its managed
-    // runtime is running, healthy, and ready. Setup stops that validation runtime transactionally;
-    // the launcher supervisor reconnects the same alias after the new configuration is committed.
+    // `runtimes connect` writes the native profile and returns once its managed runtime is healthy.
+    // Readiness follows after a successful control-plane poll, so setup proves it separately before
+    // stopping the validation runtime. The launcher supervisor reconnects the committed profile.
     connectTunnel(config);
+    const status = await waitForTunnelReady(config);
+    if (!status.ok) throw new Error(`Tunnel runtime did not become healthy and ready: ${status.detail}`);
   } catch (error) {
     bootstrapError = error;
   }
@@ -282,18 +293,28 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   }
 
   let loginCreated = false;
+  let solAvailable: boolean | undefined;
   let proAvailable: boolean | undefined;
   if (config.browserHost === "launcher") {
     if (options.forceLogin) throw new Error("Launcher browser login is owned by the launcher UI; --login cannot replace it");
-    const detectPro = launcherCapabilityProbeRequired(existing);
+    const detectCapabilities = launcherCapabilityProbeRequired(
+      existing,
+      options.refreshAccountCapabilities === true,
+    );
     const inspected = await inspectLauncherBrowserHost(config.browserHostDescriptorPath!, {
-      detectPro,
+      detectCapabilities,
     });
-    proAvailable = detectPro ? inspected.proAvailable : existing!.proAvailable;
+    solAvailable = detectCapabilities ? inspected.solAvailable : existing!.solAvailable;
+    proAvailable = detectCapabilities ? inspected.proAvailable : existing!.proAvailable;
   } else {
-    proAvailable = storedBrowserLoginCapabilities(config).proAvailable;
+    const stored = storedBrowserLoginCapabilities(config);
+    solAvailable = stored.solAvailable;
+    proAvailable = stored.proAvailable;
     const loginRequired = options.forceLogin || !browserLoginStateExists(config);
-    const capabilityProbeRequired = !loginRequired && proAvailable === undefined;
+    const capabilityProbeRequired = !loginRequired
+      && (options.refreshAccountCapabilities === true
+        || solAvailable === undefined
+        || proAvailable === undefined);
     if (beforeService.loaded && (loginRequired || capabilityProbeRequired) && !options.restartService) {
       throw new Error(
         "Setup must verify the browser account before changing the running daemon. "
@@ -303,13 +324,17 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     if (beforeService.loaded && (loginRequired || capabilityProbeRequired) && existing) await assertServiceIdle(existing);
     if (loginRequired) {
       const login = await loginToChatGpt(config);
+      solAvailable = login.solAvailable;
       proAvailable = login.proAvailable;
       loginCreated = true;
     } else if (capabilityProbeRequired) {
-      proAvailable = (await inspectBrowserLoginCapabilities(config)).proAvailable;
+      const inspected = await inspectBrowserLoginCapabilities(config);
+      solAvailable = inspected.solAvailable;
+      proAvailable = inspected.proAvailable;
     }
   }
-  config.proAvailable = proAvailable === true;
+  config.solAvailable = solAvailable === true;
+  config.proAvailable = config.solAvailable && proAvailable === true;
   const explicitTunnelChange = Boolean(options.tunnelId || options.runtimeKeyFile || options.runtimeKeyValue);
   const preliminaryChange = Boolean(existing && (meaningfulRuntimeChange(existing, config) || explicitTunnelChange || options.forceLogin));
   if (beforeService.loaded && preliminaryChange && !options.restartService) {

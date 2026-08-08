@@ -315,12 +315,16 @@ export interface CodexProviderConfig {
     brokerSocketPath?: string;
     /** Persisted, trusted Codex task authority used for follow-up turns that omit the envelope. */
     threadEnvironmentStatePath?: string;
+    /** Persisted exact-parent rolling checkpoints used only by Free/Luna turns. */
+    lunaCheckpointStatePath?: string;
     /** Optional explicit safety ceiling. Browser turns have no absolute deadline by default. */
     turnTimeoutMs?: number;
     /** Keep the single controlled browser visible. */
     headed?: boolean;
     /** Attach the turn-bound Codex MCP capability for non-Pro efforts. */
     localToolsEnabled?: boolean;
+    /** Account capability proven by the authenticated browser probe. */
+    solAvailable?: boolean;
     /** Account capability proven by the authenticated browser probe. */
     proAvailable?: boolean;
     /** Authorize per-call "Allow once" confirmation clicks for this connector. */

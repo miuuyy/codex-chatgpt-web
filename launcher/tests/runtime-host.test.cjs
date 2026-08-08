@@ -28,10 +28,20 @@ function hostFor(existingConfig) {
 }
 
 test("core setup preserves an existing full-harness installation", async () => {
-  const fixture = hostFor({ mode: "full" });
+  const fixture = hostFor({ mode: "full", appName: "Codex Native" });
   const result = await fixture.host.setupCore();
   assert.equal(result.mode, "full");
-  assert.deepEqual(fixture.invocation().args.slice(0, 2), ["setup", "--full"]);
+  assert.deepEqual(fixture.invocation().args, [
+    "setup",
+    "--full",
+    "--browser-host-descriptor",
+    "/runtime/launcher-browser.json",
+    "--refresh-account-capabilities",
+    "--acknowledge-unofficial",
+    "--restart-service",
+    "--app-name",
+    "Codex Native2",
+  ]);
 });
 
 test("core setup starts in browser-only mode when no installation exists", async () => {
@@ -39,6 +49,7 @@ test("core setup starts in browser-only mode when no installation exists", async
   const result = await fixture.host.setupCore();
   assert.equal(result.mode, "browser-only");
   assert.deepEqual(fixture.invocation().args.slice(0, 2), ["setup", "--browser-only"]);
+  assert.equal(fixture.invocation().args.includes("--refresh-account-capabilities"), true);
 });
 
 test("launcher update transaction upgrades its owned full runtime with saved configuration", async () => {
@@ -117,9 +128,12 @@ test("MCP setup reuses valid private credentials without exposing or rewriting t
       "--full",
       "--browser-host-descriptor",
       "/runtime/launcher-browser.json",
+      "--app-name",
+      "Codex Native2",
       "--acknowledge-unofficial",
       "--restart-service",
     ]);
+    assert.equal(fixture.invocation().args.includes("--refresh-account-capabilities"), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -267,8 +281,10 @@ test("failed runtime cleanup during removal still restores the previous Codex ro
 });
 
 test("connector verification uses the configured full-mode connector name", () => {
-  const full = hostFor({ mode: "full", appName: "My Codex Connector" });
-  assert.equal(full.host.mcpConnectorName(), "My Codex Connector");
+  const full = hostFor({ mode: "full", appName: "Codex Native2" });
+  assert.equal(full.host.mcpConnectorName(), "Codex Native2");
+  const staleFull = hostFor({ mode: "full", appName: "Codex Native" });
+  assert.throws(() => staleFull.host.mcpConnectorName(), /Reconnect the harness once to synchronize it/);
   const browserOnly = hostFor({ mode: "browser-only", appName: "Codex Native" });
   assert.throws(() => browserOnly.host.mcpConnectorName(), /MCP runtime is not configured/);
 });
