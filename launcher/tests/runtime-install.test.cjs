@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { runtimeInvocation } = require("../electron/runtime-command.cjs");
+const { nodeBrowserLoginInvocation, runtimeInvocation } = require("../electron/runtime-command.cjs");
 const { ensurePackagedRuntime } = require("../electron/runtime-install.cjs");
 
 function runtimeFixture(root, version = "0.2.0", bundleId = "a".repeat(64)) {
@@ -14,6 +14,7 @@ function runtimeFixture(root, version = "0.2.0", bundleId = "a".repeat(64)) {
   fs.writeFileSync(executable, "bun");
   if (process.platform !== "win32") fs.chmodSync(executable, 0o755);
   fs.writeFileSync(path.join(source, "app", "cli.js"), "cli");
+  fs.writeFileSync(path.join(source, "app", "cli-node.cjs"), "node cli");
   fs.writeFileSync(path.join(source, "app", "browser-helper.cjs"), "helper");
   fs.writeFileSync(path.join(source, "manifest.json"), `${JSON.stringify({
     schemaVersion: 1,
@@ -45,6 +46,27 @@ test("packaged runtime is installed once into a durable versioned directory", ()
     assert.equal(invocation.cwd, installed);
     assert.equal(invocation.args[0], path.join(installed, "app", "cli.js"));
     assert.equal(invocation.args[1], "serve");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Windows browser login uses Node while the packaged runtime stays on Bun", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-node-login-"));
+  const resourcesPath = runtimeFixture(root);
+  const coreHome = path.join(root, "core-home");
+  const app = { isPackaged: true, getVersion: () => "0.2.0" };
+  try {
+    const installed = ensurePackagedRuntime({ app, coreHome, resourcesPath });
+    const invocation = nodeBrowserLoginInvocation({
+      app,
+      sourceRoot: root,
+      installedRuntimeRoot: installed,
+      args: ["login", "--launcher-control"],
+    });
+    assert.equal(invocation.executable, process.execPath);
+    assert.equal(invocation.args[0], path.join(installed, "app", "cli-node.cjs"));
+    assert.equal(invocation.env.ELECTRON_RUN_AS_NODE, "1");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

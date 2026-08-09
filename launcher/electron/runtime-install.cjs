@@ -18,7 +18,12 @@ function validateRuntimeBundle(runtimeRoot, { version, platform, arch, bundleId 
     );
   }
   const paths = runtimeBundlePaths(runtimeRoot, platform);
-  for (const required of [paths.executable, paths.entrypoint, path.join(runtimeRoot, "app", "browser-helper.cjs")]) {
+  for (const required of [
+    paths.executable,
+    paths.entrypoint,
+    path.join(runtimeRoot, "app", "cli-node.cjs"),
+    path.join(runtimeRoot, "app", "browser-helper.cjs"),
+  ]) {
     if (!fs.existsSync(required) || !fs.statSync(required).isFile()) {
       throw new Error(`Runtime bundle file is missing: ${required}`);
     }

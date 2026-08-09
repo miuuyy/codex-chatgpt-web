@@ -54,6 +54,20 @@ if (!build.success) {
   throw new Error(`Runtime bundle failed: ${build.logs.map(log => log.message).join("; ")}`);
 }
 
+const nodeCliBuild = await Bun.build({
+  entrypoints: [join(root, "src", "cli.ts")],
+  target: "node",
+  format: "cjs",
+  minify: true,
+  external: ["playwright-core"],
+  packages: "external",
+  outdir: appDir,
+  naming: "cli-node.cjs",
+});
+if (!nodeCliBuild.success) {
+  throw new Error(`Node login bundle failed: ${nodeCliBuild.logs.map(log => log.message).join("; ")}`);
+}
+
 const browserHelperBuild = await Bun.build({
   entrypoints: [join(root, "src", "adapters", "chatgpt-web", "browser-helper-main.ts")],
   target: "node",
@@ -114,7 +128,7 @@ if (process.platform !== "win32") chmodSync(join(binDir, launcherName), 0o755);
 
 const playwrightPackage = join(appDir, "node_modules", "playwright-core", "package.json");
 const bundleId = createHash("sha256");
-for (const relativePath of ["app/cli.js", "app/browser-helper.cjs", "app/package.json", "app/bun.lock"]) {
+for (const relativePath of ["app/cli.js", "app/cli-node.cjs", "app/browser-helper.cjs", "app/package.json", "app/bun.lock"]) {
   bundleId.update(relativePath);
   bundleId.update("\0");
   bundleId.update(readFileSync(join(output, relativePath)));

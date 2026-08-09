@@ -23,6 +23,29 @@ function sourceRuntimeInvocation(sourceRoot, args) {
   };
 }
 
+function nodeBrowserLoginInvocation({ app, sourceRoot, installedRuntimeRoot, args }) {
+  if (!Array.isArray(args)) throw new Error("Runtime arguments must be an array");
+  if (!app.isPackaged) {
+    return {
+      executable: "node",
+      args: ["--import", "tsx", path.join(sourceRoot, "src", "cli.ts"), ...args],
+      cwd: sourceRoot,
+      env: { ELECTRON_RUN_AS_NODE: "1" },
+    };
+  }
+  if (!installedRuntimeRoot || !path.isAbsolute(installedRuntimeRoot)) {
+    throw new Error("Packaged launcher runtime has not been installed into durable local storage");
+  }
+  const entrypoint = path.join(installedRuntimeRoot, "app", "cli-node.cjs");
+  if (!fs.existsSync(entrypoint)) throw new Error(`Bundled Node login entrypoint is missing: ${entrypoint}`);
+  return {
+    executable: process.execPath,
+    args: [entrypoint, ...args],
+    cwd: installedRuntimeRoot,
+    env: { ELECTRON_RUN_AS_NODE: "1" },
+  };
+}
+
 function runtimeInvocation({ app, sourceRoot, installedRuntimeRoot, args }) {
   if (!Array.isArray(args)) throw new Error("Runtime arguments must be an array");
   if (!app.isPackaged) return sourceRuntimeInvocation(sourceRoot, args);
@@ -55,6 +78,7 @@ function embeddedRuntimeInvocation({ app, sourceRoot, args }) {
 
 module.exports = {
   embeddedRuntimeInvocation,
+  nodeBrowserLoginInvocation,
   packagedRuntimePaths,
   runtimeBundlePaths,
   runtimeInvocation,

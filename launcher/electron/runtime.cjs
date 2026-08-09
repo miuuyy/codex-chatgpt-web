@@ -11,7 +11,7 @@ const {
   requireCurrentRuntimeConnectorName,
   validateConnectorName,
 } = require("./connector-identity.cjs");
-const { embeddedRuntimeInvocation, runtimeInvocation } = require("./runtime-command.cjs");
+const { embeddedRuntimeInvocation, nodeBrowserLoginInvocation, runtimeInvocation } = require("./runtime-command.cjs");
 const { redactText } = require("./logging.cjs");
 const { DETACH_OWNED_CHILD, terminateOwnedProcessTree } = require("./process-tree.cjs");
 
@@ -341,6 +341,7 @@ class RuntimeHost {
         ],
         {
           env: this.launcherControlEnvironment(),
+          nodeBrowserLogin: this.platform === "win32",
           message: "Sign in to ChatGPT in the system Chrome/Chromium window, then close that window",
           successMessage: "System-browser ChatGPT login verified",
         },
@@ -536,7 +537,14 @@ class RuntimeHost {
     this.publishOperation?.({ name, status: "running", message: options.message || name });
     this.logger.info("runtime.operation_started", { name, args: args.map((arg) => /key|token/i.test(arg) ? "[redacted]" : arg) });
     try {
-      const invocation = options.embedded
+      const invocation = options.nodeBrowserLogin
+        ? nodeBrowserLoginInvocation({
+          app: this.app,
+          sourceRoot: this.sourceRoot,
+          installedRuntimeRoot: this.installedRuntimeRoot,
+          args,
+        })
+        : options.embedded
         ? embeddedRuntimeInvocation({ app: this.app, sourceRoot: this.sourceRoot, args })
         : this.command(args);
       const result = await new Promise((resolve, reject) => {
@@ -545,6 +553,7 @@ class RuntimeHost {
           detached: DETACH_OWNED_CHILD,
           env: {
             ...process.env,
+            ...(invocation.env || {}),
             CODEX_CHATGPT_WEB_BROWSER_HOST_DESCRIPTOR: this.browserDescriptorPath,
             ...(options.env || {}),
           },
