@@ -442,6 +442,17 @@ test("system-browser storage transfer imports only allowlisted ChatGPT/OpenAI st
         sameSite: "None",
       },
       {
+        name: "partitioned",
+        value: "supported-by-chromium-only",
+        domain: ".chatgpt.com",
+        path: "/",
+        partitionKey: "https://chatgpt.com",
+        expires: -1,
+        httpOnly: true,
+        secure: true,
+        sameSite: "Lax",
+      },
+      {
         name: "__Host-session",
         value: "host-only-session",
         domain: "chatgpt.com",
@@ -458,6 +469,7 @@ test("system-browser storage transfer imports only allowlisted ChatGPT/OpenAI st
     ],
   });
 
+  assert.deepEqual(validated.cookies.map(cookie => cookie.name), ["session", "__Host-session"]);
   assert.equal(validated.cookies[0].domain, ".chatgpt.com");
   assert.equal(Object.hasOwn(validated.cookies[1], "domain"), false);
   assert.deepEqual(validated.localStorage, [{ name: "theme", value: "dark" }]);
