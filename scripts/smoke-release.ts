@@ -1,7 +1,7 @@
 import { cpSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { defaultBrokerEndpoint } from "../src/config";
+import { defaultBrokerEndpoint, defaultChromeExecutable } from "../src/config";
 import { VERSION } from "../src/version";
 
 const sourceBundle = resolve(process.argv[2] ?? "dist/runtime");
@@ -55,7 +55,7 @@ const config = {
   contextWindow: 256_000,
   appName: "Codex Native",
   browserHost: "managed-chrome",
-  chromeExecutablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  chromeExecutablePath: defaultChromeExecutable(),
   storageStatePath: join(appHome, "browser", "storage-state.json"),
   brokerSocketPath: defaultBrokerEndpoint(appHome),
   headed: true,

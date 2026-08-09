@@ -123,9 +123,9 @@ export async function runDoctor(): Promise<DoctorReport> {
     }
   } else {
     if (!existsSync(config.chromeExecutablePath)) {
-      checks.push({ id: "chrome", status: "error", message: `Chrome executable is missing: ${config.chromeExecutablePath}` });
+      checks.push({ id: "chrome", status: "error", message: `Browser executable is missing: ${config.chromeExecutablePath}` });
     } else {
-      checks.push({ id: "chrome", status: "ok", message: `Chrome executable found: ${config.chromeExecutablePath}` });
+      checks.push({ id: "chrome", status: "ok", message: `Browser executable found: ${config.chromeExecutablePath}` });
     }
     if (!browserLoginStateExists(config)) {
       checks.push({ id: "login", status: "error", message: "ChatGPT login state is missing or unverified; run `codex-chatgpt-web login`" });

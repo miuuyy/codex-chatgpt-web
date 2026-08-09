@@ -4,33 +4,121 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { CURRENT_CONNECTOR_NAME } = require("../electron/connector-identity.cjs");
-const { resolveBrowserLoginExecutable, RuntimeHost } = require("../electron/runtime.cjs");
+const {
+  resolveBrowserLoginExecutable,
+  RuntimeHost,
+} = require("../electron/runtime.cjs");
+const {
+  resolveSystemDefaultBrowserExecutable,
+  parseMacDefaultBrowserIdentifier,
+  parseWindowsDefaultBrowserIdentifier,
+} = require("../electron/system-default-browser.cjs");
 
-test("browser login uses configured Chromium exactly and never falls back", () => {
-  const checked = [];
-  assert.equal(resolveBrowserLoginExecutable({
-    configuredPath: "/opt/custom/chromium",
-    candidates: ["/usr/bin/google-chrome", "/usr/bin/chromium"],
-    isUsable: (candidate) => {
-      checked.push(candidate);
-      return candidate === "/opt/custom/chromium";
-    },
-  }), "/opt/custom/chromium");
-  assert.deepEqual(checked, ["/opt/custom/chromium"]);
+test("system default browser resolution uses generic macOS application metadata", () => {
+  const calls = [];
+  const run = (command, args) => {
+    calls.push([command, args]);
+    if (command === "defaults" && args.at(-1) === "LSHandlers") {
+      return "{ LSHandlerRoleAll = \"com.example.browser\"; LSHandlerURLScheme = http; }";
+    }
+    if (command === "mdfind" && args[0].includes("kMDItemCFBundleIdentifier")) return "";
+    if (command === "mdfind") return "/Applications/Example Browser.app\n";
+    if (command === "mdls") return "com.example.Browser\n";
+    if (command === "defaults") return "Example Browser";
+    throw new Error(`Unexpected command: ${command}`);
+  };
 
-  assert.throws(() => resolveBrowserLoginExecutable({
-    configuredPath: "/opt/missing/chromium",
-    candidates: ["/usr/bin/google-chrome", "/usr/bin/chromium"],
-    isUsable: (candidate) => candidate === "/usr/bin/chromium",
-  }), /Configured Chrome\/Chromium executable is unavailable: \/opt\/missing\/chromium/);
+  assert.equal(parseMacDefaultBrowserIdentifier(
+    "{ LSHandlerRoleAll = \"com.example.browser\"; LSHandlerURLScheme = http; }",
+  ), "com.example.browser");
+  assert.equal(
+    resolveSystemDefaultBrowserExecutable({ platform: "darwin", env: {}, run }),
+    "/Applications/Example Browser.app/Contents/MacOS/Example Browser",
+  );
+  assert.equal(calls[1][0], "mdfind");
+  assert.equal(calls[2][0], "mdfind");
 });
 
-test("unconfigured Arch login deterministically discovers Chromium", () => {
+test("system default browser resolution scans application bundles when Spotlight has no result", () => {
+  const run = (command, args) => {
+    if (command === "defaults" && args.at(-1) === "LSHandlers") {
+      return "{ LSHandlerRoleAll = \"com.example.browser\"; LSHandlerURLScheme = http; }";
+    }
+    if (command === "mdfind") return "";
+    if (command === "find") return "/Applications/Example Browser.app\n";
+    if (command === "mdls") return "com.example.browser\n";
+    if (command === "defaults") return "Example Browser";
+    throw new Error(`Unexpected command: ${command}`);
+  };
+
+  assert.equal(
+    resolveSystemDefaultBrowserExecutable({ platform: "darwin", env: {}, run }),
+    "/Applications/Example Browser.app/Contents/MacOS/Example Browser",
+  );
+});
+
+test("system default browser resolution uses the generic Windows association command", () => {
+  const run = (command, args) => {
+    if (command !== "reg.exe") throw new Error(`Unexpected command: ${command}`);
+    if (args.includes("ProgId")) return "ProgId    REG_SZ    ExampleHTML\n";
+    return '(Default)    REG_SZ    "C:\\Program Files\\Example\\browser.exe" -- "%1"\n';
+  };
+
+  assert.equal(parseWindowsDefaultBrowserIdentifier("ProgId    REG_SZ    ExampleHTML\n"), "ExampleHTML");
+  assert.equal(
+    resolveSystemDefaultBrowserExecutable({ platform: "win32", env: {}, run }),
+    "C:\\Program Files\\Example\\browser.exe",
+  );
+});
+
+test("system default browser resolution uses the generic Linux desktop entry", () => {
+  const dataHome = "/home/test/.local/share";
+  const executable = "/opt/example/bin/example-browser";
+  const desktopFile = `${dataHome}/applications/example.desktop`;
+  const run = (command) => command === "xdg-settings" ? "example.desktop\n" : "";
+  const exists = (candidate) => candidate === desktopFile || candidate === executable;
+  const read = (candidate) => {
+    assert.equal(candidate, desktopFile);
+    return "[Desktop Entry]\nType=Application\nExec=/opt/example/bin/example-browser -- %U\n";
+  };
+
+  assert.equal(
+    resolveSystemDefaultBrowserExecutable({
+      platform: "linux",
+      env: { HOME: "/home/test", PATH: "/usr/bin" },
+      run,
+      exists,
+      read,
+    }),
+    executable,
+  );
+});
+
+test("browser login uses only the system default and never falls back", () => {
+  const checked = [];
   assert.equal(resolveBrowserLoginExecutable({
-    platform: "linux",
-    candidates: ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium"],
-    isUsable: (candidate) => candidate === "/usr/bin/chromium",
-  }), "/usr/bin/chromium");
+    resolveDefaultBrowserExecutable: () => "/opt/default-browser",
+    isUsable: (candidate) => {
+      checked.push(candidate);
+      return candidate === "/opt/default-browser";
+    },
+  }), "/opt/default-browser");
+  assert.deepEqual(checked, ["/opt/default-browser"]);
+
+  assert.throws(() => resolveBrowserLoginExecutable({
+    resolveDefaultBrowserExecutable: () => "/opt/missing-browser",
+    isUsable: () => false,
+  }), /system default browser executable is unavailable: \/opt\/missing-browser/);
+});
+
+test("browser login reports default-browser resolution failures directly", () => {
+  assert.throws(() => resolveBrowserLoginExecutable({
+    resolveDefaultBrowserExecutable: () => { throw new Error("default association is unavailable"); },
+  }), /Could not resolve the system default browser: default association is unavailable/);
+  assert.equal(resolveBrowserLoginExecutable({
+    resolveDefaultBrowserExecutable: () => "/opt/default-browser",
+    isUsable: () => true,
+  }), "/opt/default-browser");
 });
 
 function hostFor(existingConfig) {

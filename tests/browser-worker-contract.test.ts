@@ -67,11 +67,21 @@ test("browser turns have no absolute deadline unless one is explicitly configure
   })).toThrow("turnTimeoutMs must be a positive finite number");
 });
 
-test("managed Chrome defaults follow the host platform", () => {
-  expect(defaultChromeExecutable("darwin")).toBe("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
-  expect(defaultChromeExecutable("linux")).toBe("/usr/bin/google-chrome");
-  expect(defaultChromeExecutable("win32", "D:\\Program Files")).toBe(
-    "D:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+test("managed browser defaults follow the system association", () => {
+  const resolveFixtureBrowser = ({ platform, env }: { platform?: string; env?: NodeJS.ProcessEnv } = {}) => {
+    if (platform === "darwin") return "/Applications/Example Browser.app/Contents/MacOS/Example Browser";
+    if (platform === "linux") return "/opt/example-browser/bin/example-browser";
+    return `${env?.PROGRAMFILES}\\Example Browser\\browser.exe`;
+  };
+
+  expect(defaultChromeExecutable("darwin", undefined, resolveFixtureBrowser)).toBe(
+    "/Applications/Example Browser.app/Contents/MacOS/Example Browser",
+  );
+  expect(defaultChromeExecutable("linux", undefined, resolveFixtureBrowser)).toBe(
+    "/opt/example-browser/bin/example-browser",
+  );
+  expect(defaultChromeExecutable("win32", "D:\\Program Files", resolveFixtureBrowser)).toBe(
+    "D:\\Program Files\\Example Browser\\browser.exe",
   );
   const provider = { adapter: "chatgpt-web" as const, baseUrl: "browser://chatgpt" };
   expect(resolveBrowserConfig(provider).chromeExecutablePath).toBe(defaultChromeExecutable());

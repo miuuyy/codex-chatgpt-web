@@ -5,6 +5,8 @@ export const CHATGPT_TEMPORARY_CHAT_URL = "https://chatgpt.com/?temporary-chat=t
 export const CHATGPT_COMPOSER_SELECTOR = [
   '[data-testid="prompt-textarea"]',
   "#prompt-textarea",
+  'textarea[aria-label="Chat with ChatGPT"]',
+  'textarea[placeholder="Temporary chat"]',
   '[contenteditable="true"][data-lexical-editor="true"]',
 ].join(", ");
 export const CHATGPT_EFFORT_CONTROL_SELECTOR = [
@@ -73,6 +75,12 @@ export async function assertAuthenticatedChatGptPage(page: Page): Promise<void> 
   );
   if (!await anyVisible(composer)) {
     throw new Error("ChatGPT authentication could not be verified: no visible composer is present");
+  }
+  const loginActions = page.getByRole("button", { name: /^(?:Log in|Sign up(?: for free)?)$/i }).or(
+    page.getByRole("link", { name: /^(?:Log in|Sign up(?: for free)?)$/i }),
+  );
+  if (await anyVisible(loginActions)) {
+    throw new Error("ChatGPT authentication could not be verified: visible login controls are present");
   }
 }
 

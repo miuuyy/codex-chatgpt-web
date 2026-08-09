@@ -46,7 +46,7 @@ Setup options:
   --browser-only               Account-eligible Web models, full context/images, no local tools or tunnel
   --full                       Account-eligible Web models with tools; Pro remains read-only
   --port NUMBER                Loopback Responses port (default: 17841)
-  --chrome PATH                Google Chrome/Chromium executable used for account login
+  --chrome PATH                Supported Chromium browser executable used for account login
   --browser-host-descriptor PATH
                                Use the embedded launcher browser described by this owner-only file
   --refresh-account-capabilities
@@ -381,7 +381,7 @@ async function main(): Promise<void> {
       stdout.write("Playwright can reach the authenticated ChatGPT surface embedded in the launcher.\n");
     } else {
       await checkBrowserEngine(config);
-      stdout.write("Playwright can launch the configured Chrome executable.\n");
+      stdout.write("Playwright can launch the configured browser executable.\n");
     }
   } else if (command === "serve") {
     assertNoArgs(args);

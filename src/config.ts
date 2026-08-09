@@ -1,10 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, openSync, closeSync, renameSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, delimiter, dirname, isAbsolute, join, resolve, sep, win32 } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import type { CodexProviderConfig } from "./types";
 import { VERSION } from "./version";
+import { resolveSystemDefaultBrowserExecutable } from "../launcher/electron/system-default-browser.cjs";
 
 export type RuntimeMode = "browser-only" | "full";
 export type BrowserHostMode = "managed-chrome" | "launcher";
@@ -269,14 +270,13 @@ export function assertDurableRuntimeCommand(command: string[]): void {
 export function defaultChromeExecutable(
   platform = process.platform,
   programFiles = process.env.PROGRAMFILES,
+  resolveDefaultBrowserExecutable = resolveSystemDefaultBrowserExecutable,
 ): string {
-  if (platform === "darwin") {
-    return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  const env = { ...process.env };
+  if (platform === "win32" && programFiles !== undefined) {
+    env.PROGRAMFILES = programFiles;
   }
-  if (platform === "win32") {
-    return win32.join(programFiles || "C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe");
-  }
-  return "/usr/bin/google-chrome";
+  return resolveDefaultBrowserExecutable({ platform, env });
 }
 
 export function loadConfig(): AppConfig {

@@ -4,6 +4,7 @@ const os = require("node:os");
 const { randomBytes } = require("node:crypto");
 const { spawn } = require("node:child_process");
 const { writePrivateFileAtomic } = require("./atomic-file.cjs");
+const { resolveSystemDefaultBrowserExecutable } = require("./system-default-browser.cjs");
 const {
   connectorNameForSetup,
   CURRENT_CONNECTOR_NAME,
@@ -56,29 +57,6 @@ function resolveUserPath(value) {
   return path.resolve(value);
 }
 
-function browserLoginCandidates(platform = process.platform, env = process.env) {
-  if (platform === "darwin") {
-    return [
-      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-      "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    ];
-  }
-  if (platform === "win32") {
-    const roots = [env.PROGRAMFILES, env["PROGRAMFILES(X86)"], env.LOCALAPPDATA].filter(Boolean);
-    return roots.flatMap((root) => [
-      path.win32.join(root, "Google", "Chrome", "Application", "chrome.exe"),
-      path.win32.join(root, "Chromium", "Application", "chrome.exe"),
-    ]);
-  }
-  return [
-    "/usr/bin/google-chrome",
-    "/usr/bin/google-chrome-stable",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-    "/opt/google/chrome/google-chrome",
-  ];
-}
-
 function executablePathIsAbsolute(candidate, platform = process.platform) {
   return platform === "win32" ? path.win32.isAbsolute(candidate) : path.posix.isAbsolute(candidate);
 }
@@ -95,30 +73,26 @@ function usableBrowserExecutable(candidate, platform = process.platform) {
 }
 
 function resolveBrowserLoginExecutable({
-  configuredPath,
   platform = process.platform,
-  candidates = browserLoginCandidates(platform),
+  env = process.env,
+  resolveDefaultBrowserExecutable = resolveSystemDefaultBrowserExecutable,
   isUsable = (candidate) => usableBrowserExecutable(candidate, platform),
 } = {}) {
-  if (configuredPath !== undefined && configuredPath !== null) {
-    if (typeof configuredPath !== "string" || !configuredPath.trim() || !executablePathIsAbsolute(configuredPath, platform)) {
-      throw new Error(`Configured Chrome/Chromium executable path is invalid: ${String(configuredPath)}`);
-    }
-    if (!isUsable(configuredPath)) {
-      throw new Error(
-        `Configured Chrome/Chromium executable is unavailable: ${configuredPath}. Set chromeExecutablePath to an absolute`
-        + " Google Chrome or Chromium executable path and retry; the launcher will not substitute another browser.",
-      );
-    }
-    return configuredPath;
+  let candidate;
+  try {
+    candidate = resolveDefaultBrowserExecutable({ platform, env });
+  } catch (error) {
+    throw new Error(
+      `Could not resolve the system default browser: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
-  for (const candidate of [...new Set(candidates)]) {
-    if (isUsable(candidate)) return candidate;
+  if (typeof candidate !== "string" || !candidate.trim() || !executablePathIsAbsolute(candidate, platform)) {
+    throw new Error("The system default browser did not provide an absolute executable path");
   }
-  throw new Error(
-    `No supported system Chrome/Chromium executable was found. Install Google Chrome or Chromium, or configure`
-    + ` chromeExecutablePath explicitly. Checked: ${candidates.join(", ")}`,
-  );
+  if (!isUsable(candidate)) {
+    throw new Error(`The system default browser executable is unavailable: ${candidate}`);
+  }
+  return candidate;
 }
 
 function captureRegularFile(filePath) {
@@ -300,11 +274,7 @@ class RuntimeHost {
   }
 
   resolveBrowserLoginExecutable() {
-    const setupConfig = this.supervisor.readSetupConfig
-      ? this.supervisor.readSetupConfig()
-      : this.supervisor.readConfig();
     return resolveBrowserLoginExecutable({
-      configuredPath: setupConfig?.chromeExecutablePath,
       platform: this.platform,
     });
   }
@@ -341,7 +311,7 @@ class RuntimeHost {
         ],
         {
           env: this.launcherControlEnvironment(),
-          message: "Sign in to ChatGPT in the system Chrome/Chromium window, then close that window",
+          message: "Sign in to ChatGPT in the system default browser window, then quit that dedicated browser instance completely",
           successMessage: "System-browser ChatGPT login verified",
         },
       );
@@ -1030,4 +1000,8 @@ class RuntimeHost {
   }
 }
 
-module.exports = { CURRENT_CONNECTOR_NAME, resolveBrowserLoginExecutable, RuntimeHost };
+module.exports = {
+  CURRENT_CONNECTOR_NAME,
+  resolveBrowserLoginExecutable,
+  RuntimeHost,
+};

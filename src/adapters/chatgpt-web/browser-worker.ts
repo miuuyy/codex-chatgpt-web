@@ -831,7 +831,7 @@ export class ChatGptBrowserWorker {
       throw new Error(`ChatGPT web login state is missing: ${this.config.storageStatePath}`);
     }
     if (!existsSync(this.config.chromeExecutablePath)) {
-      throw new Error(`Configured Chrome executable does not exist: ${this.config.chromeExecutablePath}`);
+      throw new Error(`Configured browser executable does not exist: ${this.config.chromeExecutablePath}`);
     }
     this.browser = await chromium.launch({
       executablePath: this.config.chromeExecutablePath,
@@ -849,7 +849,7 @@ export class ChatGptBrowserWorker {
         throw new Error(`ChatGPT web login state is missing: ${this.config.storageStatePath}`);
       }
       if (!existsSync(this.config.chromeExecutablePath)) {
-        throw new Error(`Configured Chrome executable does not exist: ${this.config.chromeExecutablePath}`);
+        throw new Error(`Configured browser executable does not exist: ${this.config.chromeExecutablePath}`);
       }
       const browser = await chromium.launch({
         executablePath: this.config.chromeExecutablePath,

@@ -7,6 +7,7 @@ import { atomicWriteFile } from "./config";
 import {
   assertAuthenticatedChatGptPage,
   assertTemporaryChatPage,
+  CHATGPT_COMPOSER_SELECTOR,
   CHATGPT_TEMPORARY_CHAT_URL,
   detectChatGptAccountCapabilities,
 } from "./chatgpt-session";
@@ -25,6 +26,13 @@ interface LoginVerificationMarker {
   verifiedAt: string;
   solAvailable?: boolean;
   proAvailable?: boolean;
+}
+
+function browserEngineError(config: AppConfig, error: unknown): Error {
+  return new Error(
+    `Browser executable at ${config.chromeExecutablePath} is not compatible with the Chromium-based login adapter:`
+    + ` ${error instanceof Error ? error.message : String(error)}`,
+  );
 }
 
 export function loginVerificationMarkerPath(storageStatePath: string): string {
@@ -48,18 +56,26 @@ async function inspectStoredState(
   config: AppConfig,
   storageState: NonNullable<BrowserContextOptions["storageState"]>,
 ): Promise<ChatGptWebAccountCapabilities & { url: string }> {
-  const verifierBrowser = await chromium.launch({
-    executablePath: config.chromeExecutablePath,
-    headless: false,
-    ignoreDefaultArgs: ["--password-store=basic", "--use-mock-keychain"],
-    args: ["--no-first-run", "--no-default-browser-check"],
-  });
+  let verifierBrowser;
+  try {
+    verifierBrowser = await chromium.launch({
+      executablePath: config.chromeExecutablePath,
+      headless: false,
+      ignoreDefaultArgs: ["--password-store=basic", "--use-mock-keychain"],
+      args: ["--no-first-run", "--no-default-browser-check"],
+    });
+  } catch (error) {
+    throw browserEngineError(config, error);
+  }
   try {
     const verifierContext = await verifierBrowser.newContext({ storageState });
     try {
       const verifierPage = await verifierContext.newPage();
       await verifierPage.goto(CHATGPT_TEMPORARY_CHAT_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
-      await verifierPage.getByRole("textbox", { name: "Chat with ChatGPT" }).waitFor({ state: "visible", timeout: 60_000 });
+      const verifierComposer = verifierPage.getByRole("textbox", { name: "Chat with ChatGPT" }).or(
+        verifierPage.locator(CHATGPT_COMPOSER_SELECTOR),
+      ).first();
+      await verifierComposer.waitFor({ state: "visible", timeout: 60_000 });
       await assertAuthenticatedChatGptPage(verifierPage);
       await assertTemporaryChatPage(verifierPage);
       return { ...await detectChatGptAccountCapabilities(verifierPage), url: verifierPage.url() };
@@ -98,12 +114,12 @@ export async function loginToChatGpt(
   options: { timeoutMs?: number } = {},
 ): Promise<BrowserLoginResult> {
   if (!existsSync(config.chromeExecutablePath)) {
-    throw new Error(`Chrome/Chromium was not found at ${config.chromeExecutablePath}. Pass --chrome with its executable path.`);
+    throw new Error(`Browser executable was not found at ${config.chromeExecutablePath}. Pass --chrome with its executable path.`);
   }
   const profileDir = join(dirname(config.storageStatePath), "login-profile");
   mkdirSync(profileDir, { recursive: true, mode: 0o700 });
   process.stdout.write(
-    "A system Chrome/Chromium window is open. Sign in to ChatGPT, confirm that the composer is visible, then quit this dedicated browser instance completely.\n",
+    "A dedicated system browser window is open. Sign in to ChatGPT, confirm that Log in and Sign up controls are gone, then quit this dedicated browser instance completely.\n",
   );
   const loginBrowser = spawn(config.chromeExecutablePath, [
     `--user-data-dir=${profileDir}`,
@@ -116,18 +132,23 @@ export async function loginToChatGpt(
   const loginExit = await new Promise<number>((resolveExit, rejectExit) => {
     loginBrowser.once("error", rejectExit);
     loginBrowser.once("exit", (code, signal) => {
-      if (signal) rejectExit(new Error(`Normal Chrome login window exited from signal ${signal}`));
+      if (signal) rejectExit(new Error(`System default browser login window exited from signal ${signal}`));
       else resolveExit(code ?? 1);
     });
   });
-  if (loginExit !== 0) throw new Error(`Normal Chrome login window exited with status ${loginExit}`);
+  if (loginExit !== 0) throw new Error(`System default browser login window exited with status ${loginExit}`);
 
-  const context = await chromium.launchPersistentContext(profileDir, {
-    executablePath: config.chromeExecutablePath,
-    headless: false,
-    ignoreDefaultArgs: ["--password-store=basic", "--use-mock-keychain"],
-    args: ["--no-first-run", "--no-default-browser-check"],
-  });
+  let context;
+  try {
+    context = await chromium.launchPersistentContext(profileDir, {
+      executablePath: config.chromeExecutablePath,
+      headless: false,
+      ignoreDefaultArgs: ["--password-store=basic", "--use-mock-keychain"],
+      args: ["--no-first-run", "--no-default-browser-check"],
+    });
+  } catch (error) {
+    throw browserEngineError(config, error);
+  }
   try {
     const page = context.pages()[0] ?? await context.newPage();
     await page.goto(CHATGPT_TEMPORARY_CHAT_URL, {
@@ -135,7 +156,7 @@ export async function loginToChatGpt(
       timeout: 60_000,
     });
     const composer = page.getByRole("textbox", { name: "Chat with ChatGPT" }).or(
-      page.locator('[data-testid="prompt-textarea"], [contenteditable="true"][data-lexical-editor="true"]'),
+      page.locator(CHATGPT_COMPOSER_SELECTOR),
     ).first();
     try {
       await composer.waitFor({ state: "visible", timeout: options.timeoutMs ?? 60_000 });
@@ -174,12 +195,17 @@ export function browserLoginStateExists(config: AppConfig): boolean {
 }
 
 export async function checkBrowserEngine(config: AppConfig): Promise<void> {
-  if (!existsSync(config.chromeExecutablePath)) throw new Error(`Chrome/Chromium was not found at ${config.chromeExecutablePath}`);
-  const browser = await chromium.launch({
-    executablePath: config.chromeExecutablePath,
-    headless: true,
-    args: ["--no-first-run", "--no-default-browser-check"],
-  });
+  if (!existsSync(config.chromeExecutablePath)) throw new Error(`Browser executable was not found at ${config.chromeExecutablePath}`);
+  let browser;
+  try {
+    browser = await chromium.launch({
+      executablePath: config.chromeExecutablePath,
+      headless: true,
+      args: ["--no-first-run", "--no-default-browser-check"],
+    });
+  } catch (error) {
+    throw browserEngineError(config, error);
+  }
   try {
     const page = await browser.newPage();
     await page.goto("about:blank");
