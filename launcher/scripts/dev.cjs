@@ -1,9 +1,11 @@
 const { spawn, spawnSync } = require("node:child_process");
 const path = require("node:path");
+const { ensureElectron } = require("./ensure-electron.cjs");
 
 const root = path.resolve(__dirname, "..");
 const vitePackage = require.resolve("vite/package.json", { paths: [root] });
 const viteBin = path.join(path.dirname(vitePackage), "bin", "vite.js");
+ensureElectron();
 const electronBin = require("electron");
 const bun = process.env.CODEX_WEB_GPT_BUN || process.execPath;
 

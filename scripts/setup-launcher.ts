@@ -20,5 +20,6 @@ function run(args: string[], cwd: string): void {
   if (result.exitCode !== 0) process.exit(result.exitCode);
 }
 
-run(["run", "scripts/setup-launcher.ts"], root);
-run(["run", "dev"], launcher);
+run(["install", "--frozen-lockfile"], root);
+run(["install", "--frozen-lockfile"], launcher);
+run(["run", "ensure-electron"], launcher);

@@ -8,6 +8,7 @@
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "bun run scripts/dev.cjs",
+    "ensure-electron": "bun run scripts/ensure-electron.cjs",
     "typecheck": "tsc --noEmit",
     "build:renderer": "vite build",
     "build": "bun run typecheck && bun run build:renderer",
@@ -18,7 +19,7 @@
     "package:linux": "bun run build && bun run build:runtime && bun run scripts/package.cjs --linux",
     "smoke:package": "bun run scripts/smoke-package.cjs",
     "test": "node --test tests/*.test.cjs",
-    "start": "electron ."
+    "start": "bun run ensure-electron && electron ."
   },
   "dependencies": {
     "motion": "^12.42.2",
@@ -35,6 +36,9 @@
     "typescript": "^5.9.3",
     "vite": "^6.0.0"
   },
+  "trustedDependencies": [
+    "electron"
+  ],
   "build": {
     "appId": "dev.codexwebgpt.launcher",
     "productName": "Codex Web GPT",
