@@ -463,6 +463,38 @@ test("system-browser storage transfer imports only allowlisted ChatGPT/OpenAI st
   assert.deepEqual(validated.localStorage, [{ name: "theme", value: "dark" }]);
 });
 
+test("system-browser storage transfer excludes partitioned cookies without widening their scope", () => {
+  const validated = validateChatGptStorageState({
+    cookies: [
+      {
+        name: "session",
+        value: "secret-session",
+        domain: ".chatgpt.com",
+        path: "/",
+        expires: -1,
+        httpOnly: true,
+        secure: true,
+        sameSite: "Lax",
+      },
+      {
+        name: "partitioned",
+        value: "must-not-be-unpartitioned",
+        domain: ".chatgpt.com",
+        path: "/",
+        expires: -1,
+        httpOnly: true,
+        secure: true,
+        sameSite: "None",
+        partitionKey: "https://chatgpt.com",
+      },
+    ],
+    origins: [],
+  });
+
+  assert.equal(validated.cookies.length, 1);
+  assert.equal(validated.cookies[0].name, "session");
+});
+
 test("system-browser login proves the Electron composer and cleans transfer state", async () => {
   const calls = [];
   const browserSession = {
