@@ -252,8 +252,9 @@ export const CHATGPT_PROMPT_INSERT_CHUNK_CHARS = 16_000;
 const CHATGPT_PROMPT_INSERT_BOUNDARY_LOOKBACK_CHARS = 4_096;
 const CHATGPT_PROMPT_GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const CHATGPT_PROMPT_WHITESPACE = /\s/u;
-const CHATGPT_PROMPT_VERIFICATION_ATTEMPTS = 5;
-const CHATGPT_PROMPT_VERIFICATION_SETTLE_MS = 200;
+const CHATGPT_PROMPT_INTERMEDIATE_VERIFY_TIMEOUT_MS = 20_000;
+const CHATGPT_PROMPT_FINAL_VERIFY_TIMEOUT_MS = 10_000;
+const CHATGPT_PROMPT_VERIFICATION_POLL_MS = 100;
 export const CHATGPT_COMPOSER_DOCUMENT_END_KEY = process.platform === "darwin"
   ? "Meta+ArrowDown"
   : "Control+End";
@@ -286,6 +287,19 @@ function promptCommonPrefixChars(expected: string, observed: string): number {
   let commonPrefix = 0;
   while (commonPrefix < expected.length && expected[commonPrefix] === observed[commonPrefix]) commonPrefix += 1;
   return commonPrefix;
+}
+
+export interface ChatGptPromptReadbackPart {
+  text: string;
+  ignored: boolean;
+}
+
+export function composeChatGptPromptReadback(parts: readonly ChatGptPromptReadbackPart[]): string {
+  return parts
+    .filter(part => !part.ignored)
+    .map(part => part.text)
+    .join("\n")
+    .trimStart();
 }
 
 interface ChatGptPromptSubmissionBaseline {
@@ -1180,7 +1194,7 @@ export class ChatGptBrowserWorker {
 
   private async attachedPromptText(page: Page): Promise<string> {
     const composer = await this.activeComposer(page);
-    return composer.evaluate(element => {
+    const parts = await composer.evaluate(element => {
       const ignoredSelector = '[data-id^="plugin:"][data-keyword], [data-inline-selection-pill-cursor-target]';
       const visibleText = (node: Node): string => {
         if (node instanceof Element && node.matches(ignoredSelector)) return "";
@@ -1190,10 +1204,12 @@ export class ChatGptBrowserWorker {
         return text;
       };
       return [...element.childNodes]
-        .map(child => visibleText(child))
-        .join("\n")
-        .trimStart();
+        .map(child => ({
+          text: visibleText(child),
+          ignored: child instanceof Element && child.matches(ignoredSelector),
+        }));
     }, undefined, { timeout: 20_000 });
+    return composeChatGptPromptReadback(parts);
   }
 
   private async promptSubmissionBaseline(page: Page): Promise<ChatGptPromptSubmissionBaseline> {
@@ -1230,17 +1246,18 @@ export class ChatGptBrowserWorker {
   }
 
   private async waitForPromptComposerSettle(): Promise<void> {
-    await new Promise(resolveSleep => setTimeout(resolveSleep, CHATGPT_PROMPT_VERIFICATION_SETTLE_MS));
+    await new Promise(resolveSleep => setTimeout(resolveSleep, CHATGPT_PROMPT_VERIFICATION_POLL_MS));
   }
 
   private async exactPromptSnapshot(
     page: Page,
     prompt: string,
     baseline: ChatGptPromptSubmissionBaseline = { initialUserTurnCount: 0, initialAssistantTurnCount: 0 },
+    timeoutMs = CHATGPT_PROMPT_FINAL_VERIFY_TIMEOUT_MS,
   ): Promise<string> {
+    const deadline = Date.now() + timeoutMs;
     let observed = "";
-    for (let attempt = 0; attempt < CHATGPT_PROMPT_VERIFICATION_ATTEMPTS; attempt += 1) {
-      await this.waitForPromptComposerSettle();
+    for (;;) {
       const snapshot = await this.promptAttachmentSnapshot(page, baseline);
       observed = snapshot.text;
       if (snapshot.submissionEvidence) {
@@ -1249,8 +1266,9 @@ export class ChatGptBrowserWorker {
         );
       }
       if (observed === prompt) return observed;
+      if (Date.now() >= deadline) return observed;
+      await this.waitForPromptComposerSettle();
     }
-    return observed;
   }
 
   private async assertPromptAttached(
@@ -1258,7 +1276,7 @@ export class ChatGptBrowserWorker {
     prompt: string,
     baseline: ChatGptPromptSubmissionBaseline = { initialUserTurnCount: 0, initialAssistantTurnCount: 0 },
   ): Promise<void> {
-    const observed = await this.exactPromptSnapshot(page, prompt, baseline);
+    const observed = await this.exactPromptSnapshot(page, prompt, baseline, CHATGPT_PROMPT_FINAL_VERIFY_TIMEOUT_MS);
     if (observed === prompt) return;
     const commonPrefix = promptCommonPrefixChars(prompt, observed);
     throw new Error(
@@ -1476,10 +1494,9 @@ export class ChatGptBrowserWorker {
       const end = promptInsertChunkEnd(text, offset);
       await page.keyboard.insertText(text.slice(offset, end));
       if (end < text.length) {
-        // Lexical can rebuild the active block after an exact commit and move the native
-        // selection. Re-anchor only after the verified prefix is stable, before the next input.
+        // Keep the native selection produced by Input.insertText. Replacing it with a DOM Range
+        // after each commit can move Lexical's logical caret into the middle of the active block.
         await this.waitForPromptChunkAttached(page, text.slice(0, end).trimStart(), baseline);
-        await this.reanchorPromptCaret(page);
       }
       offset = end;
     }
@@ -1490,7 +1507,7 @@ export class ChatGptBrowserWorker {
     expected: string,
     baseline: ChatGptPromptSubmissionBaseline = { initialUserTurnCount: 0, initialAssistantTurnCount: 0 },
   ): Promise<void> {
-    const observed = await this.exactPromptSnapshot(page, expected, baseline);
+    const observed = await this.exactPromptSnapshot(page, expected, baseline, CHATGPT_PROMPT_INTERMEDIATE_VERIFY_TIMEOUT_MS);
     if (observed === expected) return;
     const commonPrefix = promptCommonPrefixChars(expected, observed);
     throw new Error(
