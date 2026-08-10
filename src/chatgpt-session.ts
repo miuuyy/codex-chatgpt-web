@@ -25,11 +25,13 @@ export const CHATGPT_ASSISTANT_TURN_SELECTOR = [
   '[data-testid^="conversation-turn-"][data-turn="assistant"]',
   '[data-testid^="conversation-turn-"][data-message-author-role="assistant"]',
   '[data-testid^="conversation-turn-"]:has([data-message-author-role="assistant"])',
+  'body:not(:has([data-testid^="conversation-turn-"])) [data-message-author-role="assistant"]',
 ].join(", ");
 export const CHATGPT_USER_TURN_SELECTOR = [
   '[data-testid^="conversation-turn-"][data-turn="user"]',
   '[data-testid^="conversation-turn-"][data-message-author-role="user"]',
   '[data-testid^="conversation-turn-"]:has([data-message-author-role="user"])',
+  'body:not(:has([data-testid^="conversation-turn-"])) [data-message-author-role="user"]',
 ].join(", ");
 
 export interface ChatGptEffortSliderState {

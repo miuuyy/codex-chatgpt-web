@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import {
+  CHATGPT_ASSISTANT_TURN_SELECTOR,
   CHATGPT_EFFORT_CONTROL_SELECTOR,
+  CHATGPT_USER_TURN_SELECTOR,
   detectChatGptAccountCapabilities,
 } from "../src/chatgpt-session";
 
@@ -8,6 +10,13 @@ test("the effort selector identifies the model slider instead of any composer me
   expect(CHATGPT_EFFORT_CONTROL_SELECTOR).toContain('[data-animated-slider-trigger="true"]');
   expect(CHATGPT_EFFORT_CONTROL_SELECTOR).toContain('[data-testid="model-switcher-dropdown-button"]');
   expect(CHATGPT_EFFORT_CONTROL_SELECTOR).not.toBe('button[aria-haspopup="menu"]');
+});
+
+test("turn selectors support role nodes without conversation-turn test ids", () => {
+  expect(CHATGPT_ASSISTANT_TURN_SELECTOR)
+    .toContain('body:not(:has([data-testid^="conversation-turn-"])) [data-message-author-role="assistant"]');
+  expect(CHATGPT_USER_TURN_SELECTOR)
+    .toContain('body:not(:has([data-testid^="conversation-turn-"])) [data-message-author-role="user"]');
 });
 
 test("a complete authenticated composer with no effort selector is Luna-only", async () => {
