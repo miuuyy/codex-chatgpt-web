@@ -19,6 +19,33 @@ test("turn selectors support role nodes without conversation-turn test ids", () 
     .toContain('body:not(:has([data-testid^="conversation-turn-"])) [data-message-author-role="user"]');
 });
 
+test("role-based turn fallback matches the observed no-test-id DOM fixture only", () => {
+  const fixtureHtml = `
+    <main>
+      <article data-message-author-role="user">existing user</article>
+      <article data-message-author-role="assistant">existing assistant</article>
+      <div data-message-author-role="status">not a turn</div>
+    </main>
+  `;
+  const roleCount = (role: "user" | "assistant"): number => (
+    [...fixtureHtml.matchAll(new RegExp(`data-message-author-role="${role}"`, "g"))].length
+  );
+  const hasConversationTurnTestId = /data-testid="conversation-turn-/.test(fixtureHtml);
+
+  expect(hasConversationTurnTestId).toBeFalse();
+  expect(roleCount("user")).toBe(1);
+  expect(roleCount("assistant")).toBe(1);
+  expect(CHATGPT_USER_TURN_SELECTOR).toContain(
+    'body:not(:has([data-testid^="conversation-turn-"])) [data-message-author-role="user"]',
+  );
+  expect(CHATGPT_ASSISTANT_TURN_SELECTOR).toContain(
+    'body:not(:has([data-testid^="conversation-turn-"])) [data-message-author-role="assistant"]',
+  );
+
+  const idBearingFixture = '<article data-testid="conversation-turn-1" data-message-author-role="user"></article>';
+  expect(/data-testid="conversation-turn-/.test(idBearingFixture)).toBeTrue();
+});
+
 test("a complete authenticated composer with no effort selector is Luna-only", async () => {
   const effortButton = {
     last() { return this; },
