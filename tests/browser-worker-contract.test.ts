@@ -289,6 +289,34 @@ test("multi-chunk prompt insertion preserves the native caret after each committ
   ]);
 });
 
+test("prompt insertion stops after a stage abort before another native edit", async () => {
+  const prompt = "x".repeat(CHATGPT_PROMPT_INSERT_CHUNK_CHARS * 2 + 1);
+  const controller = new AbortController();
+  const inserted: string[] = [];
+  const page = {
+    keyboard: {
+      insertText: async (value: string) => {
+        inserted.push(value);
+        controller.abort();
+      },
+    },
+  };
+  const insertPromptText = (ChatGptBrowserWorker.prototype as unknown as {
+    insertPromptText(
+      page: unknown,
+      text: string,
+      baseline: { initialUserTurnCount: number; initialAssistantTurnCount: number },
+      abortSignal?: AbortSignal,
+    ): Promise<void>;
+  }).insertPromptText;
+
+  await expect(insertPromptText.call({
+    waitForPromptChunkAttached: async () => {},
+  }, page, prompt, { initialUserTurnCount: 0, initialAssistantTurnCount: 0 }, controller.signal))
+    .rejects.toThrow("aborted");
+  expect(inserted).toHaveLength(1);
+});
+
 test("composer readback removes ignored root nodes before adding block separators", () => {
   expect(composeChatGptPromptReadback([
     { text: "prefix", ignored: false },
