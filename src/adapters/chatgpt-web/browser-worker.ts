@@ -302,6 +302,10 @@ export function composeChatGptPromptReadback(parts: readonly ChatGptPromptReadba
     .trimStart();
 }
 
+function throwIfChatGptPromptAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException("ChatGPT prompt attachment aborted", "AbortError");
+}
+
 interface ChatGptPromptSubmissionBaseline {
   initialUserTurnCount: number;
   initialAssistantTurnCount: number;
@@ -1245,8 +1249,10 @@ export class ChatGptBrowserWorker {
     };
   }
 
-  private async waitForPromptComposerSettle(): Promise<void> {
+  private async waitForPromptComposerSettle(abortSignal?: AbortSignal): Promise<void> {
+    throwIfChatGptPromptAborted(abortSignal);
     await new Promise(resolveSleep => setTimeout(resolveSleep, CHATGPT_PROMPT_VERIFICATION_POLL_MS));
+    throwIfChatGptPromptAborted(abortSignal);
   }
 
   private async exactPromptSnapshot(
@@ -1254,11 +1260,14 @@ export class ChatGptBrowserWorker {
     prompt: string,
     baseline: ChatGptPromptSubmissionBaseline = { initialUserTurnCount: 0, initialAssistantTurnCount: 0 },
     timeoutMs = CHATGPT_PROMPT_FINAL_VERIFY_TIMEOUT_MS,
+    abortSignal?: AbortSignal,
   ): Promise<string> {
     const deadline = Date.now() + timeoutMs;
     let observed = "";
     for (;;) {
+      throwIfChatGptPromptAborted(abortSignal);
       const snapshot = await this.promptAttachmentSnapshot(page, baseline);
+      throwIfChatGptPromptAborted(abortSignal);
       observed = snapshot.text;
       if (snapshot.submissionEvidence) {
         throw new Error(
@@ -1267,7 +1276,7 @@ export class ChatGptBrowserWorker {
       }
       if (observed === prompt) return observed;
       if (Date.now() >= deadline) return observed;
-      await this.waitForPromptComposerSettle();
+      await this.waitForPromptComposerSettle(abortSignal);
     }
   }
 
@@ -1275,8 +1284,15 @@ export class ChatGptBrowserWorker {
     page: Page,
     prompt: string,
     baseline: ChatGptPromptSubmissionBaseline = { initialUserTurnCount: 0, initialAssistantTurnCount: 0 },
+    abortSignal?: AbortSignal,
   ): Promise<void> {
-    const observed = await this.exactPromptSnapshot(page, prompt, baseline, CHATGPT_PROMPT_FINAL_VERIFY_TIMEOUT_MS);
+    const observed = await this.exactPromptSnapshot(
+      page,
+      prompt,
+      baseline,
+      CHATGPT_PROMPT_FINAL_VERIFY_TIMEOUT_MS,
+      abortSignal,
+    );
     if (observed === prompt) return;
     const commonPrefix = promptCommonPrefixChars(prompt, observed);
     throw new Error(
@@ -1401,8 +1417,11 @@ export class ChatGptBrowserWorker {
     prompt: string,
     localTools: boolean,
     captureDiagnostic?: (checkpoint: string) => Promise<void>,
+    abortSignal?: AbortSignal,
   ): Promise<void> {
+    throwIfChatGptPromptAborted(abortSignal);
     const submissionBaseline = await this.promptSubmissionBaseline(page);
+    throwIfChatGptPromptAborted(abortSignal);
     if (!localTools) {
       const composer = await this.activeComposer(page);
       // Playwright's multiline fill maps through an input action that ChatGPT's Lexical editor can
@@ -1410,17 +1429,19 @@ export class ChatGptBrowserWorker {
       // then transport the complete text in one CDP Input.insertText command.
       await composer.fill("");
       await composer.focus();
-      await this.insertPromptText(page, prompt, submissionBaseline);
-      await this.assertPromptAttached(page, prompt, submissionBaseline);
+      await this.insertPromptText(page, prompt, submissionBaseline, abortSignal);
+      await this.assertPromptAttached(page, prompt, submissionBaseline, abortSignal);
       return;
     }
     await this.selectConnector(page, captureDiagnostic);
-    await this.reanchorPromptCaret(page);
-    await this.insertPromptText(page, ` ${prompt}`, submissionBaseline);
-    await this.assertPromptAttached(page, prompt, submissionBaseline);
+    throwIfChatGptPromptAborted(abortSignal);
+    await this.reanchorPromptCaret(page, abortSignal);
+    await this.insertPromptText(page, ` ${prompt}`, submissionBaseline, abortSignal);
+    await this.assertPromptAttached(page, prompt, submissionBaseline, abortSignal);
   }
 
-  private async reanchorPromptCaret(page: Page): Promise<void> {
+  private async reanchorPromptCaret(page: Page, abortSignal?: AbortSignal): Promise<void> {
+    throwIfChatGptPromptAborted(abortSignal);
     const composer = await this.activeComposer(page);
     await composer.focus();
     const anchored = await composer.evaluate(element => {
@@ -1480,6 +1501,7 @@ export class ChatGptBrowserWorker {
         && selection.anchorNode !== null
         && lastEditableBlock.contains(selection.anchorNode);
     }, undefined, { timeout: 20_000 });
+    throwIfChatGptPromptAborted(abortSignal);
     if (!anchored) {
       throw new Error("ChatGPT composer could not re-anchor the prompt caret at the document end");
     }
@@ -1489,14 +1511,17 @@ export class ChatGptBrowserWorker {
     page: Page,
     text: string,
     baseline: ChatGptPromptSubmissionBaseline = { initialUserTurnCount: 0, initialAssistantTurnCount: 0 },
+    abortSignal?: AbortSignal,
   ): Promise<void> {
     for (let offset = 0; offset < text.length;) {
+      throwIfChatGptPromptAborted(abortSignal);
       const end = promptInsertChunkEnd(text, offset);
       await page.keyboard.insertText(text.slice(offset, end));
+      throwIfChatGptPromptAborted(abortSignal);
       if (end < text.length) {
         // Keep the native selection produced by Input.insertText. Replacing it with a DOM Range
         // after each commit can move Lexical's logical caret into the middle of the active block.
-        await this.waitForPromptChunkAttached(page, text.slice(0, end).trimStart(), baseline);
+        await this.waitForPromptChunkAttached(page, text.slice(0, end).trimStart(), baseline, abortSignal);
       }
       offset = end;
     }
@@ -1506,8 +1531,15 @@ export class ChatGptBrowserWorker {
     page: Page,
     expected: string,
     baseline: ChatGptPromptSubmissionBaseline = { initialUserTurnCount: 0, initialAssistantTurnCount: 0 },
+    abortSignal?: AbortSignal,
   ): Promise<void> {
-    const observed = await this.exactPromptSnapshot(page, expected, baseline, CHATGPT_PROMPT_INTERMEDIATE_VERIFY_TIMEOUT_MS);
+    const observed = await this.exactPromptSnapshot(
+      page,
+      expected,
+      baseline,
+      CHATGPT_PROMPT_INTERMEDIATE_VERIFY_TIMEOUT_MS,
+      abortSignal,
+    );
     if (observed === expected) return;
     const commonPrefix = promptCommonPrefixChars(expected, observed);
     throw new Error(
@@ -1970,8 +2002,14 @@ export class ChatGptBrowserWorker {
         )
       ));
       await diagnostics.capture(page, "effort-selection-complete");
-      await this.runStage(turn.traceId, "prompt_attachment", browserStageTimeouts.promptAttachment, () => (
-        this.attachPrompt(page, prepared.text, mode.localTools, checkpoint => diagnostics.capture(page, checkpoint))
+      await this.runStage(turn.traceId, "prompt_attachment", browserStageTimeouts.promptAttachment, (stageSignal) => (
+        this.attachPrompt(
+          page,
+          prepared.text,
+          mode.localTools,
+          checkpoint => diagnostics.capture(page, checkpoint),
+          stageSignal,
+        )
       ));
       await diagnostics.capture(page, "prompt-attachment-complete");
       await this.runStage(turn.traceId, "file_attachment", browserStageTimeouts.fileAttachment, () => (
