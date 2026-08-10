@@ -8,8 +8,8 @@ import { parseChatGptEffortSliderState } from "../src/chatgpt-session";
 test("Codex context uses the owned CDP composer transport, never the operating-system clipboard", () => {
   const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
   expect(workerSource).toContain('composer.fill("")');
-  expect(workerSource).toContain("this.insertPromptText(page, prompt, submissionBaseline)");
-  expect(workerSource).toContain("this.insertPromptText(page, ` ${prompt}`, submissionBaseline)");
+  expect(workerSource).toContain("this.insertPromptText(page, prompt, submissionBaseline, abortSignal)");
+  expect(workerSource).toContain("this.insertPromptText(page, ` ${prompt}`, submissionBaseline, abortSignal)");
   expect(workerSource).not.toMatch(/\bclipboard\b|pbcopy|pbpaste/i);
 });
 
