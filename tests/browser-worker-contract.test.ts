@@ -250,7 +250,7 @@ test("large read-only context is inserted as contiguous low-load edits before ex
   expect(asserted).toBe(prompt);
 });
 
-test("multi-chunk prompt insertion preserves the native caret after each committed prefix", async () => {
+test("multi-chunk prompt insertion re-anchors the DOM caret after each committed prefix", async () => {
   const prompt = "a".repeat(CHATGPT_PROMPT_INSERT_CHUNK_CHARS)
     + "b".repeat(CHATGPT_PROMPT_INSERT_CHUNK_CHARS)
     + "c";
@@ -279,12 +279,14 @@ test("multi-chunk prompt insertion preserves the native caret after each committ
   }, page, prompt);
 
   expect(attached).toBe(prompt);
-  expect(calls.filter(call => call[0] === "reanchor")).toHaveLength(0);
+  expect(calls.filter(call => call[0] === "reanchor")).toHaveLength(2);
   expect(calls).toEqual([
     ["insertText", String(CHATGPT_PROMPT_INSERT_CHUNK_CHARS)],
     ["chunkCommitted", String(CHATGPT_PROMPT_INSERT_CHUNK_CHARS)],
+    ["reanchor"],
     ["insertText", String(CHATGPT_PROMPT_INSERT_CHUNK_CHARS)],
     ["chunkCommitted", String(CHATGPT_PROMPT_INSERT_CHUNK_CHARS * 2)],
+    ["reanchor"],
     ["insertText", "1"],
   ]);
 });

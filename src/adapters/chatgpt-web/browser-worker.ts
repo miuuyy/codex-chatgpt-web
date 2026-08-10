@@ -1519,9 +1519,10 @@ export class ChatGptBrowserWorker {
       await page.keyboard.insertText(text.slice(offset, end));
       throwIfChatGptPromptAborted(abortSignal);
       if (end < text.length) {
-        // Keep the native selection produced by Input.insertText. Replacing it with a DOM Range
-        // after each commit can move Lexical's logical caret into the middle of the active block.
+        // Lexical can rebuild the active block after an exact commit and move the native
+        // selection. Re-anchor only after the verified prefix is stable, before the next input.
         await this.waitForPromptChunkAttached(page, text.slice(0, end).trimStart(), baseline, abortSignal);
+        await this.reanchorPromptCaret(page, abortSignal);
       }
       offset = end;
     }
