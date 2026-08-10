@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { Page } from "playwright-core";
-import { CHATGPT_PROMPT_INSERT_CHUNK_CHARS, ChatGptBrowserWorker, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, assertChatGptWebInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, chatGptSubmissionEvidence, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_PROMPT_INSERT_CHUNK_CHARS, ChatGptBrowserWorker, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, assertChatGptWebInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, chatGptSubmissionEvidence, composeChatGptPromptReadback, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert } from "../src/adapters/chatgpt-web/browser-worker";
 import { CHATGPT_CONNECTOR_NAME, defaultChromeExecutable } from "../src/config";
 import { parseChatGptEffortSliderState } from "../src/chatgpt-session";
 
@@ -250,7 +250,7 @@ test("large read-only context is inserted as contiguous low-load edits before ex
   expect(asserted).toBe(prompt);
 });
 
-test("multi-chunk prompt insertion re-anchors the caret after each committed prefix", async () => {
+test("multi-chunk prompt insertion preserves the native caret after each committed prefix", async () => {
   const prompt = "a".repeat(CHATGPT_PROMPT_INSERT_CHUNK_CHARS)
     + "b".repeat(CHATGPT_PROMPT_INSERT_CHUNK_CHARS)
     + "c";
@@ -275,24 +275,31 @@ test("multi-chunk prompt insertion re-anchors the caret after each committed pre
       expect(attached).toBe(expected);
       calls.push(["chunkCommitted", String(expected.length)]);
     },
-    reanchorPromptCaret: async () => {
-      // The editor may rebuild the active Lexical block after a committed chunk. Re-anchor
-      // to the verified prefix end before the next native insertion.
-      caret = attached.length;
-      calls.push(["reanchor"]);
-    },
+    reanchorPromptCaret: async () => { calls.push(["reanchor"]); },
   }, page, prompt);
 
   expect(attached).toBe(prompt);
+  expect(calls.filter(call => call[0] === "reanchor")).toHaveLength(0);
   expect(calls).toEqual([
     ["insertText", String(CHATGPT_PROMPT_INSERT_CHUNK_CHARS)],
     ["chunkCommitted", String(CHATGPT_PROMPT_INSERT_CHUNK_CHARS)],
-    ["reanchor"],
     ["insertText", String(CHATGPT_PROMPT_INSERT_CHUNK_CHARS)],
     ["chunkCommitted", String(CHATGPT_PROMPT_INSERT_CHUNK_CHARS * 2)],
-    ["reanchor"],
     ["insertText", "1"],
   ]);
+});
+
+test("composer readback removes ignored root nodes before adding block separators", () => {
+  expect(composeChatGptPromptReadback([
+    { text: "prefix", ignored: false },
+    { text: "Codex Native2", ignored: true },
+    { text: "suffix", ignored: false },
+  ])).toBe("prefix\nsuffix");
+  expect(composeChatGptPromptReadback([
+    { text: "first", ignored: false },
+    { text: "", ignored: false },
+    { text: "third", ignored: false },
+  ])).toBe("first\n\nthird");
 });
 
 test("caret re-anchor fails closed when the live selection cannot be verified", async () => {
@@ -381,24 +388,57 @@ test("long prompt insertion never divides a UTF-16 surrogate pair", async () => 
 test("intermediate prompt verification never accepts a stable equal-length boundary rewrite", async () => {
   const expected = "x".repeat(CHATGPT_PROMPT_INSERT_CHUNK_CHARS);
   const normalized = `${expected.slice(0, -2)}yz`;
-  let observations = 0;
   const waitForPromptChunkAttached = (ChatGptBrowserWorker.prototype as unknown as {
     waitForPromptChunkAttached(page: unknown, value: string): Promise<void>;
   }).waitForPromptChunkAttached;
-  const exactPromptSnapshot = (ChatGptBrowserWorker.prototype as unknown as {
-    exactPromptSnapshot(page: unknown, value: string): Promise<string>;
-  }).exactPromptSnapshot;
 
   await expect(waitForPromptChunkAttached.call({
-    exactPromptSnapshot,
+    exactPromptSnapshot: async () => normalized,
+  }, {}, expected)).rejects.toThrow("commonPrefixChars=");
+});
+
+test("prompt verification allows a delayed Lexical commit beyond five observations", async () => {
+  const expected = "expected prompt";
+  let observations = 0;
+  const exactPromptSnapshot = (ChatGptBrowserWorker.prototype as unknown as {
+    exactPromptSnapshot(
+      page: unknown,
+      value: string,
+      baseline: { initialUserTurnCount: number; initialAssistantTurnCount: number },
+      timeoutMs?: number,
+    ): Promise<string>;
+  }).exactPromptSnapshot;
+
+  const observed = await exactPromptSnapshot.call({
     waitForPromptComposerSettle: async () => {},
     promptAttachmentSnapshot: async () => {
       observations += 1;
-      return { text: normalized };
+      return { text: observations < 6 ? "pending" : expected };
     },
-  }, {}, expected)).rejects.toThrow("commonPrefixChars=");
+  }, {}, expected, { initialUserTurnCount: 0, initialAssistantTurnCount: 0 }, 5_000);
 
-  expect(observations).toBeLessThanOrEqual(5);
+  expect(observed).toBe(expected);
+  expect(observations).toBe(6);
+});
+
+test("intermediate and final prompt verification retain separate UI deadlines", async () => {
+  const expected = "expected prompt";
+  const timeouts: number[] = [];
+  const exactPromptSnapshot = async (...args: unknown[]) => {
+    timeouts.push(Number(args[3]));
+    return expected;
+  };
+  const waitForPromptChunkAttached = (ChatGptBrowserWorker.prototype as unknown as {
+    waitForPromptChunkAttached(page: unknown, value: string): Promise<void>;
+  }).waitForPromptChunkAttached;
+  const assertPromptAttached = (ChatGptBrowserWorker.prototype as unknown as {
+    assertPromptAttached(page: unknown, value: string): Promise<void>;
+  }).assertPromptAttached;
+
+  await waitForPromptChunkAttached.call({ exactPromptSnapshot }, {}, expected);
+  await assertPromptAttached.call({ exactPromptSnapshot }, {}, expected);
+
+  expect(timeouts).toEqual([20_000, 10_000]);
 });
 
 test("prompt verification stops immediately when ChatGPT submits during insertion", async () => {
