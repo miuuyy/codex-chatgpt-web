@@ -257,6 +257,7 @@ test("multi-chunk prompt insertion re-anchors the DOM caret after each committed
   const calls: Array<[string, string?]> = [];
   let attached = "";
   let caret = 0;
+  const simulatedCaretDrift = 13;
   const page = {
     keyboard: {
       insertText: async (value: string) => {
@@ -273,9 +274,13 @@ test("multi-chunk prompt insertion re-anchors the DOM caret after each committed
   await insertPromptText.call({
     waitForPromptChunkAttached: async (_page: unknown, expected: string) => {
       expect(attached).toBe(expected);
+      caret = Math.max(0, attached.length - simulatedCaretDrift);
       calls.push(["chunkCommitted", String(expected.length)]);
     },
-    reanchorPromptCaret: async () => { calls.push(["reanchor"]); },
+    reanchorPromptCaret: async () => {
+      caret = attached.length;
+      calls.push(["reanchor"]);
+    },
   }, page, prompt);
 
   expect(attached).toBe(prompt);
