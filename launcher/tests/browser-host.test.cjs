@@ -11,12 +11,45 @@ const {
 } = require("../electron/browser-state.cjs");
 const {
   allowedAuthUrl,
+  applyChromeCompatibleUserAgent,
   BrowserHost,
   CHATGPT_VIEWPORT_CSS,
+  chromeCompatibleUserAgent,
   isChatGptCloudflareChallengeResponse,
   isTemporaryChatUrl,
   validateChatGptStorageState,
 } = require("../electron/browser-host.cjs");
+
+test("ChatGPT browser user agent removes only application product tokens", () => {
+  const electronUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) CodexWebGPT/2.1.8 Chrome/146.0.7680.216 Electron/41.7.1 Safari/537.36";
+
+  assert.equal(
+    chromeCompatibleUserAgent(electronUserAgent),
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.216 Safari/537.36",
+  );
+  assert.equal(
+    chromeCompatibleUserAgent("Mozilla/5.0 Chrome/146.0.7680.216 Safari/537.36"),
+    "Mozilla/5.0 Chrome/146.0.7680.216 Safari/537.36",
+  );
+  assert.throws(() => chromeCompatibleUserAgent(""), /invalid user agent/);
+});
+
+test("ChatGPT browser applies its compatible identity to the session and current contents", () => {
+  const calls = [];
+  const raw = "Mozilla/5.0 CodexWebGPT/2.1.8 Chrome/146.0.7680.216 Electron/41.7.1 Safari/537.36";
+  const contents = {
+    session: {
+      getUserAgent: () => raw,
+      setUserAgent: (value) => calls.push(["session", value]),
+    },
+    setUserAgent: (value) => calls.push(["contents", value]),
+  };
+
+  applyChromeCompatibleUserAgent(contents);
+
+  const expected = "Mozilla/5.0 Chrome/146.0.7680.216 Safari/537.36";
+  assert.deepEqual(calls, [["session", expected], ["contents", expected]]);
+});
 
 test("only an explicit Cloudflare challenge on a ChatGPT backend response triggers recovery", () => {
   assert.equal(isChatGptCloudflareChallengeResponse({
@@ -287,6 +320,25 @@ test("authentication routing is explicit and never opens provider auth as a gene
   );
   await Promise.resolve();
   assert.equal(logins, 1);
+});
+
+test("verified system-browser import may finish an auth redirect without starting another login", async () => {
+  let logins = 0;
+  const fixture = {
+    systemBrowserLoginImportActive: true,
+    openLogin: async () => { logins += 1; },
+    logger: { error() {} },
+  };
+
+  assert.equal(
+    BrowserHost.prototype.routeAuthenticationToSystemBrowser.call(
+      fixture,
+      "https://chatgpt.com/auth/login",
+    ),
+    false,
+  );
+  await Promise.resolve();
+  assert.equal(logins, 0);
 });
 
 test("an auth redirect forces system-browser login even when cached state says authenticated", async () => {
@@ -565,6 +617,52 @@ test("system-browser login proves the Electron composer and cleans transfer stat
   assert.ok(calls.indexOf("verify-electron") > calls.findIndex((call) => Array.isArray(call) && call[0] === "cookie"));
   assert.ok(calls.indexOf("cleanup") > calls.indexOf("verify-electron"));
   assert.equal(calls.at(-1), "cleanup");
+});
+
+test("system-browser import accepts ERR_FAILED only after the Electron composer proves authentication", async () => {
+  const calls = [];
+  const fixture = {
+    logger: { warn: (event) => calls.push(["warn", event]) },
+    waitForAuthenticated: async (timeoutMs) => {
+      calls.push(["verify", timeoutMs]);
+      return { authenticated: true };
+    },
+  };
+  const contents = {
+    loadURL: async () => {
+      throw new Error("ERR_FAILED (-2) loading 'https://chatgpt.com/?temporary-chat=true'");
+    },
+  };
+
+  const result = await BrowserHost.prototype.loadImportedTemporaryChat.call(fixture, contents);
+
+  assert.equal(result.authenticated, true);
+  assert.deepEqual(calls, [
+    ["warn", "browser.system_login_navigation_superseded"],
+    ["verify", 60_000],
+  ]);
+});
+
+test("system-browser import preserves unrelated navigation failures", async () => {
+  let verified = false;
+  const fixture = {
+    logger: { warn() {} },
+    waitForAuthenticated: async () => {
+      verified = true;
+      return { authenticated: true };
+    },
+  };
+  const contents = {
+    loadURL: async () => {
+      throw new Error("ERR_CONNECTION_RESET (-101) loading 'https://chatgpt.com/?temporary-chat=true'");
+    },
+  };
+
+  await assert.rejects(
+    BrowserHost.prototype.loadImportedTemporaryChat.call(fixture, contents),
+    /ERR_CONNECTION_RESET/,
+  );
+  assert.equal(verified, false);
 });
 
 test("failed Electron session import clears partial state and cleans the transfer", async () => {

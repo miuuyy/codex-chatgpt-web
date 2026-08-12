@@ -83,6 +83,21 @@ function visibleElementScript(selector) {
   })`;
 }
 
+function chromeCompatibleUserAgent(value) {
+  if (typeof value !== "string" || !value) {
+    throw new Error("Electron session returned an invalid user agent");
+  }
+  return value
+    .replace(/\sElectron\/[^\s]+/g, "")
+    .replace(/\sCodexWebGPT\/[^\s]+/g, "");
+}
+
+function applyChromeCompatibleUserAgent(contents) {
+  const userAgent = chromeCompatibleUserAgent(contents.session.getUserAgent());
+  contents.session.setUserAgent(userAgent);
+  contents.setUserAgent(userAgent);
+}
+
 function normalizeBounds(bounds) {
   const read = (value) => Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
   return {
@@ -119,6 +134,11 @@ function isTemporaryChatUrl(value) {
   return parsed.origin === CHATGPT_ORIGIN
     && parsed.pathname === "/"
     && parsed.searchParams.get("temporary-chat") === "true";
+}
+
+function isSupersededSystemBrowserImportNavigation(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("ERR_FAILED (-2)") && message.includes(TEMPORARY_CHAT_URL);
 }
 
 function isChatGptBackendUrl(value) {
@@ -327,6 +347,10 @@ class BrowserHost {
         backgroundThrottling: true,
       },
     });
+    // ChatGPT redirects an otherwise valid imported session to /auth/login when Chromium's
+    // user agent includes Electron's product token. Keep Chromium's real version and platform,
+    // but remove only the compatibility-breaking application tokens from every owned view.
+    applyChromeCompatibleUserAgent(this.view.webContents);
     window.contentView.addChildView(this.view);
     this.view.setBounds(this.bounds);
     this.view.setVisible(false);
@@ -395,6 +419,7 @@ class BrowserHost {
         backgroundThrottling: false,
       },
     });
+    applyChromeCompatibleUserAgent(view.webContents);
     const tab = {
       id,
       surfaceId,
@@ -590,6 +615,11 @@ class BrowserHost {
 
   routeAuthenticationToSystemBrowser(url) {
     if (!allowedAuthUrl(url)) return false;
+    // The verified system-browser transfer can legitimately traverse ChatGPT's auth endpoints
+    // while the imported cookies establish the Electron session. Blocking that redirect starts
+    // another login operation and aborts the in-flight load with ERR_FAILED (-2). Keep ordinary
+    // embedded authentication fail-closed, but allow this bounded, already-verified import path.
+    if (this.systemBrowserLoginImportActive === true) return false;
     void this.openLogin({ force: true }).catch((error) => {
       this.logger.error("browser.system_login_failed", {
         message: error instanceof Error ? error.message : String(error),
@@ -1166,6 +1196,16 @@ class BrowserHost {
     if (failure) throw failure;
   }
 
+  async loadImportedTemporaryChat(contents) {
+    try {
+      await contents.loadURL(TEMPORARY_CHAT_URL);
+    } catch (error) {
+      if (!isSupersededSystemBrowserImportNavigation(error)) throw error;
+      this.logger.warn("browser.system_login_navigation_superseded");
+    }
+    return await this.waitForAuthenticated(60_000);
+  }
+
   async installSystemBrowserLogin(transfer) {
     if (!transfer || typeof transfer !== "object" || typeof transfer.cleanup !== "function") {
       throw new Error("System-browser login returned an invalid transfer handle");
@@ -1184,13 +1224,14 @@ class BrowserHost {
     const contents = this.view?.webContents;
     if (!primaryError) {
       try {
+        this.systemBrowserLoginImportActive = true;
         if (!contents || contents.isDestroyed()) throw new Error("Owned ChatGPT browser session is unavailable");
         sessionMutated = true;
         await this.clearOwnedChatGptSession();
         for (const cookie of state.cookies) await contents.session.cookies.set(cookie);
         contents.session.flushStorageData();
         await contents.session.cookies.flushStore();
-        await contents.loadURL(TEMPORARY_CHAT_URL);
+        browser = await this.loadImportedTemporaryChat(contents);
         if (state.localStorage.length > 0) {
           const entries = javaScriptLiteral(state.localStorage);
           await contents.executeJavaScript(`(() => {
@@ -1199,9 +1240,8 @@ class BrowserHost {
             }
             for (const entry of ${entries}) localStorage.setItem(entry.name, entry.value);
           })()`, true);
-          await contents.loadURL(TEMPORARY_CHAT_URL);
+          browser = await this.loadImportedTemporaryChat(contents);
         }
-        browser = await this.waitForAuthenticated(60_000);
         if (browser?.authenticated !== true) {
           throw new Error("Imported ChatGPT session did not produce an authenticated Electron composer");
         }
@@ -1211,6 +1251,8 @@ class BrowserHost {
         this.logger.info("browser.system_login_imported");
       } catch (error) {
         primaryError = error;
+      } finally {
+        this.systemBrowserLoginImportActive = false;
       }
     }
 
@@ -1477,8 +1519,10 @@ class BrowserHost {
 
 module.exports = {
   allowedAuthUrl,
+  applyChromeCompatibleUserAgent,
   BrowserHost,
   CHATGPT_VIEWPORT_CSS,
+  chromeCompatibleUserAgent,
   IDLE_BROWSER_URL,
   isChatGptCloudflareChallengeResponse,
   isTemporaryChatUrl,
