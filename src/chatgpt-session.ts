@@ -41,12 +41,13 @@ export interface ChatGptEffortSliderState {
 export interface ChatGptAuthenticationSurfaceEvidence {
   url: string;
   visibleComposerCount: number;
+  sessionAuthenticated: boolean;
 }
 
 export function chatGptAuthenticationSurfaceReady(
   evidence: ChatGptAuthenticationSurfaceEvidence,
 ): boolean {
-  if (evidence.visibleComposerCount !== 1) return false;
+  if (evidence.visibleComposerCount !== 1 || !evidence.sessionAuthenticated) return false;
   try {
     const actual = new URL(evidence.url);
     const expected = new URL(CHATGPT_TEMPORARY_CHAT_URL);
@@ -59,7 +60,7 @@ export function chatGptAuthenticationSurfaceReady(
 }
 
 export async function isAuthenticatedTemporaryChatPage(page: Page): Promise<boolean> {
-  const evidence = await page.evaluate(({ composerSelector }) => {
+  const evidence = await page.evaluate(async ({ composerSelector }) => {
     const visible = (element: Element): boolean => {
       const style = getComputedStyle(element);
       const bounds = element.getBoundingClientRect();
@@ -70,9 +71,27 @@ export async function isAuthenticatedTemporaryChatPage(page: Page): Promise<bool
         && style.visibility !== "hidden"
         && style.opacity !== "0";
     };
+    let sessionAuthenticated = false;
+    try {
+      const response = await fetch("/api/auth/session", {
+        cache: "no-store",
+        credentials: "include",
+      });
+      if (response.ok) {
+        const session = await response.json();
+        sessionAuthenticated = Boolean(
+          session
+          && typeof session === "object"
+          && !Array.isArray(session)
+          && session.user
+          && typeof session.user === "object",
+        );
+      }
+    } catch {}
     return {
       url: location.href,
       visibleComposerCount: [...document.querySelectorAll(composerSelector)].filter(visible).length,
+      sessionAuthenticated,
     };
   }, { composerSelector: CHATGPT_COMPOSER_SELECTOR }).catch(() => undefined);
   return evidence ? chatGptAuthenticationSurfaceReady(evidence) : false;

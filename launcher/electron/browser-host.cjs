@@ -1330,12 +1330,29 @@ class BrowserHost {
       this.setState({ status: "signed-out", message: "Sign in to ChatGPT", authenticated: false, url });
       return this.snapshot();
     }
-    const probe = (contents) => contents.executeJavaScript(`(() => {
+    const probe = (contents) => contents.executeJavaScript(`(async () => {
       const composer = ${visibleElementScript(COMPOSER_SELECTOR)};
-      return { composer: Boolean(composer), readyState: document.readyState };
-    })()`, true).catch(() => ({ composer: false, readyState: "unknown" }));
+      let sessionAuthenticated = false;
+      try {
+        const response = await fetch("/api/auth/session", {
+          cache: "no-store",
+          credentials: "include",
+        });
+        if (response.ok) {
+          const session = await response.json();
+          sessionAuthenticated = Boolean(
+            session
+            && typeof session === "object"
+            && !Array.isArray(session)
+            && session.user
+            && typeof session.user === "object"
+          );
+        }
+      } catch {}
+      return { composer: Boolean(composer), sessionAuthenticated, readyState: document.readyState };
+    })()`, true).catch(() => ({ composer: false, sessionAuthenticated: false, readyState: "unknown" }));
     const result = await probe(this.view.webContents);
-    if (result.composer) {
+    if (result.composer && result.sessionAuthenticated) {
       const wasAuthenticated = this.state.authenticated;
       const availability = this.activeTraceId
         ? { status: "running", message: "ChatGPT is working" }

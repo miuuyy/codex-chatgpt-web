@@ -452,6 +452,62 @@ test("logout clears only the owned ChatGPT session and returns to the sign-in su
   assert.ok(calls.some(([name]) => name === "show"));
 });
 
+test("a guest composer does not prove launcher authentication", async () => {
+  const calls = [];
+  const fixture = {
+    state: { authenticated: true },
+    activeTraceId: null,
+    manualOperation: null,
+    view: {
+      webContents: {
+        isDestroyed: () => false,
+        getURL: () => "https://chatgpt.com/?temporary-chat=true",
+        executeJavaScript: async script => {
+          calls.push(["script", script]);
+          return { composer: true, sessionAuthenticated: false, readyState: "complete" };
+        },
+      },
+    },
+    setState(patch) { this.state = { ...this.state, ...patch }; },
+    snapshot() { return { ...this.state }; },
+    logger: { info() {} },
+  };
+
+  const result = await BrowserHost.prototype.probeAuthentication.call(fixture);
+
+  assert.equal(result.authenticated, false);
+  assert.equal(result.status, "signed-out");
+  assert.match(calls[0][1], /\/api\/auth\/session/);
+  assert.match(calls[0][1], /session\.user/);
+});
+
+test("launcher authentication requires both a real session and composer", async () => {
+  const fixture = {
+    state: { authenticated: false },
+    activeTraceId: null,
+    manualOperation: null,
+    view: {
+      webContents: {
+        isDestroyed: () => false,
+        getURL: () => "https://chatgpt.com/?temporary-chat=true",
+        executeJavaScript: async () => ({
+          composer: true,
+          sessionAuthenticated: true,
+          readyState: "complete",
+        }),
+      },
+    },
+    setState(patch) { this.state = { ...this.state, ...patch }; },
+    snapshot() { return { ...this.state }; },
+    logger: { info() {} },
+  };
+
+  const result = await BrowserHost.prototype.probeAuthentication.call(fixture);
+
+  assert.equal(result.authenticated, true);
+  assert.equal(result.status, "ready");
+});
+
 test("launcher shutdown persists ChatGPT DOM storage and cookies before browser destruction", async () => {
   const calls = [];
   const fixture = {
