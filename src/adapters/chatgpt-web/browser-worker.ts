@@ -84,6 +84,7 @@ export const CHATGPT_EMPTY_RESPONSE_GRACE_MS = 10_000;
 export const CHATGPT_COMPLETION_ACTION_GRACE_MS = 60_000;
 export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
 export const CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS = 60_000;
+export const CHATGPT_MARKDOWN_SEGMENT_SHRINK_GRACE_MS = 2_000;
 const CHATGPT_SMOKE_TEXT = "Reply with exactly: CODEX WEB GPT READY";
 const CHATGPT_SMOKE_EXPECTED = "CODEX WEB GPT READY";
 /**
@@ -1925,7 +1926,11 @@ export class ChatGptBrowserWorker {
       let capturedResponse = false;
       const sentAt = Date.now();
       const visibleTrace = new ChatGptVisibleTraceTracker();
-      const markdownBuffer = new ChatGptMarkdownBuffer();
+      const markdownBuffer = new ChatGptMarkdownBuffer(
+        markdown => markdown,
+        750,
+        CHATGPT_MARKDOWN_SEGMENT_SHRINK_GRACE_MS,
+      );
       const checkpointStream = turn.captureLunaCheckpoint
         ? new ChatGptLunaCheckpointStream()
         : undefined;
@@ -1976,7 +1981,7 @@ export class ChatGptBrowserWorker {
             capturedResponse = true;
             await diagnostics.capture(page, "response-visible");
           }
-          const textDelta = markdownBuffer.observe(snapshot.markdownSegments);
+          const textDelta = markdownBuffer.observe(snapshot.markdownSegments, Date.now(), running);
           for (const trace of visibleTrace.observe(snapshot.traceBlocks, snapshot.completionActionVisible)) {
             if (trace.kind === "commentary") turn.onCommentary?.(trace.text, trace.continuation === true);
             else turn.onReasoningSummary?.(trace.text, trace.continuation === true);

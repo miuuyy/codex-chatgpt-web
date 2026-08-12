@@ -1246,7 +1246,8 @@ test("response DOM separates streaming commentary from the final Markdown answer
   expect(workerSource).toContain("const markdownSegments = renderedRoots.flatMap");
   expect(workerSource).toContain('key: `${rootIndex}:${childIndex}:${tag}:${itemIndex}`');
   expect(workerSource).toContain("streamable: childIsComplete || itemIndex < listItems.length - 1");
-  expect(workerSource).toContain("markdownBuffer.observe(snapshot.markdownSegments)");
+  expect(workerSource).toContain("markdownBuffer.observe(snapshot.markdownSegments, Date.now(), running)");
+  expect(workerSource).toContain("CHATGPT_MARKDOWN_SEGMENT_SHRINK_GRACE_MS");
   expect(workerSource).not.toContain("stableHtml:");
   expect(workerSource).not.toContain("observeStableHtml");
   expect(workerSource).toContain("const overlapsRenderedAnswer = (candidate: HTMLElement)");

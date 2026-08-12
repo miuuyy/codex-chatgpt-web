@@ -1141,6 +1141,41 @@ describe("ChatGPT outer-native harness v4", () => {
     ], 200)).toThrow("completed text block");
   });
 
+  test("waits through a transient committed-segment shrink only while the turn is running", () => {
+    const first = [{ key: "first", html: "<p>First</p>", text: "First", streamable: true }];
+    const expanded = [
+      ...first,
+      { key: "second", html: "<p>Second</p>", text: "Second", streamable: true },
+    ];
+    const recovering = new ChatGptMarkdownBuffer(markdown => markdown, 0, 500);
+
+    expect(recovering.observe(first, 0)).toBe("First");
+    expect(recovering.observe([], 100, true)).toBe("");
+    expect(recovering.observe(first, 200, true)).toBe("");
+    expect(recovering.observe(expanded, 300, true)).toBe("\n\nSecond");
+    const persistent = new ChatGptMarkdownBuffer(markdown => markdown, 0, 500);
+    expect(persistent.observe(first, 0)).toBe("First");
+    expect(persistent.observe([], 100, true)).toBe("");
+    expect(() => persistent.observe([], 700, true)).toThrow(
+      "ChatGPT removed a completed text block that was already streamed to Codex",
+    );
+
+    const completed = new ChatGptMarkdownBuffer(markdown => markdown, 0, 500);
+    expect(completed.observe(first, 0)).toBe("First");
+    expect(() => completed.observe([], 100, false)).toThrow(
+      "ChatGPT removed a completed text block that was already streamed to Codex",
+    );
+
+    const rewritten = new ChatGptMarkdownBuffer(markdown => markdown, 0, 500);
+    expect(rewritten.observe(first, 0)).toBe("First");
+    expect(rewritten.observe([], 100, true)).toBe("");
+    expect(() => rewritten.observe([
+      { key: "first", html: "<p>Changed</p>", text: "Changed", streamable: true },
+    ], 200, true)).toThrow(
+      "ChatGPT changed a completed text block that was already streamed to Codex",
+    );
+  });
+
   test("drops decorative HTML images without removing textual links", () => {
     const markdown = chatGptHtmlToMarkdown([
       '<p>Source card: <a href="https://github.com/example/repo"><img alt="GitHub" src="data:image/png;base64,AAAA"></a></p>',

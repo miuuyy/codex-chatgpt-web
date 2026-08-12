@@ -49,6 +49,8 @@ export interface ChatGptMarkdownSegment {
   streamable: boolean;
 }
 
+const transientCommittedShrinkError = "ChatGPT removed a completed text block that was already streamed to Codex";
+
 interface ChatGptMarkdownCandidate extends ChatGptMarkdownSegment {
   changedAt: number;
   streamableAt?: number;
@@ -74,17 +76,32 @@ export class ChatGptMarkdownBuffer {
   private latest: ChatGptMarkdownSegment[] = [];
   private markdown = "";
   private lastGroup: string | undefined;
+  private committedShrinkSince: number | undefined;
 
   constructor(
     private readonly transform: (markdown: string) => string = markdown => markdown,
     private readonly stabilityMs = 750,
+    private readonly committedShrinkGraceMs = 0,
   ) {
     if (!Number.isFinite(stabilityMs) || stabilityMs < 0) {
       throw new Error("ChatGPT Markdown stability window must be a non-negative finite number");
     }
+    if (!Number.isFinite(committedShrinkGraceMs) || committedShrinkGraceMs < 0) {
+      throw new Error("ChatGPT Markdown committed-shrink grace must be a non-negative finite number");
+    }
   }
 
-  observe(segments: ChatGptMarkdownSegment[], now = Date.now()): string {
+  observe(segments: ChatGptMarkdownSegment[], now = Date.now(), allowTransientShrink = false): string {
+    if (segments.length < this.committed.length) {
+      // ChatGPT can briefly reparent answer Markdown while a turn is running. Keep the committed
+      // prefix untouched and require the exact structure to return within a bounded grace window.
+      if (allowTransientShrink && this.committedShrinkGraceMs > 0) {
+        this.committedShrinkSince ??= now;
+        if (now - this.committedShrinkSince < this.committedShrinkGraceMs) return "";
+      }
+      throw new Error(transientCommittedShrinkError);
+    }
+    this.committedShrinkSince = undefined;
     this.assertCommittedPrefix(segments);
     this.latest = segments.map(segment => ({ ...segment }));
 
@@ -137,7 +154,7 @@ export class ChatGptMarkdownBuffer {
 
   private assertCommittedPrefix(segments: ChatGptMarkdownSegment[]): void {
     if (segments.length < this.committed.length) {
-      throw new Error("ChatGPT removed a completed text block that was already streamed to Codex");
+      throw new Error(transientCommittedShrinkError);
     }
     for (let index = 0; index < this.committed.length; index += 1) {
       const previous = this.committed[index]!;
