@@ -1,8 +1,14 @@
 import { expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { browserLoginStateExists, loginToChatGpt, loginVerificationMarkerPath } from "../src/browser-login";
+import {
+  browserLoginStateExists,
+  loginToChatGpt,
+  loginVerificationMarkerPath,
+  seedMacChromeLoginProfile,
+} from "../src/browser-login";
 import { CHATGPT_TEMPORARY_CHAT_URL } from "../src/chatgpt-session";
 import { defaultConfig } from "../src/config";
 
@@ -40,6 +46,8 @@ test("login uses one normal Chrome on a non-automation loopback port and never l
     const firstLaunch = launches[0] ?? "";
     expect(firstLaunch).toContain("--new-window");
     expect(firstLaunch).toContain("--user-data-dir=");
+    expect(firstLaunch).toContain("--profile-directory=Default");
+    expect(firstLaunch).toContain("--disable-extensions");
     expect(firstLaunch).toContain("--remote-debugging-address=127.0.0.1");
     const portMatch = firstLaunch.match(/--remote-debugging-port=(\d+)/);
     expect(portMatch).not.toBeNull();
@@ -63,6 +71,41 @@ test("login uses one normal Chrome on a non-automation loopback port and never l
   } finally {
     if (previousLog === undefined) delete process.env.CODEX_LOGIN_ARG_LOG;
     else process.env.CODEX_LOGIN_ARG_LOG = previousLog;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("macOS login seeds only allowlisted ChatGPT/OpenAI cookies from Chrome's current profile", () => {
+  if (process.platform !== "darwin" || !existsSync("/usr/bin/sqlite3")) return;
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-login-seed-"));
+  const chromeRoot = join(root, "Chrome");
+  const sourceProfile = join(chromeRoot, "Profile 1");
+  const targetProfile = join(root, "login-profile");
+  mkdirSync(sourceProfile, { recursive: true });
+  writeFileSync(
+    join(chromeRoot, "Local State"),
+    `${JSON.stringify({ profile: { last_used: "Profile 1" } })}\n`,
+  );
+  const sourceCookies = join(sourceProfile, "Cookies");
+  const create = spawnSync("/usr/bin/sqlite3", [sourceCookies, [
+    "CREATE TABLE cookies(host_key TEXT);",
+    "INSERT INTO cookies VALUES ('.chatgpt.com'), ('auth.openai.com'), ('.google.com'), ('example.com');",
+  ].join("")]);
+  expect(create.status).toBe(0);
+  try {
+    expect(seedMacChromeLoginProfile(targetProfile, { chromeUserDataDir: chromeRoot })).toBe(true);
+    const targetCookies = join(targetProfile, "Default", "Cookies");
+    expect(existsSync(targetCookies)).toBe(true);
+    const read = spawnSync("/usr/bin/sqlite3", [
+      targetCookies,
+      "SELECT host_key FROM cookies ORDER BY host_key;",
+    ], { encoding: "utf8" });
+    expect(read.status).toBe(0);
+    expect(read.stdout.trim().split("\n")).toEqual([".chatgpt.com", "auth.openai.com"]);
+    expect(existsSync(join(targetProfile, "Default", "Login Data"))).toBe(false);
+    expect(existsSync(join(targetProfile, "Default", "History"))).toBe(false);
+    expect(existsSync(join(targetProfile, "Default", "Preferences"))).toBe(false);
+  } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
