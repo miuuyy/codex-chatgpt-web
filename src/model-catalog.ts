@@ -93,10 +93,9 @@ export function buildChatGptWebModel(
     // provider cannot decrypt that cross-backend payload, so every routed Web model must stay on
     // the native V1 surface where `message` and `fork_context` remain ordinary Codex context.
     multi_agent_version: "v1",
-    // Keep every routed Web model inside Codex's native code-mode and subagent model registry.
-    // Pro's lack of local computer tools is enforced by the adapter runtime; `requiresPro` is only
-    // an account-entitlement gate and must not make the model disappear from native orchestration.
-    tool_mode: config.mode === "full" ? template.tool_mode : null,
+    // Code mode collapses the outer registry into an exec gateway; routed models need the regular
+    // Responses tool surface so MCP namespaces, deferred tool_search, and custom tools reach us.
+    tool_mode: null,
     upgrade: null,
     default_reasoning_level: route.codexEffort,
     supported_reasoning_levels: [reasoningLevel(template, route.codexEffort, route.displayName)],
