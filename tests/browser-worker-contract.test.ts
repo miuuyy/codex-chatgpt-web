@@ -1057,7 +1057,10 @@ test("unrelated ChatGPT alerts are not terminal", async () => {
   expect(fixture.pressed).toEqual([]);
 });
 
-function toolConfirmationPage(options: { disappearAfterReads?: number } = {}): {
+function toolConfirmationPage(options: {
+  disappearAfterReads?: number;
+  surface?: "dialog" | "card";
+} = {}): {
   page: Page;
   pressed: string[];
 } {
@@ -1089,8 +1092,20 @@ function toolConfirmationPage(options: { disappearAfterReads?: number } = {}): {
       expect(visible).toBeFalse();
     },
   };
+  const surfaceSelector = options.surface === "card"
+    ? '[data-testid="tool-approval-card"]'
+    : '[role="dialog"]';
+  const hiddenDialog = {
+    filter: () => hiddenDialog,
+    last: () => hiddenDialog,
+    isVisible: async () => false,
+  };
   return {
-    page: { locator: () => dialog } as unknown as Page,
+    page: {
+      locator: (selector: string) => selector.includes(surfaceSelector)
+        ? dialog
+        : hiddenDialog,
+    } as unknown as Page,
     pressed,
   };
 }
@@ -1111,6 +1126,13 @@ test("an unanswered ChatGPT connector approval is denied instead of aborting the
 
 test("explicit connector auto-approval still selects Allow once", async () => {
   const fixture = toolConfirmationPage();
+
+  expect(await resolveChatGptToolConfirmation(fixture.page, "Codex Native", true)).toBeTrue();
+  expect(fixture.pressed).toEqual(["Allow once:Enter"]);
+});
+
+test("auto-approval recognizes the observed non-dialog approval card", async () => {
+  const fixture = toolConfirmationPage({ surface: "card" });
 
   expect(await resolveChatGptToolConfirmation(fixture.page, "Codex Native", true)).toBeTrue();
   expect(fixture.pressed).toEqual(["Allow once:Enter"]);
