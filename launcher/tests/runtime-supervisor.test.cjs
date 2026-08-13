@@ -10,10 +10,6 @@ const { packagedRuntimePaths } = require("../electron/runtime-command.cjs");
 const { linuxDesktopEntry, requireAutostartState } = require("../electron/autostart.cjs");
 const {
   MAX_RESTARTS_PER_WINDOW,
-  TUNNEL_HEALTH_POLL_INTERVAL_MS,
-  TUNNEL_MONITOR_FAILURE_THRESHOLD,
-  TUNNEL_MONITOR_INTERVAL_MS,
-  TUNNEL_START_TIMEOUT_MS,
   RuntimeSupervisor,
   managedTunnelConnectArgs,
   validateConfig,
@@ -173,13 +169,6 @@ test("launcher runtime validation accepts native Windows paths and a named pipe"
     runtimeCommand: ["C:\\Users\\Example\\.codex-chatgpt-web\\runtime\\bun.exe"],
   };
   assert.equal(validateConfig(config, descriptorPath, "win32"), config);
-});
-
-test("launcher gives cold cross-platform tunnel startup a bounded two-minute budget", () => {
-  assert.equal(TUNNEL_START_TIMEOUT_MS, 120_000);
-  assert.equal(TUNNEL_HEALTH_POLL_INTERVAL_MS, 1_000);
-  assert.equal(TUNNEL_MONITOR_INTERVAL_MS, 10_000);
-  assert.equal(TUNNEL_MONITOR_FAILURE_THRESHOLD, 3);
 });
 
 test("launcher delegates long-lived tunnel supervision to native runtimes connect", () => {

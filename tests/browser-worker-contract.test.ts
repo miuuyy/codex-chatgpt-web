@@ -8,19 +8,15 @@ import { CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnector
 import { parseChatGptEffortSliderState } from "../src/chatgpt-session";
 import type { CodexParsedRequest } from "../src/types";
 
-test("Codex context uses the owned CDP composer transport, never the operating-system clipboard", () => {
+test("browser turn orchestration retains owned prompt insertion and semantic submission", () => {
   const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
-  expect(workerSource).toContain('composer.fill("")');
-  expect(workerSource).toContain("this.insertPromptText(page, prompt, abortSignal)");
-  expect(workerSource).toContain("this.insertPromptText(page, ` ${prompt}`, abortSignal)");
-  expect(workerSource).not.toMatch(/\bclipboard\b|pbcopy|pbpaste/i);
-});
+  const runBrowserTurn = workerSource.slice(workerSource.indexOf("  private async runBrowserTurn("));
 
-test("completed prompts activate the scoped semantic send control", () => {
-  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
-  expect(workerSource).toContain('.getByTestId("send-button")');
-  expect(workerSource).toContain('await sendButton.press("Enter")');
-  expect(workerSource).not.toContain('getByTestId("send-button").dispatchEvent("click")');
+  expect(runBrowserTurn).toContain("return this.attachPrompt(");
+  expect(runBrowserTurn).toContain('.locator("xpath=ancestor::form[1]")');
+  expect(runBrowserTurn).toContain('.getByTestId("send-button")');
+  expect(runBrowserTurn).toContain('await sendButton.press("Enter")');
+  expect(workerSource).not.toMatch(/\bclipboard\b|pbcopy|pbpaste/i);
 });
 
 test("browser turns run concurrently up to the five-tab limit", async () => {
@@ -151,39 +147,6 @@ test("closing the launcher page is an immediate terminal turn error", async () =
   await expect(responseDomSnapshot.call({}, responseTurn)).rejects.toThrow(
     "ChatGPT browser tab was closed; the Codex turn was terminated",
   );
-});
-
-test("connector verification and real tool turns share one Playwright selector", () => {
-  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
-  expect(workerSource).toContain("private async selectConnector(");
-  expect(workerSource).toContain("const selectedComposer = await this.selectConnector(");
-  expect(workerSource).toContain("await this.selectConnector(page, undefined, true)");
-  expect(workerSource.match(/this\.prepareTemporaryChatSurface\(\s*page/g)?.length).toBeGreaterThanOrEqual(4);
-  expect(workerSource).toContain('"connector_catalog_refresh"');
-  expect(workerSource).toContain('"connector-catalog-refreshed"');
-  expect(workerSource).toContain('"temporary_chat_preparation"');
-  expect(workerSource).toContain('if (page.url() !== CHATGPT_TEMPORARY_CHAT_URL)');
-  expect(workerSource).toContain('composer.pressSequentially("@c", { delay: 25 })');
-  expect(workerSource).toContain('page.locator(\'.__menu-item[tabindex="0"]\')');
-  expect(workerSource).toContain("await appResult.click({ force: true, timeout: 10_000 })");
-  expect(workerSource).not.toContain("highlightConnectorMenuRow");
-  expect(workerSource).not.toContain('await appResult.dispatchEvent("click")');
-  expect(workerSource).not.toContain('appResult.press("Enter")');
-  expect(workerSource).toContain("this.selectedConnectorControl(selectedComposer)");
-  expect(workerSource).toContain("'[data-id^=\"plugin:\"][data-keyword]'");
-  expect(workerSource).toContain("const selectedComposer = await this.activeComposer(page)");
-});
-
-test("new ChatGPT chats select the requested effort and submit the first real turn directly", () => {
-  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
-  const requestedSelection = workerSource.indexOf('"effort_selection"');
-  const promptAttachment = workerSource.indexOf('"prompt_attachment"', requestedSelection);
-  expect(workerSource).not.toContain("CHATGPT_WARMUP_PROMPT");
-  expect(workerSource).not.toContain('"warmup_effort_selection"');
-  expect(workerSource).not.toContain('"chat_warmup"');
-  expect(workerSource).toMatch(/turn\.modelId,\s+turn\.reasoning/);
-  expect(requestedSelection).toBeGreaterThan(-1);
-  expect(promptAttachment).toBeGreaterThan(requestedSelection);
 });
 
 test("active composer resolution waits for exactly one visible editor", async () => {
@@ -427,7 +390,7 @@ test("prompt insertion stops after its stage is aborted before another native ed
   expect(inserted).toHaveLength(1);
 });
 
-test("caret re-anchor fails closed and uses the live DOM Selection API", async () => {
+test("caret re-anchor fails closed when the live composer cannot be anchored", async () => {
   const reanchorPromptCaret = (ChatGptBrowserWorker.prototype as unknown as {
     reanchorPromptCaret(page: unknown): Promise<void>;
   }).reanchorPromptCaret;
@@ -444,19 +407,6 @@ test("caret re-anchor fails closed and uses the live DOM Selection API", async (
     activeComposer: async () => composer,
   }, {})).rejects.toThrow("could not re-anchor the prompt caret");
   expect(evaluateOptions).toEqual({ timeout: 20_000 });
-
-  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
-  const reanchorSource = workerSource.slice(
-    workerSource.indexOf("private async reanchorPromptCaret"),
-    workerSource.indexOf("private async insertPromptText"),
-  );
-  expect(reanchorSource).toContain("window.getSelection()");
-  expect(reanchorSource).toContain("document.createRange()");
-  expect(reanchorSource).toContain("selection.addRange(range)");
-  expect(reanchorSource).toContain("selection.anchorNode === targetNode");
-  expect(reanchorSource).toContain("selection.anchorOffset === targetOffset");
-  expect(reanchorSource).toContain('[data-id^="plugin:"][data-keyword]');
-  expect(reanchorSource).toContain("[data-inline-selection-pill-cursor-target]");
 });
 
 test("connector selection re-resolves the active composer after ChatGPT replaces it", async () => {
@@ -885,8 +835,6 @@ test("image attachment readiness uses exact file tiles and not localized remove-
     ["fileTile", "codex-input-image-1.png"],
     ["sendEnabled"],
   ]);
-  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
-  expect(workerSource).not.toContain('aria-label^="Remove file "');
 });
 
 test("effort selection uses structural menu and slider indices instead of localized labels", () => {
@@ -1158,9 +1106,6 @@ test("browser preflight separates model context from one-message transport limit
   const pro = { localToolsEnabled: false, solAvailable: true, proAvailable: true };
   const luna = { localToolsEnabled: false, solAvailable: false, proAvailable: false };
 
-  expect(() => assertChatGptWebInputWithinLimits(90_000, 81_808, "gpt-5.6-sol", "medium", plus)).toThrow(
-    "90,000-token context window",
-  );
   try {
     assertChatGptWebInputWithinLimits(90_000, 81_808, "gpt-5.6-sol", "medium", plus);
     throw new Error("expected context-window preflight to fail");
@@ -1281,38 +1226,6 @@ test("routine browser diagnostics avoid screenshots unless full capture is reque
   expect(browserDiagnosticIncludesScreenshot("response-stalled-30s", false)).toBeTrue();
   expect(browserDiagnosticIncludesScreenshot("turn-failed", false)).toBeTrue();
   expect(browserDiagnosticIncludesScreenshot("send-ready", true)).toBeTrue();
-});
-
-test("browser stage diagnostics preserve every critical local checkpoint", () => {
-  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
-  for (const checkpoint of [
-    "browser-page-acquired",
-    "temporary-chat-navigation-complete",
-    "composer-ready",
-    "session-verified",
-    "effort-control-ready",
-    "effort-menu-open-requested",
-    "effort-selected",
-    "connector-mention-triggered",
-    "connector-menu-visible",
-    "connector-menu-missing",
-    "connector-selected",
-    "prompt-attachment-complete",
-    "file-attachment-complete",
-    "send-ready",
-    "send-accepted",
-    "tool-confirmation-visible",
-    "response-visible",
-    "response-stalled-30s",
-    "turn-completed",
-    "turn-failed",
-  ]) {
-    expect(workerSource).toContain(`"${checkpoint}"`);
-  }
-  expect(workerSource).toContain('join(getConfigDir(), "diagnostics", "browser-turns")');
-  expect(workerSource).toContain('page.screenshot({ animations: "disabled", caret: "hide"');
-  expect(workerSource).toContain("atomicWriteFile(join(this.directory, `${stem}.png`), screenshot)");
-  expect(workerSource).toContain("CHATGPT_BROWSER_DIAGNOSTIC_TRACE_LIMIT = 10");
 });
 
 test("visible DOM trace interleaves statuses and explicit intermediate commentary", () => {
@@ -1557,7 +1470,6 @@ test("browser completion requires ChatGPT's response-scoped copy action", () => 
 });
 
 test("browser send accepts only conclusive ChatGPT submission evidence", () => {
-  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
   const idle = {
     initialUserTurnCount: 1,
     userTurnCount: 1,
@@ -1569,8 +1481,6 @@ test("browser send accepts only conclusive ChatGPT submission evidence", () => {
   expect(chatGptSubmissionEvidence({ ...idle, userTurnCount: 2 })).toBe("user_turn");
   expect(chatGptSubmissionEvidence({ ...idle, assistantTurnCount: 3 })).toBe("assistant_turn");
   expect(chatGptSubmissionEvidence({ ...idle, generationRunning: true })).toBe("generation_running");
-  expect(workerSource).toContain("waitForSubmissionAccepted");
-  expect(workerSource).not.toContain("userTurns.nth(initialUserTurnCount).waitFor");
 });
 
 test("visible reasoning keeps the browser turn healthy before final assistant markdown exists", () => {

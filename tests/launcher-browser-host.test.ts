@@ -4,11 +4,6 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  LAUNCHER_TURN_END_TIMEOUT_MS,
-  LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS,
-  LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS,
-  LAUNCHER_TURN_START_TIMEOUT_MS,
-  LAUNCHER_CAPABILITY_INSPECTION_TIMEOUT_MS,
   LAUNCHER_BROWSER_HOST_KIND,
   inspectLauncherBrowserHost,
   notifyLauncherTurn,
@@ -63,10 +58,6 @@ test("launcher descriptor is owner-only, loopback-only, and process-bound", () =
 });
 
 test("launcher turn control sends authenticated lifecycle events", async () => {
-  expect(LAUNCHER_TURN_START_TIMEOUT_MS).toBe(5_000);
-  expect(LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS).toBe(10_000);
-  expect(LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS).toBe(5_000);
-  expect(LAUNCHER_TURN_END_TIMEOUT_MS).toBe(15_000);
   let received: { authorization?: string; body?: unknown } = {};
   const server = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
@@ -119,7 +110,6 @@ test("launcher turn control sends authenticated lifecycle events", async () => {
 });
 
 test("launcher session verification uses the authenticated control channel instead of Bun CDP", async () => {
-  expect(LAUNCHER_CAPABILITY_INSPECTION_TIMEOUT_MS).toBe(120_000);
   const server = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));

@@ -7,22 +7,6 @@ export interface CodexParsedRequest {
   _rawBody?: unknown;
   /** Number of leading raw input items restored from local previous_response_id state. */
   _replayPrefixLen?: number;
-  /** True when the proxy expanded a previous_response_id request into a full input replay. */
-  _previousResponseInputExpanded?: boolean;
-  /** Stable upstream client thread identity, used only to derive provider-scoped continuation ids. */
-  _clientThreadId?: string;
-  /**
-   * The hosted `{type:"web_search", ...}` tool config, stashed when Codex enables web search. Routed
-   * (non-OpenAI) providers can't run it server-side, so the proxy re-exposes it as a function tool and
-   * executes searches via the gpt-5.4-mini sidecar (see src/web-search). Absent when not requested.
-   */
-  _webSearch?: Record<string, unknown>;
-  /**
-   * True when Codex requested structured output (`text.format` = json_schema/json_object). The
-   * web-search tool_result is then rendered as compact JSON instead of markdown prose, so its
-   * answer/"Sources:" text can't bleed into and corrupt the model's schema-constrained output.
-   */
-  _structuredOutput?: boolean;
   /**
    * True when the input carried `{type:"compaction_trigger"}` — Codex remote compaction v2 asking
    * this turn to produce a `{type:"compaction"}` output item. Routed adapters can't natively;
@@ -30,12 +14,6 @@ export interface CodexParsedRequest {
    * (see src/responses/compaction.ts).
    */
   _compactionRequest?: boolean;
-  /**
-   * True when the current request newly introduced a stored compaction summary/marker. Historical
-   * markers restored by previous_response_id expansion were already acknowledged and do not reset
-   * provider-private continuation caches again on every later turn.
-   */
-  _contextCompactionBoundary?: boolean;
   /**
    * True when Codex MultiAgent V2 delegated an agent_message as provider-private encrypted_content.
    * ChatGPT Web has no OpenAI backend key for that blob and must fail before opening the browser.
@@ -84,8 +62,6 @@ export interface CodexToolResultMessage {
   toolNamespace?: string;
   /** Text, or content parts when a tool (e.g. Codex view_image) returns an image in its output. */
   content: string | CodexContentPart[];
-  /** True when the Responses result contained opaque encrypted output this browser bridge cannot translate. */
-  containsEncryptedContent?: boolean;
   isError: boolean;
   timestamp: number;
 }
@@ -120,7 +96,6 @@ export interface CodexToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
-  customWireName?: string;
   thoughtSignature?: string;
   /** MCP namespace (e.g. "mcp__context7") when this call targets a namespaced tool. */
   namespace?: string;
@@ -139,10 +114,6 @@ export interface CodexTool {
   freeform?: boolean;
   /** Client-executed tool discovery (tool_search): the model's call must be relayed as a tool_search_call. */
   toolSearch?: boolean;
-  /** Tool definition restored from a prior tool_search output; transports may prioritize it when catalogs are bounded. */
-  loadedFromToolSearch?: boolean;
-  /** Synthetic web_search tool: the model's call is executed by the gpt-5.4-mini sidecar, not relayed to Codex. */
-  webSearch?: boolean;
 }
 
 /**
@@ -155,30 +126,12 @@ export function namespacedToolName(namespace: string | undefined, name: string):
   return namespace ? `${namespace}__${name}` : name;
 }
 
-export function toolChoiceAliases(tool: Pick<CodexTool, "namespace" | "name">): string[] {
-  const wireName = namespacedToolName(tool.namespace, tool.name);
-  return tool.namespace ? [wireName, `${tool.namespace}.${tool.name}`] : [wireName];
-}
-
-export function toolAllowedByChoice(tool: Pick<CodexTool, "namespace" | "name">, allowedTools: ReadonlySet<string>): boolean {
-  return toolChoiceAliases(tool).some(name => allowedTools.has(name));
-}
-
-export function resolveToolChoiceWireName(tools: readonly Pick<CodexTool, "namespace" | "name">[] | undefined, name: string): string {
-  const match = tools?.find(tool => toolChoiceAliases(tool).includes(name));
-  return match ? namespacedToolName(match.namespace, match.name) : name;
-}
-
 export type CodexToolChoice =
   | "auto"
   | "none"
   | "required"
   | { name: string }
   | { allowedTools: string[]; mode: "auto" | "required" };
-
-export function isAllowedToolChoice(value: CodexToolChoice | undefined): value is { allowedTools: string[]; mode: "auto" | "required" } {
-  return typeof value === "object" && value !== null && "allowedTools" in value;
-}
 
 export interface CodexRequestOptions {
   maxOutputTokens?: number;
@@ -219,14 +172,6 @@ export type AdapterEvent =
   | { type: "tool_call_end" }
   /** Internal boundary between a guarded first pass and its one-shot continuation. */
   | { type: "assistant_boundary" }
-  // Native web-search activity surfaced by the web-search sidecar so Codex renders a "Searched the
-  // web" cell. Emitted as a lifecycle PAIR at real wall-clock moments by src/web-search/loop.ts
-  // (routed adapters never emit these): `begin` right before the sidecar runs so Codex shows the
-  // "Searching the web" spinner, then `end` once it resolves. The bridge maps begin → an
-  // output_item.added(in_progress) and end → the matching output_item.done(completed|failed) under
-  // the SAME output index, so the activity animates instead of flashing completed instantly.
-  | { type: "web_search_call_begin"; id: string }
-  | { type: "web_search_call_end"; id: string; queries: string[]; status?: "completed" | "failed"; sources?: CodexUrlCitation[] }
   | {
       type: "done";
       usage?: CodexUsage;
@@ -256,16 +201,6 @@ export type AdapterEvent =
       code?: string;
       retryable?: boolean;
     };
-
-/**
- * A web source backing a search answer. Surfaced on the search-end event and rendered by the bridge
- * as a `url_citation` annotation on the following assistant message (the desktop app's Sources chip
- * reads these; the TUI ignores annotations, so this is additive).
- */
-export interface CodexUrlCitation {
-  url: string;
-  title?: string;
-}
 
 /**
  * Canonical Responses usage convention:

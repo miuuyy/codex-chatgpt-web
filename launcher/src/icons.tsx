@@ -21,8 +21,7 @@ export type IconName =
   | "setup"
   | "sidebar"
   | "update"
-  | "x"
-  | "zoom";
+  | "x";
 
 export function Icon({ name, ...props }: { name: IconName } & SVGProps<SVGSVGElement>) {
   const common = { fill: "none", stroke: "currentColor", strokeLinecap: "round" as const, strokeLinejoin: "round" as const, strokeWidth: 1.7 };
@@ -49,7 +48,6 @@ export function Icon({ name, ...props }: { name: IconName } & SVGProps<SVGSVGEle
       {name === "sidebar" ? <><rect {...common} x="3" y="4" width="18" height="16" rx="2.5" /><path {...common} d="M9 4v16" /></> : null}
       {name === "update" ? <><path {...common} d="M12 3v12M7.5 10.5 12 15l4.5-4.5" /><path {...common} d="M5 19h14" /></> : null}
       {name === "x" ? <path fill="currentColor" d="M5 4h3.9l3.8 5.1L17.1 4H19l-5.4 6.4L19.5 20h-3.9l-4.1-5.6L6.7 20H4.8l5.8-6.9L5 4Zm3 1.5 8.4 13h1.2l-8.4-13H8Z" /> : null}
-      {name === "zoom" ? <path {...common} d="M7 17 17 7M7 11v6h6M17 13V7h-6" /> : null}
     </svg>
   );
 }

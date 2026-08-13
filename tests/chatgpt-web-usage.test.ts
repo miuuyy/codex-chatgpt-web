@@ -13,17 +13,9 @@ function request(text: string): CodexParsedRequest {
   };
 }
 
-test("large inline prompts use tokenizer-derived usage without invented composer pressure", () => {
-  const estimated = estimateChatGptWebInputTokens(request("a".repeat(480_000)), capabilities);
-
-  expect(estimated).toBeLessThan(100_000);
-});
-
-test("ordinary context below the transport threshold keeps its tokenizer-derived usage", () => {
-  const estimated = estimateChatGptWebInputTokens(
-    request(`${"word ".repeat(79_999)}word`),
-    capabilities,
-  );
-
-  expect(estimated).toBeLessThan(100_000);
+test.each([
+  ["highly compressible", "a".repeat(480_000)],
+  ["ordinary repeated words", `${"word ".repeat(79_999)}word`],
+])("%s context uses tokenizer-derived usage without character-pressure inflation", (_label, text) => {
+  expect(estimateChatGptWebInputTokens(request(text), capabilities)).toBeLessThan(100_000);
 });

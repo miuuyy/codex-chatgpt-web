@@ -15,7 +15,6 @@ import { responsesRequestSchema } from "./schema";
 import { compactionItemToText } from "./compaction";
 import { previousResponseReplayPrefixLength } from "./state";
 import { decodeReasoningEnvelope } from "./reasoning-envelope";
-import { extractHostedWebSearch, WEB_SEARCH_TOOL_NAME } from "../web-search/synthetic-tool";
 
 function isObj(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -100,7 +99,7 @@ function mapToolChoice(value: unknown): CodexRequestOptions["toolChoice"] {
 function allowedToolName(tool: unknown): string | undefined {
   if (!isObj(tool)) return undefined;
   if (typeof tool.name === "string" && tool.name.length > 0) return tool.name;
-  if (tool.type === "web_search" || tool.type === "web_search_preview") return WEB_SEARCH_TOOL_NAME;
+  if (tool.type === "web_search" || tool.type === "web_search_preview") return "web_search";
   if (tool.type === "tool_search") return "tool_search";
   return undefined;
 }
@@ -232,10 +231,6 @@ function outputToToolResultContent(output: string | unknown[] | undefined): stri
   return parts;
 }
 
-function toolOutputContainsEncryptedContent(output: string | unknown[] | undefined): boolean {
-  return Array.isArray(output) && output.some(raw => isObj(raw) && raw.type === "encrypted_content");
-}
-
 /**
  * codex-rs ImageDetail allows "original", but chat-completions providers only accept
  * auto|low|high on image_url.detail — degrade "original" to "high" (the codex default).
@@ -285,7 +280,6 @@ export function parseRequest(body: unknown): CodexParsedRequest {
   // Remote compaction v2: the input tail carries `{type:"compaction_trigger"}` and Codex expects a
   // synthetic `{type:"compaction"}` output item (src/responses/compaction.ts). Flagged for the server.
   let compactionRequest = false;
-  let contextCompactionBoundary = false;
   let opaqueMultiAgentV2Payload = false;
 
   if (typeof data.instructions === "string" && data.instructions.length > 0) {
@@ -295,8 +289,7 @@ export function parseRequest(body: unknown): CodexParsedRequest {
   if (typeof data.input === "string") {
     messages.push({ role: "user", content: data.input, timestamp: now });
   } else if (data.input) {
-    for (let inputIndex = 0; inputIndex < data.input.length; inputIndex++) {
-      const item = data.input[inputIndex];
+    for (const item of data.input) {
       const effectiveType = (item as { type?: string }).type ?? ("role" in item ? "message" : undefined);
 
       if (effectiveType === "compaction_trigger") {
@@ -321,10 +314,7 @@ export function parseRequest(body: unknown): CodexParsedRequest {
         // the routed model keeps the compacted context; real OpenAI-encrypted blobs degrade to a note.
         // `context_compaction` (encrypted_content optional) is codex-rs's local-compaction marker;
         // with no payload it is a pure marker (the summary follows as its own user message), so it
-        // is dropped silently. It must NOT flag _compactionRequest. Only a marker newly appended in
-        // this request starts a provider-private context epoch; markers inside the prefix restored by
-        // previous_response_id were already acknowledged on the turn that introduced them.
-        if (inputIndex >= replayedInputPrefixLength) contextCompactionBoundary = true;
+        // is dropped silently. It must not flag `_compactionRequest`.
         const encrypted = (item as { encrypted_content?: unknown }).encrypted_content;
         if (effectiveType === "context_compaction" && typeof encrypted !== "string") continue;
         pendingReasoning.length = 0;
@@ -468,7 +458,6 @@ export function parseRequest(body: unknown): CodexParsedRequest {
         const toolCall: CodexToolCall = {
           type: "toolCall", id: call.call_id, name: call.name,
           arguments: { input: call.input ?? "" },
-          customWireName: call.name,
         };
         assistantHolderWithReasoning().content.push(toolCall);
         continue;
@@ -491,8 +480,7 @@ export function parseRequest(body: unknown): CodexParsedRequest {
 
       if (effectiveType === "web_search_call") {
         // Replayed hosted web-search evidence has no paired result payload that routed providers can
-        // consume. Keep it out of assistant-visible text: the old marker was useful as an internal
-        // loop hint, but when no sidecar is available the model can echo it as a fake answer.
+        // consume. Keep it out of assistant-visible text so the model cannot echo it as a fake result.
         pendingReasoning.length = 0;
         continue;
       }
@@ -549,7 +537,6 @@ export function parseRequest(body: unknown): CodexParsedRequest {
           role: "toolResult", toolCallId: output.call_id,
           toolName: toolInfo.name, toolNamespace: toolInfo.namespace,
           content: outputToToolResultContent(output.output), isError: false, timestamp: now,
-          ...(toolOutputContainsEncryptedContent(output.output) ? { containsEncryptedContent: true } : {}),
         });
         continue;
       }
@@ -564,7 +551,6 @@ export function parseRequest(body: unknown): CodexParsedRequest {
           // Same payload shape as function_call_output (codex-rs FunctionCallOutputPayload):
           // string or content items — normalize arrays instead of leaking raw wire blocks.
           content: outputToToolResultContent(output.output), isError: false, timestamp: now,
-          ...(toolOutputContainsEncryptedContent(output.output) ? { containsEncryptedContent: true } : {}),
         });
       }
     }
@@ -572,7 +558,6 @@ export function parseRequest(body: unknown): CodexParsedRequest {
 
   const declaredTools = buildTools(data.tools as unknown[] | undefined) ?? [];
   const loadedTools = buildTools(loadedToolSpecs) ?? [];
-  const loadedToolNames = new Set(loadedTools.map(t => namespacedToolName(t.namespace, t.name)));
   const seenTools = new Set<string>();
   const mergedTools = [...declaredTools, ...loadedTools]
     .filter(t => {
@@ -580,10 +565,7 @@ export function parseRequest(body: unknown): CodexParsedRequest {
       if (seenTools.has(k)) return false;
       seenTools.add(k);
       return true;
-    })
-    .map(t => loadedToolNames.has(namespacedToolName(t.namespace, t.name))
-      ? { ...t, loadedFromToolSearch: true }
-      : t);
+    });
   const context: CodexContext = {
     ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
     messages,
@@ -615,14 +597,6 @@ export function parseRequest(body: unknown): CodexParsedRequest {
   if (data.service_tier !== undefined) options.serviceTier = data.service_tier;
   if (data.prompt_cache_key !== undefined) options.promptCacheKey = data.prompt_cache_key;
 
-  // Stash the hosted web_search config (if Codex enabled it) so the proxy can run searches via the
-  // gpt-mini sidecar for routed providers. buildTools still drops the hosted tool; the sidecar path
-  // re-injects a synthetic function tool only when it will actually handle the call.
-  const webSearch = extractHostedWebSearch(data.tools as unknown[] | undefined);
-  // Detect structured-output mode (Responses `text.format`) so the web-search sidecar can render its
-  // tool_result as JSON rather than prose that could corrupt the model's schema-constrained answer.
-  const structuredOutput = detectStructuredOutput(data.text);
-
   return {
     modelId: data.model,
     ...(data.previous_response_id ? { previousResponseId: data.previous_response_id } : {}),
@@ -631,19 +605,7 @@ export function parseRequest(body: unknown): CodexParsedRequest {
     options,
     _rawBody: body,
     ...(replayedInputPrefixLength > 0 ? { _replayPrefixLen: replayedInputPrefixLength } : {}),
-    ...(webSearch ? { _webSearch: webSearch } : {}),
-    ...(structuredOutput ? { _structuredOutput: true } : {}),
     ...(compactionRequest ? { _compactionRequest: true } : {}),
-    ...(contextCompactionBoundary ? { _contextCompactionBoundary: true } : {}),
     ...(opaqueMultiAgentV2Payload ? { _opaqueMultiAgentV2Payload: true } : {}),
   };
-}
-
-/** True when the Responses `text.format` requests structured output (json_schema or json_object). */
-function detectStructuredOutput(text: unknown): boolean {
-  if (!isObj(text)) return false;
-  const format = (text as { format?: unknown }).format;
-  if (!isObj(format)) return false;
-  const t = (format as { type?: unknown }).type;
-  return t === "json_schema" || t === "json_object";
 }

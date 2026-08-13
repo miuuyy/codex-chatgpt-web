@@ -154,7 +154,3 @@ export async function detectChatGptAccountCapabilities(
     await page.keyboard.press("Escape").catch(() => {});
   }
 }
-
-export async function detectChatGptProCapability(page: Page): Promise<boolean> {
-  return (await detectChatGptAccountCapabilities(page)).proAvailable;
-}

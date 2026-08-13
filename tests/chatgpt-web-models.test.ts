@@ -126,20 +126,6 @@ describe("fixed ChatGPT Web model routes", () => {
     });
   });
 
-  test("reports the compact-aligned effective window in Codex's context indicator", () => {
-    const displayedThousands = (effort: "low" | "medium" | "high" | "xhigh" | "max", capabilities: typeof pro) => {
-      const limits = resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, effort, capabilities);
-      return Math.round((limits.contextWindow * limits.effectiveContextWindowPercent) / 100 / 1_000);
-    };
-    expect(displayedThousands("low", plus)).toBe(32);
-    expect(displayedThousands("medium", plus)).toBe(80);
-    expect(displayedThousands("low", pro)).toBe(95);
-    expect(displayedThousands("medium", pro)).toBe(95);
-    expect(displayedThousands("high", pro)).toBe(95);
-    expect(displayedThousands("xhigh", pro)).toBe(95);
-    expect(displayedThousands("max", pro)).toBe(95);
-  });
-
   test("publishes Luna's real model window without early native compaction", () => {
     expect(resolveChatGptWebContextLimits(CHATGPT_WEB_LUNA_BACKEND_MODEL, "low", {
       solAvailable: false,

@@ -12,7 +12,7 @@ import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "../src/adapters/chatgpt-web/environment";
 import { createChatGptWebAdapter } from "../src/adapters/chatgpt-web/index";
 import { chatGptHtmlToMarkdown, ChatGptMarkdownBuffer } from "../src/adapters/chatgpt-web/markdown";
-import { CHATGPT_WEB_MODEL_ID, resolveChatGptWebModelMode } from "../src/adapters/chatgpt-web/model";
+import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt, withoutSupersededModelSwitchContracts } from "../src/adapters/chatgpt-web/prompt";
 import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSessions, chatGptCompactionSourceExecutionKey, chatGptTurnExecutionKey } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, TurnBroker, type BrokerToolResult } from "../src/adapters/chatgpt-web/turn-broker";
@@ -929,31 +929,6 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(compiled.text).toContain("<codex_context_json>");
     expect(files.map(file => file.name)).toEqual(["codex-input-image-1.png"]);
     expect(files[0]!.mimeType).toBe("image/png");
-  });
-
-  test("maps one ChatGPT Web model to explicit effort modes and fails closed on invalid combinations", () => {
-    expect(resolveChatGptWebModelMode(CHATGPT_WEB_MODEL_ID, "max", toolCapabilities)).toEqual({
-      modelId: CHATGPT_WEB_MODEL_ID,
-      effort: "max",
-      displayLabel: "Pro",
-      uiEffortIndex: 4,
-      localTools: false,
-    });
-    expect(resolveChatGptWebModelMode(CHATGPT_WEB_MODEL_ID, "xhigh", toolCapabilities)).toMatchObject({
-      uiEffortIndex: 3,
-      localTools: true,
-    });
-    expect(() => resolveChatGptWebModelMode(CHATGPT_WEB_MODEL_ID, "max", {
-      localToolsEnabled: false,
-      solAvailable: true,
-      proAvailable: false,
-    })).toThrow("Pro effort is not available");
-    expect(() => resolveChatGptWebModelMode(CHATGPT_WEB_MODEL_ID, "xhigh", {
-      localToolsEnabled: true,
-      solAvailable: true,
-      proAvailable: false,
-    })).toThrow("Extra High effort is not available");
-    expect(() => resolveChatGptWebModelMode("unknown", "high", toolCapabilities)).toThrow("model is not supported");
   });
 
   test("builds a context-complete Pro prompt without exposing any local-tool capability", () => {

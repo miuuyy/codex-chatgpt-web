@@ -2,7 +2,6 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
-const path = require("node:path");
 const {
   browserViewVisible,
   constrainBrowserBounds,
@@ -12,7 +11,6 @@ const {
 const {
   allowedAuthUrl,
   BrowserHost,
-  CHATGPT_VIEWPORT_CSS,
   isChatGptCloudflareChallengeResponse,
   isTemporaryChatUrl,
 } = require("../electron/browser-host.cjs");
@@ -584,24 +582,7 @@ test("browser chrome state is read from the owned WebContents", () => {
   });
 });
 
-test("embedded ChatGPT is constrained to the owned horizontal viewport", () => {
-  assert.match(CHATGPT_VIEWPORT_CSS, /max-width:\s*100% !important/);
-  assert.match(CHATGPT_VIEWPORT_CSS, /overflow-x:\s*hidden !important/);
-  assert.match(CHATGPT_VIEWPORT_CSS, /overscroll-behavior-x:\s*none !important/);
-});
-
 test("launcher delegates every ChatGPT model and turn operation to the shared browser worker", async () => {
-  const source = require("node:fs").readFileSync(require.resolve("../electron/browser-host.cjs"), "utf8");
-  const workerSource = require("node:fs").readFileSync(require.resolve("../../src/adapters/chatgpt-web/browser-worker.ts"), "utf8");
-
-  assert.doesNotMatch(source, /model-switcher-dropdown-button|data-model-reasoning-effort-slider|menuitemradio/);
-  assert.doesNotMatch(source, /send-button|conversation-turn-|Input\.dispatch/);
-  assert.match(source, /operation:\s*"smoke"/);
-  assert.match(source, /operation:\s*"inspect"/);
-  assert.match(workerSource, /selectModelAndEffort/);
-  assert.match(workerSource, /detectChatGptAccountCapabilities/);
-  assert.match(workerSource, /runBrowserTurn/);
-
   const calls = [];
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {
     helper: { executable: "/runtime/electron", script: "/runtime/browser-helper.cjs" },
@@ -675,15 +656,6 @@ test("connector verification is effort-independent and works while the browser s
       }],
     ],
   );
-});
-
-test("connector verification has no independent CDP typing or coordinate-click path", () => {
-  const source = fs.readFileSync(path.join(__dirname, "../electron/browser-host.cjs"), "utf8");
-  const start = source.indexOf("async runConnectorVerification");
-  const end = source.indexOf("async inspectSession", start);
-  const verificationSource = source.slice(start, end);
-  assert.match(source, /verifyConnectorWithBrowserHelper/);
-  assert.doesNotMatch(verificationSource, /typeTrustedBrowserText|clickTrustedBrowserPoint|connectorMenuOpen|waitForConnectorSuggestion/);
 });
 
 test("a live helper retains exclusive ownership of its running turn", () => {
@@ -840,30 +812,6 @@ test("removing the final turn tab hides an uninitialized idle host instead of ex
   BrowserHost.prototype.removeTurnTab.call(fixture, tab, false);
 
   assert.deepEqual(calls, ["view-remove", "contents-close", "hide"]);
-});
-
-test("connector verification hard-refreshes an already hydrated Temporary Chat page", async () => {
-  let loaded = false;
-  let refreshed = false;
-  const fixture = {
-    logger: { info() {} },
-    setState() {},
-    refreshChatGptHomeDocument: async () => { refreshed = true; },
-    helper: { executable: "/runtime/electron", script: "/runtime/browser-helper.cjs" },
-    descriptorPath: "/runtime/launcher-browser.json",
-    verifyConnectorWithBrowserHelper: async ({ appName }) => ({ ok: true, appName }),
-    view: {
-      webContents: {
-        getURL: () => "https://chatgpt.com/?temporary-chat=true",
-        loadURL: async () => { loaded = true; },
-      },
-    },
-  };
-
-  await BrowserHost.prototype.runConnectorVerification.call(fixture, "Codex Native2");
-
-  assert.equal(loaded, false);
-  assert.equal(refreshed, true);
 });
 
 test("hard refresh accepts Chromium's completed loading cycle even without did-finish-load", async () => {

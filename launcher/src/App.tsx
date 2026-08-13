@@ -99,7 +99,6 @@ export function App() {
       <AnimatePresence mode="wait">
         {!snapshot.state.onboardingComplete ? (
           <Onboarding
-            copy={copy}
             key="onboarding"
             language={language}
             setError={setError}
@@ -128,13 +127,11 @@ export function App() {
 }
 
 function Onboarding({
-  copy,
   language,
   setError,
   snapshot,
   updateState,
 }: {
-  copy: Copy;
   language: Language;
   setError: (error: string | null) => void;
   snapshot: LauncherSnapshot;
@@ -1808,14 +1805,6 @@ function FatalMessage({ message }: { message: string }) {
       <p>{message}</p>
     </main>
   );
-}
-
-function browserTone(browser: BrowserState | null): "idle" | "ready" | "busy" | "error" {
-  if (!browser) return "idle";
-  if (browser.status === "error") return "error";
-  if (browser.status === "loading" || browser.status === "running" || browser.status === "testing") return "busy";
-  if (browser.authenticated) return "ready";
-  return "idle";
 }
 
 function browserTabTitleFromTitle(value: string | undefined, copy: Copy): string {

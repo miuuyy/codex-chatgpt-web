@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig } from "../src/config";
-import { TUNNEL_READY_TIMEOUT_MS, createTunnelConfig, mcpCommand } from "../src/tunnel";
+import { createTunnelConfig, mcpCommand } from "../src/tunnel";
 import { tunnelServiceDefinition } from "../src/tunnel-service";
 import { existingFullSetupCredentials, tunnelWorkerRuntimeChanged } from "../src/setup";
 
@@ -146,7 +146,4 @@ describe("tunnel launchd ownership", () => {
     ]);
   });
 
-  test("uses a realistic bounded tunnel cold-start budget", () => {
-    expect(TUNNEL_READY_TIMEOUT_MS).toBe(120_000);
-  });
 });

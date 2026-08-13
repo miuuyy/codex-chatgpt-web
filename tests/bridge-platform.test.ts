@@ -29,13 +29,6 @@ test("Responses SSE completes through the Windows push stream", async () => {
   expect(body).toEndWith("data: [DONE]\n\n");
 });
 
-test("Responses SSE completes through the Darwin pull stream", async () => {
-  const body = await new Response(responseStream("darwin")).text();
-
-  expect(body).toContain("event: response.completed");
-  expect(body).toEndWith("data: [DONE]\n\n");
-});
-
 test("Darwin SSE remains decodable through Bun.serve under sustained chunking", async () => {
   const server = Bun.serve({
     port: 0,

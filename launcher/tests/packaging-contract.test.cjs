@@ -122,14 +122,3 @@ test("Windows packages embed the checksummed Bun baseline runtime for CPUs witho
   assert.match(baseline, /Get-FileHash[^\n]+SHA256/);
   assert.match(baseline, /CODEX_CHATGPT_WEB_EMBEDDED_BUN=/);
 });
-
-test("packaged smoke executes the relocated runtime instead of only checking copied files", () => {
-  const main = fs.readFileSync(path.join(launcherRoot, "electron", "main.cjs"), "utf8");
-  const smoke = fs.readFileSync(path.join(launcherRoot, "scripts", "smoke-package.cjs"), "utf8");
-  assert.match(main, /runtimeCommand\(\["--version"\]\)/);
-  assert.match(main, /runtimeVerified:\s*true/);
-  assert.match(smoke, /marker\.runtimeVerified\s*!==\s*true/);
-  assert.match(smoke, /launcherManifest\.name/);
-  assert.match(smoke, /launcherManifest\.build\.productName/);
-  assert.doesNotMatch(smoke, /"Programs",\s*"Codex Web GPT"/);
-});

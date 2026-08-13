@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type SpawnOptions, type SpawnSyncOptions } from "node:child_process";
+import { spawnSync, type SpawnSyncOptions } from "node:child_process";
 
 export interface CommandResult {
   status: number;
@@ -42,9 +42,4 @@ export function runChecked(command: string, args: string[], options: SpawnSyncOp
     throw new Error(`${command} ${args.join(" ")} failed: ${detail}`);
   }
   return result;
-}
-
-export function spawnDetached(command: string, args: string[], options: SpawnOptions = {}): void {
-  const child = spawn(command, args, { detached: true, stdio: "ignore", ...options });
-  child.unref();
 }
