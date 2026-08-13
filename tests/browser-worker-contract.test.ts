@@ -16,6 +16,8 @@ test("browser turn orchestration retains owned prompt insertion and semantic sub
   expect(runBrowserTurn).toContain('.locator("xpath=ancestor::form[1]")');
   expect(runBrowserTurn).toContain('.getByTestId("send-button")');
   expect(runBrowserTurn).toContain('await sendButton.press("Enter")');
+  expect(runBrowserTurn).toContain("await this.waitForSubmissionAccepted(");
+  expect(runBrowserTurn).not.toContain("userTurns.nth(initialUserTurnCount).waitFor");
   expect(workerSource).not.toMatch(/\bclipboard\b|pbcopy|pbpaste/i);
 });
 
@@ -407,6 +409,19 @@ test("caret re-anchor fails closed when the live composer cannot be anchored", a
     activeComposer: async () => composer,
   }, {})).rejects.toThrow("could not re-anchor the prompt caret");
   expect(evaluateOptions).toEqual({ timeout: 20_000 });
+
+  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
+  const reanchorSource = workerSource.slice(
+    workerSource.indexOf("  private async reanchorPromptCaret("),
+    workerSource.indexOf("  private async insertPromptText("),
+  );
+  expect(reanchorSource).toContain("window.getSelection()");
+  expect(reanchorSource).toContain("document.createRange()");
+  expect(reanchorSource).toContain("selection.addRange(range)");
+  expect(reanchorSource).toContain("selection.anchorNode === targetNode");
+  expect(reanchorSource).toContain("selection.anchorOffset === targetOffset");
+  expect(reanchorSource).toContain('[data-id^="plugin:"][data-keyword]');
+  expect(reanchorSource).toContain("[data-inline-selection-pill-cursor-target]");
 });
 
 test("connector selection re-resolves the active composer after ChatGPT replaces it", async () => {

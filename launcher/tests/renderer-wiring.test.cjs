@@ -52,6 +52,29 @@ test("MCP navigation remains locked while an operation is active", () => {
   assert.match(appSource, /disabled=\{busy \|\| index > step\}/);
 });
 
+test("failed doctor reports retain every failed check", () => {
+  assert.match(
+    appSource,
+    /report\.ok\s*\?\s*report\.checks\.slice\(-6\)\s*:\s*report\.checks\.filter\(\(check\) => check\.status !== "ok"\)/,
+  );
+  assert.match(appSource, /visibleChecks\.map\(\(check\) =>/);
+});
+
+test("MCP verification proves runtime health before checking the connector", () => {
+  const start = electronMain.indexOf('handle("launcher:mcp-verify"');
+  const end = electronMain.indexOf('handle("launcher:doctor"', start);
+  const handler = electronMain.slice(start, end);
+
+  assert.ok(start >= 0 && end > start, "MCP verification handler must remain registered");
+  assert.match(
+    handler,
+    /Checking local runtime[\s\S]*?await runtimeHost\.doctor\(\)[\s\S]*?if \(!report\.ok\)[\s\S]*?return report;[\s\S]*?Checking ChatGPT connector[\s\S]*?await browserHost\.verifyConnector/,
+  );
+  assert.match(handler, /publishOperation\(\{ name: operationName, status: "completed"/);
+  assert.match(appSource, /onClick=\{\(\) => void \(doctor\?\.ok \? onDone\(\) : verify\(\)\)\}/);
+  assert.match(appSource, /operation\?\.name === "mcp-verification"/);
+});
+
 test("saved ChatGPT authentication is refreshed before setup is presented", () => {
   assert.match(electronMain, /browserHost\.refreshAuthentication\(\)/);
   assert.match(appSource, /browser\?\.status === "loading" \? copy\.checkingSignIn/);
