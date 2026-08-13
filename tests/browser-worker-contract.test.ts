@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { Page } from "playwright-core";
-import { CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_PROMPT_INSERT_CHUNK_CHARS, ChatGptBrowserWorker, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, assertChatGptWebInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, chatGptSubmissionEvidence, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_CONTEXT_FILE_TRANSPORT_ENV, CHATGPT_CONTEXT_FILE_TRANSPORT_LARGE_CHARS, CHATGPT_MAX_PROMPT_ATTACHMENTS, CHATGPT_PROMPT_INSERT_CHUNK_CHARS, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, assertChatGptWebInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, chatGptContextFileBootstrap, chatGptContextFilePayload, chatGptPromptFilePayloads, chatGptRateLimitBackoffMs, chatGptSubmissionEvidence, resetChatGptRateLimitCooldown, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptContextFileTransportMode, resolveChatGptToolConfirmation, shouldUseChatGptContextFileTransport, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert } from "../src/adapters/chatgpt-web/browser-worker";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
 import { CHATGPT_CONNECTOR_NAME, defaultChromeExecutable } from "../src/config";
@@ -11,9 +11,117 @@ import type { CodexParsedRequest } from "../src/types";
 test("Codex context uses the owned CDP composer transport, never the operating-system clipboard", () => {
   const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
   expect(workerSource).toContain('composer.fill("")');
-  expect(workerSource).toContain("this.insertPromptText(page, prompt, abortSignal)");
-  expect(workerSource).toContain("this.insertPromptText(page, ` ${prompt}`, abortSignal)");
+  expect(workerSource).toContain("this.insertPromptText(page, prompt, abortSignal, chunkChars)");
+  expect(workerSource).toContain("this.insertPromptText(page, ` ${prompt}`, abortSignal, chunkChars)");
   expect(workerSource).not.toMatch(/\bclipboard\b|pbcopy|pbpaste/i);
+});
+
+test("exact compiled Codex prompt can be transported as one context file with a small composer bootstrap", () => {
+  const compiled = compileChatGptWebPrompt(
+    {
+      modelId: CHATGPT_WEB_MODEL_ID,
+      context: {
+        systemPrompt: ["system-rule"],
+        messages: [
+          { role: "user", content: "inspect chronologically", timestamp: 1 },
+          {
+            role: "assistant",
+            content: [{
+              type: "toolCall",
+              id: "call_1",
+              name: "exec_command",
+              arguments: { cmd: "echo input" },
+            }],
+            timestamp: 2,
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_1",
+            toolName: "exec_command",
+            content: '{"output":"tool output","exit_code":0}',
+            isError: false,
+            timestamp: 3,
+          },
+          { role: "user", content: "continue from that result", timestamp: 4 },
+        ],
+      },
+      stream: true,
+      options: { reasoning: "high" },
+    },
+    { localToolsEnabled: true, solAvailable: true, proAvailable: true },
+    "turn_12345678901234567890123456789012",
+  );
+
+  const payload = chatGptContextFilePayload(compiled);
+  expect(payload.mimeType).toBe("text/plain");
+  expect(payload.name).toMatch(/^codex-context-[0-9a-f]{16}\.txt$/);
+  expect(payload.buffer.toString("utf8")).toBe(compiled.text);
+  expect(payload.buffer.toString("utf8")).toContain('"type":"tool_call"');
+  expect(payload.buffer.toString("utf8")).toContain('"arguments":{"cmd":"echo input"}');
+  expect(payload.buffer.toString("utf8")).toContain('"role":"tool_result"');
+  expect(payload.buffer.toString("utf8")).toContain('"content":"{\\"output\\":\\"tool output\\",\\"exit_code\\":0}"');
+
+  const bootstrap = chatGptContextFileBootstrap(compiled.text);
+  expect(bootstrap.length).toBeLessThan(2_000);
+  expect(bootstrap).toContain(payload.name);
+  expect(bootstrap).toContain("Read the entire attached text file");
+  expect(bootstrap).toContain("chronological Codex context");
+  expect(bootstrap).not.toContain("tool output");
+  expect(bootstrap).not.toContain("turn_12345678901234567890123456789012");
+
+  const files = chatGptPromptFilePayloads(compiled, true);
+  expect(files[0]!.name).toBe(payload.name);
+  expect(files[0]!.buffer.equals(payload.buffer)).toBeTrue();
+});
+
+test("context-file transport exposes off, large, and always modes with a conservative large threshold", () => {
+  expect(CHATGPT_CONTEXT_FILE_TRANSPORT_ENV).toBe("CODEX_CHATGPT_WEB_CONTEXT_FILE_TRANSPORT");
+  expect(CHATGPT_CONTEXT_FILE_TRANSPORT_LARGE_CHARS).toBe(80_000);
+
+  for (const value of [undefined, "", "off", "0", "false"] as const) {
+    expect(resolveChatGptContextFileTransportMode(value)).toBe("off");
+  }
+  expect(resolveChatGptContextFileTransportMode("large")).toBe("large");
+  for (const value of ["always", "1", "true"] as const) {
+    expect(resolveChatGptContextFileTransportMode(value)).toBe("always");
+  }
+  expect(() => resolveChatGptContextFileTransportMode("sometimes")).toThrow("off, large, or always");
+
+  expect(shouldUseChatGptContextFileTransport("off", 999_999)).toBeFalse();
+  expect(shouldUseChatGptContextFileTransport("large", 79_999)).toBeFalse();
+  expect(shouldUseChatGptContextFileTransport("large", 80_000)).toBeTrue();
+  expect(shouldUseChatGptContextFileTransport("always", 1)).toBeTrue();
+
+  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
+  expect(workerSource).toContain("resolveChatGptContextFileTransportMode()");
+  expect(workerSource).toContain("shouldUseChatGptContextFileTransport(");
+  expect(workerSource).toContain("const composerPrompt = contextFileTransport");
+  expect(workerSource).toContain("chatGptContextFileBootstrap(prepared.text)");
+  expect(workerSource).toContain("composerPrompt.length");
+  expect(workerSource).toContain("this.attachFiles(page, prepared, contextFileTransport)");
+  expect(workerSource).toContain("configuredTransport=${contextFileTransportMode}");
+});
+
+test("context-file transport enforces the ten-file message attachment limit without silently dropping images", () => {
+  expect(CHATGPT_MAX_PROMPT_ATTACHMENTS).toBe(10);
+  const imageUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  const promptWith = (count: number) => ({
+    text: "exact context",
+    images: Array.from({ length: count }, (_unused, index) => ({
+      ref: `codex-input-image-${index + 1}`,
+      imageUrl,
+    })),
+  });
+
+  const inlineTen = chatGptPromptFilePayloads(promptWith(10), false);
+  expect(inlineTen).toHaveLength(10);
+
+  const filePlusNine = chatGptPromptFilePayloads(promptWith(9), true);
+  expect(filePlusNine).toHaveLength(10);
+  expect(filePlusNine[0]!.name).toMatch(/^codex-context-[0-9a-f]{16}\.txt$/);
+
+  expect(() => chatGptPromptFilePayloads(promptWith(10), true))
+    .toThrow("exceeding the 10-file per-message attachment limit");
 });
 
 test("completed prompts activate the scoped semantic send control", () => {
@@ -252,6 +360,226 @@ test("large read-only context is inserted as contiguous bounded edits before exa
   expect(asserted).toBe(prompt);
 });
 
+test("read-only prompt attachment retries one unsent integrity failure with smaller transactions", async () => {
+  const calls: Array<[string, string?]> = [];
+  let insertionAttempt = 0;
+  const composer = {
+    fill: async (value: string) => { calls.push(["fill", value]); },
+    focus: async () => { calls.push(["focus"]); },
+  };
+  const attachPrompt = (ChatGptBrowserWorker.prototype as unknown as {
+    attachPrompt(
+      page: unknown,
+      prompt: string,
+      localTools: boolean,
+      captureDiagnostic?: (checkpoint: string) => Promise<void>,
+    ): Promise<void>;
+  }).attachPrompt;
+  await attachPrompt.call({
+    activeComposer: async () => composer,
+    insertPromptText: async (
+      _page: unknown,
+      _text: string,
+      _signal?: AbortSignal,
+      chunkChars?: number,
+    ) => {
+      insertionAttempt += 1;
+      calls.push(["insertAttempt", String(chunkChars)]);
+      if (insertionAttempt === 1) {
+        throw new ChatGptPromptAttachmentIntegrityError("simulated Lexical corruption");
+      }
+    },
+    assertPromptAttached: async () => { calls.push(["assert"]); },
+  }, {}, "prompt", false, async checkpoint => { calls.push(["diagnostic", checkpoint]); });
+
+  expect(calls).toEqual([
+    ["fill", ""],
+    ["focus"],
+    ["insertAttempt", String(CHATGPT_PROMPT_INSERT_CHUNK_CHARS)],
+    ["diagnostic", "prompt-attachment-retry-smaller-chunks"],
+    ["fill", ""],
+    ["focus"],
+    ["insertAttempt", "8000"],
+    ["assert"],
+  ]);
+});
+test("tool-capable prompt attachment retries one unsent integrity failure with smaller transactions", async () => {
+  const calls: Array<[string, string?]> = [];
+  let insertionAttempt = 0;
+  const composer = {
+    fill: async (value: string) => { calls.push(["fill", value]); },
+    focus: async () => { calls.push(["focus"]); },
+  };
+  const page = {
+    keyboard: {
+      press: async (key: string) => { calls.push(["press", key]); },
+    },
+  };
+  const attachPrompt = (ChatGptBrowserWorker.prototype as unknown as {
+    attachPrompt(
+      page: unknown,
+      prompt: string,
+      localTools: boolean,
+      captureDiagnostic?: (checkpoint: string) => Promise<void>,
+    ): Promise<void>;
+  }).attachPrompt;
+
+  await attachPrompt.call({
+    activeComposer: async () => {
+      calls.push(["activeComposer"]);
+      return composer;
+    },
+    selectConnector: async () => {
+      calls.push(["selectConnector"]);
+      return composer;
+    },
+    insertPromptText: async (
+      _page: unknown,
+      text: string,
+      _signal?: AbortSignal,
+      chunkChars?: number,
+    ) => {
+      insertionAttempt += 1;
+      calls.push(["insertAttempt", `${chunkChars}:${text}`]);
+      if (insertionAttempt === 1) {
+        throw new ChatGptPromptAttachmentIntegrityError("simulated dropped Lexical transaction");
+      }
+    },
+    assertPromptAttached: async (
+      _page: unknown,
+      prompt: string,
+    ) => { calls.push(["assert", prompt]); },
+  }, page, "prompt", true, async checkpoint => { calls.push(["diagnostic", checkpoint]); });
+
+  expect(calls).toEqual([
+    ["selectConnector"],
+    ["focus"],
+    ["press", CHATGPT_COMPOSER_DOCUMENT_END_KEY],
+    ["insertAttempt", `${CHATGPT_PROMPT_INSERT_CHUNK_CHARS}: prompt`],
+    ["diagnostic", "prompt-attachment-retry-smaller-chunks"],
+    ["activeComposer"],
+    ["fill", ""],
+    ["selectConnector"],
+    ["focus"],
+    ["press", CHATGPT_COMPOSER_DOCUMENT_END_KEY],
+    ["insertAttempt", "8000: prompt"],
+    ["assert", "prompt"],
+  ]);
+});
+
+test("tool-capable prompt attachment reaches a final 4k unsent retry when 16k and 8k both fail", async () => {
+  const calls: Array<[string, string?]> = [];
+  let insertionAttempt = 0;
+  const composer = {
+    fill: async (value: string) => { calls.push(["fill", value]); },
+    focus: async () => { calls.push(["focus"]); },
+  };
+  const page = {
+    keyboard: {
+      press: async (key: string) => { calls.push(["press", key]); },
+    },
+  };
+  const attachPrompt = (ChatGptBrowserWorker.prototype as unknown as {
+    attachPrompt(
+      page: unknown,
+      prompt: string,
+      localTools: boolean,
+      captureDiagnostic?: (checkpoint: string) => Promise<void>,
+    ): Promise<void>;
+  }).attachPrompt;
+
+  await attachPrompt.call({
+    activeComposer: async () => composer,
+    selectConnector: async () => composer,
+    insertPromptText: async (
+      _page: unknown,
+      _text: string,
+      _signal?: AbortSignal,
+      chunkChars?: number,
+    ) => {
+      insertionAttempt += 1;
+      calls.push(["insertAttempt", String(chunkChars)]);
+      if (insertionAttempt < 3) {
+        throw new ChatGptPromptAttachmentIntegrityError(`simulated failure ${insertionAttempt}`);
+      }
+    },
+    assertPromptAttached: async () => { calls.push(["assert"]); },
+  }, page, "prompt", true, async checkpoint => { calls.push(["diagnostic", checkpoint]); });
+
+  expect(calls.filter(call => call[0] === "insertAttempt")).toEqual([
+    ["insertAttempt", String(CHATGPT_PROMPT_INSERT_CHUNK_CHARS)],
+    ["insertAttempt", "8000"],
+    ["insertAttempt", "4000"],
+  ]);
+  expect(calls.filter(call => call[0] === "diagnostic")).toEqual([
+    ["diagnostic", "prompt-attachment-retry-smaller-chunks"],
+    ["diagnostic", "prompt-attachment-retry-smaller-chunks"],
+  ]);
+  expect(calls.filter(call => call[0] === "fill")).toEqual([
+    ["fill", ""],
+    ["fill", ""],
+  ]);
+  expect(calls.filter(call => call[0] === "assert")).toEqual([["assert"]]);
+});
+
+test("tool-capable prompt attachment reaches a final 2k unsent retry after 16k, 8k, and 4k integrity failures", async () => {
+  const calls: Array<[string, string?]> = [];
+  let insertionAttempt = 0;
+  const composer = {
+    fill: async (value: string) => { calls.push(["fill", value]); },
+    focus: async () => { calls.push(["focus"]); },
+  };
+  const page = {
+    keyboard: {
+      press: async (key: string) => { calls.push(["press", key]); },
+    },
+  };
+  const attachPrompt = (ChatGptBrowserWorker.prototype as unknown as {
+    attachPrompt(
+      page: unknown,
+      prompt: string,
+      localTools: boolean,
+      captureDiagnostic?: (checkpoint: string) => Promise<void>,
+    ): Promise<void>;
+  }).attachPrompt;
+
+  await attachPrompt.call({
+    activeComposer: async () => composer,
+    selectConnector: async () => composer,
+    insertPromptText: async (
+      _page: unknown,
+      _text: string,
+      _signal?: AbortSignal,
+      chunkChars?: number,
+    ) => {
+      insertionAttempt += 1;
+      calls.push(["insertAttempt", String(chunkChars)]);
+      if (insertionAttempt < 4) {
+        throw new ChatGptPromptAttachmentIntegrityError(`simulated failure ${insertionAttempt}`);
+      }
+    },
+    assertPromptAttached: async () => { calls.push(["assert"]); },
+  }, page, "prompt", true, async checkpoint => { calls.push(["diagnostic", checkpoint]); });
+
+  expect(calls.filter(call => call[0] === "insertAttempt")).toEqual([
+    ["insertAttempt", String(CHATGPT_PROMPT_INSERT_CHUNK_CHARS)],
+    ["insertAttempt", "8000"],
+    ["insertAttempt", "4000"],
+    ["insertAttempt", "2000"],
+  ]);
+  expect(calls.filter(call => call[0] === "diagnostic")).toEqual([
+    ["diagnostic", "prompt-attachment-retry-smaller-chunks"],
+    ["diagnostic", "prompt-attachment-retry-smaller-chunks"],
+    ["diagnostic", "prompt-attachment-retry-smaller-chunks"],
+  ]);
+  expect(calls.filter(call => call[0] === "fill")).toEqual([
+    ["fill", ""],
+    ["fill", ""],
+    ["fill", ""],
+  ]);
+  expect(calls.filter(call => call[0] === "assert")).toEqual([["assert"]]);
+});
+
 test("multi-chunk prompt insertion repairs a drifted Lexical caret after each exact prefix", async () => {
   const prompt = "a".repeat(CHATGPT_PROMPT_INSERT_CHUNK_CHARS)
     + "b".repeat(457);
@@ -292,7 +620,7 @@ test("multi-chunk prompt insertion repairs a drifted Lexical caret after each ex
   ]);
 });
 
-test("the real compaction envelope survives a simulated 16-unit caret drift at its 100k boundary", async () => {
+test("the real compaction envelope survives simulated caret drift across bounded transactions", async () => {
   const compact: CodexParsedRequest = {
     modelId: CHATGPT_WEB_MODEL_ID,
     context: {
@@ -313,8 +641,8 @@ test("the real compaction envelope survives a simulated 16-unit caret drift at i
     compact,
     { localToolsEnabled: false, solAvailable: true, proAvailable: true },
   );
-  expect(compiled.text.length).toBeGreaterThan(CHATGPT_PROMPT_INSERT_CHUNK_CHARS);
-  expect(compiled.text.length).toBeLessThan(CHATGPT_PROMPT_INSERT_CHUNK_CHARS * 2);
+  expect(CHATGPT_PROMPT_INSERT_CHUNK_CHARS).toBe(16_000);
+  expect(compiled.text.length).toBeGreaterThan(CHATGPT_PROMPT_INSERT_CHUNK_CHARS * 2);
 
   let attached = "";
   let caret = 0;
@@ -834,16 +1162,29 @@ function dialogPage(text: string): { page: Page; pressed: string[] } {
 }
 
 test("the known ChatGPT rate-limit dialog is acknowledged and returns a structured 429", async () => {
+  resetChatGptRateLimitCooldown();
   const fixture = dialogPage("Too many requests. You're making requests too quickly.");
 
-  await expect(throwIfChatGptRateLimitDialog(fixture.page)).rejects.toMatchObject({
-    name: "ChatGptWebAdapterError",
-    status: 429,
-    errorType: "rate_limit_error",
-    code: "rate_limit_exceeded",
-    retryable: true,
-  });
-  expect(fixture.pressed).toEqual(["Enter"]);
+  try {
+    await expect(throwIfChatGptRateLimitDialog(fixture.page)).rejects.toMatchObject({
+      name: "ChatGptWebAdapterError",
+      status: 429,
+      errorType: "rate_limit_error",
+      code: "rate_limit_exceeded",
+      retryable: true,
+    });
+    expect(fixture.pressed).toEqual(["Enter"]);
+  } finally {
+    resetChatGptRateLimitCooldown();
+  }
+});
+test("ChatGPT rate-limit backoff escalates and caps deterministically", () => {
+  expect(chatGptRateLimitBackoffMs(0, () => 0)).toBe(60_000);
+  expect(chatGptRateLimitBackoffMs(1, () => 0)).toBe(120_000);
+  expect(chatGptRateLimitBackoffMs(2, () => 0)).toBe(240_000);
+  expect(chatGptRateLimitBackoffMs(3, () => 0)).toBe(300_000);
+  expect(chatGptRateLimitBackoffMs(99, () => 1)).toBe(300_000);
+  expect(chatGptRateLimitBackoffMs(0, () => 1)).toBe(65_000);
 });
 
 test("unrelated ChatGPT dialogs are left untouched", async () => {
@@ -1399,6 +1740,19 @@ test("browser send accepts only conclusive ChatGPT submission evidence", () => {
   expect(chatGptSubmissionEvidence({ ...idle, generationRunning: true })).toBe("generation_running");
   expect(workerSource).toContain("waitForSubmissionAccepted");
   expect(workerSource).not.toContain("userTurns.nth(initialUserTurnCount).waitFor");
+  const acceptanceStart = workerSource.indexOf("private async waitForSubmissionAccepted");
+  const acceptanceEnd = workerSource.indexOf("private async attachedPromptText", acceptanceStart);
+  const acceptanceSource = workerSource.slice(acceptanceStart, acceptanceEnd);
+  const evidenceReturn = acceptanceSource.indexOf("if (evidence) return evidence");
+  const rateLimitGuard = acceptanceSource.indexOf("throwIfChatGptRateLimitDialog(page)");
+  expect(evidenceReturn).toBeGreaterThan(-1);
+  expect(rateLimitGuard).toBeGreaterThan(evidenceReturn);
+  const turnStart = workerSource.indexOf("private async runBrowserTurn");
+  const prepare = workerSource.indexOf("const prepared = await turn.prepare()", turnStart);
+  const cooldown = workerSource.indexOf("waitForChatGptRateLimitCooldown(turn.abortSignal, turn.onHeartbeat)", turnStart);
+  expect(cooldown).toBeGreaterThan(turnStart);
+  expect(prepare).toBeGreaterThan(cooldown);
+  expect(workerSource).toContain("resetChatGptRateLimitCooldown()");
 });
 
 test("visible reasoning keeps the browser turn healthy before final assistant markdown exists", () => {
@@ -1411,4 +1765,28 @@ test("visible reasoning keeps the browser turn healthy before final assistant ma
   };
   expect(health.update(reasoning, 1_000)).toBeUndefined();
   expect(health.update(reasoning, 10_000)).toBeUndefined();
+});
+
+test("accepted ChatGPT response stalls fail closed without resending the browser prompt", () => {
+  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
+
+  expect(workerSource).toContain("CHATGPT_RESPONSE_IDLE_TIMEOUT_MS = 10 * 60_000");
+
+  const accepted = workerSource.indexOf('await diagnostics.capture(page, "send-accepted")');
+  const completed = workerSource.indexOf('await diagnostics.capture(page, "turn-completed")', accepted);
+
+  expect(accepted).toBeGreaterThan(-1);
+  expect(completed).toBeGreaterThan(accepted);
+
+  const responseLoop = workerSource.slice(accepted, completed);
+
+  expect(responseLoop).toContain("lastResponseProgressAt");
+  expect(responseLoop).toContain("lastResponseProgressSignature");
+  expect(responseLoop).toContain('"response-stalled-timeout"');
+  expect(responseLoop).toContain('code: "browser_response_stalled"');
+  expect(responseLoop).toContain("retryable: false");
+  expect(responseLoop).toContain('stop.press("Enter")');
+
+  // Send has already succeeded before this region; a stalled accepted request must never be sent again.
+  expect(responseLoop).not.toContain('sendButton.press("Enter")');
 });

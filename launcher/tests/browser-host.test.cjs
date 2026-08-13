@@ -510,6 +510,115 @@ test("system-browser storage transfer fails closed when only partitioned cookies
   );
 });
 
+test("system-browser login storage bootstrap permits only same-origin ChatGPT auth redirects", async () => {
+  const calls = [];
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    systemBrowserLoginStorageBootstrap: true,
+    openLogin: async () => calls.push("open-login"),
+    logger: {
+      info: (event, detail) => calls.push(["info", event, detail]),
+      error: (event, detail) => calls.push(["error", event, detail]),
+    },
+  });
+
+  assert.equal(
+    BrowserHost.prototype.routeAuthenticationToSystemBrowser.call(
+      fixture,
+      "https://chatgpt.com/auth/login?next=%2F%3Ftemporary-chat%3Dtrue",
+    ),
+    false,
+  );
+  assert.equal(calls.some((call) => call === "open-login"), false);
+  assert.ok(calls.some((call) => Array.isArray(call)
+    && call[0] === "info"
+    && call[1] === "browser.system_login_storage_bootstrap_redirect"
+    && call[2]?.pathname === "/auth/login"));
+
+  assert.equal(
+    BrowserHost.prototype.routeAuthenticationToSystemBrowser.call(
+      fixture,
+      "https://accounts.google.com/o/oauth2/v2/auth",
+    ),
+    true,
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.filter((call) => call === "open-login").length, 1);
+
+  fixture.systemBrowserLoginStorageBootstrap = false;
+  assert.equal(
+    BrowserHost.prototype.routeAuthenticationToSystemBrowser.call(
+      fixture,
+      "https://chatgpt.com/login",
+    ),
+    true,
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.filter((call) => call === "open-login").length, 2);
+});
+
+test("system-browser storage bootstrap remains active through authenticated Electron import", async () => {
+  const calls = [];
+  let loadCount = 0;
+  const browserSession = {
+    clearStorageData: async () => calls.push("clear"),
+    flushStorageData: () => calls.push("flush-storage"),
+    cookies: {
+      set: async () => calls.push("cookie"),
+      flushStore: async () => calls.push("flush-cookies"),
+    },
+  };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    state: { authenticated: false },
+    systemBrowserLoginStorageBootstrap: false,
+    turnTabs: new Map(),
+    view: {
+      webContents: {
+        isDestroyed: () => false,
+        session: browserSession,
+        loadURL: async () => {
+          loadCount += 1;
+          calls.push(["load", loadCount, fixture.systemBrowserLoginStorageBootstrap]);
+        },
+        executeJavaScript: async () => calls.push(["script", fixture.systemBrowserLoginStorageBootstrap]),
+      },
+    },
+    waitForAuthenticated: async () => ({ authenticated: true }),
+    persistSession: async () => {},
+    activateHomeSurface() {},
+    show() {},
+    logger: { info() {} },
+  });
+  const transfer = {
+    storageState: {
+      cookies: [{
+        name: "session",
+        value: "secret-session",
+        domain: ".chatgpt.com",
+        path: "/",
+        expires: -1,
+        httpOnly: true,
+        secure: true,
+        sameSite: "Lax",
+      }],
+      origins: [{
+        origin: "https://chatgpt.com",
+        localStorage: [{ name: "bootstrap-key", value: "bootstrap-value" }],
+      }],
+    },
+    cleanup: async () => calls.push("cleanup"),
+  };
+
+  await BrowserHost.prototype.installSystemBrowserLogin.call(fixture, transfer);
+
+  assert.deepEqual(
+    calls.filter((call) => Array.isArray(call) && call[0] === "load"),
+    [["load", 1, false], ["load", 2, true], ["load", 3, true]],
+  );
+  assert.ok(calls.some((call) => Array.isArray(call) && call[0] === "script" && call[1] === true));
+  assert.equal(fixture.systemBrowserLoginStorageBootstrap, false);
+  assert.equal(calls.at(-1), "cleanup");
+});
+
 test("system-browser login proves the Electron composer and cleans transfer state", async () => {
   const calls = [];
   const browserSession = {

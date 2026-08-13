@@ -55,6 +55,17 @@ const LOGIN_COMPLETION_TIMEOUT_MS = 10 * 60_000;
 const LOGIN_POLL_INTERVAL_MS = 100;
 const MAX_DEVTOOLS_VERSION_BYTES = 64 * 1024;
 
+const CHATGPT_AUTH_SESSION_COOKIE_NAME = /^(?:__Secure-)?(?:next-auth|authjs)\.session-token(?:\.\d+)?$/;
+
+export function isChatGptAuthSessionCookieName(name: string): boolean {
+  return CHATGPT_AUTH_SESSION_COOKIE_NAME.test(name);
+}
+
+async function hasChatGptAuthSessionCookie(context: BrowserContext): Promise<boolean> {
+  const cookies = await context.cookies([CHATGPT_TEMPORARY_CHAT_URL]).catch(() => []);
+  return cookies.some(cookie => isChatGptAuthSessionCookieName(cookie.name) && cookie.value.length > 0);
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise(resolveDelay => setTimeout(resolveDelay, ms));
 }
@@ -186,7 +197,7 @@ async function waitForAuthenticatedTemporaryChat(
   while (Date.now() < deadline) {
     for (const page of context.pages()) {
       if (page.isClosed()) continue;
-      if (await isAuthenticatedTemporaryChatPage(page)) return page;
+      if (await isAuthenticatedTemporaryChatPage(page) && await hasChatGptAuthSessionCookie(context)) return page;
     }
     const exited = await Promise.race([
       browserExit,

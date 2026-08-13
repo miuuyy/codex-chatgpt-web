@@ -294,6 +294,10 @@ class BrowserHost {
     this.selectedTabId = "home";
     this.manualOperation = null;
     this.loginOperation = null;
+    // During storage-state import, the first navigation may legitimately redirect to ChatGPT's
+    // same-origin /auth surface before captured localStorage has been restored. Allow only that
+    // bootstrap redirect; external identity-provider navigation remains routed to system Chrome.
+    this.systemBrowserLoginStorageBootstrap = false;
     this.cloudflareChallengeRecovery = null;
     this.cloudflareChallengeRecoveryArmed = true;
     this.cloudflareChallengeRecoveryDelayMs = CLOUDFLARE_CHALLENGE_RECOVERY_DELAY_MS;
@@ -590,6 +594,16 @@ class BrowserHost {
 
   routeAuthenticationToSystemBrowser(url) {
     if (!allowedAuthUrl(url)) return false;
+    if (this.systemBrowserLoginStorageBootstrap) {
+      let parsed;
+      try { parsed = new URL(url); } catch {}
+      if (parsed?.origin === CHATGPT_ORIGIN) {
+        this.logger.info("browser.system_login_storage_bootstrap_redirect", {
+          pathname: parsed.pathname,
+        });
+        return false;
+      }
+    }
     void this.openLogin({ force: true }).catch((error) => {
       this.logger.error("browser.system_login_failed", {
         message: error instanceof Error ? error.message : String(error),
@@ -1190,18 +1204,31 @@ class BrowserHost {
         for (const cookie of state.cookies) await contents.session.cookies.set(cookie);
         contents.session.flushStorageData();
         await contents.session.cookies.flushStore();
-        await contents.loadURL(TEMPORARY_CHAT_URL);
         if (state.localStorage.length > 0) {
-          const entries = javaScriptLiteral(state.localStorage);
-          await contents.executeJavaScript(`(() => {
-            if (location.origin !== ${JSON.stringify(CHATGPT_ORIGIN)}) {
-              throw new Error("ChatGPT storage import reached an unexpected origin");
-            }
-            for (const entry of ${entries}) localStorage.setItem(entry.name, entry.value);
-          })()`, true);
+          // A newly captured account can redirect the first Electron navigation to ChatGPT /auth
+          // until its captured localStorage is restored. The normal navigation guard used to
+          // prevent that same-origin redirect, which cancelled loadURL with ERR_FAILED (-2) before
+          // the storage import could run. Permit only the bootstrap redirect while localStorage is
+          // restored, then immediately restore normal auth routing before the authoritative reload.
+          this.systemBrowserLoginStorageBootstrap = true;
+          try {
+            await contents.loadURL(TEMPORARY_CHAT_URL);
+            const entries = javaScriptLiteral(state.localStorage);
+            await contents.executeJavaScript(`(() => {
+              if (location.origin !== ${JSON.stringify(CHATGPT_ORIGIN)}) {
+                throw new Error("ChatGPT storage import reached an unexpected origin");
+              }
+              for (const entry of ${entries}) localStorage.setItem(entry.name, entry.value);
+            })()`, true);
+            await contents.loadURL(TEMPORARY_CHAT_URL);
+            browser = await this.waitForAuthenticated(60_000);
+          } finally {
+            this.systemBrowserLoginStorageBootstrap = false;
+          }
+        } else {
           await contents.loadURL(TEMPORARY_CHAT_URL);
+          browser = await this.waitForAuthenticated(60_000);
         }
-        browser = await this.waitForAuthenticated(60_000);
         if (browser?.authenticated !== true) {
           throw new Error("Imported ChatGPT session did not produce an authenticated Electron composer");
         }

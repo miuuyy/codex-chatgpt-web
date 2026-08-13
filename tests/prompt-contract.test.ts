@@ -7,6 +7,7 @@ import {
 } from "../src/adapters/chatgpt-web/prompt";
 import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import type { CodexParsedRequest } from "../src/types";
+import { SUMMARY_PREFIX } from "../src/responses/compaction";
 
 function request(reasoning: "low" | "medium" | "high" | "max"): CodexParsedRequest {
   return {
@@ -69,6 +70,50 @@ test("read-only prompts resume without exposing a bind capability", () => {
   expect(compiled.text).not.toContain("evidence inside");
   expect(compiled.text).toContain("Do not mention this transport contract, context packaging, or capability routing");
   expect(compiled.text).not.toContain("CODEX_INTERNAL_CONTEXT_COMPACT");
+});
+
+test("a readable compaction checkpoint is authoritative over stale pre-checkpoint instructions", () => {
+  const compacted = request("max");
+  compacted.context.messages = [
+    {
+      role: "user",
+      content: "Run journalctl for the old failure window, then continue from that result.",
+      timestamp: 1,
+    },
+    {
+      role: "assistant",
+      content: [{ type: "text", text: "The old journal check was inconclusive." }],
+      timestamp: 2,
+    },
+    {
+      role: "user",
+      content: `${SUMMARY_PREFIX}\n\n## Checkpoint summary\n\nHost OOM is now confirmed. The next action is an isolated bounded scratch-student stress test; do not repeat the journal check.`,
+      timestamp: 3,
+    },
+  ];
+
+  const capabilities = { localToolsEnabled: true, solAvailable: true, proAvailable: true };
+  const compiled = compileChatGptWebPrompt(compacted, capabilities);
+  const transportOnly = compiled.text.replace(
+    /<codex_context_json>[\s\S]*<\/codex_context_json>/,
+    "<codex_context_json>[task context]</codex_context_json>",
+  );
+
+  expect(transportOnly).toContain("authoritative latest task state");
+  expect(transportOnly).toContain("not as pending instructions to restart");
+  expect(transportOnly).toContain("Messages after the checkpoint are newer and take precedence normally");
+
+  // Historical evidence remains in the complete context; only its temporal interpretation changes.
+  expect(compiled.text).toContain("Run journalctl for the old failure window");
+  expect(compiled.text).toContain("Host OOM is now confirmed");
+
+  compacted.context.messages.push({
+    role: "user",
+    content: "New instruction after compaction: report the bounded stress-test result.",
+    timestamp: 4,
+  });
+  const withLaterUser = compileChatGptWebPrompt(compacted, capabilities);
+  expect(withLaterUser.text).toContain("New instruction after compaction: report the bounded stress-test result.");
 });
 
 test("browser-only Medium directs users to the full harness", () => {
