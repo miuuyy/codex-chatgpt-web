@@ -960,6 +960,8 @@ test("effort selection handles the known ChatGPT rate-limit dialog before keyboa
 
   expect(workerSource).toContain("Too many requests");
   expect(workerSource).toContain("making requests too quickly");
+  expect(workerSource).toContain("リクエストが多すぎます");
+  expect(workerSource).toContain("リクエストの頻度が高すぎます");
   expect(guard).toBeGreaterThan(-1);
   expect(activation).toBeGreaterThan(guard);
   expect(selectionSource).not.toContain("currentEffort.click(");
@@ -968,12 +970,13 @@ test("effort selection handles the known ChatGPT rate-limit dialog before keyboa
   expect(selectionSource).not.toContain("is unavailable");
 });
 
-function dialogPage(text: string): { page: Page; pressed: string[] } {
+function dialogPage(text: string, buttonName = "Got it"): { page: Page; pressed: string[] } {
   let matches = true;
+  let buttonMatches = true;
   const pressed: string[] = [];
   const button = {
     last: () => button,
-    isVisible: async () => matches,
+    isVisible: async () => matches && buttonMatches,
     press: async (key: string) => { pressed.push(key); },
   };
   const dialog = {
@@ -983,7 +986,12 @@ function dialogPage(text: string): { page: Page; pressed: string[] } {
     },
     last: () => dialog,
     isVisible: async () => matches,
-    getByRole: () => button,
+    getByRole: (_role: string, options?: { name?: string | RegExp }) => {
+      const name = options?.name;
+      buttonMatches = name === undefined
+        || (typeof name === "string" ? buttonName === name : name.test(buttonName));
+      return button;
+    },
   };
   return {
     page: {
@@ -996,6 +1004,22 @@ function dialogPage(text: string): { page: Page; pressed: string[] } {
 
 test("the known ChatGPT rate-limit dialog is acknowledged and returns a structured 429", async () => {
   const fixture = dialogPage("Too many requests. You're making requests too quickly.");
+
+  await expect(throwIfChatGptRateLimitDialog(fixture.page)).rejects.toMatchObject({
+    name: "ChatGptWebAdapterError",
+    status: 429,
+    errorType: "rate_limit_error",
+    code: "rate_limit_exceeded",
+    retryable: true,
+  });
+  expect(fixture.pressed).toEqual(["Enter"]);
+});
+
+test("the Japanese ChatGPT rate-limit dialog is acknowledged and returns a structured 429", async () => {
+  const fixture = dialogPage(
+    "リクエストが多すぎます リクエストの頻度が高すぎます。お客様のデータを保護するため、会話へのアクセスを一時的に制限しています。 数分待ってから、もう一度お試しください。",
+    "了解",
+  );
 
   await expect(throwIfChatGptRateLimitDialog(fixture.page)).rejects.toMatchObject({
     name: "ChatGptWebAdapterError",
