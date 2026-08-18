@@ -258,6 +258,32 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(() => chatGptTurnExecutionKey(request)).toThrow("conflicts with native Codex turn_id");
   });
 
+  test("accepts a retained historical user revision after native compaction assigns a fresh turn id", () => {
+    const request = rawWireRequest(environmentXml);
+    const originalExecutionKey = chatGptTurnExecutionKey(request);
+    const raw = request._rawBody as {
+      client_metadata: { "x-codex-turn-metadata": string };
+      input: Array<Record<string, unknown>>;
+    };
+    const resumedTurnId = "turn_after_compaction_456";
+    raw.client_metadata["x-codex-turn-metadata"] = JSON.stringify({
+      thread_id: "thread_test_123",
+      turn_id: resumedTurnId,
+      sandbox: "none",
+      workspaces: { [tempRoot]: { has_changes: true } },
+    });
+    raw.input[0]!.internal_chat_message_metadata_passthrough = { turn_id: resumedTurnId };
+    raw.input.push({
+      type: "compaction",
+      id: "cmp_test_after_compaction",
+      encrypted_content: "ocx1:test-summary",
+    });
+
+    expect(() => chatGptTurnExecutionKey(request)).not.toThrow();
+    expect(chatGptTurnExecutionKey(request)).not.toBe(originalExecutionKey);
+    expect(extractChatGptTurnEnvironment(request).cwd).toBe(tempRoot);
+  });
+
   test("starts a tool-capable browser turn across a same-turn developer gap", async () => {
     const socketPath = brokerTestEndpoint(`cgw-h3-canonical-${process.pid}-${Date.now()}`);
     const provider: CodexProviderConfig = {
@@ -1565,12 +1591,29 @@ describe("ChatGPT outer-native harness v4", () => {
       expect(compactionPrompt).toContain('"role":"tool_result"');
 
       const secondRequest = rawWireRequest(environmentXml);
+      const secondRaw = secondRequest._rawBody as {
+        client_metadata: { "x-codex-turn-metadata": string };
+        input: Array<Record<string, unknown>>;
+      };
+      const resumedTurnId = "turn_after_compaction_456";
+      secondRaw.client_metadata["x-codex-turn-metadata"] = JSON.stringify({
+        thread_id: "thread_test_123",
+        turn_id: resumedTurnId,
+        sandbox: "none",
+        workspaces: { [tempRoot]: { has_changes: true } },
+      });
+      secondRaw.input[0]!.internal_chat_message_metadata_passthrough = { turn_id: resumedTurnId };
+      secondRaw.input.push({
+        type: "compaction",
+        id: "cmp_resume_marker",
+        encrypted_content: "ocx1:test-summary",
+      });
       secondRequest.context.messages.push({
         role: "user",
         content: `${SUMMARY_PREFIX}\nThe project was inspected and the pending command completed.`,
         timestamp: 5,
       });
-      ((secondRequest._rawBody as { input: unknown[] }).input).push({
+      secondRaw.input.push({
         type: "message",
         role: "user",
         content: [{ type: "input_text", text: `${SUMMARY_PREFIX}\nThe project was inspected and the pending command completed.` }],
