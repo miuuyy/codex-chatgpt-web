@@ -1,15 +1,15 @@
 {
   "name": "codex-chatgpt-web",
-  "version": "2.1.11",
+  "version": "2.1.12-naakto.1",
   "private": true,
   "description": "A focused local Responses bridge that runs Codex tasks through a user-authenticated ChatGPT web session.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/miuuyy/codex-chatgpt-web.git"
+    "url": "git+https://github.com/naakto14/codex-chatgpt-web.git"
   },
-  "homepage": "https://github.com/miuuyy/codex-chatgpt-web#readme",
+  "homepage": "https://github.com/naakto14/codex-chatgpt-web#readme",
   "bugs": {
-    "url": "https://github.com/miuuyy/codex-chatgpt-web/issues"
+    "url": "https://github.com/naakto14/codex-chatgpt-web/issues"
   },
   "packageManager": "bun@1.3.14",
   "type": "module",

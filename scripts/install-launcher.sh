@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-REPOSITORY="${CODEX_WEB_GPT_REPOSITORY:-miuuyy/codex-chatgpt-web}"
+REPOSITORY="${CODEX_WEB_GPT_REPOSITORY:-naakto14/codex-chatgpt-web}"
 VERSION="${CODEX_WEB_GPT_VERSION:-}"
 OS="$(uname -s)"
 MACHINE="$(uname -m)"

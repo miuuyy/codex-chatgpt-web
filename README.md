@@ -81,13 +81,13 @@ preserving the ChatGPT profile and launcher configuration.
 **macOS or Linux**
 
 ```bash
-curl -fsSL https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.sh | sh
+curl -fsSL https://github.com/naakto14/codex-chatgpt-web/releases/latest/download/install-launcher.sh | sh
 ```
 
 **Windows PowerShell**
 
 ```powershell
-irm https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.ps1 | iex
+irm https://github.com/naakto14/codex-chatgpt-web/releases/latest/download/install-launcher.ps1 | iex
 ```
 
 Then complete the three checks in the app:
@@ -108,7 +108,7 @@ model API key, installed Chrome/Chromium, system Node/Bun, or project-managed br
 **Run from source**
 
 ```bash
-git clone https://github.com/miuuyy/codex-chatgpt-web.git && \
+git clone https://github.com/naakto14/codex-chatgpt-web.git && \
 cd codex-chatgpt-web && \
 bun run app
 ```
