@@ -369,6 +369,32 @@ test("prompt chunks never split a UTF-16 surrogate pair", async () => {
   expect(inserted[1]?.startsWith("😀")).toBeTrue();
 });
 
+test("intermediate prompt chunks keep trailing whitespace for the following native edit", async () => {
+  const prompt = `${"x".repeat(CHATGPT_PROMPT_INSERT_CHUNK_CHARS - 1)}\u00A0 tail`;
+  const inserted: string[] = [];
+  const verifiedPrefixes: string[] = [];
+  const page = {
+    keyboard: {
+      insertText: async (value: string) => { inserted.push(value); },
+    },
+  };
+  const insertPromptText = (ChatGptBrowserWorker.prototype as unknown as {
+    insertPromptText(page: unknown, text: string): Promise<void>;
+  }).insertPromptText;
+
+  await insertPromptText.call({
+    waitForPromptChunkAttached: async (_page: unknown, expected: string) => {
+      verifiedPrefixes.push(expected);
+    },
+    reanchorPromptCaret: async () => {},
+  }, page, prompt);
+
+  expect(inserted.join("")).toBe(prompt);
+  expect(inserted[0]).toBe("x".repeat(CHATGPT_PROMPT_INSERT_CHUNK_CHARS - 1));
+  expect(inserted[1]).toBe("\u00A0 tail");
+  expect(verifiedPrefixes).toEqual(["x".repeat(CHATGPT_PROMPT_INSERT_CHUNK_CHARS - 1)]);
+});
+
 test("prompt insertion stops after its stage is aborted before another native edit", async () => {
   const controller = new AbortController();
   const inserted: string[] = [];

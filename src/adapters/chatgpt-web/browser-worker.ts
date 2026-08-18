@@ -278,6 +278,15 @@ function promptInsertChunkEnd(text: string, offset: number): number {
     && nextCodeUnit >= 0xDC00 && nextCodeUnit <= 0xDFFF) {
     end -= 1;
   }
+  // ChatGPT's Lexical composer can transiently detach trailing whitespace from a large native
+  // Input.insertText edit while it rebuilds the active block. That makes the intermediate prefix
+  // look length-correct after DOM reconstruction but textually different at the chunk boundary.
+  // Keep whitespace in the following edit whenever possible so every verified intermediate chunk
+  // ends on stable text. The final chunk is intentionally left untouched and is still checked by
+  // assertPromptAttached against the complete prompt.
+  const hardEnd = end;
+  while (end > offset && /\s/u.test(text[end - 1] ?? "")) end -= 1;
+  if (end === offset) return hardEnd;
   return end;
 }
 
