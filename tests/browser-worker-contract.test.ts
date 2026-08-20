@@ -173,6 +173,62 @@ test("active composer resolution waits for exactly one visible editor", async ()
   expect(await activeComposer.call({}, page, 500)).toBe(composer);
 });
 
+test("prompt verification accepts Lexical NBSP preservation without weakening other mismatches", async () => {
+  // This reproduces a live macOS compaction failure where a 16k prompt prefix retained the same
+  // UTF-16 length but Lexical exposed alternating NBSP/ASCII spaces inside a long indentation run.
+  const expected = `prefix C\\n${" ".repeat(24)}suffix`;
+  const observed = `prefix C\\n${"\u00A0 ".repeat(12)}suffix`;
+
+  expect(observed.length).toBe(expected.length);
+  expect(observed).not.toBe(expected);
+
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    attachedPromptText: async () => observed,
+  }) as ChatGptBrowserWorker;
+
+  const promptTextEquivalent = (ChatGptBrowserWorker.prototype as unknown as {
+    promptTextEquivalent(expected: string, observed: string): boolean;
+  }).promptTextEquivalent;
+
+  expect(promptTextEquivalent.call(worker, expected, observed)).toBeTrue();
+
+  // The allowance is intentionally directional and restricted to repeated ASCII-space runs.
+  expect(promptTextEquivalent.call(worker, "a  b", "a\u00A0 b")).toBeTrue();
+  expect(promptTextEquivalent.call(worker, "a b", "a\u00A0b")).toBeFalse();
+  expect(promptTextEquivalent.call(worker, "a\u00A0b", "a b")).toBeFalse();
+
+  // Other whitespace and same-length text mutations must remain fail closed.
+  expect(promptTextEquivalent.call(worker, "a b", "a\tb")).toBeFalse();
+  expect(promptTextEquivalent.call(worker, "a\nb", "a b")).toBeFalse();
+  expect(promptTextEquivalent.call(worker, "abc", "abd")).toBeFalse();
+  expect(promptTextEquivalent.call(worker, "abc", "ab")).toBeFalse();
+
+  const waitForPromptChunkAttached = (ChatGptBrowserWorker.prototype as unknown as {
+    waitForPromptChunkAttached(
+      page: Page,
+      expected: string,
+      abortSignal?: AbortSignal,
+    ): Promise<void>;
+  }).waitForPromptChunkAttached;
+
+  const assertPromptAttached = (ChatGptBrowserWorker.prototype as unknown as {
+    assertPromptAttached(
+      page: Page,
+      prompt: string,
+      abortSignal?: AbortSignal,
+    ): Promise<void>;
+  }).assertPromptAttached;
+
+  // Exercise both verification stages so this is not only a unit test of the comparator.
+  await expect(
+    waitForPromptChunkAttached.call(worker, {} as Page, expected),
+  ).resolves.toBeUndefined();
+
+  await expect(
+    assertPromptAttached.call(worker, {} as Page, expected),
+  ).resolves.toBeUndefined();
+});
+
 test("large read-only context is inserted as contiguous bounded edits before exact verification", async () => {
   const prompt = `Act as the model backend for the Codex task encoded below.\n${"x".repeat(819_343)}`;
   const calls: Array<[string, string?]> = [];

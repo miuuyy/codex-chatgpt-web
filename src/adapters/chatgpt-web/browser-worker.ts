@@ -748,6 +748,58 @@ export class ChatGptBrowserWorker {
 
   private constructor(private readonly config: ResolvedBrowserConfig) {}
 
+  /**
+   * Lexical/contenteditable may preserve runs of ASCII spaces by exposing some of them as NBSP
+   * through DOM textContent. Treat that DOM-only representation as equivalent only when the
+   * expected U+0020 belongs to a multi-space run. Single spaces, tabs, newlines, intentional
+   * expected NBSP characters, and every other mutation remain exact and fail closed.
+   */
+  private promptCodeUnitEquivalent(
+    expected: string,
+    observed: string,
+    index: number,
+  ): boolean {
+    const expectedUnit = expected[index];
+    const observedUnit = observed[index];
+
+    if (expectedUnit === observedUnit) return true;
+    if (expectedUnit !== " " || observedUnit !== "\u00A0") return false;
+
+    return expected[index - 1] === " " || expected[index + 1] === " ";
+  }
+
+  private promptTextEquivalent(
+    expected: string,
+    observed: string,
+  ): boolean {
+    if (expected.length !== observed.length) return false;
+
+    for (let index = 0; index < expected.length; index += 1) {
+      if (!this.promptCodeUnitEquivalent(expected, observed, index)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  private promptEquivalentPrefixLength(
+    expected: string,
+    observed: string,
+  ): number {
+    const length = Math.min(expected.length, observed.length);
+
+    let index = 0;
+    while (
+      index < length
+      && this.promptCodeUnitEquivalent(expected, observed, index)
+    ) {
+      index += 1;
+    }
+
+    return index;
+  }
+
   run(turn: BrowserTurn): Promise<string> {
     if (this.activeRuns.has(turn.traceId)) {
       return Promise.reject(new Error(`Duplicate ChatGPT web browser turn: ${turn.traceId}`));
@@ -1166,12 +1218,11 @@ export class ChatGptBrowserWorker {
       throwIfPromptAttachmentAborted(abortSignal);
       observed = await this.attachedPromptText(page);
       throwIfPromptAttachmentAborted(abortSignal);
-      if (observed === prompt) return;
+      if (this.promptTextEquivalent(prompt, observed)) return;
       await new Promise(resolveSleep => setTimeout(resolveSleep, 50));
     }
     throwIfPromptAttachmentAborted(abortSignal);
-    let commonPrefix = 0;
-    while (commonPrefix < prompt.length && prompt[commonPrefix] === observed[commonPrefix]) commonPrefix += 1;
+    const commonPrefix = this.promptEquivalentPrefixLength(prompt, observed);
     throw new Error(
       `ChatGPT composer did not preserve the complete prompt (expectedChars=${prompt.length}, actualChars=${observed.length}, commonPrefixChars=${commonPrefix})`,
     );
@@ -1432,12 +1483,11 @@ export class ChatGptBrowserWorker {
       throwIfPromptAttachmentAborted(abortSignal);
       observed = await this.attachedPromptText(page);
       throwIfPromptAttachmentAborted(abortSignal);
-      if (observed === expected) return;
+      if (this.promptTextEquivalent(expected, observed)) return;
       await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
     } while (Date.now() < deadline);
     throwIfPromptAttachmentAborted(abortSignal);
-    let commonPrefix = 0;
-    while (commonPrefix < expected.length && expected[commonPrefix] === observed[commonPrefix]) commonPrefix += 1;
+    const commonPrefix = this.promptEquivalentPrefixLength(expected, observed);
     throw new Error(
       `ChatGPT composer did not commit a complete prompt insertion chunk`
       + ` (expectedChars=${expected.length}, actualChars=${observed.length}, commonPrefixChars=${commonPrefix})`,
