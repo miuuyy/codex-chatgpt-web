@@ -758,6 +758,7 @@ export class ChatGptBrowserWorker {
     expected: string,
     observed: string,
     index: number,
+    nextExpectedUnit?: string,
   ): boolean {
     const expectedUnit = expected[index];
     const observedUnit = observed[index];
@@ -765,17 +766,20 @@ export class ChatGptBrowserWorker {
     if (expectedUnit === observedUnit) return true;
     if (expectedUnit !== " " || observedUnit !== "\u00A0") return false;
 
-    return expected[index - 1] === " " || expected[index + 1] === " ";
+    return expected[index - 1] === " "
+      || expected[index + 1] === " "
+      || (index === expected.length - 1 && nextExpectedUnit === " ");
   }
 
   private promptTextEquivalent(
     expected: string,
     observed: string,
+    nextExpectedUnit?: string,
   ): boolean {
     if (expected.length !== observed.length) return false;
 
     for (let index = 0; index < expected.length; index += 1) {
-      if (!this.promptCodeUnitEquivalent(expected, observed, index)) {
+      if (!this.promptCodeUnitEquivalent(expected, observed, index, nextExpectedUnit)) {
         return false;
       }
     }
@@ -786,13 +790,14 @@ export class ChatGptBrowserWorker {
   private promptEquivalentPrefixLength(
     expected: string,
     observed: string,
+    nextExpectedUnit?: string,
   ): number {
     const length = Math.min(expected.length, observed.length);
 
     let index = 0;
     while (
       index < length
-      && this.promptCodeUnitEquivalent(expected, observed, index)
+      && this.promptCodeUnitEquivalent(expected, observed, index, nextExpectedUnit)
     ) {
       index += 1;
     }
@@ -1465,7 +1470,7 @@ export class ChatGptBrowserWorker {
         // Lexical can rebuild the active block after an exact commit and move its native selection.
         // Re-anchor only after the verified prefix is stable, before the next irreversible edit.
         const expectedPrefix = text.slice(0, end).trimStart();
-        await this.waitForPromptChunkAttached(page, expectedPrefix, abortSignal);
+        await this.waitForPromptChunkAttached(page, expectedPrefix, abortSignal, text[end]);
         await this.reanchorPromptCaret(page, abortSignal);
       }
       offset = end;
@@ -1476,6 +1481,7 @@ export class ChatGptBrowserWorker {
     page: Page,
     expected: string,
     abortSignal?: AbortSignal,
+    nextExpectedUnit?: string,
   ): Promise<void> {
     const deadline = Date.now() + 20_000;
     let observed = "";
@@ -1483,11 +1489,11 @@ export class ChatGptBrowserWorker {
       throwIfPromptAttachmentAborted(abortSignal);
       observed = await this.attachedPromptText(page);
       throwIfPromptAttachmentAborted(abortSignal);
-      if (this.promptTextEquivalent(expected, observed)) return;
+      if (this.promptTextEquivalent(expected, observed, nextExpectedUnit)) return;
       await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
     } while (Date.now() < deadline);
     throwIfPromptAttachmentAborted(abortSignal);
-    const commonPrefix = this.promptEquivalentPrefixLength(expected, observed);
+    const commonPrefix = this.promptEquivalentPrefixLength(expected, observed, nextExpectedUnit);
     throw new Error(
       `ChatGPT composer did not commit a complete prompt insertion chunk`
       + ` (expectedChars=${expected.length}, actualChars=${observed.length}, commonPrefixChars=${commonPrefix})`,

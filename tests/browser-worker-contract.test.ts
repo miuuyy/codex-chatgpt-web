@@ -187,7 +187,7 @@ test("prompt verification accepts Lexical NBSP preservation without weakening ot
   }) as ChatGptBrowserWorker;
 
   const promptTextEquivalent = (ChatGptBrowserWorker.prototype as unknown as {
-    promptTextEquivalent(expected: string, observed: string): boolean;
+    promptTextEquivalent(expected: string, observed: string, nextExpectedUnit?: string): boolean;
   }).promptTextEquivalent;
 
   expect(promptTextEquivalent.call(worker, expected, observed)).toBeTrue();
@@ -196,6 +196,8 @@ test("prompt verification accepts Lexical NBSP preservation without weakening ot
   expect(promptTextEquivalent.call(worker, "a  b", "a\u00A0 b")).toBeTrue();
   expect(promptTextEquivalent.call(worker, "a b", "a\u00A0b")).toBeFalse();
   expect(promptTextEquivalent.call(worker, "a\u00A0b", "a b")).toBeFalse();
+  expect(promptTextEquivalent.call(worker, "a ", "a\u00A0", " ")).toBeTrue();
+  expect(promptTextEquivalent.call(worker, "a ", "a\u00A0", "x")).toBeFalse();
 
   // Other whitespace and same-length text mutations must remain fail closed.
   expect(promptTextEquivalent.call(worker, "a b", "a\tb")).toBeFalse();
@@ -315,6 +317,42 @@ test("multi-chunk prompt insertion repairs a drifted Lexical caret after each ex
     ["reanchor"],
     ["insertText", "457"],
   ]);
+});
+
+test("multi-chunk prompt insertion accepts Lexical NBSP when a space run crosses the chunk boundary", async () => {
+  const prompt = "a".repeat(CHATGPT_PROMPT_INSERT_CHUNK_CHARS - 1)
+    + "  tail";
+  const inserted: string[] = [];
+  let attached = "";
+  let reanchorCount = 0;
+  const page = {
+    keyboard: {
+      insertText: async (value: string) => {
+        inserted.push(value);
+        attached += value;
+      },
+    },
+  };
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    attachedPromptText: async () => attached.length === CHATGPT_PROMPT_INSERT_CHUNK_CHARS
+      ? `${attached.slice(0, -1)}\u00A0`
+      : attached,
+    reanchorPromptCaret: async () => {
+      reanchorCount += 1;
+    },
+  }) as ChatGptBrowserWorker;
+  const insertPromptText = (ChatGptBrowserWorker.prototype as unknown as {
+    insertPromptText(page: unknown, text: string): Promise<void>;
+  }).insertPromptText;
+
+  await insertPromptText.call(worker, page, prompt);
+
+  expect(inserted).toEqual([
+    prompt.slice(0, CHATGPT_PROMPT_INSERT_CHUNK_CHARS),
+    prompt.slice(CHATGPT_PROMPT_INSERT_CHUNK_CHARS),
+  ]);
+  expect(attached).toBe(prompt);
+  expect(reanchorCount).toBe(1);
 });
 
 test("prompt insertion never sends the six-figure native edit that rewrites the first 100k prefix", async () => {
