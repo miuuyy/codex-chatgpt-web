@@ -1,4 +1,4 @@
-Bun itself is MIT-licensed.
+Bun is MIT-licensed.
 
 ## JavaScriptCore
 

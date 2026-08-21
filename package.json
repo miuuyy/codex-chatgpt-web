@@ -11,7 +11,7 @@
   "bugs": {
     "url": "https://github.com/miuuyy/codex-chatgpt-web/issues"
   },
-  "packageManager": "bun@1.3.14",
+  "packageManager": "bun@1.4.0+34cbb9a40",
   "type": "module",
   "bin": {
     "codex-chatgpt-web": "./src/cli.ts"
@@ -61,7 +61,7 @@
     "typescript": "5.9.3"
   },
   "engines": {
-    "bun": "1.3.14"
+    "bun": ">=1.4.0"
   },
   "overrides": {
     "@hono/node-server": "2.0.12",

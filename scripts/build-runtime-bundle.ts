@@ -9,28 +9,42 @@ const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"))
   packageManager?: string;
 };
 if (packageJson.version !== VERSION) throw new Error("package.json and runtime version are out of sync");
-const packageManagerMatch = /^bun@(\d+\.\d+\.\d+)$/.exec(packageJson.packageManager ?? "");
-if (!packageManagerMatch) throw new Error("package.json must pin an exact Bun packageManager version");
-const expectedBunVersion = packageManagerMatch[1];
-if (Bun.version !== expectedBunVersion) {
-  throw new Error(`Runtime bundle requires Bun ${expectedBunVersion}, received ${Bun.version}`);
+const packageManagerMatch = /^bun@((\d+\.\d+\.\d+)\+[0-9a-f]+)$/.exec(packageJson.packageManager ?? "");
+if (!packageManagerMatch) throw new Error("package.json must pin an exact Bun stable revision");
+const expectedBunRevision = packageManagerMatch[1];
+const expectedBunVersion = packageManagerMatch[2];
+const buildRevision = Bun.spawnSync([process.execPath, "--revision"], { stdout: "pipe", stderr: "pipe" });
+const reportedBuildRevision = buildRevision.stdout.toString().trim();
+if (buildRevision.exitCode !== 0 || Bun.version !== expectedBunVersion || reportedBuildRevision !== expectedBunRevision) {
+  throw new Error(`Runtime bundle requires Bun ${expectedBunRevision}, received ${reportedBuildRevision || Bun.version}`);
 }
 
-function embeddedBunExecutable(): string {
+type EmbeddedBun = { executable: string; version: string; revision: string };
+
+function embeddedBunRuntime(): EmbeddedBun {
   const configured = process.env.CODEX_CHATGPT_WEB_EMBEDDED_BUN;
-  if (!configured) return realpathSync(process.execPath);
-  if (!isAbsolute(configured)) throw new Error("CODEX_CHATGPT_WEB_EMBEDDED_BUN must be an absolute path");
-  const executable = realpathSync(configured);
+  if (configured && !isAbsolute(configured)) {
+    throw new Error("CODEX_CHATGPT_WEB_EMBEDDED_BUN must be an absolute path");
+  }
+  const executable = realpathSync(configured || process.execPath);
   const version = Bun.spawnSync([executable, "--version"], { stdout: "pipe", stderr: "pipe" });
   if (version.exitCode !== 0) {
     throw new Error(`Embedded Bun validation failed: ${version.stderr.toString() || version.stdout.toString()}`);
   }
-  const reported = version.stdout.toString().trim();
-  if (reported !== expectedBunVersion) {
-    throw new Error(`Embedded Bun must be ${expectedBunVersion}, received ${reported || "no version"}`);
+  const revision = Bun.spawnSync([executable, "--revision"], { stdout: "pipe", stderr: "pipe" });
+  if (revision.exitCode !== 0) {
+    throw new Error(`Embedded Bun revision failed: ${revision.stderr.toString() || revision.stdout.toString()}`);
   }
-  return executable;
+  const reportedVersion = version.stdout.toString().trim();
+  const reportedRevision = revision.stdout.toString().trim();
+  if (reportedVersion !== expectedBunVersion || reportedRevision !== expectedBunRevision) {
+    throw new Error(
+      `Embedded Bun must be ${expectedBunRevision}; received ${reportedRevision || reportedVersion || "no version"}`,
+    );
+  }
+  return { executable, version: reportedVersion, revision: reportedRevision };
 }
+const embeddedBun = embeddedBunRuntime();
 const output = resolve(process.argv[2] ?? join(root, "dist", "runtime"));
 const appDir = join(output, "app");
 const runtimeDir = join(output, "runtime");
@@ -79,7 +93,7 @@ if (install.exitCode !== 0) {
   throw new Error(`Runtime dependencies failed to install: ${install.stderr.toString() || install.stdout.toString()}`);
 }
 const bunName = process.platform === "win32" ? "bun.exe" : "bun";
-cpSync(embeddedBunExecutable(), join(runtimeDir, bunName));
+cpSync(embeddedBun.executable, join(runtimeDir, bunName));
 if (process.platform !== "win32") chmodSync(join(runtimeDir, bunName), 0o755);
 
 const launcherName = process.platform === "win32" ? "codex-chatgpt-web.cmd" : "codex-chatgpt-web";
@@ -114,7 +128,7 @@ if (process.platform !== "win32") chmodSync(join(binDir, launcherName), 0o755);
 
 const playwrightPackage = join(appDir, "node_modules", "playwright-core", "package.json");
 const bundleId = createHash("sha256");
-for (const relativePath of ["app/cli.js", "app/browser-helper.cjs", "app/package.json", "app/bun.lock"]) {
+for (const relativePath of ["app/cli.js", "app/browser-helper.cjs", "app/package.json", "app/bun.lock", `runtime/${bunName}`]) {
   bundleId.update(relativePath);
   bundleId.update("\0");
   bundleId.update(readFileSync(join(output, relativePath)));
@@ -124,7 +138,8 @@ writeFileSync(join(output, "manifest.json"), `${JSON.stringify({
   schemaVersion: 1,
   appVersion: VERSION,
   bundleId: bundleId.digest("hex"),
-  bunVersion: Bun.version,
+  bunVersion: embeddedBun.version,
+  bunRevision: embeddedBun.revision,
   platform: process.platform,
   arch: process.arch,
   launcher: `bin/${launcherName}`,

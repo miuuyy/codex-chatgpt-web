@@ -36,7 +36,7 @@ if [ -z "$EXPECTED" ] || [ "$ACTUAL" != "$EXPECTED" ]; then
   exit 1
 fi
 
-for DOC in LICENSE Bun-1.3.14.md THIRD_PARTY_NOTICES.txt; do
+for DOC in LICENSE Bun.md THIRD_PARTY_NOTICES.txt; do
   curl -fsSL "$BASE_URL/$DOC" -o "$TEMP_DIR/$DOC"
   DOC_EXPECTED="$(awk -v asset="$DOC" '$2 == asset { print $1 }' "$TEMP_DIR/checksums.txt")"
   DOC_ACTUAL="$(shasum -a 256 "$TEMP_DIR/$DOC" | awk '{ print $1 }')"
@@ -69,7 +69,7 @@ fi
 ln -sfn "$TARGET_DIR/bin/codex-chatgpt-web" "$BIN_DIR/.codex-chatgpt-web.next"
 mv -f "$BIN_DIR/.codex-chatgpt-web.next" "$BIN_DIR/codex-chatgpt-web"
 rm -f "$BIN_DIR/codex-chatgpt-web.legacy-standalone"
-for DOC in LICENSE Bun-1.3.14.md THIRD_PARTY_NOTICES.txt; do
+for DOC in LICENSE Bun.md THIRD_PARTY_NOTICES.txt; do
   install -m 0644 "$TEMP_DIR/$DOC" "$DOC_DIR/$DOC"
 done
 if [ -e "$BACKUP_DIR" ]; then rm -rf "$BACKUP_DIR"; fi

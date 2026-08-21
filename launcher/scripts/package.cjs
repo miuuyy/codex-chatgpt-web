@@ -1,6 +1,5 @@
 const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 
 const root = path.resolve(__dirname, "..");
@@ -37,9 +36,11 @@ if (target === "--mac" && !env.CSC_LINK && !env.CSC_NAME) {
   builderArgs.push("--config.mac.identity=-");
 }
 
-const staging = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-package-"));
+const staging = path.join(root, "release");
 const artifactsDirectory = path.join(root, "artifacts");
 try {
+  fs.rmSync(staging, { recursive: true, force: true });
+  fs.mkdirSync(staging, { recursive: true });
   const result = spawnSync(executable, [
     ...builderArgs,
     `--config.directories.output=${staging}`,

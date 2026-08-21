@@ -1,11 +1,14 @@
 param(
   [Parameter(Mandatory = $true)][string]$Version,
+  [string]$ReleaseTag = "",
+  [string]$Revision = "",
   [Parameter(Mandatory = $true)][string]$GitHubEnv
 )
 
 $ErrorActionPreference = "Stop"
 $Asset = "bun-windows-x64-baseline.zip"
-$ReleaseBase = "https://github.com/oven-sh/bun/releases/download/bun-v$Version"
+$ReleaseTag = if ($ReleaseTag) { $ReleaseTag } else { "bun-v$Version" }
+$ReleaseBase = "https://github.com/oven-sh/bun/releases/download/$ReleaseTag"
 $Stage = Join-Path $env:RUNNER_TEMP "codex-chatgpt-web-bun-baseline-$Version"
 $Archive = Join-Path $Stage $Asset
 $Checksums = Join-Path $Stage "SHASUMS256.txt"
@@ -30,5 +33,11 @@ $Reported = (& $Bun --version | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or $Reported -ne $Version) {
   throw "Bun baseline version mismatch: expected $Version, received $Reported"
 }
+$ReportedRevision = (& $Bun --revision | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or ($Revision -and $ReportedRevision -ne $Revision)) {
+  throw "Bun baseline revision mismatch: expected $Revision, received $ReportedRevision"
+}
 
 Add-Content -LiteralPath $GitHubEnv -Value "CODEX_CHATGPT_WEB_EMBEDDED_BUN=$Bun" -Encoding UTF8
+Add-Content -LiteralPath $GitHubEnv -Value "CODEX_CHATGPT_WEB_EMBEDDED_BUN_VERSION=$Reported" -Encoding UTF8
+Add-Content -LiteralPath $GitHubEnv -Value "CODEX_CHATGPT_WEB_EMBEDDED_BUN_REVISION=$ReportedRevision" -Encoding UTF8
