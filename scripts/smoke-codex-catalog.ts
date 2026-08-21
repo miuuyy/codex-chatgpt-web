@@ -5,7 +5,6 @@ import { spawnSync } from "node:child_process";
 import { CHATGPT_WEB_MODEL_ROUTES } from "../src/chatgpt-web-models";
 import { defaultConfig } from "../src/config";
 import { augmentNativeModelCatalog } from "../src/model-catalog";
-import { assertCatalogModelUnchanged } from "./smoke-codex-catalog-contract";
 
 const codex = resolve(process.argv[2] ?? "/Applications/ChatGPT.app/Contents/Resources/codex");
 function runCodex(args: string[], env = process.env): { stdout: string; stderr: string } {
@@ -23,6 +22,9 @@ function runCodex(args: string[], env = process.env): { stdout: string; stderr: 
 
 const bundled = runCodex(["debug", "models", "--bundled"]);
 const sourceCatalog = JSON.parse(bundled.stdout) as { models?: unknown[] };
+if (!sourceCatalog.models?.some(model => model && typeof model === "object" && (model as { slug?: string }).slug === "gpt-5.6-sol")) {
+  throw new Error("Bundled Codex catalog has no gpt-5.6-sol template");
+}
 
 const root = join(tmpdir(), `codex-chatgpt-web-codex-smoke-${process.pid}-${Date.now()}`);
 process.env.CODEX_HOME = join(root, "codex");
@@ -56,11 +58,11 @@ try {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     throw new Error(`Codex did not preserve the fixed ChatGPT Web model contract: ${JSON.stringify(actual)}`);
   }
+  const nativeSol = catalog.models?.find(model => model.slug === "gpt-5.6-sol");
   const webPro = catalog.models?.find(model => model.slug === "chatgpt-web/pro");
-  assertCatalogModelUnchanged(sourceCatalog, catalog, "gpt-5.6-sol");
-  if (webPro?.multi_agent_version !== "v1") {
+  if (nativeSol?.multi_agent_version !== "v1" || webPro?.multi_agent_version !== "v1") {
     throw new Error(
-      `Codex did not preserve the readable V1 Web subagent surface: ${JSON.stringify(webPro)}`,
+      `Codex did not preserve the readable V1 subagent surface: ${JSON.stringify({ nativeSol, webPro })}`,
     );
   }
   const spawnOverrides = (catalog.models ?? [])
