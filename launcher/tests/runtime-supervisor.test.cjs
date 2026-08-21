@@ -62,7 +62,6 @@ function launcherConfig(descriptorPath, overrides = {}) {
     headed: true,
     proAvailable: true,
     autoApproveToolCalls: false,
-    useEnhancedWebSessionMode: false,
     controlToken: "runtime-supervisor-control-token-0123456789abcdef",
     runtimeCommand: [process.execPath],
     ...overrides,
@@ -166,7 +165,6 @@ test("launcher runtime validation accepts native Windows paths and a named pipe"
     solAvailable: true,
     proAvailable: true,
     autoApproveToolCalls: false,
-    useEnhancedWebSessionMode: false,
     controlToken: "runtime-supervisor-control-token-0123456789abcdef",
     runtimeCommand: ["C:\\Users\\Example\\.codex-chatgpt-web\\runtime\\bun.exe"],
   };

@@ -29,8 +29,8 @@ module.exports = {
 
   cancelBrowserTurns() {
     return this.run("cancel-browser-turns", ["service", "cancel-turns"], {
-      message: "Cancelling retained browser turns",
-      successMessage: "Retained browser turns cancelled",
+      message: "Cancelling active browser turns",
+      successMessage: "Active browser turns cancelled",
       timeoutMs: 15_000,
     });
   },
