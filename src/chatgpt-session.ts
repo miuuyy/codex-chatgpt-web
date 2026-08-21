@@ -38,6 +38,12 @@ export interface ChatGptEffortSliderState {
   value: number;
 }
 
+export interface ChatGptEffortSliderSnapshot {
+  rawMin: string | null;
+  rawMax: string | null;
+  rawValue: string | null;
+}
+
 function safeIntegerAttribute(value: string | null): number | undefined {
   if (value === null || !/^-?\d+$/.test(value)) return undefined;
   const parsed = Number(value);
@@ -57,6 +63,30 @@ export function parseChatGptEffortSliderState(
   if (optionCount < 1 || optionCount > CHATGPT_EFFORT_SLIDER_MAX_OPTIONS) return undefined;
   if (value < min || value > max) return undefined;
   return { min, max, value };
+}
+
+/**
+ * Read the visible slider attributes in one browser evaluation. ChatGPT can
+ * replace or close the effort popover immediately after Playwright observes it
+ * as visible, so separate locator attribute reads can otherwise wait on a
+ * locator that no longer resolves.
+ */
+export async function visibleChatGptEffortSliderSnapshot(
+  page: Page,
+): Promise<ChatGptEffortSliderSnapshot | undefined> {
+  return await page.evaluate((selector) => {
+    const sliders = Array.from(document.querySelectorAll<HTMLElement>(selector));
+    const slider = sliders.filter((element) => {
+      const style = window.getComputedStyle(element);
+      return style.visibility !== "hidden" && element.getClientRects().length > 0;
+    }).at(-1);
+    if (!slider) return undefined;
+    return {
+      rawMin: slider.getAttribute("aria-valuemin"),
+      rawMax: slider.getAttribute("aria-valuemax"),
+      rawValue: slider.getAttribute("aria-valuenow"),
+    };
+  }, CHATGPT_EFFORT_SLIDER_SELECTOR);
 }
 
 async function anyVisible(locator: Locator): Promise<boolean> {

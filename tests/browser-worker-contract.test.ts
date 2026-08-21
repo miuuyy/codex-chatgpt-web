@@ -923,11 +923,85 @@ test("effort selection uses structural menu and slider indices instead of locali
   expect(sessionSource).not.toContain("data-radix-collection-item");
   expect(workerSource).toContain('getAttribute("aria-checked")');
   expect(workerSource).toContain('getAttribute("aria-expanded")');
-  expect(workerSource).toContain('getAttribute("aria-valuenow")');
+  expect(sessionSource).toContain('getAttribute("aria-valuenow")');
   expect(workerSource).toContain("sliderControl.press(key)");
   expect(workerSource).not.toContain("currentLabel === targetLabel");
   expect(workerSource).not.toContain("chatGptEffortLabelsMatch");
   expect(workerSource).not.toMatch(/getByRole\("button", \{\s*name: "(?:Instant|Medium|High|Extra High|Pro)"/);
+});
+
+test("effort selection reopens a slider popover that closes before its ARIA snapshot", async () => {
+  let effortButtonPresses = 0;
+  let snapshotReads = 0;
+  const neverVisible = (signal?: AbortSignal) => new Promise<void>((_resolve, reject) => {
+    signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+  });
+  const hiddenDialog = {
+    filter() { return this; },
+    last() { return this; },
+    isVisible: async () => false,
+    waitFor: async ({ signal }: { signal?: AbortSignal }) => await neverVisible(signal),
+  };
+  const currentEffort = {
+    last() { return this; },
+    waitFor: async () => undefined,
+    getAttribute: async () => "false",
+    press: async () => { effortButtonPresses += 1; },
+  };
+  const sliderControl = { press: async () => undefined };
+  const effortSlider = {
+    filter() { return this; },
+    last() { return this; },
+    waitFor: async () => undefined,
+    locator: () => sliderControl,
+  };
+  const effortChoice = {
+    waitFor: async ({ signal }: { signal?: AbortSignal }) => await neverVisible(signal),
+  };
+  const effortChoices = {
+    nth: () => effortChoice,
+    count: async () => 0,
+  };
+  const effortMenu = {
+    last() { return this; },
+    isVisible: async () => false,
+    locator: () => effortChoices,
+  };
+  const composerForm = { locator: () => currentEffort };
+  const composer = { locator: () => composerForm };
+  const page = {
+    locator: (selector: string) => {
+      if (selector.includes("composer-intelligence-picker-content")) return effortMenu;
+      if (selector.includes("data-model-reasoning-effort-slider")) return effortSlider;
+      return hiddenDialog;
+    },
+    evaluate: async () => {
+      snapshotReads += 1;
+      return snapshotReads === 1
+        ? undefined
+        : { rawMin: "0", rawMax: "4", rawValue: "2" };
+    },
+    keyboard: { press: async () => undefined },
+  };
+  const selectModelAndEffort = (ChatGptBrowserWorker.prototype as unknown as {
+    selectModelAndEffort(
+      page: unknown,
+      modelId: string,
+      reasoning: string,
+      capabilities: { localToolsEnabled: boolean; solAvailable: boolean; proAvailable: boolean },
+    ): Promise<{ displayLabel: string; uiEffortIndex: number | null }>;
+  }).selectModelAndEffort;
+
+  const mode = await selectModelAndEffort.call({
+    activeComposer: async () => composer,
+  }, page, CHATGPT_WEB_MODEL_ID, "high", {
+    localToolsEnabled: false,
+    solAvailable: true,
+    proAvailable: true,
+  });
+  expect(mode).toMatchObject({ uiEffortIndex: 2 });
+  expect(snapshotReads).toBe(2);
+  expect(effortButtonPresses).toBe(2);
 });
 
 test("effort slider ARIA state fails closed on malformed and unsupported ranges", () => {

@@ -43,6 +43,7 @@ import {
   CHATGPT_USER_TURN_SELECTOR,
   detectChatGptAccountCapabilities,
   parseChatGptEffortSliderState,
+  visibleChatGptEffortSliderSnapshot,
 } from "../../chatgpt-session";
 import { loginVerificationMarkerPath } from "../../browser-login";
 import {
@@ -1026,10 +1027,30 @@ export class ChatGptBrowserWorker {
       waitAbort.abort();
     }
     if (ready === "slider") {
+      const readEffortSliderSnapshot = async () => {
+        const snapshotDeadline = Date.now() + 5_000;
+        let snapshot = await visibleChatGptEffortSliderSnapshot(page);
+        while (!snapshot && Date.now() < snapshotDeadline) {
+          const visible = await effortMenu.isVisible().catch(() => false);
+          const expanded = await currentEffort.getAttribute("aria-expanded").catch(() => null);
+          if (!visible && expanded !== "true") {
+            await throwIfChatGptRateLimitDialog(page);
+            await currentEffort.press("Enter");
+          }
+          await new Promise(resolveSleep => setTimeout(resolveSleep, 50));
+          snapshot = await visibleChatGptEffortSliderSnapshot(page);
+        }
+        if (snapshot) return snapshot;
+        throw new ChatGptWebAdapterError(
+          "ChatGPT effort slider disappeared before its ARIA state could be read",
+          { status: 502, errorType: "server_error", code: "upstream_server_error", retryable: false },
+        );
+      };
+      let sliderSnapshot = await readEffortSliderSnapshot();
       let sliderState = parseChatGptEffortSliderState(
-        await effortSlider.getAttribute("aria-valuemin"),
-        await effortSlider.getAttribute("aria-valuemax"),
-        await effortSlider.getAttribute("aria-valuenow"),
+        sliderSnapshot.rawMin,
+        sliderSnapshot.rawMax,
+        sliderSnapshot.rawValue,
       );
       if (!sliderState) {
         throw new ChatGptWebAdapterError(
@@ -1054,10 +1075,11 @@ export class ChatGptBrowserWorker {
         await sliderControl.press(key);
         const changeDeadline = Date.now() + 5_000;
         do {
+          sliderSnapshot = await readEffortSliderSnapshot();
           sliderState = parseChatGptEffortSliderState(
-            await effortSlider.getAttribute("aria-valuemin"),
-            await effortSlider.getAttribute("aria-valuemax"),
-            await effortSlider.getAttribute("aria-valuenow"),
+            sliderSnapshot.rawMin,
+            sliderSnapshot.rawMax,
+            sliderSnapshot.rawValue,
           );
           if (!sliderState) throw new Error("ChatGPT effort slider lost its semantic ARIA state");
           if (sliderState.value !== previousValue) break;
