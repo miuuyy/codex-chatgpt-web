@@ -111,6 +111,12 @@ test("removes ChatGPT Web item identities before native Codex compaction", async
         encrypted_content: "ocxr1:eyJ0eHQiOiJoaWRkZW4ifQ==",
       },
       {
+        type: "reasoning",
+        id: "rs_55555555555555555555555555555555",
+        summary: [],
+        encrypted_content: "gAAAAABnative-opaque-reasoning",
+      },
+      {
         type: "message",
         id: "msg_22222222222222222222222222222222",
         role: "assistant",
@@ -145,21 +151,29 @@ test("removes ChatGPT Web item identities before native Codex compaction", async
   }, body);
 
   expect(upstreamRequest!.headers.get("content-encoding")).toBeNull();
-  const forwarded = await upstreamRequest!.json() as typeof body;
+  const forwarded = await upstreamRequest!.json() as {
+    previous_response_id?: string;
+    input: Array<Record<string, unknown>>;
+  };
   expect(forwarded).not.toHaveProperty("previous_response_id");
   expect(forwarded.input.every(item => !("id" in item))).toBe(true);
   expect(forwarded.input.some(item => "encrypted_content" in item
     && typeof item.encrypted_content === "string"
     && item.encrypted_content.startsWith("ocxr1:"))).toBe(false);
+  expect(forwarded.input).toContainEqual({
+    type: "reasoning",
+    summary: [],
+    encrypted_content: "gAAAAABnative-opaque-reasoning",
+  });
   expect(forwarded.input[0]).toMatchObject({
     type: "reasoning",
     summary: [{ type: "summary_text", text: "Pro thinking" }],
   });
-  expect(forwarded.input[2]).toMatchObject({
+  expect(forwarded.input[3]).toMatchObject({
     type: "message",
     role: "assistant",
   });
-  expect(forwarded.input[3]).toMatchObject({
+  expect(forwarded.input[4]).toMatchObject({
     type: "function_call",
     call_id: "call_keep_linkage",
   });
