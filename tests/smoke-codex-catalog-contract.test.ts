@@ -1,10 +1,32 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { assertCatalogModelUnchanged } from "../scripts/smoke-codex-catalog-contract";
 
-test("catalog smoke preserves the bundled native model row byte-for-byte", () => {
-  const source = readFileSync(join(import.meta.dir, "..", "scripts", "smoke-codex-catalog.ts"), "utf8");
+const nativeModel = {
+  slug: "gpt-5.6-sol",
+  visibility: "list",
+  supported_in_api: true,
+  supported_reasoning_levels: [{ effort: "high" }],
+};
 
-  expect(source).toContain("JSON.stringify(nativeSol) !== JSON.stringify(sourceNativeSol)");
-  expect(source).not.toContain("nativeSol?.multi_agent_version");
+test("catalog verifier accepts an unchanged native model row", () => {
+  const source = { models: [nativeModel] };
+  const actual = { models: [{ ...nativeModel }] };
+
+  expect(() => assertCatalogModelUnchanged(source, actual, nativeModel.slug)).not.toThrow();
+});
+
+test("catalog verifier rejects a missing native model row", () => {
+  expect(() => assertCatalogModelUnchanged(
+    { models: [nativeModel] },
+    { models: [] },
+    nativeModel.slug,
+  )).toThrow("Integrated Codex catalog has no gpt-5.6-sol model");
+});
+
+test("catalog verifier rejects a mutated native model row", () => {
+  expect(() => assertCatalogModelUnchanged(
+    { models: [nativeModel] },
+    { models: [{ ...nativeModel, multi_agent_version: "v1" }] },
+    nativeModel.slug,
+  )).toThrow("Codex integration changed the bundled gpt-5.6-sol model contract");
 });
