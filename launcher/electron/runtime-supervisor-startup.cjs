@@ -192,6 +192,13 @@ module.exports = {
     if (this.stopping) return;
     const config = this.readConfig();
     if (!config) return;
+    if (config.releaseVersion !== this.app.getVersion()) {
+      const message = `Config requires ${config.releaseVersion}; launcher is ${this.app.getVersion()}`;
+      this.tryWriteState("needs-setup", message);
+      this.logger.warn("runtime.setup_required", { detail: message });
+      this.publishOperation?.({ name: "runtime-recovery", status: "failed", message });
+      return;
+    }
     this.publishOperation?.({ name: "runtime-recovery", status: "running", message: `Restarting ${name}` });
     if (name === "tunnel") await this.startTunnel(config, "runtime-recovery");
     else await this.startDaemon(config);
