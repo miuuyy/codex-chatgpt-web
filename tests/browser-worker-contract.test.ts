@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { Page } from "playwright-core";
-import { CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_PROMPT_INSERT_CHUNK_CHARS, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, chatGptSubmissionEvidence, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_PROMPT_INSERT_CHUNK_CHARS, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, chatGptCurrentResponseTurnIndex, chatGptSubmissionEvidence, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert } from "../src/adapters/chatgpt-web/browser-worker";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
@@ -1264,7 +1264,8 @@ test("submission acceptance stops when its stage is aborted", async () => {
       page: Page,
       userTurns: unknown,
       responseTurns: unknown,
-      responseTurn: unknown,
+      conversationTurns: unknown,
+      initialConversationTurnIds: readonly string[],
       initialUserTurnCount: number,
       initialResponseTurnCount: number,
       signal: AbortSignal,
@@ -1279,6 +1280,7 @@ test("submission acceptance stops when its stage is aborted", async () => {
     {},
     {},
     {},
+    [],
     0,
     0,
     controller.signal,
@@ -1756,6 +1758,69 @@ test("browser send accepts only conclusive ChatGPT submission evidence", () => {
   expect(chatGptSubmissionEvidence({ ...idle, userTurnCount: 2 })).toBe("user_turn");
   expect(chatGptSubmissionEvidence({ ...idle, assistantTurnCount: 3 })).toBe("assistant_turn");
   expect(chatGptSubmissionEvidence({ ...idle, generationRunning: true })).toBe("generation_running");
+});
+
+test("current response identity follows a removed provisional turn to its replacement", () => {
+  const initialTurnIds = ["conversation-turn-old-user", "conversation-turn-old-assistant"];
+  const oldTurns = [
+    { testId: initialTurnIds[0]!, isUser: true, hasResponseEvidence: false },
+    { testId: initialTurnIds[1]!, isUser: false, hasResponseEvidence: true },
+  ];
+  const currentUser = {
+    testId: "conversation-turn-current-user",
+    isUser: true,
+    hasResponseEvidence: false,
+  };
+  const provisional = {
+    testId: "conversation-turn-provisional",
+    isUser: false,
+    hasResponseEvidence: true,
+  };
+
+  expect(chatGptCurrentResponseTurnIndex(
+    [...oldTurns, currentUser, provisional],
+    initialTurnIds,
+  )).toBe(3);
+  expect(chatGptCurrentResponseTurnIndex(
+    [...oldTurns, currentUser],
+    initialTurnIds,
+  )).toBeUndefined();
+  expect(chatGptCurrentResponseTurnIndex(
+    [oldTurns[0]!, {
+      testId: "conversation-turn-old-assistant-replaced",
+      isUser: false,
+      hasResponseEvidence: true,
+    }, currentUser],
+    initialTurnIds,
+  )).toBeUndefined();
+  expect(chatGptCurrentResponseTurnIndex(
+    [...oldTurns, currentUser, {
+      testId: "conversation-turn-generic-wrapper",
+      isUser: false,
+      hasResponseEvidence: false,
+    }],
+    initialTurnIds,
+  )).toBeUndefined();
+  for (const unowned of [
+    { testId: null, isUser: false, hasResponseEvidence: true },
+    { testId: initialTurnIds[1]!, isUser: false, hasResponseEvidence: true },
+    { testId: "conversation-turn-current-user-replacement", isUser: true, hasResponseEvidence: true },
+  ]) {
+    expect(chatGptCurrentResponseTurnIndex(
+      [...oldTurns, currentUser, unowned],
+      initialTurnIds,
+    )).toBeUndefined();
+  }
+
+  const replacement = {
+    testId: "conversation-turn-replacement",
+    isUser: false,
+    hasResponseEvidence: true,
+  };
+  expect(chatGptCurrentResponseTurnIndex(
+    [...oldTurns, currentUser, replacement],
+    initialTurnIds,
+  )).toBe(3);
 });
 
 test("visible reasoning keeps the browser turn healthy before final assistant markdown exists", () => {
