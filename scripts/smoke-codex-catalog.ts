@@ -22,7 +22,10 @@ function runCodex(args: string[], env = process.env): { stdout: string; stderr: 
 
 const bundled = runCodex(["debug", "models", "--bundled"]);
 const sourceCatalog = JSON.parse(bundled.stdout) as { models?: unknown[] };
-if (!sourceCatalog.models?.some(model => model && typeof model === "object" && (model as { slug?: string }).slug === "gpt-5.6-sol")) {
+const sourceNativeSol = sourceCatalog.models?.find(
+  model => model && typeof model === "object" && (model as { slug?: string }).slug === "gpt-5.6-sol",
+);
+if (!sourceNativeSol) {
   throw new Error("Bundled Codex catalog has no gpt-5.6-sol template");
 }
 
@@ -60,9 +63,12 @@ try {
   }
   const nativeSol = catalog.models?.find(model => model.slug === "gpt-5.6-sol");
   const webPro = catalog.models?.find(model => model.slug === "chatgpt-web/pro");
-  if (nativeSol?.multi_agent_version !== "v1" || webPro?.multi_agent_version !== "v1") {
+  if (JSON.stringify(nativeSol) !== JSON.stringify(sourceNativeSol)) {
+    throw new Error("Codex integration changed the bundled gpt-5.6-sol model contract");
+  }
+  if (webPro?.multi_agent_version !== "v1") {
     throw new Error(
-      `Codex did not preserve the readable V1 subagent surface: ${JSON.stringify({ nativeSol, webPro })}`,
+      `Codex did not preserve the readable V1 Web subagent surface: ${JSON.stringify(webPro)}`,
     );
   }
   const spawnOverrides = (catalog.models ?? [])
