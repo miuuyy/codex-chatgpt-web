@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from
 import { basename, dirname, join } from "node:path";
 import { unzipSync } from "fflate";
 import type { AppConfig, TunnelConfig } from "./config";
-import { atomicWriteFile, getConfigDir } from "./config";
+import { atomicWriteFile, getConfigDir, stripUtf8Bom } from "./config";
 import { runCommand, runChecked } from "./process";
 
 const TUNNEL_VERSION = "0.0.10";
@@ -72,7 +72,7 @@ export async function installTunnelClient(): Promise<string> {
   const executable = binaryPath();
   const manifestFile = manifestPath();
   if (existsSync(executable) && existsSync(manifestFile)) {
-    const manifest = JSON.parse(readFileSync(manifestFile, "utf8")) as Partial<TunnelInstallManifest>;
+    const manifest = JSON.parse(stripUtf8Bom(readFileSync(manifestFile, "utf8"))) as Partial<TunnelInstallManifest>;
     const actual = sha256(readFileSync(executable));
     if (manifest.version === 1 && manifest.tunnelClientVersion === TUNNEL_VERSION && manifest.binarySha256 === actual) {
       if (process.platform !== "win32" && (statSync(executable).mode & 0o111) === 0) {

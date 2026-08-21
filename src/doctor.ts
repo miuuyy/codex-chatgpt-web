@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import type { AppConfig } from "./config";
-import { getConfigDir, getConfigPath, loadConfig } from "./config";
+import { getConfigDir, getConfigPath, loadConfig, stripUtf8Bom } from "./config";
 import { join } from "node:path";
 import { inspectCodexIntegration } from "./codex-integration";
 import { browserLoginStateExists, loginVerificationMarkerPath } from "./browser-login";
@@ -36,7 +36,7 @@ function launcherOwnershipError(config: AppConfig, health: Record<string, unknow
   if (!existsSync(path)) return `Launcher runtime ownership marker is missing: ${path}`;
   let state: Record<string, unknown>;
   try {
-    state = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    state = JSON.parse(stripUtf8Bom(readFileSync(path, "utf8"))) as Record<string, unknown>;
   } catch (error) {
     return `Launcher runtime ownership marker is invalid: ${error instanceof Error ? error.message : String(error)}`;
   }

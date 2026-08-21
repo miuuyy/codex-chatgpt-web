@@ -140,6 +140,14 @@ export function atomicWriteFile(path: string, data: string | Uint8Array): void {
   try { chmodSync(path, 0o600); } catch { /* Windows ACLs are managed by the installer. */ }
 }
 
+export function stripUtf8Bom(text: string): string {
+  return text.startsWith("\uFEFF") ? text.slice(1) : text;
+}
+
+export function preserveUtf8Bom(text: string, original: string): string {
+  return original.startsWith("\uFEFF") ? `\uFEFF${stripUtf8Bom(text)}` : stripUtf8Bom(text);
+}
+
 export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
   const home = getConfigDir();
   return {
@@ -282,13 +290,13 @@ export function defaultChromeExecutable(
 export function loadConfig(): AppConfig {
   const path = getConfigPath();
   if (!existsSync(path)) throw new Error(`Configuration is missing: ${path}. Run codex-chatgpt-web setup first.`);
-  return parseConfig(JSON.parse(readFileSync(path, "utf8")), path);
+  return parseConfig(JSON.parse(stripUtf8Bom(readFileSync(path, "utf8"))), path);
 }
 
 export function loadConfigForSetup(): AppConfig {
   const path = getConfigPath();
   if (!existsSync(path)) throw new Error(`Configuration is missing: ${path}. Run codex-chatgpt-web setup first.`);
-  const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+  const raw = JSON.parse(stripUtf8Bom(readFileSync(path, "utf8"))) as Record<string, unknown>;
   if (raw.version === 1 && raw.mode === "pro-only") {
     raw.version = 2;
     raw.mode = "browser-only";
@@ -383,7 +391,9 @@ function parseConfig(value: unknown, path: string): AppConfig {
 }
 
 export function saveConfig(config: AppConfig): void {
-  atomicWriteFile(getConfigPath(), `${JSON.stringify(config, null, 2)}\n`);
+  const path = getConfigPath();
+  const original = existsSync(path) ? readFileSync(path, "utf8") : "";
+  atomicWriteFile(path, preserveUtf8Bom(`${JSON.stringify(config, null, 2)}\n`, original));
 }
 
 export function providerConfig(config: AppConfig): CodexProviderConfig {

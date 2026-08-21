@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
+const { readJsonFile } = require("./json-file.cjs");
 
 function appendLog(job, message) {
   try {
@@ -126,7 +127,7 @@ function relaunchExisting(job) {
 async function main() {
   const jobPath = process.argv[2];
   if (!jobPath || !path.isAbsolute(jobPath)) throw new Error("Update worker requires an absolute job path");
-  const job = JSON.parse(fs.readFileSync(jobPath, "utf8"));
+  const job = readJsonFile(jobPath);
   appendLog(job, `waiting for launcher PID ${job.parentPid} before installing v${job.version}`);
   await waitForParent(job.parentPid);
   appendLog(job, `installing v${job.version} on ${job.platform}`);

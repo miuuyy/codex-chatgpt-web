@@ -1,12 +1,13 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { renameAtomicFile } = require("./atomic-file.cjs");
+const { readJsonFile } = require("./json-file.cjs");
 const { runtimeBundlePaths } = require("./runtime-command.cjs");
 
 function validateRuntimeBundle(runtimeRoot, { version, platform, arch, bundleId }) {
   const manifestPath = path.join(runtimeRoot, "manifest.json");
   if (!fs.existsSync(manifestPath)) throw new Error(`Runtime manifest is missing: ${manifestPath}`);
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const manifest = readJsonFile(manifestPath);
   if (manifest.schemaVersion !== 1
     || manifest.appVersion !== version
     || manifest.platform !== platform
@@ -38,7 +39,7 @@ function ensurePackagedRuntime({ app, coreHome, resourcesPath }) {
   };
   const source = path.join(resourcesPath, "runtime");
   validateRuntimeBundle(source, identity);
-  const sourceManifest = JSON.parse(fs.readFileSync(path.join(source, "manifest.json"), "utf8"));
+  const sourceManifest = readJsonFile(path.join(source, "manifest.json"));
   const expectedIdentity = { ...identity, bundleId: sourceManifest.bundleId };
   const versionsRoot = path.join(coreHome, "versions");
   const destination = path.join(
