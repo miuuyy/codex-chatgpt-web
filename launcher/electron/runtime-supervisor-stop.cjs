@@ -7,7 +7,7 @@ const { redactText } = require("./logging.cjs");
 const { DETACH_OWNED_CHILD, processRunning, terminateOwnedProcessTree } = require("./process-tree.cjs");
 const { runtimeInvocation } = require("./runtime-command.cjs");
 const helpers = require("./runtime-supervisor-helpers.cjs");
-const { RESTART_WINDOW_MS, MAX_RESTARTS_PER_WINDOW, MAX_RUNTIME_LOG_LINE_CHARS, MAX_CONTROL_OUTPUT_BYTES, DRAIN_IDLE_TIMEOUT_MS, DRAIN_POLL_INTERVAL_MS, TUNNEL_START_TIMEOUT_MS, TUNNEL_HEALTH_POLL_INTERVAL_MS, TUNNEL_MONITOR_INTERVAL_MS, TUNNEL_MONITOR_FAILURE_THRESHOLD, sleep, collectLines, loopbackHealthBaseURL, readJson, errorMessage, appendFailure, absolutePath, pathIdentity, windowsPipeEndpoint, tunnelRuntimeAbsent, tunnelRuntimeStopped, runtimeOwnershipMayBeLive, conciseTunnelLog, tunnelControlDiagnostic, tunnelCommandQuoted, managedTunnelMcpCommand, managedTunnelConnectArgs, validateConfig } = helpers;
+const { RESTART_WINDOW_MS, MAX_RESTARTS_PER_WINDOW, MAX_RUNTIME_LOG_LINE_CHARS, MAX_CONTROL_OUTPUT_BYTES, DRAIN_IDLE_TIMEOUT_MS, DRAIN_POLL_INTERVAL_MS, TUNNEL_START_TIMEOUT_MS, TUNNEL_HEALTH_POLL_INTERVAL_MS, TUNNEL_MONITOR_INTERVAL_MS, TUNNEL_MONITOR_FAILURE_THRESHOLD, sleep, collectLines, loopbackHealthBaseURL, readJson, errorMessage, appendFailure, absolutePath, pathIdentity, windowsPipeEndpoint, tunnelRuntimeAbsent, tunnelRuntimeStopped, runtimeOwnershipMayBeLive, foreignLauncherOwnerMayRecover, conciseTunnelLog, tunnelControlDiagnostic, tunnelCommandQuoted, managedTunnelMcpCommand, managedTunnelConnectArgs, validateConfig } = helpers;
 
 module.exports = {
   async stopStaleOwnedRuntime(config) {
@@ -47,12 +47,12 @@ module.exports = {
         + " has no tunnel identity with which to verify it",
       );
     }
+    if (foreignLauncherOwnerMayRecover(state)) {
+      throw new Error(`Another launcher process still owns the runtime (pid ${state.ownerPid})`);
+    }
     if (!daemonRunning && !managedTunnelRunning) {
       this.clearState();
       return true;
-    }
-    if (state.ownerPid !== process.pid && processRunning(state.ownerPid)) {
-      throw new Error(`Another launcher process still owns the runtime (pid ${state.ownerPid})`);
     }
 
     this.logger.warn("runtime.stale_owner_recovery_started", {
@@ -92,28 +92,48 @@ module.exports = {
   },
 
   async acquireDrain(config, timeoutMs = DRAIN_IDLE_TIMEOUT_MS) {
-    let attempted = false;
+    let resumeRequired = false;
     try {
-      attempted = true;
       const deadline = Date.now() + timeoutMs;
       for (;;) {
-        const health = await this.control(config, "drain");
-        if (health.accepting_turns !== false
-          || !Number.isInteger(health.active_http_turns)
-          || !Number.isInteger(health.active_browser_turns)) {
-          throw new Error("daemon did not acknowledge the drain contract");
+        resumeRequired = true;
+        const health = await this.control(config, "drain-if-idle");
+        resumeRequired = false;
+        const activeHttp = health.active_http_turns;
+        const activeBrowser = health.active_browser_turns;
+        if (!Number.isInteger(activeHttp) || !Number.isInteger(activeBrowser)) {
+          throw new Error("daemon did not acknowledge the atomic idle-drain contract");
         }
-        if (health.active_http_turns === 0 && health.active_browser_turns === 0) return true;
+        if (health.status === "ok"
+          && health.acquired === true
+          && health.accepting_turns === false
+          && activeHttp === 0
+          && activeBrowser === 0) {
+          return true;
+        }
+        if (health.status === "draining"
+          && health.acquired === false
+          && health.accepting_turns === false
+          && activeHttp === 0
+          && activeBrowser === 0) {
+          return true;
+        }
+        if (health.status !== "busy"
+          || health.acquired !== false
+          || health.accepting_turns !== true) {
+          resumeRequired = health.acquired === true;
+          throw new Error("daemon did not acknowledge the atomic idle-drain contract");
+        }
         if (Date.now() >= deadline) {
           throw new Error(
-            `daemon has ${health.active_http_turns} active HTTP turn(s) and ${health.active_browser_turns} active browser turn(s)`,
+            `daemon has ${activeHttp} active HTTP turn(s) and ${activeBrowser} active browser turn(s)`,
           );
         }
         await sleep(Math.min(DRAIN_POLL_INTERVAL_MS, Math.max(1, deadline - Date.now())));
       }
     } catch (error) {
       let resumeError;
-      if (attempted) {
+      if (resumeRequired) {
         try {
           await this.control(config, "resume");
         } catch (caught) {

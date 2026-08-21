@@ -212,6 +212,57 @@ test("a drained runtime rejects new model-catalog work before shutdown", async (
   }
 });
 
+test("an atomic idle drain leaves admission open while a browser turn is active", async () => {
+  const config = { ...defaultConfig("browser-only"), port: 0 };
+  const server = startServer(config);
+  const endpoint = `http://127.0.0.1:${server.port}`;
+  const authorization = { authorization: `Bearer ${config.controlToken}` };
+  chatGptTurnSessions.clear();
+  chatGptTurnSessions.getOrCreate("restart-active-turn", () => ({
+    mode: "read-only",
+    browser: new Promise<string>(() => {}),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    cancel: () => {},
+  }));
+
+  try {
+    const busy = await fetch(`${endpoint}/admin/drain-if-idle`, {
+      method: "POST",
+      headers: authorization,
+    });
+    expect(busy.status).toBe(200);
+    expect(await busy.json()).toMatchObject({
+      status: "busy",
+      acquired: false,
+      accepting_turns: true,
+      active_http_turns: 0,
+      active_browser_turns: 1,
+    });
+    expect(await (await fetch(`${endpoint}/healthz`)).json()).toMatchObject({
+      accepting_turns: true,
+      active_browser_turns: 1,
+    });
+
+    chatGptTurnSessions.clear();
+    const drained = await fetch(`${endpoint}/admin/drain-if-idle`, {
+      method: "POST",
+      headers: authorization,
+    });
+    expect(drained.status).toBe(200);
+    expect(await drained.json()).toMatchObject({
+      status: "ok",
+      acquired: true,
+      accepting_turns: false,
+      active_http_turns: 0,
+      active_browser_turns: 0,
+    });
+  } finally {
+    chatGptTurnSessions.clear();
+    await server.stop(true);
+  }
+});
+
 test("health proves that Codex received a successful augmented model catalog", async () => {
   const config = { ...defaultConfig("browser-only"), port: 0 };
   const server = startServer(config, {

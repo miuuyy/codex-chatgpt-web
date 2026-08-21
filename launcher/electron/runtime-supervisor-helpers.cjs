@@ -104,6 +104,12 @@ function runtimeOwnershipMayBeLive(state) {
   return ["starting", "ready", "degraded", "stopping"].includes(state.status);
 }
 
+function foreignLauncherOwnerMayRecover(state) {
+  return state?.ownerPid !== process.pid
+    && processRunning(state?.ownerPid)
+    && ["starting", "ready", "degraded", "stopping"].includes(state?.status);
+}
+
 function conciseTunnelLog(value) {
   if (typeof value !== "string" || !value.trim()) return undefined;
   const tail = value.trim().split(/\r?\n/).slice(-3).join(" | ");
@@ -282,6 +288,7 @@ module.exports = {
   tunnelRuntimeAbsent,
   tunnelRuntimeStopped,
   runtimeOwnershipMayBeLive,
+  foreignLauncherOwnerMayRecover,
   conciseTunnelLog,
   tunnelControlDiagnostic,
   tunnelCommandQuoted,

@@ -7,7 +7,7 @@ const { redactText } = require("./logging.cjs");
 const { DETACH_OWNED_CHILD, processRunning, terminateOwnedProcessTree } = require("./process-tree.cjs");
 const { runtimeInvocation } = require("./runtime-command.cjs");
 const helpers = require("./runtime-supervisor-helpers.cjs");
-const { RESTART_WINDOW_MS, MAX_RESTARTS_PER_WINDOW, MAX_RUNTIME_LOG_LINE_CHARS, MAX_CONTROL_OUTPUT_BYTES, DRAIN_IDLE_TIMEOUT_MS, DRAIN_POLL_INTERVAL_MS, TUNNEL_START_TIMEOUT_MS, TUNNEL_HEALTH_POLL_INTERVAL_MS, TUNNEL_MONITOR_INTERVAL_MS, TUNNEL_MONITOR_FAILURE_THRESHOLD, sleep, collectLines, loopbackHealthBaseURL, readJson, errorMessage, appendFailure, absolutePath, pathIdentity, windowsPipeEndpoint, tunnelRuntimeAbsent, tunnelRuntimeStopped, runtimeOwnershipMayBeLive, conciseTunnelLog, tunnelControlDiagnostic, tunnelCommandQuoted, managedTunnelMcpCommand, managedTunnelConnectArgs, validateConfig } = helpers;
+const { RESTART_WINDOW_MS, MAX_RESTARTS_PER_WINDOW, MAX_RUNTIME_LOG_LINE_CHARS, MAX_CONTROL_OUTPUT_BYTES, DRAIN_IDLE_TIMEOUT_MS, DRAIN_POLL_INTERVAL_MS, TUNNEL_START_TIMEOUT_MS, TUNNEL_HEALTH_POLL_INTERVAL_MS, TUNNEL_MONITOR_INTERVAL_MS, TUNNEL_MONITOR_FAILURE_THRESHOLD, sleep, collectLines, loopbackHealthBaseURL, readJson, errorMessage, appendFailure, absolutePath, pathIdentity, windowsPipeEndpoint, tunnelRuntimeAbsent, tunnelRuntimeStopped, runtimeOwnershipMayBeLive, foreignLauncherOwnerMayRecover, conciseTunnelLog, tunnelControlDiagnostic, tunnelCommandQuoted, managedTunnelMcpCommand, managedTunnelConnectArgs, validateConfig } = helpers;
 
 const tunnelMethods = require("./runtime-supervisor-tunnel.cjs");
 const startupMethods = require("./runtime-supervisor-startup.cjs");
@@ -53,6 +53,7 @@ class RuntimeSupervisor {
     this.recoveryTasks = new Set();
     this.expectedExits = new WeakSet();
     this.restartableChildren = new WeakSet();
+    this.stateWriteCleanupStarted = false;
     this.lastChildFailure = { daemon: null, tunnel: null };
     this.lastChildOutput = { daemon: null, tunnel: null };
   }
@@ -126,6 +127,22 @@ class RuntimeSupervisor {
         if (this.restartTimers[name]) {
           clearTimeout(this.restartTimers[name]);
           this.restartTimers[name] = null;
+        }
+      }
+      if (!this.stateWriteCleanupStarted) {
+        this.stateWriteCleanupStarted = true;
+        for (const name of ["daemon", "tunnel"]) {
+          const child = this[name];
+          if (!child || child.exitCode !== null || child.signalCode !== null) continue;
+          this.expectedExits.add(child);
+          try {
+            terminateOwnedProcessTree(child);
+          } catch (terminationError) {
+            this.logger.error("runtime.state_write_cleanup_failed", {
+              name,
+              message: errorMessage(terminationError),
+            });
+          }
         }
       }
       this.logger.error("runtime.state_write_failed", { status, message });
