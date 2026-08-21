@@ -84,6 +84,7 @@ export const CHATGPT_EMPTY_RESPONSE_GRACE_MS = 10_000;
 export const CHATGPT_COMPLETION_ACTION_GRACE_MS = 60_000;
 export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
 export const CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS = 60_000;
+const CHATGPT_CONVERSATION_TURN_SELECTOR = '[data-testid^="conversation-turn-"]';
 const CHATGPT_SMOKE_TEXT = "Reply with exactly: CODEX WEB GPT READY";
 const CHATGPT_SMOKE_EXPECTED = "CODEX WEB GPT READY";
 /**
@@ -336,6 +337,28 @@ export function chatGptSubmissionEvidence(state: {
   if (state.userTurnCount > state.initialUserTurnCount) return "user_turn";
   if (state.assistantTurnCount > state.initialAssistantTurnCount) return "assistant_turn";
   if (state.generationRunning) return "generation_running";
+  return undefined;
+}
+
+export interface ChatGptConversationTurnDescriptor {
+  testId: string | null;
+  isUser: boolean;
+  hasResponseEvidence: boolean;
+}
+
+export function chatGptCurrentResponseTurnIndex(
+  turns: readonly ChatGptConversationTurnDescriptor[],
+  initialTurnIds: readonly string[],
+): number | undefined {
+  const initial = new Set(initialTurnIds);
+  const currentUserIndex = turns.findLastIndex(turn => turn.isUser);
+  for (let index = turns.length - 1; index > currentUserIndex; index -= 1) {
+    const turn = turns[index]!;
+    if (turn.testId
+      && !turn.isUser
+      && turn.hasResponseEvidence
+      && !initial.has(turn.testId)) return index;
+  }
   return undefined;
 }
 
@@ -1164,7 +1187,8 @@ export class ChatGptBrowserWorker {
     page: Page,
     userTurns: Locator,
     responseTurns: Locator,
-    responseTurn: Locator,
+    conversationTurns: Locator,
+    initialConversationTurnIds: readonly string[],
     initialUserTurnCount: number,
     initialResponseTurnCount: number,
     signal?: AbortSignal,
@@ -1174,7 +1198,11 @@ export class ChatGptBrowserWorker {
     for (;;) {
       if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
       await throwIfChatGptSessionFailureAlert(page);
-      await throwIfChatGptTerminalErrorAlert(responseTurn);
+      const responseTurn = await this.currentResponseTurn(
+        conversationTurns,
+        initialConversationTurnIds,
+      );
+      if (responseTurn) await throwIfChatGptTerminalErrorAlert(responseTurn);
       const [userTurnCount, assistantTurnCount, visibleStopButtonCount] = await Promise.all([
         userTurns.count(),
         responseTurns.count(),
@@ -1190,6 +1218,32 @@ export class ChatGptBrowserWorker {
       if (evidence) return evidence;
       await new Promise(resolveSleep => setTimeout(resolveSleep, 50));
     }
+  }
+
+  private async currentResponseTurn(
+    conversationTurns: Locator,
+    initialConversationTurnIds: readonly string[],
+  ): Promise<Locator | undefined> {
+    const turns = await conversationTurns.evaluateAll((elements, completionActionSelector) => (
+      elements.map(element => ({
+        testId: element.getAttribute("data-testid"),
+        isUser: element.matches('[data-turn="user"], [data-message-author-role="user"]')
+          || element.querySelector('[data-message-author-role="user"]') !== null,
+        hasResponseEvidence: element.matches('[data-turn="assistant"], [data-message-author-role="assistant"]')
+          || element.querySelector([
+            '[data-message-author-role="assistant"]',
+            "[data-streaming-response-status]",
+            ".markdown",
+            '[role="alert"]',
+            '[role="status"]',
+            '[aria-busy="true"]',
+            completionActionSelector,
+          ].join(", ")) !== null,
+      }))
+    ), CHATGPT_COMPLETION_ACTION_SELECTOR);
+    const index = chatGptCurrentResponseTurnIndex(turns, initialConversationTurnIds);
+    const testId = index === undefined ? undefined : turns[index]?.testId;
+    return testId ? conversationTurns.page().getByTestId(testId) : undefined;
   }
 
   private async attachedPromptText(page: Page): Promise<string> {
@@ -1765,8 +1819,8 @@ export class ChatGptBrowserWorker {
     return snapshot;
   }
 
-  private async stalledTurnDiagnostic(page: Page, responseTurn: Locator): Promise<string> {
-    const responseState = await responseTurn.count()
+  private async stalledTurnDiagnostic(page: Page, responseTurn?: Locator): Promise<string> {
+    const responseState = responseTurn && await responseTurn.count()
       ? await responseTurn.evaluate(element => {
         const root = element as HTMLElement;
         const descriptors = [...root.querySelectorAll<HTMLElement>("[role], [data-testid], button, [aria-label]")]
@@ -1997,9 +2051,14 @@ export class ChatGptBrowserWorker {
         this.attachFiles(page, prepared)
       ));
       await diagnostics.capture(page, "file-attachment-complete");
+      const conversationTurns = page.locator(CHATGPT_CONVERSATION_TURN_SELECTOR);
+      const initialConversationTurnIds = await conversationTurns.evaluateAll(elements => (
+        elements
+          .map(element => element.getAttribute("data-testid"))
+          .filter((testId): testId is string => Boolean(testId))
+      ));
       const responseTurns = page.locator(CHATGPT_ASSISTANT_TURN_SELECTOR);
       const initialResponseTurnCount = await responseTurns.count();
-      const responseTurn = responseTurns.nth(initialResponseTurnCount);
       const userTurns = page.locator(CHATGPT_USER_TURN_SELECTOR);
       const initialUserTurnCount = await userTurns.count();
       await this.runStage(turn.traceId, "send", browserStageTimeouts.send, async (stageSignal) => {
@@ -2019,7 +2078,8 @@ export class ChatGptBrowserWorker {
           page,
           userTurns,
           responseTurns,
-          responseTurn,
+          conversationTurns,
+          initialConversationTurnIds,
           initialUserTurnCount,
           initialResponseTurnCount,
           stageSignal,
@@ -2063,7 +2123,11 @@ export class ChatGptBrowserWorker {
         }
 
         await throwIfChatGptSessionFailureAlert(page);
-        await throwIfChatGptTerminalErrorAlert(responseTurn);
+        const responseTurn = await this.currentResponseTurn(
+          conversationTurns,
+          initialConversationTurnIds,
+        );
+        if (responseTurn) await throwIfChatGptTerminalErrorAlert(responseTurn);
 
         if (mode.localTools && await resolveChatGptToolConfirmation(
           page,
@@ -2077,7 +2141,9 @@ export class ChatGptBrowserWorker {
           continue;
         }
 
-        const snapshot = await this.responseDomSnapshot(responseTurn);
+        const snapshot = responseTurn
+          ? await this.responseDomSnapshot(responseTurn)
+          : absentResponseDomSnapshot();
         const stop = page.locator(CHATGPT_STOP_BUTTON_SELECTOR).last();
         const running = await stop.isVisible().catch(() => false);
         if (running) sawRunning = true;
