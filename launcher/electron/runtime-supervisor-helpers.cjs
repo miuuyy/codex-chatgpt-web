@@ -22,6 +22,7 @@ const TUNNEL_START_TIMEOUT_MS = 120_000;
 const TUNNEL_HEALTH_POLL_INTERVAL_MS = 1_000;
 const TUNNEL_MONITOR_INTERVAL_MS = 10_000;
 const TUNNEL_MONITOR_FAILURE_THRESHOLD = 3;
+const TUNNEL_MCP_CONNECTION_MAX_TTL = "24h";
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -268,6 +269,7 @@ module.exports = {
   TUNNEL_HEALTH_POLL_INTERVAL_MS,
   TUNNEL_MONITOR_INTERVAL_MS,
   TUNNEL_MONITOR_FAILURE_THRESHOLD,
+  TUNNEL_MCP_CONNECTION_MAX_TTL,
   sleep,
   collectLines,
   loopbackHealthBaseURL,

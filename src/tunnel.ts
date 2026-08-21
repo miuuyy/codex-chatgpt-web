@@ -10,6 +10,7 @@ const TUNNEL_VERSION = "0.0.10";
 const RELEASE_BASE = `https://github.com/openai/tunnel-client/releases/download/v${TUNNEL_VERSION}`;
 const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024;
 export const TUNNEL_READY_TIMEOUT_MS = 120_000;
+export const TUNNEL_MCP_CONNECTION_MAX_TTL = "24h";
 const TUNNEL_STATUS_POLL_INTERVAL_MS = 1_000;
 
 interface TunnelInstallManifest {

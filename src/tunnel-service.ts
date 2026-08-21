@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import type { AppConfig } from "./config";
 import { atomicWriteFile, getConfigDir } from "./config";
 import { runCommand, runChecked } from "./process";
+import { TUNNEL_MCP_CONNECTION_MAX_TTL } from "./tunnel";
 
 const LABEL = "io.github.codex-chatgpt-web.tunnel";
 
@@ -66,6 +67,8 @@ ${args.map(arg => `    <string>${xml(arg)}</string>`).join("\n")}
   <dict>
     <key>CODEX_CHATGPT_WEB_HOME</key>
     <string>${xml(getConfigDir())}</string>
+    <key>MCP_CONNECTION_MAX_TTL</key>
+    <string>${TUNNEL_MCP_CONNECTION_MAX_TTL}</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
