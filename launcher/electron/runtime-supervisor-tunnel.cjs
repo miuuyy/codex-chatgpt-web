@@ -388,9 +388,9 @@ module.exports = {
       });
       if (this.tunnelMonitorFailures < TUNNEL_MONITOR_FAILURE_THRESHOLD) return;
       this.lastChildFailure.tunnel = message;
-      this.tunnel = null;
       this.stopTunnelMonitor();
       if (!this.tryWriteState("degraded", message)) return;
+      this.tunnel = null;
       this.publishOperation?.({ name: "runtime-recovery", status: "running", message });
       this.scheduleRecovery("tunnel");
     };
