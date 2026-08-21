@@ -4,6 +4,25 @@ const { renameAtomicFile } = require("./atomic-file.cjs");
 const { readJsonFile } = require("./json-file.cjs");
 const { runtimeBundlePaths } = require("./runtime-command.cjs");
 
+function removePreviousRuntime(runtimeRoot) {
+  try {
+    fs.rmSync(runtimeRoot, { recursive: true, force: true });
+    return true;
+  } catch (error) {
+    if (["EPERM", "EACCES", "EBUSY", "ENOTEMPTY", "ENOENT"].includes(error?.code)) return false;
+    throw error;
+  }
+}
+
+function cleanupPreviousRuntimes(versionsRoot, destination) {
+  const prefix = `${path.basename(destination)}.previous-`;
+  for (const entry of fs.readdirSync(versionsRoot, { withFileTypes: true })) {
+    if (entry.isDirectory() && entry.name.startsWith(prefix)) {
+      removePreviousRuntime(path.join(versionsRoot, entry.name));
+    }
+  }
+}
+
 function validateRuntimeBundle(runtimeRoot, { version, platform, arch, bundleId }) {
   const manifestPath = path.join(runtimeRoot, "manifest.json");
   if (!fs.existsSync(manifestPath)) throw new Error(`Runtime manifest is missing: ${manifestPath}`);
@@ -48,7 +67,9 @@ function ensurePackagedRuntime({ app, coreHome, resourcesPath }) {
   );
   if (fs.existsSync(destination)) {
     try {
-      return validateRuntimeBundle(destination, expectedIdentity);
+      const installed = validateRuntimeBundle(destination, expectedIdentity);
+      cleanupPreviousRuntimes(versionsRoot, destination);
+      return installed;
     } catch {
       // A terminated installer or external cleanup can leave a version directory present but
       // incomplete. Rebuild the launcher-owned bundle transactionally from the signed package.
@@ -85,7 +106,7 @@ function ensurePackagedRuntime({ app, coreHome, resourcesPath }) {
       throw error;
     }
     if (previousMoved) {
-      fs.rmSync(previous, { recursive: true, force: true });
+      removePreviousRuntime(previous);
       previousMoved = false;
     }
   } finally {

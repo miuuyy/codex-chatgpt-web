@@ -112,3 +112,73 @@ test("packaged runtime replaces stale files when a release is refreshed under th
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("packaged runtime keeps a successful replacement when a previous Windows runtime stays locked", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-runtime-locked-"));
+  const resourcesPath = runtimeFixture(root, "0.2.0", "a".repeat(64));
+  const coreHome = path.join(root, "core-home");
+  const app = { isPackaged: true, getVersion: () => "0.2.0" };
+  const originalRmSync = fs.rmSync;
+  let lockedPrevious;
+  try {
+    const installed = ensurePackagedRuntime({ app, coreHome, resourcesPath });
+    const source = path.join(resourcesPath, "runtime");
+    const manifestPath = path.join(source, "manifest.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    fs.writeFileSync(path.join(source, "app", "cli.js"), "replacement cli");
+    fs.writeFileSync(manifestPath, `${JSON.stringify({ ...manifest, bundleId: "b".repeat(64) })}\n`);
+
+    fs.rmSync = (pathname, options) => {
+      if (String(pathname).includes(".previous-")) {
+        lockedPrevious = String(pathname);
+        const error = new Error("simulated Windows runtime lock");
+        error.code = "EBUSY";
+        throw error;
+      }
+      return originalRmSync(pathname, options);
+    };
+
+    assert.doesNotThrow(() => ensurePackagedRuntime({ app, coreHome, resourcesPath }));
+    assert.equal(fs.readFileSync(path.join(installed, "app", "cli.js"), "utf8"), "replacement cli");
+    assert.ok(lockedPrevious);
+    assert.equal(fs.existsSync(lockedPrevious), true);
+    assert.equal(ensurePackagedRuntime({ app, coreHome, resourcesPath }), installed);
+  } finally {
+    fs.rmSync = originalRmSync;
+    originalRmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("packaged runtime still fails closed on structural previous-runtime cleanup errors", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-runtime-cleanup-error-"));
+  const resourcesPath = runtimeFixture(root, "0.2.0", "a".repeat(64));
+  const coreHome = path.join(root, "core-home");
+  const app = { isPackaged: true, getVersion: () => "0.2.0" };
+  const originalRmSync = fs.rmSync;
+  try {
+    const installed = ensurePackagedRuntime({ app, coreHome, resourcesPath });
+    const source = path.join(resourcesPath, "runtime");
+    const manifestPath = path.join(source, "manifest.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    fs.writeFileSync(path.join(source, "app", "cli.js"), "replacement cli");
+    fs.writeFileSync(manifestPath, `${JSON.stringify({ ...manifest, bundleId: "b".repeat(64) })}\n`);
+
+    fs.rmSync = (pathname, options) => {
+      if (String(pathname).includes(".previous-")) {
+        const error = new Error("structural cleanup failure");
+        error.code = "EINVAL";
+        throw error;
+      }
+      return originalRmSync(pathname, options);
+    };
+
+    assert.throws(
+      () => ensurePackagedRuntime({ app, coreHome, resourcesPath }),
+      /structural cleanup failure/,
+    );
+    assert.equal(fs.readFileSync(path.join(installed, "app", "cli.js"), "utf8"), "replacement cli");
+  } finally {
+    fs.rmSync = originalRmSync;
+    originalRmSync(root, { recursive: true, force: true });
+  }
+});
