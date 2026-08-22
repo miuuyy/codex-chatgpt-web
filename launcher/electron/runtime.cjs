@@ -909,9 +909,10 @@ class RuntimeHost {
     };
   }
 
-  setupMcp({ tunnelId = "", runtimeKey = "", replace = false } = {}) {
+  setupMcp({ appName = "", tunnelId = "", runtimeKey = "", replace = false } = {}) {
     this.assertProductionProfile("Native Codex MCP setup");
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
+    const connectorName = appName ? validateConnectorName(appName) : this.browserConnectorName();
     const reuseSavedCredentials = replace !== true && this.mcpCredentialsConfigured();
     if (!reuseSavedCredentials && !/^tunnel_[a-f0-9]{32}$/.test(tunnelId)) {
       throw new Error("Tunnel ID must be tunnel_ followed by 32 lowercase hexadecimal characters");
@@ -925,7 +926,7 @@ class RuntimeHost {
       "--browser-host-descriptor",
       this.browserDescriptorPath,
       "--app-name",
-      this.browserConnectorName(),
+      connectorName,
       "--replace-codex-route",
     ];
     if (reuseSavedCredentials) {
@@ -956,11 +957,12 @@ class RuntimeHost {
     }).finally(() => fs.rmSync(keyPath, { force: true }));
   }
 
-  setupDevMcp({ tunnelId = "", runtimeKey = "", replace = false } = {}) {
+  setupDevMcp({ appName = "", tunnelId = "", runtimeKey = "", replace = false } = {}) {
     if (this.launcherProfile !== "development") {
       throw new Error("DEV MCP setup requires the isolated DEV launcher");
     }
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
+    const connectorName = appName ? validateConnectorName(appName) : this.browserConnectorName();
     const reuseSavedCredentials = replace !== true && this.mcpCredentialsConfigured();
     if (!reuseSavedCredentials && !/^tunnel_[a-f0-9]{32}$/.test(tunnelId)) {
       throw new Error("Tunnel ID must be tunnel_ followed by 32 lowercase hexadecimal characters");
@@ -975,7 +977,7 @@ class RuntimeHost {
       "--browser-host-descriptor",
       this.browserDescriptorPath,
       "--app-name",
-      this.browserConnectorName(),
+      connectorName,
       "--acknowledge-unofficial",
     ];
     if (reuseSavedCredentials) {

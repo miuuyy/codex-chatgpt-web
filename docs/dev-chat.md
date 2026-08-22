@@ -15,7 +15,8 @@ usable.
 - Run its browser smoke test and initialize the DEV profile. Complete MCP setup only when testing
   simulated tool rounds; browser, effort, context-limit, and compaction work in browser-only mode.
   The launcher stores any MCP credentials only in the DEV home and supervises only that isolated
-  tunnel. Create the ChatGPT connector as `Codex Native2 DEV`; keep `Codex Native2` unchanged.
+  tunnel. Create the ChatGPT connector as `Codex Native2 DEV`; keep the production connector
+  unchanged.
 
 Nothing is copied from the normal launcher. The DEV command fails closed if its own launcher,
 browser descriptor, credentials, or connector are not ready. It never falls back to the production

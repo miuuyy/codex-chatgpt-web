@@ -49,7 +49,7 @@ The working-tree adapter attaches to a tab leased only from that DEV launcher. I
 launcher owns one persistent, isolated tunnel runtime; a named CLI chat owns only the private turn
 broker attached to that tunnel for the command's lifetime. The distinct `Codex Native2 DEV`
 connector reaches the same MCP server and turn-token contract without requiring any Responses
-daemon or colliding with the production `Codex Native2` connector.
+daemon or colliding with the configured production connector.
 
 Only the responsibilities normally owned by native Codex are synthetic: named history storage,
 turn metadata, tool-result execution, context-threshold scheduling, and installation of compacted
@@ -65,14 +65,16 @@ probe. The DEV launcher supervisor owns only the isolated MCP tunnel. Browser di
 state, thread authority, checkpoints, and named chat state live
 under `~/.codex-chatgpt-web-dev` by default.
 
-The ChatGPT connector name is also the public MCP ABI identity. The direct turn-token contract uses
-`Codex Native2`; the retired `Codex Native` identity is never selected or refreshed in place. Setup
-migrates known legacy local configuration to the new name, clears prior verification state, and
-requires the user to create the new connector. Browser verification accepts the exact new identity,
-reports a specific migration error when only the legacy identity is visible, and never falls back to
-the legacy connector. Future public schema changes require another explicit connector identity.
-Repository DEV mode uses `Codex Native2 DEV` so the same ChatGPT account can keep both production
-and development connectors installed without renaming, refreshing, or deleting either one.
+The configured ChatGPT connector name is also the public MCP ABI identity. Fresh launcher setup asks
+the user to choose a unique production name; existing configured names are preserved. `Codex Native2`
+remains the compatibility/CLI default and the migration target for known legacy local configuration,
+while the retired `Codex Native` identity is never selected or refreshed in place. Legacy migration
+clears prior verification state and requires the user to create the replacement connector. Browser
+verification accepts the exact configured identity, reports a specific migration error when only the
+legacy identity is visible, and never falls back to the legacy connector. Future public schema
+changes require another explicit connector identity. Repository DEV mode defaults to
+`Codex Native2 DEV` so the same ChatGPT account can keep both production and development connectors
+installed without renaming, refreshing, or deleting either one.
 
 ## Browser lifecycle
 

@@ -355,9 +355,10 @@ test("MCP setup reuses valid private credentials without exposing or rewriting t
   }
 });
 
-test("new MCP setup uses the explicit default connector name", async () => {
+test("new MCP setup accepts a custom connector name", async () => {
   const fixture = hostFor(null);
   await fixture.host.setupMcp({
+    appName: "Custom app name",
     replace: true,
     tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
     runtimeKey: "new-private-runtime-key",
@@ -369,8 +370,19 @@ test("new MCP setup uses the explicit default connector name", async () => {
     "--browser-host-descriptor",
     "/runtime/launcher-browser.json",
     "--app-name",
-    "Codex Native2",
+    "Custom app name",
   ]);
+});
+
+test("new MCP setup still falls back to the configured connector name", async () => {
+  const fixture = hostFor(null);
+  await fixture.host.setupMcp({
+    replace: true,
+    tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
+    runtimeKey: "new-private-runtime-key",
+  });
+
+  assert.deepEqual(fixture.invocation().args.slice(4, 6), ["--app-name", "Codex Native2"]);
 });
 
 test("MCP credential replacement remains explicit and requires a complete new pair", async () => {
@@ -628,6 +640,9 @@ test("connector verification uses the current identity and rejects a legacy loca
   const full = hostFor({ mode: "full", appName: "Codex Native2" });
   assert.equal(full.host.mcpConnectorName(), "Codex Native2");
   assert.equal(full.host.browserConnectorName(), "Codex Native2");
+  const customFull = hostFor({ mode: "full", appName: "Custom app name" });
+  assert.equal(customFull.host.mcpConnectorName(), "Custom app name");
+  assert.equal(customFull.host.browserConnectorName(), "Custom app name");
   const defaultName = hostFor(null);
   assert.equal(defaultName.host.browserConnectorName(), CURRENT_CONNECTOR_NAME);
   const legacyFull = hostFor({ mode: "full", appName: "Codex Native" });

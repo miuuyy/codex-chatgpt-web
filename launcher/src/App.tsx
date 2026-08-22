@@ -966,6 +966,12 @@ function McpSurface({
   const [step, setStep] = useState(Math.min(2, Math.max(0, snapshot.state.mcpGuideStep || 0)));
   const [tunnelId, setTunnelId] = useState("");
   const [runtimeKey, setRuntimeKey] = useState("");
+  const hasExistingConnector = devProfile
+    || snapshot.mcpCredentialsConfigured
+    || snapshot.state.mcpRuntimeInstalled === true;
+  const [connectorName, setConnectorName] = useState(
+    hasExistingConnector ? snapshot.connectorName : "",
+  );
   const [credentialsConfigured, setCredentialsConfigured] = useState(snapshot.mcpCredentialsConfigured);
   const [replacingCredentials, setReplacingCredentials] = useState(false);
   const [localBusy, setLocalBusy] = useState(false);
@@ -1004,6 +1010,7 @@ function McpSurface({
     setError(null);
     try {
       await api!.setupMcp({
+        appName: connectorName,
         ...(credentialsConfigured && !replacingCredentials
           ? { replace: false }
           : { tunnelId, runtimeKey, replace: true }),
@@ -1093,62 +1100,76 @@ function McpSurface({
               </div>
             ) : null}
             {step === 1 ? (
-              credentialsConfigured && !replacingCredentials ? (
-                <div className="saved-credentials">
-                  <NoticeRow icon="check" tone="success">
-                    <span>
-                      <strong>{copy.credentialsConfigured}</strong>
-                      <small>{copy.credentialsConfiguredBody}</small>
-                    </span>
-                  </NoticeRow>
-                  <button
-                    className="text-button"
-                    disabled={busy}
-                    onClick={() => setReplacingCredentials(true)}
-                    type="button"
-                  >
-                    {copy.replaceCredentials}
-                  </button>
+              <div>
+                <div className="field-list connector-name-field">
+                  <FieldRow label={copy.connectorName}>
+                    <input
+                      maxLength={80}
+                      onChange={(event) => setConnectorName(event.target.value)}
+                      placeholder={copy.connectorNamePlaceholder}
+                      spellCheck={false}
+                      value={connectorName}
+                    />
+                  </FieldRow>
                 </div>
-              ) : (
-                <div className="field-list">
-                  <FieldRow label={copy.tunnelId}>
-                    <input
-                      autoCapitalize="none"
-                      autoCorrect="off"
-                      onChange={(event) => setTunnelId(event.target.value)}
-                      placeholder="tunnel_…"
-                      spellCheck={false}
-                      value={tunnelId}
-                    />
-                  </FieldRow>
-                  <FieldRow label={copy.runtimeKey}>
-                    <input
-                      autoCapitalize="none"
-                      autoCorrect="off"
-                      onChange={(event) => setRuntimeKey(event.target.value)}
-                      placeholder="sk-…"
-                      spellCheck={false}
-                      type="password"
-                      value={runtimeKey}
-                    />
-                  </FieldRow>
-                  {credentialsConfigured ? (
+                <p className="mcp-step-two-hint">{copy.connectorNameHint}</p>
+                {credentialsConfigured && !replacingCredentials ? (
+                  <div className="saved-credentials">
+                    <NoticeRow icon="check" tone="success">
+                      <span>
+                        <strong>{copy.credentialsConfigured}</strong>
+                        <small>{copy.credentialsConfiguredBody}</small>
+                      </span>
+                    </NoticeRow>
                     <button
-                      className="text-button keep-credentials"
+                      className="text-button"
                       disabled={busy}
-                      onClick={() => {
-                        setTunnelId("");
-                        setRuntimeKey("");
-                        setReplacingCredentials(false);
-                      }}
+                      onClick={() => setReplacingCredentials(true)}
                       type="button"
                     >
-                      {copy.keepCredentials}
+                      {copy.replaceCredentials}
                     </button>
-                  ) : null}
-                </div>
-              )
+                  </div>
+                ) : (
+                  <div className="field-list credential-fields">
+                    <FieldRow label={copy.tunnelId}>
+                      <input
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        onChange={(event) => setTunnelId(event.target.value)}
+                        placeholder="tunnel_…"
+                        spellCheck={false}
+                        value={tunnelId}
+                      />
+                    </FieldRow>
+                    <FieldRow label={copy.runtimeKey}>
+                      <input
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        onChange={(event) => setRuntimeKey(event.target.value)}
+                        placeholder="sk-…"
+                        spellCheck={false}
+                        type="password"
+                        value={runtimeKey}
+                      />
+                    </FieldRow>
+                    {credentialsConfigured ? (
+                      <button
+                        className="text-button keep-credentials"
+                        disabled={busy}
+                        onClick={() => {
+                          setTunnelId("");
+                          setRuntimeKey("");
+                          setReplacingCredentials(false);
+                        }}
+                        type="button"
+                      >
+                        {copy.keepCredentials}
+                      </button>
+                    ) : null}
+                  </div>
+                )}
+              </div>
             ) : null}
             {step === 1 ? (
               <p className="mcp-step-two-hint">
@@ -1162,7 +1183,7 @@ function McpSurface({
                 </NoticeRow>
                 <div className="connector-name">
                   <span>{copy.connectorName}</span>
-                  <code>{snapshot.connectorName}</code>
+                  <code>{connectorName.trim()}</code>
                 </div>
                 <div className="inline-actions">
                   <SecondaryButton
@@ -1196,6 +1217,7 @@ function McpSurface({
             disabled={
               busy
               || !snapshot.state.codexCatalogVerified
+              || !connectorName.trim()
               || ((!credentialsConfigured || replacingCredentials) && (!tunnelId || !runtimeKey))
             }
             onClick={() => void install()}

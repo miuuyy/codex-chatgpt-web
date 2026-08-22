@@ -610,6 +610,7 @@ function registerIpc({ logger, stateStore }) {
       ? runtimeHost.setupDevMcp.bind(runtimeHost)
       : runtimeHost.setupMcp.bind(runtimeHost);
     const result = await setup({
+      appName: typeof input?.appName === "string" ? input.appName.trim() : "",
       tunnelId: typeof input?.tunnelId === "string" ? input.tunnelId.trim() : "",
       runtimeKey: typeof input?.runtimeKey === "string" ? input.runtimeKey : "",
       replace: input?.replace === true,

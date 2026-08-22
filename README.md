@@ -139,8 +139,9 @@ Full mode connects ChatGPT's tool calls back to the current Codex task through t
 not expose a public IP, open an inbound port, or require router forwarding.
 
 > [!WARNING]
-> Create a **new** connector named **Codex Native2** and set its permissions to
-> **Allow all actions**. Do not rename, refresh, or reuse an older **Codex Native** connector:
+> Choose a unique connector name in the launcher, create a **new** connector with that exact name,
+> and set its permissions to **Allow all actions**. Do not rename, refresh, or reuse an older
+> **Codex Native** connector:
 > ChatGPT caches the public MCP contract by connector identity, and **Allow low-risk actions**
 > blocks commands and patches before they reach the Codex harness.
 
@@ -148,16 +149,18 @@ not expose a public IP, open an inbound port, or require router forwarding.
 2. Open **MCP** in the launcher. Create the Tunnel and a regular API key on the same OpenAI account
    that will use the ChatGPT connector; creating the key is free and does not consume model API
    credits.
-3. Paste the Tunnel ID and API key, then press **Connect harness**.
+3. Choose a unique connector name, paste the Tunnel ID and API key, then press **Connect harness**.
 4. Enable **Developer Mode** in ChatGPT settings. Create a **new** connector using **Tunnel**, select
-   that exact Tunnel, set **Authentication** to **None**, and name it exactly **Codex Native2**.
+   that exact Tunnel, set **Authentication** to **None**, and use the exact connector name shown by
+   the launcher.
 5. If an older **Codex Native** connector exists, leave it untouched. Do not rename or refresh it:
    ChatGPT caches the public MCP contract by connector identity, and this release uses a new direct
-   turn-token contract. Under **Permissions** on **Codex Native2**, choose **Allow all actions**;
+   turn-token contract. Under **Permissions** on the new connector, choose **Allow all actions**;
    **Allow low-risk actions** blocks commands and patches before they reach this runtime. The outer
    Codex harness still enforces its sandbox and approvals.
-6. Run **Verify runtime**. It selects **Codex Native2** exactly. If only **Codex Native** is found,
-   verification fails with an explicit migration error instead of accepting the legacy connector.
+6. Run **Verify runtime**. It selects the configured connector name exactly. If only **Codex Native**
+   is found, verification fails with an explicit migration error instead of accepting the legacy
+   connector.
 
 Write/modify actions also require the ChatGPT workspace and its administrator policy to permit
 them. See
@@ -213,7 +216,7 @@ bun run app:package
 state, browser cookies/login, ChatGPT account, configuration, sandboxed `CODEX_HOME`, chats,
 diagnostics, broker, and tunnel profile. It can run beside the normal launcher and never starts a
 Responses daemon or changes Codex. Optional Full setup starts and supervises only its isolated MCP
-tunnel, using the distinct ChatGPT connector name `Codex Native2 DEV`.
+tunnel, using the distinct default ChatGPT connector name `Codex Native2 DEV`.
 
 `dev:chat` is a named, persistent synthetic outer-Codex harness. It executes the current working
 tree through that isolated launcher browser, Temporary Chat, prompt compiler, Responses parser, and
@@ -223,8 +226,8 @@ not open a Responses listener, change `openai_base_url`, stop the live daemon, o
 Run it without a message for `/status`, `/fill 30000`, `/compact`, `/model`, and `/reset` commands.
 Sign in and initialize the profile once inside the window labelled **DEV**. Configure optional Full
 harness only for simulated tool rounds; its launcher keeps the DEV tunnel ready while named chats
-attach their broker on demand. Production credentials and the `Codex Native2` connector are never
-reused implicitly. See
+attach their broker on demand. Production credentials and the configured production connector are
+never reused implicitly. See
 [DEV chat harness](docs/dev-chat.md).
 
 - [Architecture](docs/architecture.md)

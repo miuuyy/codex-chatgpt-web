@@ -1285,6 +1285,14 @@ code {
   border-top: 1px solid var(--color-border);
 }
 
+.credential-fields {
+  margin-top: 10px;
+}
+
+.connector-name-field + .mcp-step-two-hint {
+  margin-top: 8px;
+}
+
 .field-row {
   display: grid;
   min-height: 54px;

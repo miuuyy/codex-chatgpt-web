@@ -70,6 +70,23 @@ test("MCP connection remains unavailable until the model catalog is verified", (
   assert.match(appSource, /\|\| !snapshot\.state\.codexCatalogVerified/);
 });
 
+test("MCP setup lets the user choose the connector name and forwards it to the runtime", () => {
+  assert.match(
+    appSource,
+    /const hasExistingConnector = devProfile[\s\S]*?snapshot\.mcpCredentialsConfigured[\s\S]*?snapshot\.state\.mcpRuntimeInstalled === true;/,
+  );
+  assert.match(
+    appSource,
+    /const \[connectorName, setConnectorName\] = useState\(\s*hasExistingConnector \? snapshot\.connectorName : "",\s*\);/,
+  );
+  assert.match(appSource, /api!\.setupMcp\(\{\s*appName: connectorName,/);
+  assert.match(
+    appSource,
+    /maxLength=\{80\}[\s\S]*?setConnectorName\(event\.target\.value\)[\s\S]*?placeholder=\{copy\.connectorNamePlaceholder\}/,
+  );
+  assert.match(electronMain, /appName: typeof input\?\.appName === "string" \? input\.appName\.trim\(\) : ""/);
+});
+
 test("MCP navigation remains locked while an operation is active", () => {
   assert.match(appSource, /<McpSurface[\s\S]*?operation=\{operation\}/);
   assert.match(appSource, /const busy = localBusy \|\| operation\?\.status === "running"/);

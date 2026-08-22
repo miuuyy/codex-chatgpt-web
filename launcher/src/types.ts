@@ -135,6 +135,7 @@ export interface LauncherApi {
   uninstallIntegration(): Promise<{ cancelled: true } | { cancelled: false; state: LauncherState }>;
   setupCore(): Promise<{ ok: boolean; stdout: string; restartRequired: boolean }>;
   setupMcp(input: {
+    appName?: string;
     tunnelId?: string;
     runtimeKey?: string;
     replace?: boolean;

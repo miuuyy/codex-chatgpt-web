@@ -28,9 +28,9 @@ For live browser development, start `bun run dev:launcher`, sign in inside the w
 optional Full harness when testing simulated MCP/tool rounds. The DEV profile has
 separate Electron state, browser login, configuration, sandboxed `CODEX_HOME`, broker, and tunnel
 identity. Its launcher supervises the tunnel without starting a Responses daemon; named chats own
-only their turn broker. Use the separate `Codex Native2 DEV` connector and leave production
-`Codex Native2` unchanged. It can coexist with the normal launcher without replacing the Codex
-route or binding its Responses port. Use `/fill TOKENS` and `/compact` to reproduce context-boundary work; see
+only their turn broker. Use the separate `Codex Native2 DEV` connector and leave the configured
+production connector unchanged. It can coexist with the normal launcher without replacing the
+Codex route or binding its Responses port. Use `/fill TOKENS` and `/compact` to reproduce context-boundary work; see
 [docs/dev-chat.md](docs/dev-chat.md).
 
 Browser UI changes should include the exact observed DOM evidence and a reproducible test fixture.
