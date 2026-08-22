@@ -151,8 +151,7 @@ export interface SetCodexIntegrationActiveResult {
 }
 
 export interface CodexModelContextOverride {
-  contextWindow?: number;
-  autoCompactTokenLimit?: number;
+  contextWindow: number;
 }
 
 export function getCodexHome(): string {

@@ -135,26 +135,20 @@ export function augmentNativeModelCatalog(
   }
   const template = selectNativeTemplate(nativeModels, config);
   if (contextOverride) {
-    // These are top-level Codex settings, not per-model ones. Apply them to every native row so
-    // switching native models cannot silently restore the smaller catalog defaults. Routed Web
-    // rows retain their adapter-owned measured limits below.
+    // model_context_window is a single top-level Codex setting, not a per-model one. Apply its
+    // advertised maximum to every native row so switching native models cannot silently clamp the
+    // effective override. Codex itself applies context_window and auto-compaction configuration.
     for (const candidate of nativeModels) {
       const modelSlug = slug(candidate);
       if (!modelSlug) continue;
       const model = object(candidate, `native ${modelSlug} model`);
-      if (contextOverride.contextWindow !== undefined) {
-        const current = model.max_context_window;
-        if (current !== undefined && current !== null
-          && (typeof current !== "number" || !Number.isSafeInteger(current) || current <= 0)) {
-          throw new Error(`Native ${modelSlug} max_context_window must be a positive integer`);
-        }
-        if (current === undefined || current === null || current < contextOverride.contextWindow) {
-          model.max_context_window = contextOverride.contextWindow;
-        }
-        model.context_window = contextOverride.contextWindow;
+      const current = model.max_context_window;
+      if (current !== undefined && current !== null
+        && (typeof current !== "number" || !Number.isSafeInteger(current) || current <= 0)) {
+        throw new Error(`Native ${modelSlug} max_context_window must be a positive integer`);
       }
-      if (contextOverride.autoCompactTokenLimit !== undefined) {
-        model.auto_compact_token_limit = contextOverride.autoCompactTokenLimit;
+      if (current === undefined || current === null || current < contextOverride.contextWindow) {
+        model.max_context_window = contextOverride.contextWindow;
       }
     }
   }

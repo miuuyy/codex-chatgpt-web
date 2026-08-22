@@ -102,8 +102,9 @@ auto-compaction reserve. Usage is counted with the GPT-5 tokenizer plus fixed pl
 reserves, rather than inferred from character length. The ChatGPT composer also has an independent
 inline-size boundary: usage accounting asks Codex to compact before that boundary, and a prompt
 that still exceeds the proven hard ceiling fails explicitly before any browser turn opens.
-Top-level `model_context_window` and `model_auto_compact_token_limit` overrides are applied only to
-the proxied native Codex rows; routed ChatGPT Web models retain their measured adapter-owned limits.
+Top-level `model_context_window` raises only the proxied native rows' advertised maximum, allowing
+Codex to apply its own configured context override without clamping. Routed ChatGPT Web models
+retain their measured adapter-owned limits.
 
 Routed compaction v1/v2 runs as a dedicated read-only browser summarization turn with no broker or
 local tools, then returns the native replacement-history shape expected by Codex. A prompt-level

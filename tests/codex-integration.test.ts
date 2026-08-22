@@ -42,7 +42,7 @@ describe("reversible native Codex route integration", () => {
     expect(getCodexHome()).toBe(join(homedir(), "custom-codex-home"));
   });
 
-  test("reads explicit native context and compaction overrides from Codex config", () => {
+  test("reads an explicit native context override without requiring a selected model", () => {
     const { codexHome } = fixture();
     writeFileSync(
       join(codexHome, "config.toml"),
@@ -55,31 +55,6 @@ describe("reversible native Codex route integration", () => {
 
     expect(readCodexModelContextOverride()).toEqual({
       contextWindow: 1_000_000,
-      autoCompactTokenLimit: 900_000,
-    });
-  });
-
-  test("reads an explicit native compaction override independently", () => {
-    const { codexHome } = fixture();
-    writeFileSync(
-      join(codexHome, "config.toml"),
-      "model_auto_compact_token_limit = 456_789\n",
-    );
-
-    expect(readCodexModelContextOverride()).toEqual({
-      autoCompactTokenLimit: 456_789,
-    });
-  });
-
-  test("preserves a zero native compaction threshold accepted by Codex", () => {
-    const { codexHome } = fixture();
-    writeFileSync(
-      join(codexHome, "config.toml"),
-      "model_auto_compact_token_limit = 0\n",
-    );
-
-    expect(readCodexModelContextOverride()).toEqual({
-      autoCompactTokenLimit: 0,
     });
   });
 

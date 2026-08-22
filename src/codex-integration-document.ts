@@ -78,7 +78,7 @@ export function findTopLevelAssignment(lines: string[], key: string): PreviousAs
   return matches[0] ?? { present: false };
 }
 
-function findTopLevelInteger(lines: string[], key: string): number | undefined {
+function findTopLevelPositiveInteger(lines: string[], key: string): number | undefined {
   const regex = assignmentRegex(key);
   const matches: string[] = [];
   for (let index = 0; index < firstTableIndex(lines); index += 1) {
@@ -90,17 +90,9 @@ function findTopLevelInteger(lines: string[], key: string): number | undefined {
   if (matches.length > 1) throw new Error(`Codex config contains duplicate top-level ${key} assignments`);
   if (matches.length === 0) return undefined;
   const normalized = matches[0]!.replaceAll("_", "");
-  if (!/^-?\d+$/.test(normalized)) throw new Error(`${key} in Codex config must be an integer`);
+  if (!/^\d+$/.test(normalized)) throw new Error(`${key} in Codex config must be a positive integer`);
   const value = Number(normalized);
-  if (!Number.isSafeInteger(value)) throw new Error(`${key} in Codex config must be an integer`);
-  return value;
-}
-
-function findTopLevelPositiveInteger(lines: string[], key: string): number | undefined {
-  const value = findTopLevelInteger(lines, key);
-  if (value !== undefined && value <= 0) {
-    throw new Error(`${key} in Codex config must be a positive integer`);
-  }
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${key} in Codex config must be a positive integer`);
   return value;
 }
 
@@ -110,15 +102,7 @@ export function readCodexModelContextOverride(): CodexModelContextOverride | und
   const text = readFileSync(path, "utf8");
   const lines = splitLines(text);
   const contextWindow = findTopLevelPositiveInteger(lines, "model_context_window");
-  const autoCompactTokenLimit = findTopLevelInteger(
-    lines,
-    "model_auto_compact_token_limit",
-  );
-  if (contextWindow === undefined && autoCompactTokenLimit === undefined) return undefined;
-  return {
-    ...(contextWindow === undefined ? {} : { contextWindow }),
-    ...(autoCompactTokenLimit === undefined ? {} : { autoCompactTokenLimit }),
-  };
+  return contextWindow === undefined ? undefined : { contextWindow };
 }
 
 export function assignments(lines: string[]): Record<ManagedAssignmentKey, PreviousAssignment> {

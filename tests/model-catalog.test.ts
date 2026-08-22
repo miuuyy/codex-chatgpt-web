@@ -158,40 +158,24 @@ describe("native /models augmentation", () => {
     });
   });
 
-  test("honors explicit Codex context and compaction overrides only for native models", () => {
+  test("raises only native maximum windows for an explicit Codex context override", () => {
     const native = source();
     const nativeSnapshot = structuredClone(native);
     const config = defaultConfig("full");
     const result = augmentNativeModelCatalog(native, config, {
       contextWindow: 371_851,
-      autoCompactTokenLimit: 333_333,
     });
     const models = result.models as Array<Record<string, unknown>>;
     const originalModels = nativeSnapshot.models as Array<Record<string, unknown>>;
 
     expect(native).toEqual(nativeSnapshot);
     expect(models.slice(0, 3)).toEqual([
-      {
-        ...originalModels[0],
-        context_window: 371_851,
-        max_context_window: 371_851,
-        auto_compact_token_limit: 333_333,
-      },
-      {
-        ...originalModels[1],
-        context_window: 371_851,
-        max_context_window: 371_851,
-        auto_compact_token_limit: 333_333,
-        multi_agent_version: "v1",
-      },
-      {
-        ...originalModels[2],
-        context_window: 371_851,
-        max_context_window: 371_851,
-        auto_compact_token_limit: 333_333,
-        multi_agent_version: "v1",
-      },
+      { ...originalModels[0], max_context_window: 371_851 },
+      { ...originalModels[1], max_context_window: 371_851, multi_agent_version: "v1" },
+      { ...originalModels[2], max_context_window: 371_851, multi_agent_version: "v1" },
     ]);
+    expect(models[1]!.context_window).toBe(300_000);
+    expect(models[1]!.auto_compact_token_limit).toBe(270_000);
     for (const [index, model] of models.slice(3).entries()) {
       const route = CHATGPT_WEB_MODEL_ROUTES[index]!;
       const limits = resolveChatGptWebContextLimits(
@@ -209,41 +193,15 @@ describe("native /models augmentation", () => {
   test("never lowers a native window that already exceeds the Codex context override", () => {
     const native = source();
     const models = native.models as Array<Record<string, unknown>>;
-    models[0]!.max_context_window = 1_000_000;
+    models[1]!.max_context_window = 1_000_000;
     const result = augmentNativeModelCatalog(native, defaultConfig("full"), {
       contextWindow: 371_851,
     });
 
-    const overridden = (result.models as Array<Record<string, unknown>>)[0]!;
-    expect(overridden.context_window).toBe(371_851);
+    const overridden = (result.models as Array<Record<string, unknown>>)[1]!;
+    expect(overridden.context_window).toBe(300_000);
     expect(overridden.max_context_window).toBe(1_000_000);
-  });
-
-  test("applies a native compaction override without changing native context windows", () => {
-    const native = source();
-    const nativeSnapshot = structuredClone(native);
-    const config = defaultConfig("full");
-    const models = augmentNativeModelCatalog(native, config, {
-      autoCompactTokenLimit: 222_222,
-    }).models as Array<Record<string, unknown>>;
-    const originalModels = nativeSnapshot.models as Array<Record<string, unknown>>;
-
-    expect(native).toEqual(nativeSnapshot);
-    expect(models.slice(0, 3)).toEqual([
-      { ...originalModels[0], auto_compact_token_limit: 222_222 },
-      { ...originalModels[1], auto_compact_token_limit: 222_222, multi_agent_version: "v1" },
-      { ...originalModels[2], auto_compact_token_limit: 222_222, multi_agent_version: "v1" },
-    ]);
-    for (const [index, model] of models.slice(3).entries()) {
-      const route = CHATGPT_WEB_MODEL_ROUTES[index]!;
-      const limits = resolveChatGptWebContextLimits(
-        route.backendModel,
-        route.adapterEffort,
-        config,
-      );
-      expect(model.context_window).toBe(limits.contextWindow);
-      expect(model.auto_compact_token_limit).toBe(limits.autoCompactTokenLimit);
-    }
+    expect(overridden.auto_compact_token_limit).toBe(270_000);
   });
 
   test("uses an available compatible official model when an account exposes a smaller catalog", () => {
