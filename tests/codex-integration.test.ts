@@ -42,16 +42,44 @@ describe("reversible native Codex route integration", () => {
     expect(getCodexHome()).toBe(join(homedir(), "custom-codex-home"));
   });
 
-  test("reads the selected model's explicit context override from Codex config", () => {
+  test("reads explicit native context and compaction overrides from Codex config", () => {
     const { codexHome } = fixture();
     writeFileSync(
       join(codexHome, "config.toml"),
-      'model = "gpt-5.6-sol"\nmodel_context_window = 371_851 # explicit override\n',
+      [
+        "model_context_window = 1_000_000 # explicit override",
+        "model_auto_compact_token_limit = 900_000",
+        "",
+      ].join("\n"),
     );
 
     expect(readCodexModelContextOverride()).toEqual({
-      model: "gpt-5.6-sol",
-      contextWindow: 371_851,
+      contextWindow: 1_000_000,
+      autoCompactTokenLimit: 900_000,
+    });
+  });
+
+  test("reads an explicit native compaction override independently", () => {
+    const { codexHome } = fixture();
+    writeFileSync(
+      join(codexHome, "config.toml"),
+      "model_auto_compact_token_limit = 456_789\n",
+    );
+
+    expect(readCodexModelContextOverride()).toEqual({
+      autoCompactTokenLimit: 456_789,
+    });
+  });
+
+  test("preserves a zero native compaction threshold accepted by Codex", () => {
+    const { codexHome } = fixture();
+    writeFileSync(
+      join(codexHome, "config.toml"),
+      "model_auto_compact_token_limit = 0\n",
+    );
+
+    expect(readCodexModelContextOverride()).toEqual({
+      autoCompactTokenLimit: 0,
     });
   });
 

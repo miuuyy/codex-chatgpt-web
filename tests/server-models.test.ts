@@ -25,7 +25,7 @@ test("proxies official /models auth and query, then appends the fixed ChatGPT We
         tool_mode: "code_mode_only",
       }],
     }, { headers: { etag: "native-etag" } });
-  }, () => ({ model: "gpt-5.6-sol", contextWindow: 371_851 }));
+  }, () => ({ contextWindow: 371_851, autoCompactTokenLimit: 333_333 }));
 
   expect(upstream!.url).toBe("https://chatgpt.com/backend-api/codex/models?client_version=1.2.3");
   expect(upstream!.method).toBe("GET");
@@ -52,7 +52,9 @@ test("proxies official /models auth and query, then appends the fixed ChatGPT We
     "chatgpt-web/extra-high",
     "chatgpt-web/pro",
   ]);
+  expect(body.models[0]!.context_window).toBe(371_851);
   expect(body.models[0]!.max_context_window).toBe(371_851);
+  expect(body.models[0]!.auto_compact_token_limit).toBe(333_333);
   expect(body.models[0]!.multi_agent_version).toBe("v1");
   for (const [index, model] of body.models.slice(1).entries()) {
     const route = CHATGPT_WEB_MODEL_ROUTES[index]!;
