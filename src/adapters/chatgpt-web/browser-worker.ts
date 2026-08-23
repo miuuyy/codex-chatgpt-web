@@ -297,6 +297,7 @@ const browserStageTimeouts = {
 export const CHATGPT_PROMPT_INSERT_CHUNK_CHARS = 16_000;
 const CHATGPT_PROMPT_INSERT_BOUNDARY_LOOKBACK_CHARS = 4_096;
 const CHATGPT_PROMPT_WHITESPACE = /\s/u;
+const CHATGPT_PROMPT_INLINE_CODE_DELIMITER = "`";
 export const CHATGPT_COMPOSER_DOCUMENT_END_KEY = process.platform === "darwin"
   ? "Meta+ArrowDown"
   : "Control+End";
@@ -322,7 +323,12 @@ function promptInsertChunkEnd(text: string, offset: number): number {
     ) {
       whitespaceStart -= 1;
     }
-    if (whitespaceStart > offset) return whitespaceStart;
+    if (
+      whitespaceStart > offset
+      && text[whitespaceStart - 1] !== CHATGPT_PROMPT_INLINE_CODE_DELIMITER
+    ) {
+      return whitespaceStart;
+    }
   }
 
   let end = hardEnd;
@@ -332,6 +338,17 @@ function promptInsertChunkEnd(text: string, offset: number): number {
     && nextCodeUnit >= 0xDC00 && nextCodeUnit <= 0xDFFF) {
     end -= 1;
   }
+  // ChatGPT's Lexical editor can treat a backtick at the end of one bounded native edit as an
+  // inline-code shortcut delimiter. On the next reconciliation it may remove that backtick and a
+  // matching backtick from the already verified prefix, corrupting serialized Markdown or JSON.
+  // Leave the delimiter for the following edit so no intermediate native edit ends on it.
+  while (
+    end > offset
+    && text[end - 1] === CHATGPT_PROMPT_INLINE_CODE_DELIMITER
+  ) {
+    end -= 1;
+  }
+  if (end === offset) return hardEnd;
   return end;
 }
 

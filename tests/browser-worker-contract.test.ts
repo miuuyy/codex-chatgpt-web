@@ -429,6 +429,51 @@ test("prompt insertion avoids a native edit boundary inside a text token", async
   expect(attached).toBe(prompt);
 });
 
+test("prompt chunks avoid a trailing backtick that triggers Lexical inline-code rewriting", async () => {
+  const earlierInlineCode = "`dependency-expert`";
+  const boundaryInlineCode = "`Closed`";
+  const stablePrefix = earlierInlineCode
+    + "x".repeat(CHATGPT_PROMPT_INSERT_CHUNK_CHARS - earlierInlineCode.length);
+  const unstableBoundary = "y".repeat(
+    CHATGPT_PROMPT_INSERT_CHUNK_CHARS - boundaryInlineCode.length,
+  ) + boundaryInlineCode;
+  const prompt = `${stablePrefix}${unstableBoundary} tail`;
+  const inserted: string[] = [];
+  let attached = "";
+  const page = {
+    keyboard: {
+      insertText: async (value: string) => {
+        inserted.push(value);
+        // Model the observed ChatGPT composer failure: when a bounded native edit ends on a
+        // backtick, Lexical drops that delimiter and rewrites an earlier verified prefix.
+        if (value.endsWith("`")) {
+          attached = attached.replace(earlierInlineCode, "dependency-expert`");
+          attached += value.slice(0, -1);
+        } else {
+          attached += value;
+        }
+      },
+    },
+  };
+  const insertPromptText = (ChatGptBrowserWorker.prototype as unknown as {
+    insertPromptText(page: unknown, text: string): Promise<void>;
+  }).insertPromptText;
+
+  await insertPromptText.call({
+    waitForPromptChunkAttached: async (_page: unknown, expected: string) => {
+      expect(attached).toBe(expected);
+    },
+    reanchorPromptCaret: async () => {},
+  }, page, prompt);
+
+  expect(inserted.join("")).toBe(prompt);
+  expect(inserted.slice(0, -1).every(chunk => !chunk.endsWith("`"))).toBeTrue();
+  expect(inserted[0]).toBe(stablePrefix);
+  expect(inserted[1]).toBe(unstableBoundary.slice(0, -1));
+  expect(inserted[2]?.startsWith("` tail")).toBeTrue();
+  expect(attached).toBe(prompt);
+});
+
 test("compaction prompt attachment retries once only before submission evidence", async () => {
   const attachWithRetry = (ChatGptBrowserWorker.prototype as unknown as {
     attachPromptWithCompactionRetry(
