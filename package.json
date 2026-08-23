@@ -1,6 +1,6 @@
 {
   "name": "codex-chatgpt-web",
-  "version": "3.0.0-naakto.2",
+  "version": "3.0.0-naakto.3",
   "private": true,
   "description": "A focused local Responses bridge that runs Codex tasks through a user-authenticated ChatGPT web session.",
   "repository": {

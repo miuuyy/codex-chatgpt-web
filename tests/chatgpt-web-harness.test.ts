@@ -1146,7 +1146,7 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(response.usage.total_tokens).toBe(usage.totalTokens!);
   });
 
-  test("accepts completion only from the response-scoped final answer action", () => {
+  test("treats a stopped non-empty response as a completion candidate without requiring the copy action", () => {
     const state = {
       responsePresent: true,
       running: false,
@@ -1155,7 +1155,9 @@ describe("ChatGPT outer-native harness v4", () => {
     };
     expect(chatGptTurnIsComplete(state)).toBe(true);
     expect(chatGptTurnIsComplete({ ...state, responsePresent: false })).toBe(false);
-    expect(chatGptTurnIsComplete({ ...state, completionActionVisible: false })).toBe(false);
+    expect(chatGptTurnIsComplete({ ...state, running: true })).toBe(false);
+    expect(chatGptTurnIsComplete({ ...state, currentText: "" })).toBe(false);
+    expect(chatGptTurnIsComplete({ ...state, completionActionVisible: false })).toBe(true);
   });
 
   test("requires completed-turn evidence to remain unchanged before accepting it", () => {

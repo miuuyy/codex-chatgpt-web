@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { Page } from "playwright-core";
-import { CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_PROMPT_INSERT_CHUNK_CHARS, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, assertChatGptWebInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, chatGptSubmissionEvidence, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, throwIfChatGptUnusualActivityAlert } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_PROMPT_INSERT_CHUNK_CHARS, ChatGptBrowserWorker, ChatGptCompletionTracker, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, assertChatGptWebInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, chatGptSubmissionEvidence, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, throwIfChatGptUnusualActivityAlert } from "../src/adapters/chatgpt-web/browser-worker";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
@@ -267,18 +267,19 @@ test("large read-only context is inserted as contiguous bounded edits before exa
   }, page, prompt, false);
 
   const inserted = calls.filter(call => call[0] === "insertText").map(call => call[1] ?? "");
-  const fullChunkCount = Math.floor((prompt.length - 1) / CHATGPT_PROMPT_INSERT_CHUNK_CHARS);
+  const chunkCount = Math.ceil(prompt.length / CHATGPT_PROMPT_INSERT_CHUNK_CHARS);
+  const intermediateChunkCount = chunkCount - 1;
   expect(calls.slice(0, 2)).toEqual([["fill", ""], ["focus"]]);
   expect(inserted.every(chunk => chunk.length <= CHATGPT_PROMPT_INSERT_CHUNK_CHARS)).toBeTrue();
-  expect(inserted.length).toBe(Math.ceil(prompt.length / CHATGPT_PROMPT_INSERT_CHUNK_CHARS));
+  expect(inserted.length).toBe(chunkCount);
   expect(inserted.join("")).toBe(prompt);
   expect(calls.filter(call => call[0] === "chunkCommitted")).toEqual(
-    Array.from({ length: fullChunkCount }, (_value, index) => [
+    Array.from({ length: chunkCount }, (_value, index) => [
       "chunkCommitted",
-      String((index + 1) * CHATGPT_PROMPT_INSERT_CHUNK_CHARS),
+      String(Math.min((index + 1) * CHATGPT_PROMPT_INSERT_CHUNK_CHARS, prompt.length)),
     ]),
   );
-  expect(calls.filter(call => call[0] === "reanchor")).toHaveLength(fullChunkCount);
+  expect(calls.filter(call => call[0] === "reanchor")).toHaveLength(intermediateChunkCount);
   expect(calls.filter(call => call[0] === "press")).toEqual([]);
   expect(asserted).toBe(prompt);
 });
@@ -320,7 +321,77 @@ test("multi-chunk prompt insertion repairs a drifted Lexical caret after each ex
     ["chunkCommitted", String(CHATGPT_PROMPT_INSERT_CHUNK_CHARS)],
     ["reanchor"],
     ["insertText", "457"],
+    ["chunkCommitted", String(prompt.length)],
   ]);
+});
+
+test("prompt insertion retries one middle chunk only when the native edit was a verified no-op", async () => {
+  const droppedChunk = "b".repeat(CHATGPT_PROMPT_INSERT_CHUNK_CHARS);
+  const prompt = "a".repeat(CHATGPT_PROMPT_INSERT_CHUNK_CHARS) + droppedChunk + "tail";
+  let attached = "";
+  let droppedChunkAttempts = 0;
+  let reanchors = 0;
+  const page = {
+    keyboard: {
+      insertText: async (value: string) => {
+        if (value === droppedChunk && droppedChunkAttempts++ === 0) return;
+        attached += value;
+      },
+    },
+  };
+  const insertPromptText = (ChatGptBrowserWorker.prototype as unknown as {
+    insertPromptText(page: unknown, text: string): Promise<void>;
+  }).insertPromptText;
+
+  await insertPromptText.call({
+    waitForPromptChunkAttached: async (_page: unknown, expected: string) => {
+      if (attached !== expected) {
+        throw new ChatGptPromptAttachmentIntegrityError("native edit was discarded");
+      }
+    },
+    attachedPromptText: async () => attached,
+    promptTextEquivalent: (expected: string, observed: string) => expected === observed,
+    reanchorPromptCaret: async () => { reanchors += 1; },
+  }, page, prompt);
+
+  expect(attached).toBe(prompt);
+  expect(droppedChunkAttempts).toBe(2);
+  expect(reanchors).toBe(3);
+});
+
+test("prompt insertion never retries a partially committed native edit", async () => {
+  const prompt = "a".repeat(CHATGPT_PROMPT_INSERT_CHUNK_CHARS) + "tail";
+  let attached = "";
+  let tailAttempts = 0;
+  const page = {
+    keyboard: {
+      insertText: async (value: string) => {
+        if (value === "tail") {
+          tailAttempts += 1;
+          attached += value.slice(0, 2);
+          return;
+        }
+        attached += value;
+      },
+    },
+  };
+  const insertPromptText = (ChatGptBrowserWorker.prototype as unknown as {
+    insertPromptText(page: unknown, text: string): Promise<void>;
+  }).insertPromptText;
+
+  await expect(insertPromptText.call({
+    waitForPromptChunkAttached: async (_page: unknown, expected: string) => {
+      if (attached !== expected) {
+        throw new ChatGptPromptAttachmentIntegrityError("native edit was partial");
+      }
+    },
+    attachedPromptText: async () => attached,
+    promptTextEquivalent: (expected: string, observed: string) => expected === observed,
+    reanchorPromptCaret: async () => {},
+  }, page, prompt)).rejects.toThrow("native edit was partial");
+
+  expect(tailAttempts).toBe(1);
+  expect(attached).toBe(`${"a".repeat(CHATGPT_PROMPT_INSERT_CHUNK_CHARS)}ta`);
 });
 
 test("prompt insertion avoids a native edit boundary inside a text token", async () => {
@@ -499,7 +570,7 @@ test("the real compaction envelope survives simulated caret drift at every bound
     reanchorPromptCaret: async () => { caret = attached.length; },
   }, page, compiled.text);
 
-  expect(simulatedDrifts).toBe(Math.floor((compiled.text.length - 1) / CHATGPT_PROMPT_INSERT_CHUNK_CHARS));
+  expect(simulatedDrifts).toBe(Math.ceil(compiled.text.length / CHATGPT_PROMPT_INSERT_CHUNK_CHARS));
   expect(attached).toBe(compiled.text);
 });
 
@@ -548,7 +619,10 @@ test("intermediate prompt chunks keep trailing whitespace for the following nati
   expect(inserted.join("")).toBe(prompt);
   expect(inserted[0]).toBe("x".repeat(CHATGPT_PROMPT_INSERT_CHUNK_CHARS - 1));
   expect(inserted[1]).toBe("\u00A0 tail");
-  expect(verifiedPrefixes).toEqual(["x".repeat(CHATGPT_PROMPT_INSERT_CHUNK_CHARS - 1)]);
+  expect(verifiedPrefixes).toEqual([
+    "x".repeat(CHATGPT_PROMPT_INSERT_CHUNK_CHARS - 1),
+    prompt,
+  ]);
 });
 
 test("prompt insertion stops after its stage is aborted before another native edit", async () => {
@@ -1016,6 +1090,9 @@ test("tool-capable prompts use the shared Playwright connector selection before 
       return selected ? selectedComposer : initialComposer;
     },
     reanchorPromptCaret: async () => { calls.push(["reanchor"]); },
+    waitForPromptChunkAttached: async (_page: unknown, expected: string) => {
+      calls.push(["chunkCommitted", expected]);
+    },
     assertPromptAttached: async () => { calls.push(["assertPrompt"]); },
   }, page, "context", true);
 
@@ -1030,6 +1107,7 @@ test("tool-capable prompts use the shared Playwright connector selection before 
     ["selectedFocus"],
     ["press", CHATGPT_COMPOSER_DOCUMENT_END_KEY],
     ["insertText", " context"],
+    ["chunkCommitted", "context"],
     ["assertPrompt"],
   ]);
 });
@@ -1776,6 +1854,51 @@ test("browser DOM health fails closed on a vanished or empty ChatGPT response", 
   expect(missingCompletionAction.update(completedWithoutMarker, 1_750)).toContain("DOM may have changed");
 });
 
+test("browser completion accepts a stable final answer when ChatGPT omits the copy action", () => {
+  const completion = new ChatGptCompletionTracker(200, 500);
+  const markerless = {
+    responsePresent: true,
+    running: false,
+    currentText: "complete answer",
+    currentHtml: "<p>complete answer</p>",
+    completionActionVisible: false,
+  };
+  expect(completion.update(markerless, 1_000)).toBeFalse();
+  expect(completion.update(markerless, 1_499)).toBeFalse();
+  expect(completion.update(markerless, 1_500)).toBeTrue();
+});
+
+test("browser completion does not accept markerless output while generation is active or changing", () => {
+  const completion = new ChatGptCompletionTracker(200, 500);
+  const markerless = {
+    responsePresent: true,
+    running: false,
+    currentText: "partial",
+    currentHtml: "<p>partial</p>",
+    completionActionVisible: false,
+  };
+  expect(completion.update(markerless, 1_000)).toBeFalse();
+  expect(completion.update({ ...markerless, running: true }, 1_400)).toBeFalse();
+  expect(completion.update(markerless, 1_500)).toBeFalse();
+  expect(completion.update({ ...markerless, currentText: "partial answer", currentHtml: "<p>partial answer</p>" }, 1_900)).toBeFalse();
+  expect(completion.update({ ...markerless, currentText: "partial answer", currentHtml: "<p>partial answer</p>" }, 2_399)).toBeFalse();
+  expect(completion.update({ ...markerless, currentText: "partial answer", currentHtml: "<p>partial answer</p>" }, 2_400)).toBeTrue();
+});
+
+test("browser completion still uses the faster settle window when the copy action is present", () => {
+  const completion = new ChatGptCompletionTracker(200, 500);
+  const completed = {
+    responsePresent: true,
+    running: false,
+    currentText: "complete answer",
+    currentHtml: "<p>complete answer</p>",
+    completionActionVisible: true,
+  };
+  expect(completion.update(completed, 1_000)).toBeFalse();
+  expect(completion.update(completed, 1_199)).toBeFalse();
+  expect(completion.update(completed, 1_200)).toBeTrue();
+});
+
 test("stalled-turn diagnostics record DOM metrics without response or overlay content", () => {
   const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
   const start = workerSource.indexOf("private async stalledTurnDiagnostic");
@@ -1787,11 +1910,12 @@ test("stalled-turn diagnostics record DOM metrics without response or overlay co
   expect(diagnosticSource).not.toMatch(/\bariaLabel:\s*candidate\.getAttribute/);
 });
 
-test("browser completion requires ChatGPT's response-scoped copy action", () => {
+test("browser completion uses ChatGPT's response-scoped copy action as supporting evidence", () => {
   const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
   const sessionSource = readFileSync(new URL("../src/chatgpt-session.ts", import.meta.url), "utf8");
   expect(sessionSource).toContain('button[data-testid="copy-turn-action-button"]');
   expect(workerSource).toContain("CHATGPT_COMPLETION_ACTION_SELECTOR");
+  expect(workerSource).toContain("CHATGPT_MARKERLESS_COMPLETION_SETTLE_MS");
   expect(workerSource).not.toContain('root.querySelectorAll<HTMLElement>("button")');
 });
 

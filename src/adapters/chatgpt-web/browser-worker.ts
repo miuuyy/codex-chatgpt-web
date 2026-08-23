@@ -85,6 +85,7 @@ export const CHATGPT_RESPONSE_DOM_GRACE_MS = 60_000;
 export const CHATGPT_EMPTY_RESPONSE_GRACE_MS = 10_000;
 export const CHATGPT_COMPLETION_ACTION_GRACE_MS = 60_000;
 export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
+export const CHATGPT_MARKERLESS_COMPLETION_SETTLE_MS = 5_000;
 export const CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS = 60_000;
 const CHATGPT_SMOKE_TEXT = "Reply with exactly: CODEX WEB GPT READY";
 const CHATGPT_SMOKE_EXPECTED = "CODEX WEB GPT READY";
@@ -384,8 +385,7 @@ export function chatGptTurnIsComplete(state: {
 }): boolean {
   return state.responsePresent
     && !state.running
-    && state.currentText.length > 0
-    && state.completionActionVisible;
+    && state.currentText.length > 0;
 }
 
 export type ChatGptSubmissionEvidence = "user_turn" | "assistant_turn" | "generation_running";
@@ -406,7 +406,10 @@ export function chatGptSubmissionEvidence(state: {
 export class ChatGptCompletionTracker {
   private candidate?: { signature: string; since: number };
 
-  constructor(private readonly stableMs = CHATGPT_COMPLETION_SETTLE_MS) {}
+  constructor(
+    private readonly stableMs = CHATGPT_COMPLETION_SETTLE_MS,
+    private readonly markerlessStableMs = CHATGPT_MARKERLESS_COMPLETION_SETTLE_MS,
+  ) {}
 
   update(state: Parameters<typeof chatGptTurnIsComplete>[0], now = Date.now()): boolean {
     if (!chatGptTurnIsComplete(state)) {
@@ -418,7 +421,10 @@ export class ChatGptCompletionTracker {
       this.candidate = { signature, since: now };
       return false;
     }
-    return now - this.candidate.since >= this.stableMs;
+    const requiredStableMs = state.completionActionVisible
+      ? this.stableMs
+      : this.markerlessStableMs;
+    return now - this.candidate.since >= requiredStableMs;
   }
 }
 
@@ -1668,13 +1674,39 @@ export class ChatGptBrowserWorker {
     for (let offset = 0; offset < text.length;) {
       throwIfPromptAttachmentAborted(abortSignal);
       const end = promptInsertChunkEnd(text, offset);
-      await page.keyboard.insertText(text.slice(offset, end));
-      throwIfPromptAttachmentAborted(abortSignal);
+      const chunk = text.slice(offset, end);
+      const previousPrefix = text.slice(0, offset).trimStart();
+      const expectedPrefix = text.slice(0, end).trimStart();
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await page.keyboard.insertText(chunk);
+        throwIfPromptAttachmentAborted(abortSignal);
+        try {
+          await this.waitForPromptChunkAttached(page, expectedPrefix, abortSignal);
+          break;
+        } catch (error) {
+          if (attempt > 0 || !(error instanceof ChatGptPromptAttachmentIntegrityError)) throw error;
+
+          // Input.insertText can occasionally return after Lexical has discarded the native edit.
+          // Retry only when the live editor is still exactly at the last verified prefix. Check
+          // again after restoring focus/caret so a delayed commit can never produce a duplicate.
+          const observedAfterFailure = await this.attachedPromptText(page);
+          if (!this.promptTextEquivalent(previousPrefix, observedAfterFailure)) throw error;
+          if (previousPrefix.length > 0) {
+            await this.reanchorPromptCaret(page, abortSignal);
+          } else {
+            const composer = await this.activeComposer(page);
+            await composer.focus();
+            await page.keyboard.press(CHATGPT_COMPOSER_DOCUMENT_END_KEY);
+            await settleChatGptUi();
+          }
+          throwIfPromptAttachmentAborted(abortSignal);
+          const observedBeforeRetry = await this.attachedPromptText(page);
+          if (!this.promptTextEquivalent(previousPrefix, observedBeforeRetry)) throw error;
+        }
+      }
       if (end < text.length) {
         // Lexical can rebuild the active block after an exact commit and move its native selection.
         // Re-anchor only after the verified prefix is stable, before the next irreversible edit.
-        const expectedPrefix = text.slice(0, end).trimStart();
-        await this.waitForPromptChunkAttached(page, expectedPrefix, abortSignal);
         await this.reanchorPromptCaret(page, abortSignal);
       }
       offset = end;
