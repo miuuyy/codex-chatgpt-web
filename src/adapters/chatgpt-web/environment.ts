@@ -316,6 +316,48 @@ function hasAssistantOutputBetween(input: unknown[], startIndex: number, endInde
   return false;
 }
 
+/**
+ * Codex only emits the <environment_context> envelope when a task starts or its environment
+ * changes, not on every follow-up turn, and current builds (0.147+) no longer stamp per-item
+ * turn IDs on replayed history. When a thread is resumed — or the local-tool harness is enabled
+ * after the thread already has turns — the trusted envelope sits far behind the active prompt with
+ * neither structural adjacency nor a per-item turn_id, so `environmentBeforeUser` and the replay
+ * loop above (both keyed on `itemTurnId`) miss it and the thread can never bootstrap its stored
+ * authority. Accept a historical server-owned <environment_context> only when genuine assistant
+ * output separates it from the active prompt (evidence of a real resumed transcript) and its
+ * filesystem authority still agrees with the authoritative canonical turn metadata, so a
+ * user-authored envelope typed into a chat message cannot qualify.
+ */
+function canonicalMetadataEnvironmentInReplayedThread(
+  input: unknown[],
+  activeUserIndex: number,
+  metadata: Record<string, unknown> | undefined,
+): string | undefined {
+  if (activeUserIndex <= 0 || !metadata) return undefined;
+  const metadataTurnId = typeof metadata.turn_id === "string" ? metadata.turn_id.trim() : "";
+  const metadataSandbox = sandboxTypeFromMetadata(canonicalSandboxMetadata(metadata));
+  if (!metadataTurnId || !metadataSandbox) return undefined;
+
+  for (let index = activeUserIndex - 1; index > 0; index -= 1) {
+    const item = record(input[index]);
+    if (item?.type !== "message" || item.role !== "user" || typeof item.id !== "string" || !item.id) continue;
+    if (!hasAssistantOutputBetween(input, index + 1, activeUserIndex)) continue;
+    const content = Array.isArray(item.content) ? item.content : [];
+    for (const part of content) {
+      const text = record(part)?.text;
+      if (typeof text !== "string") continue;
+      const trimmed = text.trim();
+      if (!/^<environment_context>[\s\S]*<\/environment_context>$/.test(trimmed)) continue;
+      // Bind to canonical metadata without requiring metadata-bound roots so Codex's own auxiliary
+      // roots (e.g. .codex visualization scratch) are tolerated exactly as on the first-turn path;
+      // the primary cwd is still constrained to the trusted metadata workspaces inside the check.
+      if (!environmentMatchesCanonicalMetadata(trimmed, metadata, false)) continue;
+      return trimmed;
+    }
+  }
+  return undefined;
+}
+
 function rawEnvironmentText(parsed: CodexParsedRequest): string | undefined {
   const body = record(parsed._rawBody);
   const input = Array.isArray(body?.input) ? body.input : [];
@@ -386,6 +428,13 @@ function rawEnvironmentText(parsed: CodexParsedRequest): string | undefined {
       if (bounded === historical) return bounded;
     }
   }
+
+  // Final fallback: recover a resumed thread's trusted envelope when Codex replays the transcript
+  // without per-item turn IDs and without structural adjacency to the active prompt. This lets the
+  // thread environment store bootstrap its authority mid-conversation instead of failing every
+  // tool-capable turn with a missing-cwd error.
+  const replayed = canonicalMetadataEnvironmentInReplayedThread(input, activeUserIndex, metadata);
+  if (replayed) return replayed;
   return undefined;
 }
 
