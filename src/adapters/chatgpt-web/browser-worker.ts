@@ -169,6 +169,18 @@ export async function throwIfChatGptTerminalErrorAlert(scope: ChatGptTextScope):
   );
 }
 
+const chatGptUnusualActivityAlert = (scope: ChatGptTextScope): Locator => scope
+  .getByText(/Unusual activity has been detected from your device\.[\s\S]*Try again later\.(?:\s*\([^)]+\))?/i)
+  .last();
+
+export async function throwIfChatGptUnusualActivityAlert(scope: ChatGptTextScope): Promise<void> {
+  if (!await chatGptUnusualActivityAlert(scope).isVisible().catch(() => false)) return;
+  throw new ChatGptWebAdapterError(
+    "ChatGPT temporarily blocked the turn after detecting unusual activity from this device. Retry later.",
+    { status: 429, errorType: "rate_limit_error", code: "unusual_activity_detected", retryable: true },
+  );
+}
+
 function chatGptBrowserTabClosedError(): ChatGptWebAdapterError {
   return new ChatGptWebAdapterError(
     "The ChatGPT browser tab was closed, so the Codex turn was cancelled.",
@@ -1246,6 +1258,7 @@ export class ChatGptBrowserWorker {
       if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
       await throwIfChatGptSessionFailureAlert(page);
       await throwIfChatGptTerminalErrorAlert(responseTurn);
+      await throwIfChatGptUnusualActivityAlert(responseTurn);
       const evidence = await this.currentSubmissionEvidence(
         page,
         userTurns,
@@ -2284,6 +2297,7 @@ export class ChatGptBrowserWorker {
 
         await throwIfChatGptSessionFailureAlert(page);
         await throwIfChatGptTerminalErrorAlert(responseTurn);
+        await throwIfChatGptUnusualActivityAlert(responseTurn);
 
         if (mode.localTools && await resolveChatGptToolConfirmation(
           page,

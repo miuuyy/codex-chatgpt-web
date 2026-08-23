@@ -164,7 +164,6 @@ export function createChatGptWebAdapter(
 ): ProviderAdapter {
   const worker = ChatGptBrowserWorker.forProvider(provider);
   const broker = dependencies.broker ?? TurnBroker.forSocket(brokerSocketPath(provider));
-  const timeoutMs = provider.chatgptWeb?.turnTimeoutMs;
   const configuredCapabilities: ChatGptWebCapabilities = {
     localToolsEnabled: provider.chatgptWeb?.localToolsEnabled === true,
     solAvailable: provider.chatgptWeb?.solAvailable !== false,
@@ -272,7 +271,7 @@ export function createChatGptWebAdapter(
       prepare: async () => {
         const turnToken = await broker.register(
           environment,
-          timeoutMs === undefined ? undefined : timeoutMs + 60_000,
+          undefined,
           traceId,
         );
         activeToken = turnToken;

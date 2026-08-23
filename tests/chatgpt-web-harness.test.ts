@@ -16,7 +16,7 @@ import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt, withoutSupersededModelSwitchContracts } from "../src/adapters/chatgpt-web/prompt";
 import { MAX_CHATGPT_WEB_TURN_RETRIES } from "../src/adapters/chatgpt-web/retry-policy";
 import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSessions, chatGptCompactionSourceExecutionKey, chatGptTurnExecutionKey } from "../src/adapters/chatgpt-web/turn-execution";
-import { callTurnBroker, TurnBroker, type BrokerToolResult } from "../src/adapters/chatgpt-web/turn-broker";
+import { callTurnBroker, TurnBroker, type BrokerToolResult, type TurnBrokerOwner } from "../src/adapters/chatgpt-web/turn-broker";
 import { defaultBrokerEndpoint } from "../src/config";
 import { estimateChatGptWebUsage } from "../src/adapters/chatgpt-web/usage";
 import { decodeCompactionSummary, SUMMARY_PREFIX } from "../src/responses/compaction";
@@ -1361,6 +1361,53 @@ describe("ChatGPT outer-native harness v4", () => {
     await expect(callTurnBroker(socketPath, { method: "resolve", bindingId: claimed.bindingId }))
       .rejects.toThrow("has already finished");
     await broker.close();
+  });
+
+  test("configured browser timeouts do not impose a broker token TTL on a live tool turn", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-h3-live-token-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: "browser://chatgpt-live-token-test",
+      chatgptWeb: { brokerSocketPath: socketPath, turnTimeoutMs: 30_000, localToolsEnabled: true, solAvailable: true, proAvailable: true },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    const broker = TurnBroker.forSocket(socketPath);
+    const registeredTtls: Array<number | undefined> = [];
+    const owner: TurnBrokerOwner = {
+      register: async (environment, ttlMs, traceId) => {
+        registeredTtls.push(ttlMs);
+        return broker.register(environment, ttlMs, traceId);
+      },
+      updateEnvironment: (token, environment) => broker.updateEnvironment(token, environment),
+      nextToolBatch: (token, signal) => broker.nextToolBatch(token, signal),
+      completeTool: (token, callId, result) => broker.completeTool(token, callId, result),
+      revoke: token => broker.revoke(token),
+    };
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+      const prepared = await turn.prepare();
+      try {
+        const answer = "Live token remained owned by the browser turn";
+        turn.onTextDelta(answer);
+        return answer;
+      } finally {
+        prepared.release();
+      }
+    };
+
+    try {
+      const events: AdapterEvent[] = [];
+      await createChatGptWebAdapter(provider, { broker: owner }).runTurn!(
+        rawWireRequest(environmentXml),
+        { headers: new Headers() },
+        event => events.push(event),
+      );
+      expect(registeredTtls).toEqual([undefined]);
+      expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      await broker.close();
+    }
   });
 
   test("recalculates usage from tool results added during the active browser turn", async () => {
