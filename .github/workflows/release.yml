@@ -155,7 +155,7 @@ jobs:
           mapfile -d '' release_files < <(find release-assets -type f -print0)
           test "${#release_files[@]}" -gt 0
           release_flags=(--latest)
-          if [[ "$RELEASE_TAG" == *-* ]]; then
+          if [[ "$RELEASE_TAG" =~ (^|[-.])(alpha|beta|rc)([-.]|$) ]]; then
             release_flags=(--prerelease --latest=false)
           fi
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
