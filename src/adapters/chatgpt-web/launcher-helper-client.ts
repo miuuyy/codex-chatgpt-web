@@ -178,6 +178,7 @@ export class LauncherBrowserHelperClient {
           config: {
             appName: this.config.appName,
             browserHostDescriptorPath: this.config.browserHostDescriptorPath!,
+            browserDiagnosticsPath: this.config.browserDiagnosticsPath,
             turnTimeoutMs: this.config.turnTimeoutMs,
             autoApproveToolCalls: this.config.autoApproveToolCalls,
           },
@@ -219,15 +220,19 @@ export class LauncherBrowserHelperClient {
       return this.ready;
     }
     const descriptor = readLauncherBrowserHostDescriptor(this.config.browserHostDescriptorPath!);
-    const child = spawn(descriptor.helper.executable, [descriptor.helper.script], {
-      env: {
-        ...process.env,
-        ELECTRON_RUN_AS_NODE: "1",
-        CODEX_CHATGPT_WEB_BROWSER_HELPER_PROCESS: "1",
+    const child = spawn(
+      descriptor.helper.executable,
+      [this.config.browserHelperScriptPath ?? descriptor.helper.script],
+      {
+        env: {
+          ...process.env,
+          ELECTRON_RUN_AS_NODE: "1",
+          CODEX_CHATGPT_WEB_BROWSER_HELPER_PROCESS: "1",
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
       },
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    });
+    );
     this.child = child;
     this.ready = new Promise<void>((resolveReady, rejectReady) => {
       this.readyResolve = resolveReady;

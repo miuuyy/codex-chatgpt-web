@@ -158,14 +158,11 @@ describe("native /models augmentation", () => {
     });
   });
 
-  test("honors an explicit Codex context override without replacing or reordering native models", () => {
+  test("raises only native maximum windows for an explicit Codex context override", () => {
     const native = source();
     const nativeSnapshot = structuredClone(native);
     const config = defaultConfig("full");
-    // model_context_window is one top-level Codex setting, so it must not depend on which model
-    // the config's `model` line happens to name - that line can hold a ChatGPT Web slug.
     const result = augmentNativeModelCatalog(native, config, {
-      model: "chatgpt-web/medium",
       contextWindow: 371_851,
     });
     const models = result.models as Array<Record<string, unknown>>;
@@ -178,6 +175,7 @@ describe("native /models augmentation", () => {
       { ...originalModels[2], max_context_window: 371_851, multi_agent_version: "v1" },
     ]);
     expect(models[1]!.context_window).toBe(300_000);
+    expect(models[1]!.auto_compact_token_limit).toBe(270_000);
     for (const [index, model] of models.slice(3).entries()) {
       const route = CHATGPT_WEB_MODEL_ROUTES[index]!;
       const limits = resolveChatGptWebContextLimits(
@@ -195,13 +193,15 @@ describe("native /models augmentation", () => {
   test("never lowers a native window that already exceeds the Codex context override", () => {
     const native = source();
     const models = native.models as Array<Record<string, unknown>>;
-    models[0]!.max_context_window = 1_000_000;
+    models[1]!.max_context_window = 1_000_000;
     const result = augmentNativeModelCatalog(native, defaultConfig("full"), {
-      model: "gpt-5.6-sol",
       contextWindow: 371_851,
     });
 
-    expect((result.models as Array<Record<string, unknown>>)[0]!.max_context_window).toBe(1_000_000);
+    const overridden = (result.models as Array<Record<string, unknown>>)[1]!;
+    expect(overridden.context_window).toBe(300_000);
+    expect(overridden.max_context_window).toBe(1_000_000);
+    expect(overridden.auto_compact_token_limit).toBe(270_000);
   });
 
   test("uses an available compatible official model when an account exposes a smaller catalog", () => {

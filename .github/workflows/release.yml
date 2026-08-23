@@ -37,14 +37,14 @@ jobs:
           ref: ${{ env.RELEASE_TAG }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.14
+          bun-version: 1.4.0
       - run: bun install --frozen-lockfile
       - run: bun install --frozen-lockfile
         working-directory: launcher
       - name: Prepare AVX2-independent Windows runtime
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/prepare-windows-baseline-bun.ps1 -Version 1.3.14 -GitHubEnv $env:GITHUB_ENV
+        run: ./scripts/prepare-windows-baseline-bun.ps1 -Version 1.4.0 -GitHubEnv $env:GITHUB_ENV
       - run: bun run verify
       - run: bun run app:package
       - name: Ensure virtual display is available
@@ -89,7 +89,7 @@ jobs:
           ref: ${{ env.RELEASE_TAG }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.14
+          bun-version: 1.4.0
       - run: bun install --frozen-lockfile
       - run: bun install --frozen-lockfile
         working-directory: launcher
@@ -105,7 +105,7 @@ jobs:
       - name: Add licenses, installers, and demo
         run: |
           cp LICENSE release-assets/LICENSE
-          cp LICENSES/Bun-1.3.14.md release-assets/Bun-1.3.14.md
+          cp LICENSES/Bun-1.4.0.md release-assets/Bun-1.4.0.md
           cp dist/THIRD_PARTY_NOTICES.txt release-assets/THIRD_PARTY_NOTICES.txt
           cp scripts/install.sh release-assets/install.sh
           cp scripts/install-launcher.sh release-assets/install-launcher.sh
@@ -154,6 +154,10 @@ jobs:
         run: |
           mapfile -d '' release_files < <(find release-assets -type f -print0)
           test "${#release_files[@]}" -gt 0
+          release_flags=(--latest)
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            release_flags=(--prerelease --latest=false)
+          fi
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" "${release_files[@]}" \
               --repo "$GITHUB_REPOSITORY" \
@@ -161,10 +165,11 @@ jobs:
             gh release edit "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --draft=false \
-              --latest
+              "${release_flags[@]}"
           else
             gh release create "$RELEASE_TAG" "${release_files[@]}" \
               --repo "$GITHUB_REPOSITORY" \
               --title "$RELEASE_TAG" \
+              "${release_flags[@]}" \
               --generate-notes
           fi

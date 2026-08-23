@@ -38,6 +38,12 @@ Codex keeps the native task, context lifecycle, UI, and tool harness. The local 
 routes only the selected model turn through a fresh ChatGPT Temporary Chat; in full mode, MCP
 connects ChatGPT back to the tools of that same Codex task.
 
+> [!TIP]
+> I also built **[ChatGPT Persona Voice](https://github.com/miuuyy/ChatGPT-Persona-Voice)**, a local
+> app that changes the ChatGPT/Codex voice in near real time. It never touches your account, browser
+> session, or ChatGPT requests, so using it carries no account-blocking risk. If you like my work,
+> give it a try.
+
 ## Highlights
 
 - **A polished cross-platform launcher.** One command installs the native macOS, Windows, or Linux
@@ -53,18 +59,17 @@ connects ChatGPT back to the tools of that same Codex task.
   compiled context. Measured browser ceilings trigger compaction, while Luna carries completed
   state through an adaptive rolling checkpoint. Browser chats are never reused across tasks or
   added to normal ChatGPT history.
-- **The full Codex harness over MCP.** In full mode, Instant through Extra High can use the active
-  Codex task's filesystem, shell, images, approvals, and configured tools/apps through MCP. Calls
-  and real results stay inside the same browser response—nothing is simulated as text.
-- **Pro stays useful.** Pro is the one exception: ChatGPT's current Pro mode does not expose the
-  custom MCP connector this bridge needs. Its native capabilities, including web search and
-  research, remain available. Gather local workspace context with Instant through Extra High,
-  switch to Pro, and Pro receives the current compiled Codex context for deeper analysis, subject
-  to the same measured browser ceiling and compaction rules.
-- **Fail-closed and manually tested.** Model selection, long inline context, images, streaming,
-  visible trace, compaction, native tool rounds, cancellation, and Pro were exercised end-to-end on
-  macOS and Windows 11. UI drift and missing capabilities produce explicit errors rather than
-  silent fallbacks.
+- **The full Codex harness over MCP.** In Full mode, every effort available to the signed-in account—
+  Luna, Instant, Medium, High, Extra High, and Pro—can use the active Codex task's filesystem,
+  shell, images, approvals, and configured tools/apps through the same turn-bound MCP capability.
+  Calls and real results stay inside the same browser response; nothing is simulated as text.
+- **No Pro exception.** Pro follows exactly the same MCP, context, image, tracing, tool-round,
+  browser-ceiling, and compaction contracts as every other effort. There are no effort-specific MCP
+  exclusions. Browser-only mode remains read-only for every route.
+- **Fail-closed with an explicit release gate.** UI drift and missing capabilities produce explicit
+  errors rather than silent fallbacks. Account-bound model selection, long context, images,
+  streaming, compaction, native tool rounds, cancellation, and Pro are covered by the documented
+  [release validation](docs/release-validation.md), separately from package smoke.
 
 Temporary Chat is a ChatGPT privacy mode, not anonymity or local-only inference: prompts are still
 processed by OpenAI and are subject to the account's settings and OpenAI's
@@ -113,18 +118,19 @@ cd codex-chatgpt-web && \
 bun run app
 ```
 
-This source path requires Bun 1.3.14. The command installs locked dependencies and opens the app.
+This source path requires Bun 1.4.0. The command installs locked dependencies and opens the app.
 
 ## Modes
 
 | Mode | Models | Local Codex tools | Extra setup |
 | --- | --- | --- | --- |
 | **Browser-only** | Free/Go: Luna; Plus: Instant–High; Pro: adds Extra High and Pro | No; Codex shows a warning | None |
-| **Full harness** | Free/Go: Luna; Plus: Instant–High; Pro: adds Extra High and Pro | Non-Pro models: yes when the connector is available; Pro: read-only | OpenAI tunnel + ChatGPT connector |
+| **Full harness** | Free/Go: Luna; Plus: Instant–High; Pro: adds Extra High and Pro | Yes for every listed effort, including Pro | OpenAI tunnel + ChatGPT connector |
 
 Every picker entry has one fixed ChatGPT mode. Codex still displays its built-in Effort and Speed
-rows, but changing them cannot silently change the selected browser model. Pro receives the current
-compiled context from Codex, but ChatGPT Pro cannot initiate local MCP/tool calls.
+rows, but changing them cannot silently change the selected browser model. In Full mode every
+available effort receives the same turn-bound MCP capability. Pro has no separate restriction or
+reduced tool contract.
 
 ## Full harness
 
@@ -180,9 +186,10 @@ capture a screenshot at every checkpoint during an investigation.
   [#76](https://github.com/miuuyy/codex-chatgpt-web/issues/76).
 - Browser state is a sensitive login artifact, and the loopback listener is reachable by processes
   running as the same local user. Never share the launcher profile; use a trusted workstation.
-- Release packages currently target macOS 13+ (arm64/x64), Windows x64, and Linux x64. The browser
-  flow is manually exercised end-to-end on macOS and Windows 11; runtime, tests, and native
-  packaging are gated on all three operating systems in CI.
+- Release packages currently target macOS 13+ (arm64/x64), Windows x64, and Linux x64. Runtime,
+  tests, and native packaging are gated on all three operating systems in CI. Account-bound browser
+  and MCP flows require the separate [release validation](docs/release-validation.md); package smoke
+  is not treated as end-to-end proof.
 - Until platform signing credentials are configured for a release, macOS Gatekeeper or Windows
   SmartScreen may show an unknown-publisher warning. The one-command installers verify the
   published SHA-256 manifest before installation.
@@ -195,11 +202,33 @@ Read the complete [architecture](docs/architecture.md) and
 
 ```bash
 bun run app
+bun run dev:launcher
+bun run src/cli.ts dev status
+bun run dev:chat compaction-lab "Reply with exactly: DEV READY"
 bun run verify
 bun run app:package
 ```
 
+`dev:launcher` starts a second launcher profile under `~/.codex-chatgpt-web-dev`: separate Electron
+state, browser cookies/login, ChatGPT account, configuration, sandboxed `CODEX_HOME`, chats,
+diagnostics, broker, and tunnel profile. It can run beside the normal launcher and never starts a
+Responses daemon or changes Codex. Optional Full setup starts and supervises only its isolated MCP
+tunnel, using the distinct ChatGPT connector name `Codex Native2 DEV`.
+
+`dev:chat` is a named, persistent synthetic outer-Codex harness. It executes the current working
+tree through that isolated launcher browser, Temporary Chat, prompt compiler, Responses parser, and
+compaction handlers. Optional Full setup also exercises the MCP connector and broker; tool effects
+are explicit simulation receipts. Browser-only chats expose no outer tools. It does
+not open a Responses listener, change `openai_base_url`, stop the live daemon, or claim port 17841.
+Run it without a message for `/status`, `/fill 30000`, `/compact`, `/model`, and `/reset` commands.
+Sign in and initialize the profile once inside the window labelled **DEV**. Configure optional Full
+harness only for simulated tool rounds; its launcher keeps the DEV tunnel ready while named chats
+attach their broker on demand. Production credentials and the `Codex Native2` connector are never
+reused implicitly. See
+[DEV chat harness](docs/dev-chat.md).
+
 - [Architecture](docs/architecture.md)
+- [DEV chat harness](docs/dev-chat.md)
 - [Security model](docs/security-model.md)
 - [Contributing](CONTRIBUTING.md)
 

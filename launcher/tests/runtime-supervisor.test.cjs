@@ -131,6 +131,81 @@ test("launcher runtime ownership rejects a different browser descriptor", () => 
   );
 });
 
+test("launcher runtime ownership cannot cross production and DEV profiles", () => {
+  const descriptorPath = path.join(os.tmpdir(), "launcher.json");
+  const production = { ...launcherConfig(descriptorPath), solAvailable: true };
+  const development = { ...production, purpose: "dev-harness" };
+  assert.equal(validateConfig(production, descriptorPath, process.platform, "production"), production);
+  assert.equal(validateConfig(development, descriptorPath, process.platform, "development"), development);
+  assert.throws(
+    () => validateConfig(development, descriptorPath, process.platform, "production"),
+    /Production launcher refuses a DEV harness/,
+  );
+  assert.throws(
+    () => validateConfig(production, descriptorPath, process.platform, "development"),
+    /DEV launcher refuses a configuration/,
+  );
+});
+
+test("DEV runtime supervision starts only the isolated MCP tunnel", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-dev-tunnel-supervisor-"));
+  const descriptorPath = path.join(root, "runtime", "launcher-browser.json");
+  fs.mkdirSync(path.dirname(descriptorPath), { recursive: true });
+  const config = launcherConfig(descriptorPath, {
+    purpose: "dev-harness",
+    mode: "full",
+    appName: "Codex Native2 DEV",
+    tunnel: {
+      binaryPath: path.join(root, "bin", "tunnel-client"),
+      tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
+      runtimeKeyFile: path.join(root, "secrets", "runtime.key"),
+      profileDir: path.join(root, "tunnel", "profiles"),
+      profileName: "codex-chatgpt-web-dev",
+      alias: "codex-chatgpt-web-dev",
+    },
+  });
+  fs.writeFileSync(path.join(root, "config.json"), `${JSON.stringify(config)}\n`);
+  let daemonStarts = 0;
+  let proxyProbes = 0;
+  let tunnelStarts = 0;
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root,
+    coreHome: root,
+    browserDescriptorPath: descriptorPath,
+    launcherProfile: "development",
+  });
+  supervisor.proxyHealth = async () => {
+    proxyProbes += 1;
+    return false;
+  };
+  supervisor.startTunnel = async () => {
+    tunnelStarts += 1;
+    supervisor.tunnel = { pid: 123_456_789, exitCode: null, signalCode: null, managed: true };
+  };
+  supervisor.startDaemon = async () => {
+    daemonStarts += 1;
+  };
+  supervisor.tunnelHealth = async () => true;
+  try {
+    const runtime = await supervisor.startConfigured();
+    assert.equal(runtime.status, "ready");
+    assert.equal(runtime.daemonPid, undefined);
+    assert.equal(runtime.tunnelPid, 123_456_789);
+    assert.equal(tunnelStarts, 1);
+    assert.equal(daemonStarts, 0);
+    assert.equal(proxyProbes, 0);
+    assert.equal(await supervisor.ownedRuntimeReady(config), true);
+    const state = JSON.parse(fs.readFileSync(supervisor.statePath, "utf8"));
+    assert.equal(state.daemonPid, null);
+    assert.equal(state.tunnelPid, 123_456_789);
+  } finally {
+    supervisor.tunnel = null;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("launcher runtime validation rejects a relative full-mode executable before spawn", () => {
   const descriptorPath = path.join(os.tmpdir(), "launcher.json");
   assert.throws(() => validateConfig(launcherConfig(descriptorPath, {
@@ -955,6 +1030,61 @@ test("launcher supervisor waits for an in-flight HTTP turn to finish after drain
 
   await supervisor.acquireDrain({}, 1_000);
   assert.deepEqual(actions, ["drain", "drain"]);
+});
+
+test("explicit launcher shutdown cancels active turns before the graceful stop", async () => {
+  const actions = [];
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: os.tmpdir(),
+    coreHome: os.tmpdir(),
+    browserDescriptorPath: path.join(os.tmpdir(), "launcher.json"),
+  });
+  supervisor.cancelActiveTurns = async () => {
+    actions.push("cancel-turns");
+    return { cancelledHttpTurns: 1, cancelledBrowserTurns: 1 };
+  };
+  supervisor.stopForSetup = async () => {
+    actions.push("graceful-stop");
+    return { status: "stopped" };
+  };
+
+  assert.deepEqual(
+    await supervisor.shutdown({ cancelActiveTurns: true, force: true }),
+    { status: "stopped" },
+  );
+  assert.deepEqual(actions, ["cancel-turns", "graceful-stop"]);
+});
+
+test("explicit launcher shutdown force-stops only its owned runtime when graceful shutdown fails", async () => {
+  const actions = [];
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: os.tmpdir(),
+    coreHome: os.tmpdir(),
+    browserDescriptorPath: path.join(os.tmpdir(), "launcher.json"),
+  });
+  supervisor.cancelActiveTurns = async () => { actions.push("cancel-turns"); };
+  supervisor.stopForSetup = async () => {
+    actions.push("graceful-stop");
+    throw new Error("daemon still reports one HTTP turn");
+  };
+  supervisor.forceStopOwnedRuntime = async error => {
+    actions.push(`forced-stop:${error.message}`);
+    return { status: "forced", detail: error.message };
+  };
+
+  assert.deepEqual(
+    await supervisor.shutdown({ cancelActiveTurns: true, force: true }),
+    { status: "forced", detail: "daemon still reports one HTTP turn" },
+  );
+  assert.deepEqual(actions, [
+    "cancel-turns",
+    "graceful-stop",
+    "forced-stop:daemon still reports one HTTP turn",
+  ]);
 });
 
 test("launcher resumes an owned drained daemon before reporting it ready", async () => {

@@ -135,9 +135,9 @@ export function augmentNativeModelCatalog(
   }
   const template = selectNativeTemplate(nativeModels, config);
   if (contextOverride) {
-    // model_context_window is a single top-level Codex setting, not a per-model one. Binding it to
-    // the model named in the config makes it vanish the moment that line names a ChatGPT Web slug,
-    // leaving the model actually in use clamped to the catalog's smaller window.
+    // model_context_window is a single top-level Codex setting, not a per-model one. Apply its
+    // advertised maximum to every native row so switching native models cannot silently clamp the
+    // effective override. Codex itself applies context_window and auto-compaction configuration.
     for (const candidate of nativeModels) {
       const modelSlug = slug(candidate);
       if (!modelSlug) continue;

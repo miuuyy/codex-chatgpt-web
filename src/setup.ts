@@ -9,6 +9,7 @@ import {
   defaultConfig,
   getConfigPath,
   loadConfigForSetup,
+  resolveDevSetupConnectorName,
   resolveSetupConnectorName,
   saveConfig,
 } from "./config";
@@ -20,6 +21,11 @@ import {
 } from "./browser-login";
 import { installCodexIntegration, preflightCodexIntegration } from "./codex-integration";
 import { inspectLauncherBrowserHost } from "./launcher-browser-host";
+import {
+  DEV_CONFIG_PURPOSE,
+  DEV_LAUNCHER_PROFILE,
+  DEV_TUNNEL_BASE_NAME,
+} from "./dev-chat/constants";
 import {
   assertServiceIdle,
   getServiceStatus,
@@ -56,6 +62,13 @@ export interface SetupResult {
   serviceLoaded: boolean;
   tunnelReady: boolean | null;
   codexRestartRequired: true;
+  connectorSetupRequired: boolean;
+}
+
+export interface DevProfileSetupResult {
+  mode: RuntimeMode;
+  configPath: string;
+  tunnelReady: boolean | null;
   connectorSetupRequired: boolean;
 }
 
@@ -210,6 +223,23 @@ function baseConfig(existing: AppConfig | undefined, options: SetupOptions): App
   return config;
 }
 
+async function inspectLauncherCapabilities(
+  config: AppConfig,
+  existing: AppConfig | undefined,
+  refreshAccountCapabilities: boolean,
+  expectedProfile: "production" | "development",
+): Promise<{ solAvailable: boolean; proAvailable: boolean }> {
+  const detectCapabilities = launcherCapabilityProbeRequired(existing, refreshAccountCapabilities);
+  const inspected = await inspectLauncherBrowserHost(config.browserHostDescriptorPath!, {
+    detectCapabilities,
+    expectedProfile,
+  });
+  return {
+    solAvailable: detectCapabilities ? inspected.solAvailable === true : existing!.solAvailable,
+    proAvailable: detectCapabilities ? inspected.proAvailable === true : existing!.proAvailable,
+  };
+}
+
 async function configureTunnel(config: AppConfig, existing: AppConfig | undefined, options: SetupOptions): Promise<void> {
   if (config.mode === "browser-only") {
     delete config.tunnel;
@@ -264,7 +294,11 @@ async function bootstrapTunnelProfile(config: AppConfig): Promise<void> {
 
 export async function setup(options: SetupOptions): Promise<SetupResult> {
   const existing = loadExistingConfig();
+  if (existing?.purpose === DEV_CONFIG_PURPOSE) {
+    throw new Error("A DEV harness configuration cannot be installed into Codex");
+  }
   const config = baseConfig(existing, options);
+  delete config.purpose;
   const launcherOwned = config.browserHost === "launcher";
   if (!launcherOwned && process.platform !== "darwin") {
     throw new Error(
@@ -298,15 +332,14 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   let proAvailable: boolean | undefined;
   if (config.browserHost === "launcher") {
     if (options.forceLogin) throw new Error("Launcher browser login is owned by the launcher UI; --login cannot replace it");
-    const detectCapabilities = launcherCapabilityProbeRequired(
+    const capabilities = await inspectLauncherCapabilities(
+      config,
       existing,
       options.refreshAccountCapabilities === true,
+      "production",
     );
-    const inspected = await inspectLauncherBrowserHost(config.browserHostDescriptorPath!, {
-      detectCapabilities,
-    });
-    solAvailable = detectCapabilities ? inspected.solAvailable : existing!.solAvailable;
-    proAvailable = detectCapabilities ? inspected.proAvailable : existing!.proAvailable;
+    solAvailable = capabilities.solAvailable;
+    proAvailable = capabilities.proAvailable;
   } else {
     const stored = storedBrowserLoginCapabilities(config);
     solAvailable = stored.solAvailable;
@@ -416,6 +449,58 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     serviceLoaded: launcherOwned ? false : getServiceStatus().loaded,
     tunnelReady,
     codexRestartRequired: true,
+    connectorSetupRequired: config.mode === "full",
+  };
+}
+
+/**
+ * Configure the isolated launcher/browser/tunnel inputs used by the repository DEV harness.
+ * This deliberately has no Codex integration, Responses listener, or system service; the DEV
+ * launcher supervises only the isolated MCP tunnel after this transaction commits.
+ */
+export async function setupDevProfile(options: SetupOptions): Promise<DevProfileSetupResult> {
+  const existing = loadExistingConfig();
+  if (existing && existing.purpose !== DEV_CONFIG_PURPOSE) {
+    throw new Error("DEV profile home contains a non-DEV configuration; refusing to repurpose it");
+  }
+  if (!options.browserHostDescriptorPath) {
+    throw new Error("DEV profile setup requires the isolated launcher browser descriptor");
+  }
+  const config = baseConfig(existing, {
+    ...options,
+    appName: resolveDevSetupConnectorName(existing?.appName, options.appName),
+  });
+  if (config.browserHost !== "launcher") {
+    throw new Error("DEV profile setup requires the desktop launcher browser host");
+  }
+  config.purpose = DEV_CONFIG_PURPOSE;
+  const capabilities = await inspectLauncherCapabilities(
+    config,
+    existing,
+    options.refreshAccountCapabilities === true,
+    DEV_LAUNCHER_PROFILE,
+  );
+  config.solAvailable = capabilities.solAvailable;
+  config.proAvailable = capabilities.solAvailable && capabilities.proAvailable;
+
+  const explicitTunnelChange = Boolean(options.tunnelId || options.runtimeKeyFile || options.runtimeKeyValue);
+  await configureTunnel(config, existing, options);
+  let tunnelReady: boolean | null = null;
+  if (config.mode === "full") {
+    config.tunnel!.alias = DEV_TUNNEL_BASE_NAME;
+    config.tunnel!.profileName = DEV_TUNNEL_BASE_NAME;
+    const profilePath = join(config.tunnel!.profileDir, `${config.tunnel!.profileName}.yaml`);
+    const needsProfile = !existsSync(profilePath);
+    if (needsProfile || tunnelWorkerRuntimeChanged(existing, config) || explicitTunnelChange) {
+      await bootstrapTunnelProfile(config);
+    }
+    tunnelReady = false;
+  }
+  saveConfig(config);
+  return {
+    mode: config.mode,
+    configPath: getConfigPath(),
+    tunnelReady,
     connectorSetupRequired: config.mode === "full",
   };
 }

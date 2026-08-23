@@ -29,12 +29,41 @@ launcher-owned codex-chatgpt-web daemon
 
 ### `full`
 
-- Exposes the same fixed models; Instant through Extra High are tool-capable, while Pro remains
-  read-only.
+- Exposes the same fixed models and attaches the turn-bound connector capability to every available
+  effort, from Luna through Pro. There are no effort-specific MCP exclusions.
 - ChatGPT uses a custom MCP connector backed by `openai/tunnel-client`.
 - Every connector call presents one outer Codex turn capability; the MCP server keeps the derived
   binding private and dispatches the requested action immediately.
 - Tool calls and results remain in the same ChatGPT response while Codex executes them locally.
+
+### Repository DEV driver
+
+The DEV chat is not another provider or browser implementation. It is a synthetic outer-Codex
+driver around the same in-process Responses handlers. `dev launcher` starts the packaged launcher
+with an explicit `development` profile. That profile has a different core home, sandboxed
+`CODEX_HOME`, Electron `userData`, persistent browser partition, descriptor, cookie jar, login,
+configuration, chat store, diagnostic store, broker path, tunnel profile, and alias. The normal and
+DEV launchers can therefore run at the same time with different ChatGPT accounts.
+
+The working-tree adapter attaches to a tab leased only from that DEV launcher. In Full mode the DEV
+launcher owns one persistent, isolated tunnel runtime; a named CLI chat owns only the private turn
+broker attached to that tunnel for the command's lifetime. The distinct `Codex Native2 DEV`
+connector reaches the same MCP server and turn-token contract without requiring any Responses
+daemon or colliding with the production `Codex Native2` connector.
+
+Only the responsibilities normally owned by native Codex are synthetic: named history storage,
+turn metadata, tool-result execution, context-threshold scheduling, and installation of compacted
+replacement history. Every tool result is an explicit `simulated: true` receipt with
+`side_effects_performed: false`; no semantic router guesses a command result.
+
+The driver calls `responseRequest` and `compactRequest` directly. It starts no HTTP server, does not
+read or write Codex's route journal or `config.toml`, and does not stop or replace the normal
+launcher-owned daemon. A `dev-harness` discriminator prevents the Responses server and production
+launcher from starting a Responses daemon for its config. DEV setup stores browser capabilities
+and tunnel credentials but performs no Codex integration, system service installation, or port
+probe. The DEV launcher supervisor owns only the isolated MCP tunnel. Browser diagnostics, broker
+state, thread authority, checkpoints, and named chat state live
+under `~/.codex-chatgpt-web-dev` by default.
 
 The ChatGPT connector name is also the public MCP ABI identity. The direct turn-token contract uses
 `Codex Native2`; the retired `Codex Native` identity is never selected or refreshed in place. Setup
@@ -42,6 +71,8 @@ migrates known legacy local configuration to the new name, clears prior verifica
 requires the user to create the new connector. Browser verification accepts the exact new identity,
 reports a specific migration error when only the legacy identity is visible, and never falls back to
 the legacy connector. Future public schema changes require another explicit connector identity.
+Repository DEV mode uses `Codex Native2 DEV` so the same ChatGPT account can keep both production
+and development connectors installed without renaming, refreshing, or deleting either one.
 
 ## Browser lifecycle
 
@@ -71,6 +102,9 @@ auto-compaction reserve. Usage is counted with the GPT-5 tokenizer plus fixed pl
 reserves, rather than inferred from character length. The ChatGPT composer also has an independent
 inline-size boundary: usage accounting asks Codex to compact before that boundary, and a prompt
 that still exceeds the proven hard ceiling fails explicitly before any browser turn opens.
+Top-level `model_context_window` raises only the proxied native rows' advertised maximum, allowing
+Codex to apply its own configured context override without clamping. Routed ChatGPT Web models
+retain their measured adapter-owned limits.
 
 Routed compaction v1/v2 runs as a dedicated read-only browser summarization turn with no broker or
 local tools, then returns the native replacement-history shape expected by Codex. A prompt-level

@@ -14,6 +14,8 @@ const {
   constrainBrowserBounds,
   navigateBrowser,
   readBrowserNavigationState,
+  scaleBrowserBounds,
+  shellZoomActionForInput,
 } = require("./browser-state.cjs");
 
 const TEMPORARY_CHAT_URL = "https://chatgpt.com/?temporary-chat=true";
@@ -21,6 +23,7 @@ const CHATGPT_ORIGIN = "https://chatgpt.com";
 const IDLE_BROWSER_URL = "about:blank#codex-web-gpt-browser-host";
 const MAX_BROWSER_VIEW_DIMENSION = 16_384;
 const MAX_BROWSER_TABS = 5;
+const HIDDEN_TURN_VIEWPORT = Object.freeze({ width: 800, height: 600 });
 // These are lease/initialization guards only. They do not limit a live ChatGPT turn: active turns
 // stay alive as long as the helper keeps heartbeating. They only reclaim a blank surface or a turn
 // whose helper disappeared without delivering the normal /v1/turn/end event.
@@ -29,9 +32,10 @@ const TURN_HEARTBEAT_TIMEOUT_MS = 60_000;
 const TURN_TAB_BOOTSTRAP_TIMEOUT_MS = 120_000;
 const BROWSER_NAVIGATION_TIMEOUT_MS = 60_000;
 const CHATGPT_AUTH_SESSION_TIMEOUT_MS = 5_000;
-const CHATGPT_PARTITION = "persist:codex-web-gpt-chatgpt";
 const CHATGPT_BACKEND_REQUEST_FILTER = { urls: [`${CHATGPT_ORIGIN}/backend-api/*`] };
 const ZOOM_FACTORS = [0.5, 0.67, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
+const SHELL_ZOOM_LEVEL_STEP = 0.5;
+const SHELL_ZOOM_LEVEL_LIMIT = 5;
 const AUTH_PROVIDER_HOSTS = new Set([
   "auth.openai.com",
   "auth0.openai.com",
@@ -148,6 +152,14 @@ function isChatGptCloudflareChallengeResponse(details) {
     && responseHeaderIncludes(details.responseHeaders, "cf-mitigated", "challenge");
 }
 
+class BrowserTurnCancelledError extends Error {
+  constructor(traceId) {
+    super(`Browser turn ${traceId} was cancelled by the user`);
+    this.name = "BrowserTurnCancelledError";
+    this.code = "turn_cancelled";
+  }
+}
+
 class BrowserHost {
   constructor({
     window,
@@ -157,6 +169,8 @@ class BrowserHost {
     getConnectorName,
     helper,
     logger,
+    partition = "persist:codex-web-gpt-chatgpt",
+    profile = "production",
     publishState,
   }) {
     if (typeof getConnectorName !== "function") {
@@ -169,6 +183,15 @@ class BrowserHost {
     this.getConnectorName = getConnectorName;
     this.helper = helper;
     this.logger = logger;
+    if (profile !== "production" && profile !== "development") {
+      throw new Error("Browser host profile is invalid");
+    }
+    const expectedPartition = profile === "development"
+      ? "persist:codex-web-gpt-dev-chatgpt"
+      : "persist:codex-web-gpt-chatgpt";
+    if (partition !== expectedPartition) throw new Error("Browser host partition does not match its profile");
+    this.partition = partition;
+    this.profile = profile;
     this.publishState = publishState;
     this.runBrowserHelperOperation = runBrowserHelperOperation;
     this.verifyConnectorWithBrowserHelper = verifyConnectorWithBrowserHelper;
@@ -177,6 +200,7 @@ class BrowserHost {
     this.surfaceActive = true;
     this.turnTabs = new Map();
     this.closedTurnOwners = new Map();
+    this.userCancelledTurnOwners = new Map();
     this.selectedTabId = "home";
     this.manualOperation = null;
     this.loginOperation = null;
@@ -185,6 +209,7 @@ class BrowserHost {
     this.cloudflareChallengeRecoveryDelayMs = CLOUDFLARE_CHALLENGE_RECOVERY_DELAY_MS;
     this.cloudflareChallengeRecoverySettleMs = CLOUDFLARE_CHALLENGE_RECOVERY_SETTLE_MS;
     this.viewportCssKey = null;
+    this.shellZoomShortcutBindings = new Map();
     this.authView = null;
     this.authNavigationError = null;
     this.homeNavigationTimeout = null;
@@ -207,7 +232,7 @@ class BrowserHost {
     };
     this.view = new WebContentsView({
       webPreferences: {
-        partition: CHATGPT_PARTITION,
+        partition: this.partition,
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
@@ -219,6 +244,8 @@ class BrowserHost {
     this.view.setBounds(this.bounds);
     this.view.setVisible(false);
     this.view.webContents.setZoomFactor(this.state.zoomFactor);
+    this.bindShellZoomShortcuts(this.window.webContents);
+    this.bindShellZoomShortcuts(this.view.webContents);
     this.bindChatGptBackendRecovery();
     this.bindWebContents();
     this.initializationReady = this.view.webContents.loadURL(IDLE_BROWSER_URL).then(async () => {
@@ -275,7 +302,7 @@ class BrowserHost {
     if (!ordinal) throw new Error("ChatGPT Web browser tab allocation is inconsistent");
     const view = new WebContentsView({
       webPreferences: {
-        partition: CHATGPT_PARTITION,
+        partition: this.partition,
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
@@ -302,9 +329,10 @@ class BrowserHost {
     };
     this.turnTabs.set(id, tab);
     this.window.contentView.addChildView(view);
-    view.setBounds(this.bounds);
+    view.setBounds(this.hiddenTurnBounds());
     view.setVisible(false);
     view.webContents.setZoomFactor(this.state.zoomFactor);
+    this.bindShellZoomShortcuts(view.webContents);
     this.bindTurnContents(tab);
     void view.webContents.loadURL(IDLE_BROWSER_URL).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
@@ -316,6 +344,39 @@ class BrowserHost {
       this.removeTurnTab(tab, true);
     });
     return tab;
+  }
+
+  zoomShell(action) {
+    const contents = this.window.webContents;
+    if (!contents || contents.isDestroyed()) throw new Error("Launcher shell is unavailable for zoom");
+    const current = contents.getZoomLevel();
+    if (!Number.isFinite(current)) throw new Error("Launcher shell zoom state is invalid");
+    const next = action === "reset"
+      ? 0
+      : action === "in"
+        ? Math.min(SHELL_ZOOM_LEVEL_LIMIT, current + SHELL_ZOOM_LEVEL_STEP)
+        : Math.max(-SHELL_ZOOM_LEVEL_LIMIT, current - SHELL_ZOOM_LEVEL_STEP);
+    contents.setZoomLevel(next);
+  }
+
+  bindShellZoomShortcuts(contents) {
+    if (!contents || contents.isDestroyed() || this.shellZoomShortcutBindings.has(contents)) return;
+    const handler = (event, input) => {
+      const action = shellZoomActionForInput(input);
+      if (!action) return;
+      event.preventDefault();
+      try {
+        this.zoomShell(action);
+      } catch (error) {
+        this.logger.error("launcher.shell_zoom_shortcut_failed", {
+          action,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+    this.shellZoomShortcutBindings.set(contents, handler);
+    contents.on("before-input-event", handler);
+    contents.once("destroyed", () => this.shellZoomShortcutBindings.delete(contents));
   }
 
   bindTurnContents(tab) {
@@ -719,12 +780,14 @@ class BrowserHost {
     }
   }
 
-  setBounds(bounds) {
+  setBounds(bounds, rendererZoomFactor = 1) {
     const [width, height] = this.window.getContentSize();
-    this.bounds = constrainBrowserBounds(normalizeBounds(bounds), { width, height });
+    this.bounds = constrainBrowserBounds(
+      normalizeBounds(scaleBrowserBounds(bounds, rendererZoomFactor)),
+      { width, height },
+    );
     this.boundsReady = true;
     this.view.setBounds(this.bounds);
-    for (const tab of this.turnTabs.values()) tab.view.setBounds(this.bounds);
     this.authView?.setBounds(this.bounds);
     this.syncViewVisibility();
     void this.view.webContents.executeJavaScript("window.dispatchEvent(new Event('resize'))", true).catch(() => {});
@@ -735,6 +798,16 @@ class BrowserHost {
 
   activeView() {
     return this.authView || this.selectedTurnTab()?.view || this.view;
+  }
+
+  hiddenTurnBounds() {
+    const [contentWidth, contentHeight] = this.window.getContentSize();
+    return {
+      x: 0,
+      y: 0,
+      width: Math.max(HIDDEN_TURN_VIEWPORT.width, Math.round(contentWidth || 0)),
+      height: Math.max(HIDDEN_TURN_VIEWPORT.height, Math.round(contentHeight || 0)),
+    };
   }
 
   activateHomeSurface() {
@@ -750,7 +823,9 @@ class BrowserHost {
     const selected = this.selectedTurnTab();
     this.view.setVisible(visible && !this.authView && !selected);
     for (const tab of this.turnTabs.values()) {
-      tab.view.setVisible(visible && !this.authView && selected?.id === tab.id);
+      const tabVisible = visible && !this.authView && selected?.id === tab.id;
+      tab.view.setBounds(tabVisible ? this.bounds : this.hiddenTurnBounds());
+      tab.view.setVisible(tabVisible);
     }
     this.authView?.setVisible(visible);
   }
@@ -796,6 +871,9 @@ class BrowserHost {
   closeTab(tabId) {
     const tab = this.turnTabs.get(tabId);
     if (!tab) throw new Error("Browser tab does not exist");
+    if (tab.status === "running") {
+      this.userCancelledTurnOwners.set(tab.traceId, tab.helperPid);
+    }
     this.removeTurnTab(tab, true);
     this.logger.info("browser.tab_closed", { tabId, traceId: tab.traceId, status: tab.status });
     return this.snapshot();
@@ -810,6 +888,7 @@ class BrowserHost {
     authView.setBounds(this.bounds);
     authView.setVisible(false);
     authView.webContents.setZoomFactor(this.state.zoomFactor);
+    this.bindShellZoomShortcuts(authView.webContents);
     const contents = authView.webContents;
     const clearNavigationTimeout = () => {
       if (!authView.navigationTimeout) return;
@@ -1023,6 +1102,9 @@ class BrowserHost {
     if (this.manualOperation) {
       throw new Error(`ChatGPT browser is busy with ${this.manualOperation}`);
     }
+    if (this.userCancelledTurnOwners.has(traceId)) {
+      throw new BrowserTurnCancelledError(traceId);
+    }
     const existing = [...this.turnTabs.values()].find((tab) => tab.traceId === traceId);
     if (existing) {
       if (existing.status === "running" && existing.helperPid !== helperPid) {
@@ -1069,8 +1151,10 @@ class BrowserHost {
     if (!tab) {
       const closedOwner = this.closedTurnOwners.get(traceId);
       if (closedOwner === helperPid) {
+        const cancelledByUser = this.userCancelledTurnOwners.get(traceId) === helperPid;
         this.closedTurnOwners.delete(traceId);
-        return;
+        this.userCancelledTurnOwners.delete(traceId);
+        return { cancelledByUser };
       }
       throw new Error(`Browser turn ownership mismatch: no browser tab owns ${traceId}`);
     }
@@ -1093,6 +1177,7 @@ class BrowserHost {
     this.removeTurnTab(tab, false);
     if (hideAfterTurn && !this.activeTraceId) this.hide();
     this.logger.info("browser.tab_released", { tabId: tab.id, traceId, status: tab.status });
+    return { cancelledByUser: false };
   }
 
   async returnToIdle() {
@@ -1165,7 +1250,11 @@ class BrowserHost {
       if (!isTemporaryChatUrl(this.view.webContents.getURL())) {
         await this.view.webContents.loadURL(TEMPORARY_CHAT_URL);
       }
-      return await this.probeAuthentication();
+      const state = await this.probeAuthentication();
+      if (state.authenticated) {
+        this.setState({ status: "ready", message: "ChatGPT is ready" });
+      }
+      return this.snapshot();
     });
   }
 
@@ -1406,13 +1495,14 @@ class BrowserHost {
 
   writeDescriptor() {
     const descriptor = {
-      version: 1,
+      version: 2,
       kind: "codex-web-gpt-launcher",
+      profile: this.profile,
       pid: process.pid,
       endpoint: `http://127.0.0.1:${this.cdpPort}`,
       control: this.control,
       helper: this.helper,
-      partition: "persist:codex-web-gpt-chatgpt",
+      partition: this.partition,
       idleUrl: IDLE_BROWSER_URL,
       surfaceId: this.surfaceId,
       createdAt: new Date().toISOString(),
@@ -1433,6 +1523,10 @@ class BrowserHost {
       const current = JSON.parse(fs.readFileSync(this.descriptorPath, "utf8"));
       if (current.pid === process.pid) fs.rmSync(this.descriptorPath, { force: true });
     } catch {}
+    for (const [contents, handler] of this.shellZoomShortcutBindings) {
+      if (!contents.isDestroyed()) contents.off("before-input-event", handler);
+    }
+    this.shellZoomShortcutBindings.clear();
     this.closeAuthView(this.authView, true);
     this.clearHomeNavigationTimeout();
     if (this.turnLeaseSweep) clearInterval(this.turnLeaseSweep);
@@ -1448,6 +1542,7 @@ class BrowserHost {
 module.exports = {
   allowedAuthUrl,
   BrowserHost,
+  BrowserTurnCancelledError,
   CHATGPT_VIEWPORT_CSS,
   IDLE_BROWSER_URL,
   isChatGptCloudflareChallengeResponse,

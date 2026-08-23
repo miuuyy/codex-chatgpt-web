@@ -1,4 +1,5 @@
 export type Language = "en" | "zh-CN";
+export type LauncherProfile = "production" | "development";
 export type Surface = "browser" | "setup" | "mcp" | "activity" | "settings";
 
 export interface LauncherState {
@@ -83,6 +84,12 @@ export type UpdateState =
   | { status: "error"; message: string };
 
 export interface LauncherSnapshot {
+  profile: LauncherProfile;
+  profilePaths: {
+    coreHome: string;
+    codexHome: string;
+    userData: string;
+  };
   state: LauncherState;
   browser: BrowserState | null;
   connectorName: string;

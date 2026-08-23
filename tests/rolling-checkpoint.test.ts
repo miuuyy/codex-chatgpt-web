@@ -144,6 +144,7 @@ test("Luna prompt requests the strict private checkpoint only when capture is en
   expect(normal.text).not.toContain(CHATGPT_LUNA_CHECKPOINT_MARKER);
   expect(rolling.text).toContain(CHATGPT_LUNA_CHECKPOINT_MARKER);
   expect(rolling.text).toContain("Do not write JSON");
+  expect(rolling.text).toContain("never permit an empty checkpoint");
   expect(rolling.text).toContain("Objective:");
   expect(rolling.text).toContain(`${CHATGPT_LUNA_CHECKPOINT_MAX_TOKENS.toLocaleString("en-US")} tokens`);
 });

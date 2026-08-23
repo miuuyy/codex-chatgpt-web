@@ -4,15 +4,12 @@ dist/
 coverage/
 .DS_Store
 .env
-.playwright-cli/
-output/
 *.log
 *.pid
 *.sock
 *.key
 storage-state.json
 runtime/
-references/
 .launcher-runtime/
 launcher/build/
 launcher/release/

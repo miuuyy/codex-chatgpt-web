@@ -7,6 +7,8 @@ const {
   constrainBrowserBounds,
   navigateBrowser,
   readBrowserNavigationState,
+  scaleBrowserBounds,
+  shellZoomActionForInput,
 } = require("../electron/browser-state.cjs");
 const {
   allowedAuthUrl,
@@ -210,6 +212,36 @@ test("browser surface reactivation preserves its last measured bounds", () => {
   assert.equal(fixture.boundsReady, true);
 });
 
+test("hidden turn tabs retain an operational viewport without revealing the browser surface", () => {
+  const events = [];
+  const tab = {
+    id: "tab-hidden-viewport",
+    view: {
+      setBounds: bounds => events.push(["bounds", bounds]),
+      setVisible: visible => events.push(["visible", visible]),
+    },
+  };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    visible: false,
+    surfaceActive: false,
+    boundsReady: false,
+    bounds: { x: 0, y: 0, width: 1, height: 1 },
+    selectedTabId: tab.id,
+    turnTabs: new Map([[tab.id, tab]]),
+    authView: null,
+    window: { getContentSize: () => [1120, 720] },
+    view: { setVisible: visible => events.push(["home", visible]) },
+  });
+
+  BrowserHost.prototype.syncViewVisibility.call(fixture);
+
+  assert.deepEqual(events, [
+    ["home", false],
+    ["bounds", { x: 0, y: 0, width: 1120, height: 720 }],
+    ["visible", false],
+  ]);
+});
+
 test("manual browser operations wait for the first measured surface", async () => {
   let readinessReads = 0;
   const fixture = {
@@ -245,6 +277,33 @@ test("browser bounds are clipped to the launcher content area", () => {
     constrainBrowserBounds({ x: -20, y: -10, width: 0, height: 0 }, { width: 1200, height: 800 }),
     { x: 0, y: 0, width: 1, height: 1 },
   );
+});
+
+test("zoomed renderer bounds are converted back to native window coordinates", () => {
+  assert.deepEqual(
+    scaleBrowserBounds({ x: 200, y: 60, width: 800, height: 500 }, 1.25),
+    { x: 250, y: 75, width: 1000, height: 625 },
+  );
+  assert.throws(
+    () => scaleBrowserBounds({ x: 1, y: 1, width: 1, height: 1 }, 0),
+    /zoom factor must be positive/,
+  );
+});
+
+test("shell zoom shortcuts recognize native CommandOrControl keys only", () => {
+  const keyDown = { type: "keyDown", key: "=", meta: true, control: false, alt: false };
+
+  assert.equal(shellZoomActionForInput(keyDown, "darwin"), "in");
+  assert.equal(shellZoomActionForInput({ ...keyDown, key: "-" }, "darwin"), "out");
+  assert.equal(shellZoomActionForInput({ ...keyDown, key: "0" }, "darwin"), "reset");
+  assert.equal(
+    shellZoomActionForInput({ ...keyDown, meta: false, control: true }, "win32"),
+    "in",
+  );
+  assert.equal(shellZoomActionForInput({ ...keyDown, meta: false }, "darwin"), null);
+  assert.equal(shellZoomActionForInput({ ...keyDown, key: "r" }, "darwin"), null);
+  assert.equal(shellZoomActionForInput({ ...keyDown, type: "keyUp" }, "darwin"), null);
+  assert.equal(shellZoomActionForInput({ ...keyDown, alt: true }, "darwin"), null);
 });
 
 test("guest and incomplete server sessions do not prove launcher authentication", async () => {
@@ -564,6 +623,44 @@ test("browser zoom in, out, and reset are symmetric across owned views", () => {
   assert.throws(() => BrowserHost.prototype.zoom.call(fixture, "fit"), /Unknown browser zoom action/);
 });
 
+test("Command zoom changes only the launcher shell while browser zoom stays independent", () => {
+  const focusedBrowserContents = new EventEmitter();
+  focusedBrowserContents.isDestroyed = () => false;
+  let shellZoomLevel = 0;
+  const shellContents = {
+    getZoomLevel: () => shellZoomLevel,
+    isDestroyed: () => false,
+    setZoomLevel: (next) => { shellZoomLevel = next; },
+  };
+  const originalBounds = { x: 280, y: 76, width: 840, height: 644 };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    state: { zoomFactor: 1 },
+    bounds: originalBounds,
+    window: { webContents: shellContents },
+    shellZoomShortcutBindings: new Map(),
+    logger: { error() {} },
+  });
+  let prevented = 0;
+
+  BrowserHost.prototype.bindShellZoomShortcuts.call(fixture, focusedBrowserContents);
+  focusedBrowserContents.emit(
+    "before-input-event",
+    { preventDefault: () => { prevented += 1; } },
+    {
+      type: "keyDown",
+      key: "=",
+      meta: process.platform === "darwin",
+      control: process.platform !== "darwin",
+      alt: false,
+    },
+  );
+
+  assert.equal(prevented, 1);
+  assert.equal(shellZoomLevel, 0.5);
+  assert.equal(fixture.state.zoomFactor, 1);
+  assert.deepEqual(fixture.bounds, originalBounds);
+});
+
 test("browser chrome state is read from the owned WebContents", () => {
   const { webContents } = createContents();
   const state = readBrowserNavigationState(webContents, {
@@ -669,6 +766,7 @@ test("a live helper retains exclusive ownership of its running turn", () => {
     () => BrowserHost.prototype.beginTurn.call({
       manualOperation: null,
       turnTabs: new Map([[tab.id, tab]]),
+      userCancelledTurnOwners: new Map(),
     }, tab.traceId, false, process.pid + 1),
     /owned by another helper process/,
   );
@@ -695,6 +793,7 @@ test("a replacement helper takes over only after the previous owner exited", () 
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {
     manualOperation: null,
     turnTabs: new Map([[tab.id, tab]]),
+    userCancelledTurnOwners: new Map(),
     selectedTabId: "home",
     syncViewVisibility() {},
     snapshot: () => ({ tabs: [] }),
@@ -890,6 +989,7 @@ test("launcher session refresh resolves persisted authentication before setup ac
     ["state", { status: "loading", message: "Checking saved ChatGPT session" }],
     ["load", "https://chatgpt.com/?temporary-chat=true"],
     ["probe"],
+    ["state", { status: "ready", message: "ChatGPT is ready" }],
   ]);
 });
 
@@ -971,6 +1071,7 @@ test("selecting a task tab shows and focuses its owned Playwright surface", () =
   const visibility = [];
   const focused = [];
   const makeView = (id) => ({
+    setBounds() {},
     setVisible: (visible) => visibility.push([id, visible]),
     webContents: { focus: () => focused.push(id) },
   });
@@ -983,6 +1084,9 @@ test("selecting a task tab shows and focuses its owned Playwright surface", () =
     visible: true,
     surfaceActive: true,
     boundsReady: true,
+    bounds: { x: 260, y: 78, width: 800, height: 600 },
+    authView: null,
+    window: { getContentSize: () => [1120, 720] },
     snapshot: () => ({ activeTabId: fixture.selectedTabId }),
     publishState() {},
     writeDescriptor() {},
@@ -1019,7 +1123,7 @@ test("a stale helper cannot end a replacement turn with the same trace id", asyn
   );
 });
 
-test("closing a running browser tab preserves ownership until its helper reports termination", () => {
+test("closing a running browser tab reports terminal user cancellation to its helper", async () => {
   const closed = [];
   const tab = {
     id: "tab-running",
@@ -1033,6 +1137,7 @@ test("closing a running browser tab preserves ownership until its helper reports
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {
     turnTabs: new Map([[tab.id, tab]]),
     closedTurnOwners: new Map(),
+    userCancelledTurnOwners: new Map(),
     selectedTabId: tab.id,
     window: { contentView: { removeChildView: () => closed.push("view") } },
     syncViewVisibility() {},
@@ -1046,7 +1151,26 @@ test("closing a running browser tab preserves ownership until its helper reports
 
   assert.deepEqual(closed, ["view", "contents"]);
   assert.equal(fixture.closedTurnOwners.get("trace_running"), 333);
+  assert.equal(fixture.userCancelledTurnOwners.get("trace_running"), 333);
   assert.equal(fixture.selectedTabId, "home");
+  assert.throws(
+    () => BrowserHost.prototype.beginTurn.call(fixture, tab.traceId, false, 444),
+    error => error?.code === "turn_cancelled",
+  );
+
+  assert.deepEqual(
+    await BrowserHost.prototype.endTurn.call(
+      fixture,
+      tab.traceId,
+      tab.helperPid,
+      "failed",
+      false,
+      "page closed",
+    ),
+    { cancelledByUser: true },
+  );
+  assert.equal(fixture.closedTurnOwners.has("trace_running"), false);
+  assert.equal(fixture.userCancelledTurnOwners.has("trace_running"), false);
 });
 
 test("a later provider round reuses its task tab and restores active ownership", () => {
@@ -1070,6 +1194,7 @@ test("a later provider round reuses its task tab and restores active ownership",
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {
     manualOperation: null,
     turnTabs: new Map([[tab.id, tab]]),
+    userCancelledTurnOwners: new Map(),
     selectedTabId: "home",
     syncViewVisibility: () => events.push("visible"),
     snapshot: () => ({ tabs: [] }),

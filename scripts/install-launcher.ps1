@@ -65,9 +65,14 @@ try {
   $Expected = ($ExpectedLine -split "\s+")[0].ToLowerInvariant()
   $Actual = (Get-FileHash -Algorithm SHA256 $Installer).Hash.ToLowerInvariant()
   if ($Actual -ne $Expected) { throw "SHA-256 verification failed for $Asset" }
-  $Process = Start-Process -FilePath $Installer -ArgumentList "/S" -Wait -PassThru
+  $Process = Start-Process -FilePath $Installer -ArgumentList "/S", "/currentuser" -Wait -PassThru
   if ($Process.ExitCode -ne 0) { throw "Installer exited with code $($Process.ExitCode)" }
-  $Executable = Join-Path $env:LOCALAPPDATA "Programs\codex-web-gpt-launcher\Codex Web GPT.exe"
+  $InstallRegistry = "HKCU:\Software\d1a6026a-6210-588e-9a2b-da3936f94e02"
+  $InstallLocation = [string](Get-ItemPropertyValue -LiteralPath $InstallRegistry -Name "InstallLocation")
+  if (-not [System.IO.Path]::IsPathFullyQualified($InstallLocation)) {
+    throw "Installer recorded an invalid InstallLocation: $InstallLocation"
+  }
+  $Executable = Join-Path $InstallLocation "Codex Web GPT.exe"
   if (-not (Test-Path $Executable)) { throw "Installed launcher was not found at $Executable" }
   Start-Process $Executable
   Write-Host "Installed $Executable"

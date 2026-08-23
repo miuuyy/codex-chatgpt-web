@@ -5,6 +5,7 @@ const { randomBytes } = require("node:crypto");
 const { spawn } = require("node:child_process");
 const { writePrivateFileAtomic } = require("./atomic-file.cjs");
 const {
+  connectorNameForDevSetup,
   connectorNameForSetup,
   CURRENT_CONNECTOR_NAME,
   isLegacyConnectorName,
@@ -130,7 +131,9 @@ class RuntimeHost {
     installedRuntimeRoot,
     runtimeRootProvider,
     browserDescriptorPath,
+    coreHome,
     codexHome,
+    launcherProfile = "production",
     launchAgentsDir,
     platform = process.platform,
     publishOperation,
@@ -142,6 +145,14 @@ class RuntimeHost {
     this.installedRuntimeRoot = installedRuntimeRoot;
     this.runtimeRootProvider = runtimeRootProvider;
     this.browserDescriptorPath = browserDescriptorPath;
+    if (launcherProfile !== "production" && launcherProfile !== "development") {
+      throw new Error("Runtime host launcher profile is invalid");
+    }
+    this.launcherProfile = launcherProfile;
+    this.coreHome = coreHome ? resolveUserPath(coreHome) : null;
+    if (launcherProfile === "development" && !this.coreHome) {
+      throw new Error("Runtime host DEV profile requires its isolated home");
+    }
     this.platform = platform;
     this.codexHome = codexHome
       ? resolveUserPath(codexHome)
@@ -164,6 +175,12 @@ class RuntimeHost {
       && this.activeChild.exitCode === null
       && this.activeChild.signalCode === null;
     return this.lifecycleOperation || this.active || (stuckChild ? "previous runtime process shutdown" : null);
+  }
+
+  assertProductionProfile(operation) {
+    if (this.launcherProfile !== "production") {
+      throw new Error(`${operation} is unavailable in the isolated DEV launcher profile`);
+    }
   }
 
   cleanupEphemeralSecrets() {
@@ -207,6 +224,18 @@ class RuntimeHost {
       throw new Error("Launcher browser ownership descriptor does not belong to this launcher process");
     }
     return { CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: token };
+  }
+
+  devSetupEnvironment(environment = process.env) {
+    if (this.launcherProfile !== "development" || !this.coreHome) {
+      throw new Error("DEV setup environment requires the isolated DEV launcher");
+    }
+    const childEnvironment = { ...environment };
+    delete childEnvironment.CODEX_CHATGPT_WEB_HOME;
+    delete childEnvironment.CODEX_HOME;
+    delete childEnvironment.CODEX_WEB_GPT_LAUNCHER_DATA_DIR;
+    childEnvironment.CODEX_WEB_GPT_DEV_HOME = this.coreHome;
+    return childEnvironment;
   }
 
   runtimeConfigSnapshot() {
@@ -384,14 +413,17 @@ class RuntimeHost {
         ? embeddedRuntimeInvocation({ app: this.app, sourceRoot: this.sourceRoot, args })
         : this.command(args);
       const result = await new Promise((resolve, reject) => {
+        const environment = options.environment
+          ? { ...options.environment }
+          : { ...process.env };
+        Object.assign(environment, {
+          CODEX_CHATGPT_WEB_BROWSER_HOST_DESCRIPTOR: this.browserDescriptorPath,
+          ...(options.env || {}),
+        });
         const child = spawn(invocation.executable, invocation.args, {
           cwd: invocation.cwd,
           detached: DETACH_OWNED_CHILD,
-          env: {
-            ...process.env,
-            CODEX_CHATGPT_WEB_BROWSER_HOST_DESCRIPTOR: this.browserDescriptorPath,
-            ...(options.env || {}),
-          },
+          env: environment,
           stdio: ["ignore", "pipe", "pipe"],
           windowsHide: true,
         });
@@ -494,7 +526,8 @@ class RuntimeHost {
           });
         });
       });
-      if (result.code !== 0) {
+      const acceptedExitCodes = options.acceptedExitCodes || [0];
+      if (!acceptedExitCodes.includes(result.code)) {
         const detail = result.stderr.trim() || result.stdout.trim() || `exit ${result.code}`;
         throw new Error(detail);
       }
@@ -512,10 +545,12 @@ class RuntimeHost {
   }
 
   async doctor() {
+    this.assertProductionProfile("Runtime doctor");
     try {
       const result = await this.run("doctor", ["doctor", "--json"], {
         message: "Checking runtime",
         timeoutMs: 75_000,
+        acceptedExitCodes: [0, 1],
       });
       return JSON.parse(result.stdout);
     } catch (error) {
@@ -526,7 +561,70 @@ class RuntimeHost {
     }
   }
 
+  async devDoctor() {
+    if (this.launcherProfile !== "development") {
+      throw new Error("DEV harness diagnostics require the isolated DEV launcher profile");
+    }
+    const checks = [];
+    let config;
+    try {
+      config = this.supervisor.readConfig();
+      checks.push({
+        id: "dev-profile",
+        status: config?.purpose === "dev-harness" ? "ok" : "error",
+        message: config?.purpose === "dev-harness"
+          ? "Isolated DEV harness configuration is valid"
+          : "Isolated DEV harness configuration is missing",
+      });
+    } catch (error) {
+      checks.push({
+        id: "dev-profile",
+        status: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    const full = config?.mode === "full" && config?.tunnel;
+    checks.push({
+      id: "dev-tunnel-credentials",
+      status: full && fs.existsSync(config.tunnel.runtimeKeyFile) ? "ok" : "error",
+      message: full && fs.existsSync(config.tunnel.runtimeKeyFile)
+        ? "DEV tunnel credentials are configured"
+        : "DEV Full harness tunnel credentials are not configured",
+    });
+    if (full) {
+      try {
+        const runtime = await this.supervisor.readTunnelHealth(config);
+        checks.push({
+          id: "dev-tunnel-runtime",
+          status: runtime.ready ? "ok" : "error",
+          message: runtime.ready
+            ? "Isolated DEV MCP tunnel runtime is ready"
+            : "Isolated DEV MCP tunnel runtime is not ready",
+          ...(!runtime.ready ? { detail: runtime.detail } : {}),
+        });
+      } catch (error) {
+        checks.push({
+          id: "dev-tunnel-runtime",
+          status: "error",
+          message: "Isolated DEV MCP tunnel runtime could not be inspected",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    checks.push({
+      id: "responses-listener",
+      status: "ok",
+      message: "DEV runtime supervision is tunnel-only and never starts a Responses listener",
+    });
+    return {
+      ok: checks.every(check => check.status !== "error"),
+      mode: config?.mode,
+      checks,
+    };
+  }
+
   async bridgeStatus(operationName = "bridge-status") {
+    this.assertProductionProfile("Codex bridge status");
     const result = await this.run(operationName, ["route", "status"], {
       embedded: true,
       message: "Checking Codex bridge route",
@@ -567,6 +665,7 @@ class RuntimeHost {
   }
 
   async setBridgeEnabled(enabled) {
+    this.assertProductionProfile("Codex bridge routing");
     const desired = enabled === true;
     const name = desired ? "bridge-connect" : "bridge-disconnect";
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
@@ -645,24 +744,31 @@ class RuntimeHost {
     if (!current.configured || current.mode !== "full") {
       throw new Error("The native MCP runtime is not configured");
     }
-    return requireCurrentRuntimeConnectorName(current.config?.appName);
+    return this.launcherProfile === "development"
+      ? connectorNameForDevSetup(current.config?.appName)
+      : requireCurrentRuntimeConnectorName(current.config?.appName);
   }
 
   browserConnectorName() {
     const current = this.runtimeConfigSnapshot();
+    if (this.launcherProfile === "development") {
+      return connectorNameForDevSetup(current.config?.appName);
+    }
     if (!current.configured || current.mode !== "full") return CURRENT_CONNECTOR_NAME;
     return connectorNameForSetup(current.config?.appName);
   }
 
-  cancelBrowserTurns() {
-    return this.run("cancel-browser-turns", ["service", "cancel-turns"], {
-      message: "Cancelling retained browser turns",
-      successMessage: "Retained browser turns cancelled",
+  cancelActiveTurns() {
+    this.assertProductionProfile("Launcher-owned turn cancellation");
+    return this.run("cancel-active-turns", ["service", "cancel-turns"], {
+      message: "Cancelling active Codex turns",
+      successMessage: "Active Codex turns cancelled",
       timeoutMs: 15_000,
     });
   }
 
   async uninstallIntegration() {
+    this.assertProductionProfile("Codex integration removal");
     const name = "uninstall-integration";
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
     const previousRuntime = this.runtimeConfigSnapshot();
@@ -715,6 +821,7 @@ class RuntimeHost {
   }
 
   async setupCore() {
+    this.assertProductionProfile("Codex integration setup");
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
     const existing = this.runtimeConfigSnapshot();
     const mode = existing.mode;
@@ -737,7 +844,33 @@ class RuntimeHost {
     return { ...result, mode };
   }
 
+  async setupDevCore() {
+    if (this.launcherProfile !== "development") {
+      throw new Error("DEV profile setup requires the isolated DEV launcher");
+    }
+    if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
+    const existing = this.runtimeConfigSnapshot();
+    const mode = existing.mode;
+    const args = [
+      "dev",
+      "setup",
+      mode === "full" ? "--full" : "--browser-only",
+      "--browser-host-descriptor",
+      this.browserDescriptorPath,
+      "--refresh-account-capabilities",
+      "--acknowledge-unofficial",
+    ];
+    if (mode === "full") args.push("--app-name", this.browserConnectorName());
+    const result = await this.runDevSetup("dev-profile-setup", args, {
+      message: "Configuring the isolated DEV harness",
+      successMessage: "Isolated DEV harness configured",
+      timeoutMs: mode === "full" ? MCP_SETUP_TIMEOUT_MS : CORE_SETUP_TIMEOUT_MS,
+    });
+    return { ...result, mode };
+  }
+
   async upgradeManagedRuntime() {
+    this.assertProductionProfile("Managed Codex runtime upgrade");
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
     const existing = this.runtimeConfigSnapshot();
     const currentVersion = this.app.getVersion();
@@ -777,6 +910,7 @@ class RuntimeHost {
   }
 
   setupMcp({ tunnelId = "", runtimeKey = "", replace = false } = {}) {
+    this.assertProductionProfile("Native Codex MCP setup");
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
     const reuseSavedCredentials = replace !== true && this.mcpCredentialsConfigured();
     if (!reuseSavedCredentials && !/^tunnel_[a-f0-9]{32}$/.test(tunnelId)) {
@@ -820,6 +954,59 @@ class RuntimeHost {
       successMessage: "Local MCP tools are ready",
       timeoutMs: MCP_SETUP_TIMEOUT_MS,
     }).finally(() => fs.rmSync(keyPath, { force: true }));
+  }
+
+  setupDevMcp({ tunnelId = "", runtimeKey = "", replace = false } = {}) {
+    if (this.launcherProfile !== "development") {
+      throw new Error("DEV MCP setup requires the isolated DEV launcher");
+    }
+    if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
+    const reuseSavedCredentials = replace !== true && this.mcpCredentialsConfigured();
+    if (!reuseSavedCredentials && !/^tunnel_[a-f0-9]{32}$/.test(tunnelId)) {
+      throw new Error("Tunnel ID must be tunnel_ followed by 32 lowercase hexadecimal characters");
+    }
+    if (!reuseSavedCredentials && (typeof runtimeKey !== "string" || runtimeKey.trim().length < 20)) {
+      throw new Error("A Tunnels Read + Use runtime key is required");
+    }
+    const args = [
+      "dev",
+      "setup",
+      "--full",
+      "--browser-host-descriptor",
+      this.browserDescriptorPath,
+      "--app-name",
+      this.browserConnectorName(),
+      "--acknowledge-unofficial",
+    ];
+    if (reuseSavedCredentials) {
+      return this.runDevSetup("dev-mcp-setup", args, {
+        message: "Validating saved DEV tunnel credentials",
+        successMessage: "DEV Full harness is configured",
+        timeoutMs: MCP_SETUP_TIMEOUT_MS,
+      });
+    }
+    const secretsDir = path.join(this.app.getPath("userData"), "secrets");
+    fs.mkdirSync(secretsDir, { recursive: true, mode: 0o700 });
+    try { fs.chmodSync(secretsDir, 0o700); } catch {}
+    const keyPath = path.join(secretsDir, `runtime-key-${randomBytes(16).toString("hex")}.tmp`);
+    fs.writeFileSync(keyPath, runtimeKey.trim(), { flag: "wx", mode: 0o600 });
+    args.push("--tunnel-id", tunnelId, "--runtime-key-file", keyPath);
+    return this.runDevSetup("dev-mcp-setup", args, {
+      message: "Configuring the isolated DEV Full harness",
+      successMessage: "DEV Full harness is configured",
+      timeoutMs: MCP_SETUP_TIMEOUT_MS,
+    }).finally(() => fs.rmSync(keyPath, { force: true }));
+  }
+
+  async runDevSetup(name, args, options) {
+    if (this.launcherProfile !== "development") {
+      throw new Error("DEV setup transaction requires the isolated DEV launcher");
+    }
+    return this.runSetup(name, args, {
+      ...options,
+      embedded: true,
+      environment: this.devSetupEnvironment(),
+    });
   }
 
   async runSetup(name, args, options) {

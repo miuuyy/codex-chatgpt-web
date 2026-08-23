@@ -41,7 +41,7 @@ const environmentXml = `<environment_context>
   <filesystem><workspace_roots><root>${tempRoot}</root></workspace_roots><permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile></filesystem>
 </environment_context>`;
 const toolCapabilities = { localToolsEnabled: true, solAvailable: true, proAvailable: true };
-const readOnlyCapabilities = { localToolsEnabled: false, solAvailable: true, proAvailable: true };
+const browserOnlyCapabilities = { localToolsEnabled: false, solAvailable: true, proAvailable: true };
 
 function brokerTestEndpoint(name: string): string {
   return process.platform === "win32"
@@ -997,7 +997,7 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(files[0]!.mimeType).toBe("image/png");
   });
 
-  test("builds a context-complete Pro prompt without exposing any local-tool capability", () => {
+  test("keeps browser-only Pro context complete without creating a local-tool capability", () => {
     const imageUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAE0lEQVR4nGP4z8DwHwwZGP6DAQBJyAn3FGMynQAAAABJRU5ErkJggg==";
     const request = proRequest();
     request.context.systemPrompt = ["system-rule", "repo-rule"];
@@ -1020,7 +1020,7 @@ describe("ChatGPT outer-native harness v4", () => {
       },
     ];
 
-    const compiled = compileChatGptWebPrompt(request, readOnlyCapabilities);
+    const compiled = compileChatGptWebPrompt(request, browserOnlyCapabilities);
     expect(compiled.text).toContain("ChatGPT Web Pro with no Codex Native bridge to the user's local computer");
     expect(compiled.text).toContain("web search, browsing, research");
     expect(compiled.text).toContain("prepared workspace evidence");
@@ -1030,19 +1030,19 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(compiled.text).not.toContain("codex_bind_turn");
     expect(compiled.text).not.toContain("turn_token");
     expect(compiled.text).not.toContain("Use the attached Codex Native plugin");
-    expect(() => compileChatGptWebPrompt(request, readOnlyCapabilities, "turn_forbidden")).toThrow("must not receive");
+    expect(() => compileChatGptWebPrompt(request, browserOnlyCapabilities, "turn_forbidden")).toThrow("must not receive");
 
-    expect(chatGptReadOnlyContextWarning(request, readOnlyCapabilities)).toContain("complete accumulated task context");
-    expect(chatGptReadOnlyContextWarning(request, readOnlyCapabilities)).toContain("web search remain available");
-    expect(chatGptReadOnlyContextWarning(request, readOnlyCapabilities)).not.toContain("tools/MCP");
+    expect(chatGptReadOnlyContextWarning(request, browserOnlyCapabilities)).toContain("complete accumulated task context");
+    expect(chatGptReadOnlyContextWarning(request, browserOnlyCapabilities)).toContain("web search remain available");
+    expect(chatGptReadOnlyContextWarning(request, browserOnlyCapabilities)).not.toContain("tools/MCP");
     request.context.messages = [{ role: "user", content: "No preparation yet", timestamp: 3 }];
-    expect(chatGptReadOnlyContextWarning(request, readOnlyCapabilities)).toContain("does not contain local tool results yet");
+    expect(chatGptReadOnlyContextWarning(request, browserOnlyCapabilities)).toContain("does not contain local tool results yet");
     request.context.messages = [{
       role: "user",
       content: `${SUMMARY_PREFIX}\n\nWorkspace files and tests were inspected before compaction.`,
       timestamp: 4,
     }];
-    expect(chatGptReadOnlyContextWarning(request, readOnlyCapabilities)).toContain("compaction summary");
+    expect(chatGptReadOnlyContextWarning(request, browserOnlyCapabilities)).toContain("compaction summary");
     expect(chatGptReadOnlyContextWarning(parsed(), toolCapabilities)).toBeUndefined();
     expect(() => compileChatGptWebPrompt(parsed(), toolCapabilities)).toThrow("requires a broker turn token");
   });
@@ -1476,6 +1476,7 @@ describe("ChatGPT outer-native harness v4", () => {
       const prepared = await turn.prepare();
       try {
         if (prepared.text.includes("history-compaction checkpoint")) {
+          expect(turn.compaction).toBe(true);
           compactionPrompt = prepared.text;
           const compactSummary = "The project was inspected and the pending command completed.";
           turn.onTextDelta(compactSummary);
@@ -1691,13 +1692,13 @@ describe("ChatGPT outer-native harness v4", () => {
     }
   });
 
-  test("runs Pro as one context-complete read-only browser turn with native warning, tracing, and exact replay", async () => {
+  test("runs Pro through the same turn-bound MCP tool loop as other Full-mode efforts", async () => {
     const socketPath = brokerTestEndpoint(`cgw-h3-pro-${process.pid}-${Date.now()}`);
     const provider: CodexProviderConfig = {
       adapter: "chatgpt-web",
       baseUrl: "browser://chatgpt-pro-test",
       contextWindow: 256_000,
-      chatgptWeb: { brokerSocketPath: socketPath, turnTimeoutMs: 30_000, localToolsEnabled: false, solAvailable: true, proAvailable: true },
+      chatgptWeb: { brokerSocketPath: socketPath, turnTimeoutMs: 30_000, localToolsEnabled: true, solAvailable: true, proAvailable: true },
     };
     const worker = ChatGptBrowserWorker.forProvider(provider);
     const originalRun = worker.run.bind(worker);
@@ -1705,92 +1706,97 @@ describe("ChatGPT outer-native harness v4", () => {
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
       browserStarts += 1;
       expect(turn.modelId).toBe(CHATGPT_WEB_MODEL_ID);
+      expect(turn.reasoning).toBe("max");
+      expect(turn.capabilities.localToolsEnabled).toBe(true);
       const prepared = await turn.prepare();
       try {
-        expect(prepared.text).toContain("ChatGPT Web Pro with no Codex Native bridge to the user's local computer");
-        expect(prepared.text).toContain("web search, browsing, research");
-        expect(prepared.text).not.toContain("turn_token");
-        expect(prepared.text).not.toContain("codex_bind_turn");
-        turn.onReasoningSummary?.("Reviewed the accumulated");
-        turn.onReasoningSummary?.(" task evidence", true);
-        turn.onCommentary?.("The prepared context contains enough evidence to continue the analysis.");
-        turn.onReasoningSummary?.("Synthesized the read-only conclusion");
+        expect(prepared.text).toContain("For local work required by the task, use the attached Codex Native tools directly");
+        expect(prepared.text).not.toContain("with no Codex Native bridge");
+        const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
+        if (!token) throw new Error("turn token missing from compiled Pro prompt");
+        const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
+        turn.onReasoningSummary?.("Pro requested live workspace evidence");
+        const nativeResult = await callTurnBroker<BrokerToolResult>(socketPath, {
+          method: "invoke",
+          bindingId: claimed.bindingId,
+          wireName: "exec_command",
+          freeform: false,
+          arguments: { cmd: "pwd", workdir: tempRoot },
+        }, 30_000);
+        const output = (nativeResult.structuredContent as { output: string }).output;
+        turn.onReasoningSummary?.("Pro received the native tool result");
         turn.onTextDelta("## Pro result");
-        turn.onTextDelta("\n\nPrepared context synthesized.");
-        return "## Pro result\n\nPrepared context synthesized.";
+        turn.onTextDelta(`\n\nWorkspace: ${output}`);
+        return `## Pro result\n\nWorkspace: ${output}`;
       } finally {
         prepared.release();
       }
     };
 
     const request = proRequest();
-    request._rawBody = {
-      prompt_cache_key: "thread_pro_read_only",
-      client_metadata: {
-        "x-codex-turn-metadata": JSON.stringify({
-          thread_id: "thread_pro_read_only",
-          turn_id: "turn_pro_read_only",
-        }),
-      },
-      input: [{
-        type: "message",
-        role: "user",
-        content: [{ type: "input_text", text: "Synthesize the already prepared context" }],
-        internal_chat_message_metadata_passthrough: { turn_id: "turn_pro_read_only" },
-      }],
-    };
-    request.context.messages.push({
-      role: "toolResult",
-      toolCallId: "call_prepared",
-      toolName: "exec_command",
-      content: JSON.stringify({ output: "workspace already inspected", exit_code: 0 }),
-      isError: false,
-      timestamp: 3,
-    });
     const adapter = createChatGptWebAdapter(provider);
-    const events: AdapterEvent[] = [];
+    const firstEvents: AdapterEvent[] = [];
     try {
-      await adapter.runTurn!(request, { headers: new Headers() }, event => events.push(event));
+      await adapter.runTurn!(request, { headers: new Headers() }, event => firstEvents.push(event));
       expect(browserStarts).toBe(1);
-      expect(events.some(event => event.type === "tool_call_start")).toBe(false);
-      const commentary = events.filter(
-        (event): event is Extract<AdapterEvent, { type: "text_delta" }> => event.type === "text_delta" && event.phase === "commentary",
+      const call = firstEvents.find(
+        (event): event is Extract<AdapterEvent, { type: "tool_call_start" }> => event.type === "tool_call_start",
       );
-      expect(commentary).toEqual([
-        expect.objectContaining({
-          text: expect.stringContaining("cannot access the local Codex computer"),
-          phase: "commentary",
-        }),
-        {
-          type: "text_delta",
-          text: "The prepared context contains enough evidence to continue the analysis.",
-          phase: "commentary",
-        },
-      ]);
-      expect(events.filter(event => event.type === "thinking_delta")).toEqual([
-        { type: "thinking_delta", thinking: "Reviewed the accumulated" },
-        { type: "thinking_delta", thinking: " task evidence" },
-        { type: "thinking_delta", thinking: "Synthesized the read-only conclusion" },
-      ]);
-      expect(events.filter((event): event is Extract<AdapterEvent, { type: "text_delta" }> => event.type === "text_delta" && event.phase === "final_answer")
-        .map(event => event.text).join(""))
-        .toBe("## Pro result\n\nPrepared context synthesized.");
-      expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+      expect(call?.name).toBe("exec_command");
+      expect(firstEvents.some(event => event.type === "text_delta"
+        && event.text.includes("cannot access the local Codex computer"))).toBe(false);
+      expect(firstEvents.at(-1)).toMatchObject({ type: "done", stopReason: "tool_use", endTurn: false });
 
-      const response = buildResponseJSON(events, CHATGPT_WEB_MODEL_ID) as {
-        output: Array<{ type: string; phase?: string; content?: Array<{ text?: string }> }>;
+      const continuation = structuredClone(request);
+      const toolCall = {
+        role: "assistant" as const,
+        content: [{
+          type: "toolCall" as const,
+          id: call!.id,
+          name: "exec_command",
+          arguments: { cmd: "pwd", workdir: tempRoot },
+        }],
+        timestamp: 3,
       };
-      const warning = response.output.find(item => item.type === "message" && item.phase === "commentary");
-      expect(warning?.content?.[0]?.text).toContain("cannot access the local Codex computer");
-      expect(warning?.content?.[0]?.text).toContain("web search remain available");
-      expect(warning?.content?.[0]?.text).not.toContain("tools/MCP");
-      expect(response.output.filter(item => item.type === "message" && item.phase === "commentary")).toHaveLength(2);
-      expect(response.output.filter(item => item.type === "reasoning")).toHaveLength(2);
+      const result = {
+        role: "toolResult" as const,
+        toolCallId: call!.id,
+        toolName: "exec_command",
+        content: JSON.stringify({ output: tempRoot, exit_code: 0 }),
+        isError: false,
+        timestamp: 4,
+      };
+      continuation.context.messages.push(toolCall, result);
+      ((continuation._rawBody as { input: unknown[] }).input).push(
+        {
+          type: "function_call",
+          call_id: call!.id,
+          name: "exec_command",
+          arguments: JSON.stringify({ cmd: "pwd", workdir: tempRoot }),
+        },
+        {
+          type: "function_call_output",
+          call_id: call!.id,
+          output: result.content,
+        },
+      );
+
+      const finalEvents: AdapterEvent[] = [];
+      await adapter.runTurn!(continuation, { headers: new Headers() }, event => finalEvents.push(event));
+      expect(browserStarts).toBe(1);
+      expect(finalEvents.find(event => event.type === "thinking_delta")).toEqual({
+        type: "thinking_delta",
+        thinking: "Pro received the native tool result",
+      });
+      expect(finalEvents.filter((event): event is Extract<AdapterEvent, { type: "text_delta" }> => event.type === "text_delta")
+        .map(event => event.text).join(""))
+        .toBe(`## Pro result\n\nWorkspace: ${tempRoot}`);
+      expect(finalEvents.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
 
       const replay: AdapterEvent[] = [];
-      await adapter.runTurn!(request, { headers: new Headers() }, event => replay.push(event));
+      await adapter.runTurn!(continuation, { headers: new Headers() }, event => replay.push(event));
       expect(browserStarts).toBe(1);
-      expect(replay).toEqual(events);
+      expect(replay).toEqual(finalEvents);
     } finally {
       (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
       await TurnBroker.forSocket(socketPath).close();

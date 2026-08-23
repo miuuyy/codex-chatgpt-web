@@ -14,6 +14,7 @@ export type BrowserHostMode = "managed-chrome" | "launcher";
  * contract therefore has a new identity instead of mutating the retired connector in place.
  */
 export const CHATGPT_CONNECTOR_NAME = "Codex Native2";
+export const DEV_CHATGPT_CONNECTOR_NAME = `${CHATGPT_CONNECTOR_NAME} DEV`;
 export const LEGACY_CHATGPT_CONNECTOR_NAMES = ["Codex Native"] as const;
 
 export function isLegacyChatGptConnectorName(value: string): boolean {
@@ -41,6 +42,15 @@ export function resolveSetupConnectorName(existingName?: string, requestedName?:
   return existing;
 }
 
+export function resolveDevSetupConnectorName(existingName?: string, requestedName?: string): string {
+  if (requestedName !== undefined) return resolveSetupConnectorName(existingName, requestedName);
+  const existing = existingName?.trim();
+  if (!existing || existing === CHATGPT_CONNECTOR_NAME || isLegacyChatGptConnectorName(existing)) {
+    return DEV_CHATGPT_CONNECTOR_NAME;
+  }
+  return resolveSetupConnectorName(existing);
+}
+
 export interface TunnelConfig {
   binaryPath: string;
   tunnelId: string;
@@ -52,6 +62,7 @@ export interface TunnelConfig {
 
 export interface AppConfig {
   version: 3;
+  purpose?: "dev-harness";
   releaseVersion: string;
   mode: RuntimeMode;
   host: "127.0.0.1";
@@ -138,6 +149,14 @@ export function atomicWriteFile(path: string, data: string | Uint8Array): void {
     throw error;
   }
   try { chmodSync(path, 0o600); } catch { /* Windows ACLs are managed by the installer. */ }
+}
+
+export function stripUtf8Bom(text: string): string {
+  return text.startsWith("\uFEFF") ? text.slice(1) : text;
+}
+
+export function preserveUtf8Bom(text: string, original: string): string {
+  return original.startsWith("\uFEFF") ? `\uFEFF${stripUtf8Bom(text)}` : stripUtf8Bom(text);
 }
 
 export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
@@ -282,13 +301,13 @@ export function defaultChromeExecutable(
 export function loadConfig(): AppConfig {
   const path = getConfigPath();
   if (!existsSync(path)) throw new Error(`Configuration is missing: ${path}. Run codex-chatgpt-web setup first.`);
-  return parseConfig(JSON.parse(readFileSync(path, "utf8")), path);
+  return parseConfig(JSON.parse(stripUtf8Bom(readFileSync(path, "utf8"))), path);
 }
 
 export function loadConfigForSetup(): AppConfig {
   const path = getConfigPath();
   if (!existsSync(path)) throw new Error(`Configuration is missing: ${path}. Run codex-chatgpt-web setup first.`);
-  const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+  const raw = JSON.parse(stripUtf8Bom(readFileSync(path, "utf8"))) as Record<string, unknown>;
   if (raw.version === 1 && raw.mode === "pro-only") {
     raw.version = 2;
     raw.mode = "browser-only";
@@ -304,6 +323,9 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid configuration object in ${path}`);
   const parsed = value as Partial<AppConfig>;
   if (parsed.version !== 3) throw new Error(`Unsupported configuration version in ${path}; rerun setup to migrate it`);
+  if (parsed.purpose !== undefined && parsed.purpose !== "dev-harness") {
+    throw new Error(`Invalid configuration purpose in ${path}`);
+  }
   if (typeof parsed.releaseVersion !== "string" || !parsed.releaseVersion.trim()) throw new Error(`Missing releaseVersion in ${path}`);
   if (parsed.mode !== "browser-only" && parsed.mode !== "full") throw new Error(`Invalid runtime mode in ${path}`);
   if (parsed.host !== "127.0.0.1") throw new Error("The Responses proxy must bind to 127.0.0.1");
@@ -383,7 +405,9 @@ function parseConfig(value: unknown, path: string): AppConfig {
 }
 
 export function saveConfig(config: AppConfig): void {
-  atomicWriteFile(getConfigPath(), `${JSON.stringify(config, null, 2)}\n`);
+  const path = getConfigPath();
+  const original = existsSync(path) ? readFileSync(path, "utf8") : "";
+  atomicWriteFile(path, preserveUtf8Bom(`${JSON.stringify(config, null, 2)}\n`, original));
 }
 
 export function providerConfig(config: AppConfig): CodexProviderConfig {
