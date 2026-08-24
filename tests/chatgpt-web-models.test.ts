@@ -158,6 +158,19 @@ describe("fixed ChatGPT Web model routes", () => {
       .toThrow("model is not enabled");
   });
 
+  test("keeps normal Pro turns on Pro and routes only Pro compaction through Extra High", () => {
+    const config = defaultConfig("full");
+    config.proAvailable = true;
+    const normal = parsed("chatgpt-web/pro", "low");
+    const compact = parsed("chatgpt-web/pro", "low");
+    compact._compactionRequest = true;
+
+    expect(routeChatGptWebRequest(normal, config).slug).toBe("chatgpt-web/pro");
+    expect(normal.options.reasoning).toBe("max");
+    expect(routeChatGptWebRequest(compact, config).slug).toBe("chatgpt-web/pro");
+    expect(compact.options.reasoning).toBe("xhigh");
+  });
+
   test("binds the Luna route to Luna without a selectable effort", () => {
     const config = defaultConfig("browser-only");
     config.solAvailable = false;

@@ -1,6 +1,6 @@
 {
   "name": "codex-web-gpt-launcher",
-  "version": "2.1.11",
+  "version": "3.0.1",
   "private": true,
   "description": "Desktop control center for Codex ChatGPT Web",
   "author": "miuuyy",
@@ -78,12 +78,13 @@
       "target": ["AppImage"]
     },
     "nsis": {
-      "oneClick": true,
+      "guid": "d1a6026a-6210-588e-9a2b-da3936f94e02",
+      "oneClick": false,
       "perMachine": false,
       "allowElevation": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "runAfterFinish": false
+      "runAfterFinish": true
     }
   }
 }

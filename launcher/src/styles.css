@@ -155,6 +155,27 @@ code {
   border-radius: 8px;
 }
 
+.titlebar-dev-profile,
+.dev-profile-badge {
+  display: inline-flex;
+  height: 18px;
+  align-items: center;
+  padding: 0 6px;
+  border: 1px solid rgb(51 156 255 / 38%);
+  border-radius: 999px;
+  background: rgb(51 156 255 / 14%);
+  color: var(--blue-200);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1;
+}
+
+.titlebar-dev-profile {
+  pointer-events: none;
+}
+
 .app-root:not([data-platform="darwin"]) .titlebar-left {
   left: 8px;
 }
@@ -285,6 +306,10 @@ code {
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.sidebar-brand-identity .dev-profile-badge {
+  flex: none;
 }
 
 .sidebar-brand-actions {
@@ -533,6 +558,7 @@ code {
   color: var(--color-text-secondary);
   font-size: var(--text-sm);
   user-select: none;
+  -webkit-app-region: no-drag;
 }
 
 .browser-tab::before {

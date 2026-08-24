@@ -10,9 +10,9 @@ import { join } from "node:path";
 import {
   getCodexHome,
   getCodexModelsCachePath,
-  patchCodexRouteText,
 } from "./codex-integration";
 import { atomicWriteFile, getConfigDir } from "./config";
+import { installRoute } from "./codex-integration-route";
 
 const MAX_MANAGED_FILE_BYTES = 16 * 1024 * 1024;
 const DEFAULT_DISPLAY_NAME = "External Responses bridge";
@@ -280,7 +280,7 @@ export function installExternalResponsesIntegration(
     auth: snapshot(authPath()),
   };
   const baselineConfig = snapshotBytes(previous.config).toString("utf8");
-  const installedConfig = patchCodexRouteText(baselineConfig, baseUrl, true);
+  const installedConfig = installRoute(baselineConfig, baseUrl, true).text;
   const installedAuth = `${JSON.stringify({ OPENAI_API_KEY: apiKey }, null, 2)}\n`;
   const journal: ExternalResponsesJournal = {
     version: 1,

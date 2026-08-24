@@ -20,3 +20,15 @@ export class ChatGptWebAdapterError extends Error {
     this.retryable = options.retryable;
   }
 }
+
+export function chatGptBrowserTabClosedError(): ChatGptWebAdapterError {
+  return new ChatGptWebAdapterError(
+    "The ChatGPT browser tab was closed, so the Codex turn was cancelled.",
+    {
+      status: 499,
+      errorType: "client_closed_request",
+      code: "client_cancelled",
+      retryable: false,
+    },
+  );
+}

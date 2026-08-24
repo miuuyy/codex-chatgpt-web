@@ -60,6 +60,29 @@ test("compacts ChatGPT Web v1 through a dedicated read-only browser summarizatio
   ]);
 });
 
+test("compacts a Pro task with Extra High while preserving the Pro route", async () => {
+  const config = defaultConfig("full");
+  config.proAvailable = true;
+  const response = await compactRequest(new Request("http://127.0.0.1:17841/v1/responses/compact", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: "chatgpt-web/pro",
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "Inspect" }] }],
+    }),
+  }), config, () => ({
+    name: "pro-compaction-effort-check",
+    async runTurn(parsed, _incoming, emit) {
+      expect(parsed._compactionRequest).toBe(true);
+      expect(parsed.options.reasoning).toBe("xhigh");
+      emit({ type: "text_delta", text: summary, phase: "final_answer" });
+      emit({ type: "done", stopReason: "stop", endTurn: true });
+    },
+  }));
+
+  expect(response.status).toBe(200);
+});
+
 test("preserves canonical Codex turn metadata from the compact endpoint header", async () => {
   const turnMetadata = { thread_id: "thread_compact", turn_id: "turn_compact" };
   const response = await compactRequest(new Request("http://127.0.0.1:17841/v1/responses/compact", {

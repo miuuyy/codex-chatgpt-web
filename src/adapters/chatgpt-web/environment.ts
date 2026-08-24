@@ -18,7 +18,18 @@ export interface ChatGptTurnEnvironment {
 export interface ChatGptTurnIdentity {
   threadId?: string;
   turnId?: string;
+  parentThreadId?: string;
+  agentName?: string;
+  subagentKind?: string;
   promptCacheKey?: string;
+}
+
+export interface ChatGptThreadSpawnLineage {
+  threadId: string;
+  parentThreadId: string;
+  agentName: string;
+  sandboxType: ChatGptSandboxPolicy["type"];
+  workspaceRoots: string[];
 }
 
 export interface ChatGptTurnUserRevision {
@@ -77,6 +88,7 @@ function rawMessageText(value: Record<string, unknown>): string {
 function contextualUserMessage(value: Record<string, unknown>): boolean {
   const text = rawMessageText(value).trim();
   return /^<environment_context>[\s\S]*<\/environment_context>$/.test(text)
+    || /^<subagent_notification>[\s\S]*<\/subagent_notification>$/.test(text)
     || isReadableCompactionSummaryText(text)
     || text === OPAQUE_COMPACTION_NOTE;
 }
@@ -498,6 +510,34 @@ export function extractChatGptTurnIdentity(parsed: CodexParsedRequest): ChatGptT
   return {
     ...(typeof metadata?.thread_id === "string" ? { threadId: metadata.thread_id } : {}),
     ...(typeof metadata?.turn_id === "string" ? { turnId: metadata.turn_id } : {}),
+    ...(typeof metadata?.parent_thread_id === "string" ? { parentThreadId: metadata.parent_thread_id } : {}),
+    ...(typeof metadata?.agent_name === "string" ? { agentName: metadata.agent_name } : {}),
+    ...(typeof metadata?.subagent_kind === "string" ? { subagentKind: metadata.subagent_kind } : {}),
     ...(typeof body?.prompt_cache_key === "string" ? { promptCacheKey: body.prompt_cache_key } : {}),
   };
+}
+
+/**
+ * Return the canonical parent link carried by a native Codex thread-spawn request.
+ * This is deliberately stricter than generic metadata parsing: only a real child turn with an
+ * agent path, explicit turn purpose, sandbox policy, and absolute workspace evidence can inherit
+ * filesystem authority from a previously verified parent thread.
+ */
+export function extractChatGptThreadSpawnLineage(
+  parsed: CodexParsedRequest,
+): ChatGptThreadSpawnLineage | undefined {
+  const metadata = clientTurnMetadata(parsed);
+  if (!metadata || metadata.request_kind !== "turn" || metadata.subagent_kind !== "thread_spawn") return undefined;
+  const threadId = typeof metadata.thread_id === "string" ? metadata.thread_id.trim() : "";
+  const parentThreadId = typeof metadata.parent_thread_id === "string" ? metadata.parent_thread_id.trim() : "";
+  const agentName = typeof metadata.agent_name === "string" ? metadata.agent_name.trim() : "";
+  if (!threadId || !parentThreadId || threadId === parentThreadId || !/^\/root\/.+/.test(agentName)) return undefined;
+
+  const sandboxType = sandboxTypeFromMetadata(canonicalSandboxMetadata(metadata));
+  if (!sandboxType || sandboxType === "platform") return undefined;
+  const workspaces = record(metadata.workspaces);
+  const workspacePaths = workspaces ? Object.keys(workspaces) : [];
+  if (workspacePaths.some(path => !isAbsolute(path))) return undefined;
+  const workspaceRoots = [...new Set(workspacePaths.map(path => resolve(path)))];
+  return { threadId, parentThreadId, agentName, sandboxType, workspaceRoots };
 }

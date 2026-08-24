@@ -139,7 +139,7 @@ export interface DrainLease {
   release: () => Promise<void>;
 }
 
-async function control(config: AppConfig, action: "drain" | "resume" | "cancel-browser-turns"): Promise<Record<string, unknown>> {
+async function control(config: AppConfig, action: "drain" | "resume" | "cancel-turns"): Promise<Record<string, unknown>> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5_000);
   try {
@@ -155,13 +155,22 @@ async function control(config: AppConfig, action: "drain" | "resume" | "cancel-b
   }
 }
 
-export async function cancelBrowserTurns(config: AppConfig): Promise<number> {
-  const result = await control(config, "cancel-browser-turns");
-  const cancelled = result.cancelled_browser_turns;
-  if (!Number.isInteger(cancelled) || (cancelled as number) < 0) {
-    throw new Error("daemon did not acknowledge browser-turn cancellation");
+export async function cancelActiveTurns(config: AppConfig): Promise<{
+  cancelledHttpTurns: number;
+  cancelledBrowserTurns: number;
+}> {
+  const result = await control(config, "cancel-turns");
+  const cancelledHttpTurns = result.cancelled_http_turns;
+  const cancelledBrowserTurns = result.cancelled_browser_turns;
+  if (!Number.isInteger(cancelledHttpTurns) || (cancelledHttpTurns as number) < 0
+    || !Number.isInteger(cancelledBrowserTurns) || (cancelledBrowserTurns as number) < 0
+    || result.active_http_turns !== 0 || result.active_browser_turns !== 0) {
+    throw new Error("daemon did not acknowledge complete active-turn cancellation");
   }
-  return cancelled as number;
+  return {
+    cancelledHttpTurns: cancelledHttpTurns as number,
+    cancelledBrowserTurns: cancelledBrowserTurns as number,
+  };
 }
 
 export async function negotiateDrain(

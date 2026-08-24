@@ -73,8 +73,8 @@ describe("external Responses provider integration", () => {
     expect(result).toMatchObject({ active: true, baseUrl: "https://gateway.example/v1" });
     const installedConfig = readFileSync(configPath, "utf8");
     expect(installedConfig).toContain('openai_base_url = "https://gateway.example/v1"');
-    expect(installedConfig).not.toMatch(/^\s*model_provider\s*=/m);
-    expect(installedConfig).not.toMatch(/^\s*model_catalog_json\s*=/m);
+    expect(installedConfig).toContain('model_provider = "custom"');
+    expect(installedConfig).toContain('model_catalog_json = "/tmp/custom-models.json"');
     expect(installedConfig).toContain("goals = true");
     expect(JSON.parse(readFileSync(authPath, "utf8"))).toEqual({ OPENAI_API_KEY: "downstream-secret-key" });
     expect(existsSync(cachePath)).toBe(false);

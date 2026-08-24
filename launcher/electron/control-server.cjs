@@ -126,7 +126,7 @@ class BrowserControlServer {
         return;
       } else {
         if (!['completed', 'failed', 'aborted'].includes(body.status)) throw new Error("turn status is invalid");
-        await host.endTurn(
+        const release = await host.endTurn(
           body.traceId,
           body.helperPid,
           body.status,
@@ -134,12 +134,17 @@ class BrowserControlServer {
           body.message,
         );
         this.logger.info("browser.turn_ended", { traceId: body.traceId, status: body.status });
+        writeJson(response, 200, { ok: true, ...release });
+        return;
       }
-      writeJson(response, 200, { ok: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn("browser.control_rejected", { message });
-      writeJson(response, 400, { error: message });
+      const cancelled = error?.code === "turn_cancelled";
+      writeJson(response, cancelled ? 409 : 400, {
+        error: message,
+        ...(cancelled ? { code: "turn_cancelled" } : {}),
+      });
     }
   }
 

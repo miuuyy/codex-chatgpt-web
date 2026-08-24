@@ -1,6 +1,5 @@
 const fs = require("node:fs");
 const net = require("node:net");
-const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { pathToFileURL } = require("node:url");
@@ -21,12 +20,14 @@ const { BrowserControlServer } = require("./control-server.cjs");
 const { getAutostart, setAutostart } = require("./autostart.cjs");
 const {
   createLogger,
+  exportSanitizedLogs,
   installProcessDiagnosticGuards,
   registerLoggedIpc,
 } = require("./logging.cjs");
 const { RuntimeHost } = require("./runtime.cjs");
 const { ensurePackagedRuntime } = require("./runtime-install.cjs");
 const { RuntimeSupervisor } = require("./runtime-supervisor.cjs");
+const { DEVELOPMENT_PROFILE, resolveLauncherProfile } = require("./profile.cjs");
 const { runtimeBundlePaths } = require("./runtime-command.cjs");
 const {
   PROVIDER_INSTALL_SCHEME,
@@ -46,16 +47,9 @@ const {
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 const SOURCE_ROOT = path.resolve(__dirname, "../..");
-function resolveUserPath(value) {
-  if (value === "~") return os.homedir();
-  if (value.startsWith("~/") || value.startsWith("~\\")) {
-    return path.resolve(os.homedir(), value.slice(2));
-  }
-  return path.resolve(value);
-}
-const CORE_HOME = process.env.CODEX_CHATGPT_WEB_HOME?.trim()
-  ? resolveUserPath(process.env.CODEX_CHATGPT_WEB_HOME.trim())
-  : path.join(os.homedir(), ".codex-chatgpt-web");
+const LAUNCHER_PROFILE = resolveLauncherProfile({ appData: app.getPath("appData") });
+const IS_DEV_PROFILE = LAUNCHER_PROFILE.kind === DEVELOPMENT_PROFILE;
+const CORE_HOME = LAUNCHER_PROFILE.coreHome;
 const BROWSER_DESCRIPTOR_PATH = path.join(CORE_HOME, "runtime", "launcher-browser.json");
 const BROWSER_HELPER_PATH = app.isPackaged
   ? path.join(process.resourcesPath, "runtime", "app", "browser-helper.cjs")
@@ -69,21 +63,25 @@ const ALLOWED_EXTERNAL_URLS = new Set([GITHUB_URL, X_URL, CONNECTORS_URL, TUNNEL
 const PACKAGED_RENDERER_URL = pathToFileURL(path.join(__dirname, "..", "dist", "index.html")).href;
 const APP_ICON_PATH = path.join(__dirname, "..", "assets", "icon.png");
 
-app.setName("Codex Web GPT");
-if (process.platform === "win32") app.setAppUserModelId("dev.codexwebgpt.launcher");
-const providerInstallScheme = PROVIDER_INSTALL_SCHEME.slice(0, -1);
-if (process.defaultApp && process.argv[1]) {
-  app.setAsDefaultProtocolClient(providerInstallScheme, process.execPath, [path.resolve(process.argv[1])]);
-} else {
-  app.setAsDefaultProtocolClient(providerInstallScheme);
+process.env.CODEX_CHATGPT_WEB_HOME = CORE_HOME;
+process.env.CODEX_HOME = LAUNCHER_PROFILE.codexHome;
+app.setName(LAUNCHER_PROFILE.displayName);
+if (process.platform === "win32") {
+  app.setAppUserModelId(IS_DEV_PROFILE ? "dev.codexwebgpt.launcher.dev" : "dev.codexwebgpt.launcher");
 }
-const configuredUserData = process.env.CODEX_WEB_GPT_LAUNCHER_DATA_DIR?.trim();
-const launcherUserData = configuredUserData
-  ? resolveUserPath(configuredUserData)
-  : path.join(app.getPath("appData"), "Codex Web GPT");
+if (!IS_DEV_PROFILE) {
+  const providerInstallScheme = PROVIDER_INSTALL_SCHEME.slice(0, -1);
+  if (process.defaultApp && process.argv[1]) {
+    app.setAsDefaultProtocolClient(providerInstallScheme, process.execPath, [path.resolve(process.argv[1])]);
+  } else {
+    app.setAsDefaultProtocolClient(providerInstallScheme);
+  }
+}
+const launcherUserData = LAUNCHER_PROFILE.userData;
 fs.mkdirSync(launcherUserData, { recursive: true, mode: 0o700 });
 if (process.platform !== "win32") fs.chmodSync(launcherUserData, 0o700);
 app.setPath("userData", launcherUserData);
+app.setAppLogsPath(path.join(launcherUserData, "logs"));
 installProcessDiagnosticGuards({
   filePath: path.join(launcherUserData, "logs", "process-stream-errors.log"),
 });
@@ -106,6 +104,7 @@ let updateController = null;
 let pendingProviderInstall = null;
 
 function acceptProviderInstallUrl(value) {
+  if (IS_DEV_PROFILE) return false;
   const request = parseProviderInstallUrl(value);
   if (!request) return false;
   pendingProviderInstall = request;
@@ -223,9 +222,9 @@ function trayImage() {
 function createTray(logger) {
   try {
     tray = new Tray(trayImage());
-    tray.setToolTip("Codex Web GPT");
+    tray.setToolTip(LAUNCHER_PROFILE.displayName);
     tray.setContextMenu(Menu.buildFromTemplate([
-      { label: "Open Codex Web GPT", click: () => showMainWindow() },
+      { label: `Open ${LAUNCHER_PROFILE.displayName}`, click: () => showMainWindow() },
       { type: "separator" },
       { label: "Quit", click: () => { void requestQuit(); } },
     ]));
@@ -291,7 +290,7 @@ function createWindow({ logger, stateStore, windowStatePath, startHidden }) {
       : {}),
     minWidth: MIN_WINDOW_BOUNDS.width,
     minHeight: MIN_WINDOW_BOUNDS.height,
-    title: "Codex Web GPT",
+    title: LAUNCHER_PROFILE.displayName,
     icon: APP_ICON_PATH,
     show: false,
     backgroundColor: isMac ? "#00000000" : "#181818",
@@ -390,6 +389,12 @@ function smokePassedForCurrentVersion(state) {
 function registerIpc({ logger, stateStore }) {
   const handle = (channel, handler) => registerLoggedIpc(ipcMain, logger, channel, handler);
   handle("launcher:snapshot", async () => ({
+    profile: LAUNCHER_PROFILE.kind,
+    profilePaths: {
+      coreHome: CORE_HOME,
+      codexHome: LAUNCHER_PROFILE.codexHome,
+      userData: launcherUserData,
+    },
     state: stateStore.read(),
     browser: browserHost?.snapshot() ?? null,
     connectorName: runtimeHost.browserConnectorName(),
@@ -428,8 +433,8 @@ function registerIpc({ logger, stateStore }) {
     return true;
   });
 
-  handle("launcher:browser-bounds", (_event, bounds) => {
-    browserHost?.setBounds(validateBounds(bounds));
+  handle("launcher:browser-bounds", (event, bounds) => {
+    browserHost?.setBounds(validateBounds(bounds), event.sender.getZoomFactor());
     return true;
   });
   handle("launcher:browser-surface-active", (_event, active) => browserHost.setSurfaceActive(active === true));
@@ -464,10 +469,31 @@ function registerIpc({ logger, stateStore }) {
     smokePassedThisSession = true;
     return result;
   });
-  handle("launcher:mcp-verify", async () => {
+  handle("launcher:mcp-verify", async (event) => {
     const operationName = "mcp-verification";
+    const activeTraceId = browserHost.activeTraceId;
+    logger.info("mcp.verification_requested", {
+      activeTraceId,
+      launcherFocused: mainWindow?.isFocused() === true,
+      rendererFocused: event.sender.isFocused(),
+    });
+    if (activeTraceId) {
+      const report = {
+        ok: false,
+        checks: [{
+          id: "connector",
+          status: "error",
+          message: "Finish the active Codex task before verifying the ChatGPT connector",
+          detail: `Active browser turn: ${activeTraceId}`,
+        }],
+      };
+      const state = stateStore.update({ mcpSetupComplete: false });
+      send("launcher:state-changed", state);
+      publishOperation({ name: operationName, status: "failed", message: report.checks[0].message });
+      return report;
+    }
     publishOperation({ name: operationName, status: "running", message: "Checking local runtime" });
-    const report = await runtimeHost.doctor();
+    const report = IS_DEV_PROFILE ? await runtimeHost.devDoctor() : await runtimeHost.doctor();
     if (!report.ok) {
       const message = report.checks
         .filter((check) => check.status === "error")
@@ -484,20 +510,43 @@ function registerIpc({ logger, stateStore }) {
       await browserHost.verifyConnector(runtimeHost.mcpConnectorName());
       const state = stateStore.update({ mcpSetupComplete: true });
       send("launcher:state-changed", state);
-      publishOperation({ name: operationName, status: "completed", message: "Runtime and connector verified" });
-      return report;
+      const successMessage = IS_DEV_PROFILE
+        ? "DEV harness and connector verified"
+        : "Runtime and connector verified";
+      publishOperation({ name: operationName, status: "completed", message: successMessage });
+      return {
+        ...report,
+        checks: report.checks.map((check) => check.id === "connector"
+          ? {
+              id: "connector",
+              status: "ok",
+              message: `ChatGPT connector ${JSON.stringify(runtimeHost.mcpConnectorName())} is available`,
+            }
+          : check),
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const state = stateStore.update({ mcpSetupComplete: false });
       send("launcher:state-changed", state);
       publishOperation({ name: operationName, status: "failed", message });
-      throw error;
+      return {
+        ...report,
+        ok: false,
+        checks: [
+          ...report.checks.filter((check) => check.id !== "connector"),
+          { id: "connector", status: "error", message },
+        ],
+      };
     }
   });
 
-  handle("launcher:doctor", () => runtimeHost.doctor());
-  handle("launcher:cancel-turns", () => runtimeHost.cancelBrowserTurns());
+  handle("launcher:doctor", () => IS_DEV_PROFILE ? runtimeHost.devDoctor() : runtimeHost.doctor());
+  handle("launcher:cancel-turns", () => {
+    if (IS_DEV_PROFILE) throw new Error("DEV chat turns are owned by the repository CLI process");
+    return runtimeHost.cancelActiveTurns();
+  });
   handle("launcher:bridge-enabled", async (_event, enabled) => {
+    if (IS_DEV_PROFILE) throw new Error("DEV profile has no Codex bridge route");
     if (stateStore.read().externalProviderActive) {
       throw new Error("Disconnect the external Responses provider before changing the local Codex bridge route");
     }
@@ -512,6 +561,7 @@ function registerIpc({ logger, stateStore }) {
     return state;
   });
   handle("launcher:uninstall-integration", async () => {
+    if (IS_DEV_PROFILE) throw new Error("DEV profile has no Codex integration to remove");
     if (stateStore.read().externalProviderActive) {
       throw new Error("Disconnect the external Responses provider before removing the local Codex integration");
     }
@@ -555,18 +605,28 @@ function registerIpc({ logger, stateStore }) {
       throw new Error("Disconnect the external Responses provider before reinstalling the local Codex route");
     }
     const browser = await browserHost.probeAuthentication();
-    if (!browser.authenticated) throw new Error("Sign in to ChatGPT before installing the Codex integration");
+    if (!browser.authenticated) {
+      throw new Error(
+        IS_DEV_PROFILE
+          ? "Sign in to the isolated DEV ChatGPT profile before configuring the harness"
+          : "Sign in to ChatGPT before installing the Codex integration",
+      );
+    }
     const setupState = stateStore.read();
     if (!setupState.coreSetupComplete
       && !(smokePassedThisSession || smokePassedForCurrentVersion(setupState))) {
-      throw new Error("Run the browser smoke test before installing the Codex integration");
+      throw new Error(
+        IS_DEV_PROFILE
+          ? "Run the browser smoke test before configuring the DEV harness"
+          : "Run the browser smoke test before installing the Codex integration",
+      );
     }
-    const result = await runtimeHost.setupCore();
+    const result = IS_DEV_PROFILE ? await runtimeHost.setupDevCore() : await runtimeHost.setupCore();
     stateStore.update({
-      bridgeEnabled: true,
+      bridgeEnabled: IS_DEV_PROFILE ? false : true,
       coreSetupComplete: true,
-      codexCatalogVerified: false,
-      codexRestartRequired: true,
+      codexCatalogVerified: IS_DEV_PROFILE ? true : false,
+      codexRestartRequired: IS_DEV_PROFILE ? false : true,
       ...(result.mode === "full" ? {
         mcpRuntimeInstalled: true,
         mcpSetupComplete: false,
@@ -582,15 +642,18 @@ function registerIpc({ logger, stateStore }) {
         message: error instanceof Error ? error.message : String(error),
       });
     });
-    startCatalogVerificationMonitor({ logger, stateStore });
-    return { ok: true, stdout: result.stdout, restartRequired: true };
+    if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
+    return { ok: true, stdout: result.stdout, restartRequired: !IS_DEV_PROFILE };
   });
   handle("launcher:setup-mcp", async (_event, input) => {
     if (stateStore.read().externalProviderActive) {
       throw new Error("Disconnect the external Responses provider before changing the Full MCP runtime");
     }
     await browserHost.reveal();
-    const result = await runtimeHost.setupMcp({
+    const setup = IS_DEV_PROFILE
+      ? runtimeHost.setupDevMcp.bind(runtimeHost)
+      : runtimeHost.setupMcp.bind(runtimeHost);
+    const result = await setup({
       tunnelId: typeof input?.tunnelId === "string" ? input.tunnelId.trim() : "",
       runtimeKey: typeof input?.runtimeKey === "string" ? input.runtimeKey : "",
       replace: input?.replace === true,
@@ -599,7 +662,7 @@ function registerIpc({ logger, stateStore }) {
       mcpRuntimeInstalled: true,
       mcpSetupComplete: false,
       mcpGuideStep: 2,
-      codexRestartRequired: true,
+      codexRestartRequired: IS_DEV_PROFILE ? false : true,
     });
     return { ok: true, stdout: result.stdout };
   });
@@ -609,6 +672,7 @@ function registerIpc({ logger, stateStore }) {
     return true;
   });
   handle("launcher:external-provider-install", async (_event, input) => {
+    if (IS_DEV_PROFILE) throw new Error("DEV profile cannot install a production Codex provider route");
     const request = pendingProviderInstall;
     if (!request) throw new Error("No external Responses provider install request is pending");
     if (input?.endpoint !== request.endpoint || input?.name !== request.name) {
@@ -651,6 +715,7 @@ function registerIpc({ logger, stateStore }) {
     return { cancelled: false, state };
   });
   handle("launcher:external-provider-uninstall", async () => {
+    if (IS_DEV_PROFILE) throw new Error("DEV profile has no production Codex provider route");
     const stateBefore = stateStore.read();
     if (!stateBefore.externalProviderActive) return { cancelled: false, state: stateBefore };
     const chinese = stateBefore.language === "zh-CN";
@@ -703,6 +768,7 @@ function registerIpc({ logger, stateStore }) {
   });
 
   handle("launcher:autostart", (_event, enabled) => {
+    if (IS_DEV_PROFILE) throw new Error("The isolated DEV launcher is started explicitly from the repository CLI");
     const desired = enabled === true;
     const autostart = setAutostart(app, desired);
     return {
@@ -718,10 +784,20 @@ function registerIpc({ logger, stateStore }) {
   });
   handle("launcher:sidebar-state", (_event, value) => stateStore.update(validateSidebarState(value)));
   handle("launcher:logs", (_event, limit) => logger.recent(limit));
-  handle("launcher:open-logs", async () => {
-    const error = await shell.openPath(path.dirname(logger.filePath));
-    if (error) throw new Error(`Could not open the launcher log directory: ${error}`);
-    return logger.filePath;
+  handle("launcher:export-logs", async () => {
+    const date = new Date().toISOString().slice(0, 10);
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: "Export privacy-safe diagnostics",
+      defaultPath: path.join(app.getPath("documents"), `codex-web-gpt-diagnostics-${date}.jsonl`),
+      filters: [{ name: "JSON Lines", extensions: ["jsonl"] }],
+    });
+    if (result.canceled || !result.filePath) return null;
+    const recordCount = exportSanitizedLogs({
+      filePath: logger.filePath,
+      destinationPath: result.filePath,
+    });
+    logger.info("launcher.logs_exported", { recordCount });
+    return result.filePath;
   });
   handle("launcher:update-install", async () => {
     if (!updateController) throw new Error("Launcher updates are unavailable");
@@ -756,7 +832,7 @@ async function requestQuit() {
     if (activeOperation) {
       throw new Error(`Wait for ${activeOperation} to finish before quitting Codex Web GPT`);
     }
-    await runtimeSupervisor?.shutdown();
+    await runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true });
     stopCatalogVerificationMonitor();
     quitting = true;
     await browserHost?.persistSession();
@@ -778,7 +854,9 @@ async function requestQuit() {
 
 async function start() {
   cdpPort = await findFreePort();
-  if (process.platform === "linux") app.commandLine.appendSwitch("class", "codex-web-gpt");
+  if (process.platform === "linux") {
+    app.commandLine.appendSwitch("class", IS_DEV_PROFILE ? "codex-web-gpt-dev" : "codex-web-gpt");
+  }
   app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
   app.commandLine.appendSwitch("remote-debugging-port", String(cdpPort));
 
@@ -809,6 +887,13 @@ async function start() {
   };
 
   const stateStore = createStateStore(path.join(app.getPath("userData"), "launcher-state.json"));
+  if (IS_DEV_PROFILE && !stateStore.read().onboardingComplete) {
+    stateStore.update({
+      language: stateStore.read().language || "en",
+      onboardingComplete: true,
+      autoStart: false,
+    });
+  }
   if (stateStore.read().sessionRefreshReminderAt === null) {
     stateStore.update({ sessionRefreshReminderAt: nextSessionRefreshReminderAt() });
   }
@@ -820,8 +905,11 @@ async function start() {
       codexRestartRequired: false,
     });
   }
-  const autostart = getAutostart(app);
-  if (stateStore.read().onboardingComplete && autostart.supported && stateStore.read().autoStart !== autostart.enabled) {
+  const autostart = IS_DEV_PROFILE ? { supported: false, enabled: false } : getAutostart(app);
+  if (!IS_DEV_PROFILE
+    && stateStore.read().onboardingComplete
+    && autostart.supported
+    && stateStore.read().autoStart !== autostart.enabled) {
     setAutostart(app, stateStore.read().autoStart);
   }
   const logger = createLogger({
@@ -849,6 +937,7 @@ async function start() {
     runtimeRootProvider,
     coreHome: CORE_HOME,
     browserDescriptorPath: BROWSER_DESCRIPTOR_PATH,
+    launcherProfile: LAUNCHER_PROFILE.kind,
     publishOperation,
   });
   runtimeHost = new RuntimeHost({
@@ -858,6 +947,9 @@ async function start() {
     installedRuntimeRoot,
     runtimeRootProvider,
     browserDescriptorPath: BROWSER_DESCRIPTOR_PATH,
+    coreHome: CORE_HOME,
+    codexHome: LAUNCHER_PROFILE.codexHome,
+    launcherProfile: LAUNCHER_PROFILE.kind,
     publishOperation,
     supervisor: runtimeSupervisor,
   });
@@ -866,9 +958,12 @@ async function start() {
     descriptorPath: BROWSER_DESCRIPTOR_PATH,
     cdpPort,
     control: browserControl.descriptor(),
+    cancelTurn: IS_DEV_PROFILE ? undefined : traceId => runtimeSupervisor.cancelBrowserTurn(traceId),
     getConnectorName: () => runtimeHost.browserConnectorName(),
     helper: { executable: process.execPath, script: BROWSER_HELPER_PATH },
     logger,
+    partition: LAUNCHER_PROFILE.browserPartition,
+    profile: LAUNCHER_PROFILE.kind,
     publishState: (state) => send("launcher:browser-state", state),
   });
   await browserHost.ready();
@@ -877,7 +972,7 @@ async function start() {
     currentVersion: app.getVersion(),
     platform: process.platform,
     arch: process.arch,
-    packaged: app.isPackaged,
+    packaged: app.isPackaged && !IS_DEV_PROFILE,
     executablePath: process.execPath,
     runtimeExecutable: updaterRuntimeRoot
       ? runtimeBundlePaths(updaterRuntimeRoot, process.platform).executable
@@ -886,9 +981,10 @@ async function start() {
     publish: (state) => send("launcher:update-state", state),
     logger,
   });
+  const launcherSmokeTest = process.argv.includes("--launcher-smoke-test");
   registerIpc({ logger, stateStore });
   process.argv.some(acceptProviderInstallUrl);
-  void runtimeHost.externalProviderStatus("external-provider-startup-status").then((status) => {
+  if (!IS_DEV_PROFILE && !launcherSmokeTest) void runtimeHost.externalProviderStatus("external-provider-startup-status").then((status) => {
     const state = stateStore.update({
       externalProviderActive: status.active === true,
       externalProviderName: status.active === true && typeof status.displayName === "string"
@@ -904,7 +1000,6 @@ async function start() {
   });
   const trayAvailable = createTray(logger);
   if (startHidden && !trayAvailable) mainWindow.once("ready-to-show", () => showMainWindow());
-  const launcherSmokeTest = process.argv.includes("--launcher-smoke-test");
   if (!launcherSmokeTest) {
     void browserHost.refreshAuthentication().catch((error) => {
       logger.warn("browser.session_refresh_failed", {
@@ -952,7 +1047,40 @@ async function start() {
     app.quit();
     return;
   }
-  void (async () => {
+  if (IS_DEV_PROFILE) {
+    let config = null;
+    try {
+      config = runtimeSupervisor.readConfig();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error("dev_profile.config_invalid", { message });
+      publishOperation({ name: "dev-profile", status: "failed", message });
+    }
+    const state = stateStore.update({
+      bridgeEnabled: false,
+      coreSetupComplete: Boolean(config),
+      codexCatalogVerified: Boolean(config),
+      mcpRuntimeInstalled: config?.mode === "full",
+      ...(config?.mode !== "full" ? { mcpSetupComplete: false, mcpGuideStep: 0 } : {}),
+      codexRestartRequired: false,
+      autoStart: false,
+    });
+    send("launcher:state-changed", state);
+    logger.info("dev_profile.ready", {
+      configured: Boolean(config),
+      mode: config?.mode || null,
+      coreHome: CORE_HOME,
+      userData: launcherUserData,
+    });
+    if (config?.mode === "full") {
+      void runtimeSupervisor.startIfConfigured().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error("dev_profile.runtime_start_failed", { message });
+        const failed = stateStore.update({ mcpSetupComplete: false });
+        send("launcher:state-changed", failed);
+      });
+    }
+  } else void (async () => {
     const upgrade = await runtimeHost.upgradeManagedRuntime();
     if (upgrade.updated) {
       const state = stateStore.update({

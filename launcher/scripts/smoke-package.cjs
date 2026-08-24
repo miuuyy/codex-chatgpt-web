@@ -12,12 +12,14 @@ const expectedVersion = launcherManifest.version;
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-package-smoke-"));
 const markerPath = path.join(scratch, "ready.json");
 const coreHome = path.join(scratch, "core-home");
+let macAppBundle;
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: options.cwd || scratch,
     env: options.env || process.env,
     encoding: "utf8",
+    maxBuffer: 8 * 1024 * 1024,
     timeout: options.timeout || 45_000,
     windowsHide: true,
   });
@@ -27,6 +29,24 @@ function run(command, args, options = {}) {
       `${command} failed with status ${result.status}: ${result.stderr?.trim() || result.stdout?.trim() || "no output"}`,
     );
   }
+}
+
+function windowsInstallLocation() {
+  const guid = launcherManifest.build.nsis.guid;
+  const registryKey = `HKCU\\Software\\${guid}`;
+  const result = spawnSync("reg.exe", ["query", registryKey, "/v", "InstallLocation"], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`Windows installer did not register ${registryKey}: ${result.stderr?.trim() || "no output"}`);
+  }
+  const match = result.stdout.match(/^\s*InstallLocation\s+REG_SZ\s+(.+?)\s*$/mi);
+  if (!match || !path.win32.isAbsolute(match[1])) {
+    throw new Error(`Windows installer registered an invalid InstallLocation: ${result.stdout.trim()}`);
+  }
+  return match[1];
 }
 
 function artifact(pattern, label) {
@@ -42,6 +62,7 @@ function artifact(pattern, label) {
 function smokeEnvironment() {
   return {
     ...process.env,
+    TMPDIR: scratch,
     CODEX_WEB_GPT_LAUNCHER_DATA_DIR: path.join(scratch, "launcher-data"),
     CODEX_CHATGPT_WEB_HOME: coreHome,
     CODEX_HOME: path.join(scratch, "codex-home"),
@@ -60,7 +81,8 @@ try {
     const stage = path.join(scratch, "stage");
     fs.mkdirSync(stage);
     run("ditto", ["-x", "-k", archive, stage]);
-    executable = path.join(stage, "Codex Web GPT.app", "Contents", "MacOS", "Codex Web GPT");
+    macAppBundle = path.join(stage, "Codex Web GPT.app");
+    executable = path.join(macAppBundle, "Contents", "MacOS", "Codex Web GPT");
     command = executable;
     args = ["--launcher-smoke-test"];
   } else if (process.platform === "linux") {
@@ -71,13 +93,8 @@ try {
     env.APPIMAGE_EXTRACT_AND_RUN = "1";
   } else if (process.platform === "win32") {
     const installer = artifact(/-win-x64\.exe$/, "Windows installer");
-    run(installer, ["/S"], { timeout: 120_000 });
-    executable = path.join(
-      process.env.LOCALAPPDATA || "",
-      "Programs",
-      launcherManifest.name,
-      `${launcherManifest.build.productName}.exe`,
-    );
+    run(installer, ["/S", "/currentuser"], { timeout: 120_000 });
+    executable = path.join(windowsInstallLocation(), `${launcherManifest.build.productName}.exe`);
     command = executable;
     args = ["--launcher-smoke-test"];
   } else {
@@ -111,5 +128,17 @@ try {
   }
   process.stdout.write(`PACKAGED_LAUNCHER_SMOKE_OK ${process.platform}/${process.arch}\n`);
 } finally {
-  fs.rmSync(scratch, { recursive: true, force: true });
+  try {
+    if (macAppBundle) {
+      const launchServices =
+        "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+      run(
+        launchServices,
+        ["-u", macAppBundle],
+      );
+      run(launchServices, ["-gc"]);
+    }
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
 }

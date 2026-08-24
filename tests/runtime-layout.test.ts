@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   assertDurableRuntimeCommand,
   CHATGPT_CONNECTOR_NAME,
+  DEV_CHATGPT_CONNECTOR_NAME,
   defaultBrokerEndpoint,
   defaultConfig,
   expandUserPath,
@@ -14,6 +15,7 @@ import {
   loadConfigForSetup,
   providerConfig,
   resolveBrokerEndpoint,
+  resolveDevSetupConnectorName,
   resolveSetupConnectorName,
   runtimeCommandForProcess,
 } from "../src/config";
@@ -88,11 +90,20 @@ test("user-home expansion accepts native Unix and Windows separators", () => {
 
 test("the direct-turn connector identity migrates known legacy setup without overwriting custom names", () => {
   expect(defaultConfig("full").appName).toBe(CHATGPT_CONNECTOR_NAME);
+  expect(defaultConfig("full").subagentProtocol).toBe("compatibility-v1");
   expect(resolveSetupConnectorName("Codex Native")).toBe("Codex Native2");
   expect(resolveSetupConnectorName("Team Codex Harness")).toBe("Team Codex Harness");
   expect(resolveSetupConnectorName(undefined, "Team Codex Harness")).toBe("Team Codex Harness");
   expect(() => resolveSetupConnectorName(undefined, "Codex Native"))
     .toThrow(/requires a newly created connector named "Codex Native2"/);
+});
+
+test("the DEV profile uses a distinct connector identity without overwriting custom names", () => {
+  expect(resolveDevSetupConnectorName()).toBe(DEV_CHATGPT_CONNECTOR_NAME);
+  expect(resolveDevSetupConnectorName("Codex Native")).toBe(DEV_CHATGPT_CONNECTOR_NAME);
+  expect(resolveDevSetupConnectorName(CHATGPT_CONNECTOR_NAME)).toBe(DEV_CHATGPT_CONNECTOR_NAME);
+  expect(resolveDevSetupConnectorName("Team DEV Harness")).toBe("Team DEV Harness");
+  expect(resolveDevSetupConnectorName(undefined, "Explicit DEV Harness")).toBe("Explicit DEV Harness");
 });
 
 test("setup explicitly migrates v1 pro-only config to v3 managed browser-only", () => {
@@ -123,6 +134,7 @@ test("setup explicitly migrates v1 pro-only config to v3 managed browser-only", 
     version: 3,
     mode: "browser-only",
     browserHost: "managed-chrome",
+    subagentProtocol: "compatibility-v1",
     solAvailable: true,
   });
 });

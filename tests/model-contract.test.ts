@@ -22,7 +22,7 @@ test("the browser adapter maps fixed routed efforts to the visible ChatGPT modes
   });
   expect(resolveChatGptWebModelMode(CHATGPT_WEB_MODEL_ID, "max", capabilities)).toMatchObject({
     uiEffortIndex: 4,
-    localTools: false,
+    localTools: true,
   });
 });
 

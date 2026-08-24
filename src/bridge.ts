@@ -63,6 +63,22 @@ interface OutputItem {
   [key: string]: unknown;
 }
 
+const PLAINTEXT_COLLABORATION_CALLS = new Set([
+  "spawn_agent",
+  "send_message",
+  "followup_task",
+]);
+
+/**
+ * Codex MultiAgent V2 normally treats collaboration message arguments as backend ciphertext.
+ * An empty encrypted_function_args list is the protocol's explicit plaintext-delivery marker.
+ */
+function plaintextCollaborationFields(namespace: string | undefined, name: string): Record<string, unknown> {
+  return namespace === "collaboration" && PLAINTEXT_COLLABORATION_CALLS.has(name)
+    ? { encrypted_function_args: [] }
+    : {};
+}
+
 export type ResponsesTerminalStatus = "completed" | "failed" | "incomplete";
 
 export function bridgeToResponsesSSE(
@@ -332,6 +348,7 @@ export function bridgeToResponsesSSE(
               call_id: currentToolCall.callId, name: currentToolCall.name,
               arguments: argsStr, status: "completed",
               ...(currentToolCall.namespace ? { namespace: currentToolCall.namespace } : {}),
+              ...plaintextCollaborationFields(currentToolCall.namespace, currentToolCall.name),
             };
         emit("response.output_item.done", { output_index: currentToolCall.outputIndex, item });
         finishedItems.push(item as OutputItem);
@@ -518,7 +535,11 @@ export function bridgeToResponsesSSE(
                 ? { type: "tool_search_call", id: itemId, call_id: event.id, execution: "client", arguments: {}, status: "in_progress" }
                 : freeform
                 ? { type: "custom_tool_call", id: itemId, call_id: event.id, name: realName, input: "", status: "in_progress" }
-                : { type: "function_call", id: itemId, call_id: event.id, name: realName, arguments: "", status: "in_progress", ...(ns ? { namespace: ns } : {}) };
+                : {
+                    type: "function_call", id: itemId, call_id: event.id, name: realName,
+                    arguments: "", status: "in_progress", ...(ns ? { namespace: ns } : {}),
+                    ...plaintextCollaborationFields(ns, realName),
+                  };
               emit("response.output_item.added", { output_index: outputIndex, item });
               currentToolCall = { itemId, outputIndex, callId: event.id, name: realName, args: "", namespace: ns, freeform, toolSearch };
               break;
@@ -910,6 +931,7 @@ export function buildResponseJSON(
         call_id: currentToolCallId, name: realName,
         arguments: currentToolCallArgs || "{}", status: "completed",
         ...(ns ? { namespace: ns } : {}),
+        ...plaintextCollaborationFields(ns, realName),
       });
     }
     currentToolCallId = "";

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   LAUNCHER_BROWSER_HOST_KIND,
+  LauncherBrowserTurnCancelledError,
   inspectLauncherBrowserHost,
   notifyLauncherTurn,
   readLauncherBrowserHostDescriptor,
@@ -18,13 +19,17 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function descriptorFile(controlEndpoint = "http://127.0.0.1:39111"): string {
+function descriptorFile(
+  controlEndpoint = "http://127.0.0.1:39111",
+  profile: "production" | "development" = "production",
+): string {
   const root = mkdtempSync(join(tmpdir(), "codex-launcher-descriptor-"));
   roots.push(root);
   const path = join(root, "launcher-browser.json");
   writeFileSync(path, `${JSON.stringify({
-    version: 1,
+    version: 2,
     kind: LAUNCHER_BROWSER_HOST_KIND,
+    profile,
     pid: process.pid,
     endpoint: "http://127.0.0.1:39110",
     control: {
@@ -35,7 +40,9 @@ function descriptorFile(controlEndpoint = "http://127.0.0.1:39111"): string {
       executable: process.execPath,
       script: import.meta.path,
     },
-    partition: "persist:codex-web-gpt-chatgpt",
+    partition: profile === "development"
+      ? "persist:codex-web-gpt-dev-chatgpt"
+      : "persist:codex-web-gpt-chatgpt",
     idleUrl: "about:blank#codex-web-gpt-browser-host",
     surfaceId: "launcher_surface_id_0123456789AB",
     createdAt: new Date().toISOString(),
@@ -47,6 +54,7 @@ test("launcher descriptor is owner-only, loopback-only, and process-bound", () =
   const path = descriptorFile();
   expect(readLauncherBrowserHostDescriptor(path)).toMatchObject({
     kind: LAUNCHER_BROWSER_HOST_KIND,
+    profile: "production",
     pid: process.pid,
     endpoint: "http://127.0.0.1:39110",
     surfaceId: "launcher_surface_id_0123456789AB",
@@ -69,7 +77,9 @@ test("launcher turn control sends authenticated lifecycle events", async () => {
     response.writeHead(200, { "content-type": "application/json" });
     response.end(request.url === "/v1/turn/start"
       ? '{"ok":true,"surfaceId":"launcher_surface_id_0123456789AB"}\n'
-      : '{"ok":true}\n');
+      : request.url === "/v1/turn/end"
+        ? '{"ok":true,"cancelledByUser":false}\n'
+        : '{"ok":true}\n');
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -92,18 +102,44 @@ test("launcher turn control sends authenticated lifecycle events", async () => {
       helperPid: process.pid,
     });
     expect(received.body).toEqual({ phase: "heartbeat", traceId: "abc123def456", helperPid: process.pid });
-    await notifyLauncherTurn(path, {
+    await expect(notifyLauncherTurn(path, {
       phase: "end",
       traceId: "abc123def456",
       helperPid: process.pid,
       status: "completed",
-    });
+    })).resolves.toEqual({ cancelledByUser: false });
     expect(received.body).toEqual({
       phase: "end",
       traceId: "abc123def456",
       helperPid: process.pid,
       status: "completed",
     });
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+test("launcher turn control preserves explicit user cancellation as a terminal signal", async () => {
+  const server = createServer(async (request, response) => {
+    for await (const _chunk of request) { /* drain request */ }
+    response.writeHead(409, { "content-type": "application/json" });
+    response.end('{"error":"turn closed by user","code":"turn_cancelled"}\n');
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server has no port");
+    const path = descriptorFile(`http://127.0.0.1:${address.port}`);
+    const error = await notifyLauncherTurn(path, {
+      phase: "start",
+      traceId: "cancelled123",
+      helperPid: process.pid,
+    }).catch(cause => cause);
+    expect(error).toBeInstanceOf(LauncherBrowserTurnCancelledError);
+    expect((error as Error).message).toBe("turn closed by user");
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
   }
@@ -173,6 +209,16 @@ test("launcher descriptor rejects non-loopback browser ownership", () => {
   value.endpoint = "https://example.com:443";
   writeFileSync(path, `${JSON.stringify(value)}\n`, { mode: 0o600 });
   expect(() => readLauncherBrowserHostDescriptor(path)).toThrow("http://127.0.0.1");
+});
+
+test("launcher profile checks reject cross-profile browser ownership", async () => {
+  const path = descriptorFile("http://127.0.0.1:39111", "development");
+  expect(readLauncherBrowserHostDescriptor(path)).toMatchObject({
+    profile: "development",
+    partition: "persist:codex-web-gpt-dev-chatgpt",
+  });
+  await expect(inspectLauncherBrowserHost(path, { expectedProfile: "production", timeoutMs: 5 }))
+    .rejects.toThrow("belongs to development");
 });
 
 test("launcher page selection uses the owned surface marker instead of URL order", async () => {

@@ -20,7 +20,8 @@ created. Repository contents, tool output, websites, and prompt text are untrust
    for its sandbox, approval, UI, command sessions, and tool result.
 
 The bridge transports decisions; it does not add a second planner, semantic router, or fallback
-model. Unsupported model/effort/tool combinations fail explicitly.
+model. Every available effort uses the same MCP contract. An unavailable account route, missing
+connector, or missing outer tool fails explicitly instead of becoming an effort-specific exception.
 
 The direct turn-token MCP schema is attached only through the `Codex Native2` connector identity.
 The pre-v4 `Codex Native` connector is treated as legacy and is never selected as a fallback. This
@@ -57,7 +58,7 @@ port. Run on a trusted single-user account and treat local code execution as ins
 boundary.
 
 The lifecycle endpoints are separate from the Responses surface. `/admin/drain`, `/admin/resume`,
-`/admin/cancel-browser-turns`, and `/admin/shutdown` require a random bearer token stored in the
+`/admin/cancel-turn`, `/admin/cancel-turns`, and `/admin/shutdown` require a random bearer token stored in the
 user-only application config. The launcher uses them to reject new work, prove that both the HTTP
 request and long-lived browser/tool loop are idle, flush response state, and stop a process. The
 token does not turn loopback into a hostile-local-process security boundary; it prevents accidental

@@ -2,10 +2,17 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { chatGptWebTraceId } from "../src/adapters/chatgpt-web";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
-import { callTurnBroker, closeTurnBrokers } from "../src/adapters/chatgpt-web/turn-broker";
-import { defaultBrokerEndpoint, defaultConfig } from "../src/config";
-import { HttpTurnCounter, startServer } from "../src/server";
+import { callTurnBroker, closeTurnBrokers, RemoteTurnBroker, TurnBroker } from "../src/adapters/chatgpt-web/turn-broker";
+import { defaultBrokerEndpoint, defaultConfig, providerConfig } from "../src/config";
+import { parseRequest } from "../src/responses/parser";
+import { HttpTurnCounter, responseRequest, routeChatGptWebRequest, startServer } from "../src/server";
+
+test("DEV harness configuration cannot bind a Responses listener", () => {
+  const config = { ...defaultConfig("browser-only"), purpose: "dev-harness" as const, port: 0 };
+  expect(() => startServer(config)).toThrow("cannot start a Responses listener");
+});
 
 async function waitForTurnCount(turns: HttpTurnCounter, expected: number): Promise<void> {
   const deadline = Date.now() + 1_000;
@@ -106,8 +113,27 @@ test("HTTP turn tracking releases a stream requested by an already disconnected 
   const turns = new HttpTurnCounter();
   const client = new AbortController();
   client.abort();
-  await turns.track(async () => new Response(new ReadableStream<Uint8Array>()), client.signal);
+  const response = await turns.track(async () => new Response(new ReadableStream<Uint8Array>()), client.signal);
 
+  expect(turns.count()).toBe(0);
+  expect(response.status).toBe(499);
+  expect(response.body).toBeNull();
+});
+
+test("HTTP turn cancellation aborts the tracked request and waits for lifecycle release", async () => {
+  const turns = new HttpTurnCounter();
+  let observedAbort = false;
+  const tracked = turns.track(signal => new Promise<Response>((_resolve, reject) => {
+    signal.addEventListener("abort", () => {
+      observedAbort = true;
+      reject(signal.reason);
+    }, { once: true });
+  }));
+
+  await waitForTurnCount(turns, 1);
+  expect(await turns.cancelAll("launcher quit")).toBe(1);
+  await expect(tracked).rejects.toBe("launcher quit");
+  expect(observedAbort).toBe(true);
   expect(turns.count()).toBe(0);
 });
 
@@ -125,20 +151,21 @@ test("authenticated lifecycle control cancels orphaned browser turns", async () 
   }));
 
   try {
-    const unauthorized = await fetch(`http://127.0.0.1:${server.port}/admin/cancel-browser-turns`, {
+    const unauthorized = await fetch(`http://127.0.0.1:${server.port}/admin/cancel-turns`, {
       method: "POST",
       headers: { authorization: "Bearer invalid" },
     });
     expect(unauthorized.status).toBe(401);
     expect(chatGptTurnSessions.activeCount()).toBe(1);
 
-    const response = await fetch(`http://127.0.0.1:${server.port}/admin/cancel-browser-turns`, {
+    const response = await fetch(`http://127.0.0.1:${server.port}/admin/cancel-turns`, {
       method: "POST",
       headers: { authorization: `Bearer ${config.controlToken}` },
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
       status: "ok",
+      cancelled_http_turns: 0,
       cancelled_browser_turns: 1,
       active_http_turns: 0,
       active_browser_turns: 0,
@@ -147,6 +174,175 @@ test("authenticated lifecycle control cancels orphaned browser turns", async () 
     expect(chatGptTurnSessions.activeCount()).toBe(0);
   } finally {
     chatGptTurnSessions.clear();
+    await server.stop(true);
+  }
+});
+
+test("authenticated targeted cancellation terminates one browser trace without reopening it", async () => {
+  const config = { ...defaultConfig("browser-only"), port: 0 };
+  const server = startServer(config);
+  chatGptTurnSessions.clear();
+  let rejectTarget!: (error: Error) => void;
+  let targetCancelled = 0;
+  let otherCancelled = 0;
+  const target = chatGptTurnSessions.getOrCreate("target-key", () => ({
+    mode: "read-only",
+    browser: new Promise<string>((_resolve, reject) => { rejectTarget = reject; }),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    cancel: () => {
+      targetCancelled += 1;
+      rejectTarget(new Error("tab closed"));
+    },
+  }), "trace_target");
+  chatGptTurnSessions.getOrCreate("other-key", () => ({
+    mode: "read-only",
+    browser: new Promise<string>(() => {}),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    cancel: () => { otherCancelled += 1; },
+  }), "trace_other");
+
+  try {
+    const unauthorized = await fetch(`http://127.0.0.1:${server.port}/admin/cancel-turn`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer invalid" },
+      body: JSON.stringify({ traceId: "trace_target" }),
+    });
+    expect(unauthorized.status).toBe(401);
+
+    const response = await fetch(`http://127.0.0.1:${server.port}/admin/cancel-turn`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${config.controlToken}`,
+      },
+      body: JSON.stringify({ traceId: "trace_target" }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      status: "ok",
+      trace_id: "trace_target",
+      cancelled_browser_turns: 1,
+      cancelled_broker_turns: 0,
+      active_browser_turns: 1,
+    });
+    expect(targetCancelled).toBe(1);
+    expect(otherCancelled).toBe(0);
+    expect(target.settledOutcome()).toMatchObject({ type: "error" });
+    expect(chatGptTurnSessions.getOrCreate("target-key", () => {
+      throw new Error("cancelled trace must remain terminal");
+    }, "trace_target")).toBe(target);
+  } finally {
+    chatGptTurnSessions.clear();
+    await server.stop(true);
+  }
+});
+
+test("a Codex retry after tab cancellation receives terminal HTTP 400 without a new browser", async () => {
+  const config = defaultConfig("browser-only");
+  const turnId = "turn_cancelled_replay";
+  const body = {
+    model: "chatgpt-web/high",
+    stream: true,
+    client_metadata: {
+      "x-codex-turn-metadata": JSON.stringify({
+        thread_id: "thread_cancelled_replay",
+        turn_id: turnId,
+      }),
+    },
+    input: [{
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "Run until the browser tab is closed" }],
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    }],
+  };
+  const parsed = parseRequest(body);
+  routeChatGptWebRequest(parsed, config);
+  const traceId = chatGptWebTraceId(providerConfig(config), parsed);
+  let rejectBrowser!: (error: Error) => void;
+  chatGptTurnSessions.clear();
+  chatGptTurnSessions.getOrCreate("cancelled-replay", () => ({
+    mode: "read-only",
+    browser: new Promise<string>((_resolve, reject) => { rejectBrowser = reject; }),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    cancel: reason => rejectBrowser(reason ?? new Error("cancelled")),
+  }), traceId);
+
+  try {
+    expect(await chatGptTurnSessions.cancelTrace(traceId)).toBe(1);
+    expect(chatGptTurnSessions.cancelledError(traceId)?.message).toContain("Codex turn was cancelled");
+    let adapterConstructions = 0;
+    const response = await responseRequest(new Request("http://127.0.0.1:17841/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }), config, () => {
+      adapterConstructions += 1;
+      throw new Error("cancelled turn must not construct a new browser adapter");
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: {
+        type: "client_closed_request",
+        code: "client_cancelled",
+        message: "The ChatGPT browser tab was closed, so the Codex turn was cancelled.",
+      },
+    });
+    expect(adapterConstructions).toBe(0);
+  } finally {
+    chatGptTurnSessions.clear();
+  }
+});
+
+test("authenticated lifecycle control aborts active HTTP work before acknowledging cancellation", async () => {
+  const config = { ...defaultConfig("browser-only"), port: 0 };
+  let upstreamAbortObserved = false;
+  const server = startServer(config, {
+    fetchUpstream: request => new Promise<Response>((_resolve, reject) => {
+      request.signal.addEventListener("abort", () => {
+        upstreamAbortObserved = true;
+        reject(request.signal.reason);
+      }, { once: true });
+    }),
+  });
+  const endpoint = `http://127.0.0.1:${server.port}`;
+  const activeRequest = fetch(`${endpoint}/v1/alpha/search`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer test-codex-session",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ query: "retained turn" }),
+  }).catch(() => null);
+
+  try {
+    const deadline = Date.now() + 1_000;
+    let activeHttpTurns = 0;
+    while (Date.now() < deadline && activeHttpTurns !== 1) {
+      const health = await (await fetch(`${endpoint}/healthz`)).json() as { active_http_turns: number };
+      activeHttpTurns = health.active_http_turns;
+      if (activeHttpTurns !== 1) await Bun.sleep(5);
+    }
+    expect(activeHttpTurns).toBe(1);
+
+    const cancelled = await fetch(`${endpoint}/admin/cancel-turns`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${config.controlToken}` },
+    });
+    expect(cancelled.status).toBe(200);
+    expect(await cancelled.json()).toMatchObject({
+      status: "ok",
+      cancelled_http_turns: 1,
+      active_http_turns: 0,
+      active_browser_turns: 0,
+    });
+    expect(upstreamAbortObserved).toBe(true);
+    await activeRequest;
+  } finally {
     await server.stop(true);
   }
 });
@@ -174,6 +370,46 @@ test("a full-mode runtime exposes its broker endpoint before any turn registers"
       await Bun.sleep(20);
     }
     expect(message).toContain("turn token is invalid");
+  } finally {
+    await server.stop(true);
+    await closeTurnBrokers();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("lifecycle drain and cancellation include browser turns owned by the external DEV driver", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cgw-dev-lifecycle-"));
+  const config = { ...defaultConfig("full"), port: 0, brokerSocketPath: defaultBrokerEndpoint(root) };
+  await TurnBroker.forSocket(config.brokerSocketPath).listen();
+  const server = startServer(config);
+  const endpoint = `http://127.0.0.1:${server.port}`;
+  const authorization = { authorization: `Bearer ${config.controlToken}` };
+  const remote = new RemoteTurnBroker(config.brokerSocketPath);
+  try {
+    const environment = {
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" as const },
+      tools: [],
+    };
+    const token = await remote.register(environment, 60_000, "dev-lifecycle");
+    const waiting = remote.nextToolBatch(token).then(
+      () => "resolved",
+      error => error instanceof Error ? error.message : String(error),
+    );
+
+    const drain = await fetch(`${endpoint}/admin/drain`, { method: "POST", headers: authorization });
+    expect(await drain.json()).toMatchObject({ active_browser_turns: 1, accepting_turns: false });
+    await expect(remote.register(environment, 60_000, "dev-after-drain")).rejects.toThrow("draining");
+
+    const cancel = await fetch(`${endpoint}/admin/cancel-turns`, { method: "POST", headers: authorization });
+    expect(await cancel.json()).toMatchObject({
+      cancelled_http_turns: 0,
+      cancelled_browser_turns: 1,
+      active_browser_turns: 0,
+    });
+    expect(await waiting).toContain("revoked");
   } finally {
     await server.stop(true);
     await closeTurnBrokers();

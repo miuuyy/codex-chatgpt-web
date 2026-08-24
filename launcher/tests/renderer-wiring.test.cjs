@@ -5,6 +5,7 @@ const path = require("node:path");
 
 const launcherRoot = path.resolve(__dirname, "..");
 const appSource = fs.readFileSync(path.join(launcherRoot, "src", "App.tsx"), "utf8");
+const stylesSource = fs.readFileSync(path.join(launcherRoot, "src", "styles.css"), "utf8");
 const electronMain = fs.readFileSync(path.join(launcherRoot, "electron", "main.cjs"), "utf8");
 const browserHostSource = fs.readFileSync(path.join(launcherRoot, "electron", "browser-host.cjs"), "utf8");
 const preloadSource = fs.readFileSync(path.join(launcherRoot, "electron", "preload.cjs"), "utf8");
@@ -16,6 +17,23 @@ test("embedded ChatGPT is measured only after its animated surface mounts", () =
   assert.match(appSource, /ref=\{browserSlotRef\}/);
 });
 
+test("native clicks reach browser tabs instead of the window drag region", () => {
+  assert.match(appSource, /draggable=\{surface !== "browser"\}/);
+  assert.match(appSource, /className=\{`app-titlebar\$\{draggable \? " draggable" : ""\}`\}/);
+  assert.match(stylesSource, /\.browser-tab\s*\{[^}]*-webkit-app-region:\s*no-drag;/s);
+  assert.match(appSource, /className="browser-tab-drag draggable"/);
+});
+
+test("renderer zoom scales the shell without moving or zooming the native ChatGPT surface", () => {
+  assert.match(
+    electronMain,
+    /browserHost\?\.setBounds\(validateBounds\(bounds\), event\.sender\.getZoomFactor\(\)\)/,
+  );
+  assert.match(browserHostSource, /this\.bindShellZoomShortcuts\(this\.window\.webContents\)/);
+  assert.match(browserHostSource, /contents\.setZoomLevel\(next\)/);
+  assert.match(appSource, /api!\.zoomBrowser\(action\)/);
+});
+
 test("closing the launcher follows the persisted background-runtime preference", () => {
   assert.match(
     electronMain,
@@ -25,10 +43,25 @@ test("closing the launcher follows the persisted background-runtime preference",
 });
 
 test("normal shutdown persists the ChatGPT session before closing browser views", () => {
+  assert.match(
+    electronMain,
+    /runtimeSupervisor\?\.shutdown\(\{ cancelActiveTurns: true, force: true \}\)/,
+  );
   const persist = electronMain.indexOf("await browserHost?.persistSession()");
   const destroy = electronMain.indexOf("browserHost?.destroy()", persist);
   assert.ok(persist >= 0, "shutdown must persist the ChatGPT session");
   assert.ok(destroy > persist, "browser views must close only after session persistence completes");
+});
+
+test("DEV launcher exposes its profile and supervises only its Full-mode MCP runtime", () => {
+  assert.match(electronMain, /profile:\s*LAUNCHER_PROFILE\.kind/);
+  assert.match(electronMain, /if \(IS_DEV_PROFILE\) \{[\s\S]*?config\?\.mode === "full"[\s\S]*?runtimeSupervisor\.startIfConfigured\(\)[\s\S]*?\} else void \(async \(\) => \{/);
+  assert.match(electronMain, /await runtimeSupervisor\?\.shutdown\(\{ cancelActiveTurns: true, force: true \}\)/);
+  assert.match(electronMain, /packaged:\s*app\.isPackaged && !IS_DEV_PROFILE/);
+  assert.match(electronMain, /IS_DEV_PROFILE && !stateStore\.read\(\)\.onboardingComplete/);
+  assert.match(electronMain, /onboardingComplete:\s*true,[\s\S]*?autoStart:\s*false/);
+  assert.match(appSource, /snapshot\.profile === "development"/);
+  assert.match(appSource, /data-profile=\{snapshot\.profile\}/);
 });
 
 test("the renderer bridge switch reaches the fail-closed runtime route", () => {
@@ -58,6 +91,24 @@ test("failed doctor reports retain every failed check", () => {
     /report\.ok\s*\?\s*report\.checks\.slice\(-6\)\s*:\s*report\.checks\.filter\(\(check\) => check\.status !== "ok"\)/,
   );
   assert.match(appSource, /visibleChecks\.map\(\(check\) =>/);
+});
+
+test("launcher shares only privacy-safe exported diagnostics", () => {
+  assert.match(appSource, /api!\.exportLogs\(\)/);
+  assert.match(preloadSource, /exportLogs:[\s\S]*?launcher:export-logs/);
+  assert.match(electronMain, /launcher:export-logs[\s\S]*?showSaveDialog[\s\S]*?exportSanitizedLogs/);
+  assert.doesNotMatch(preloadSource, /launcher:open-logs/);
+  assert.doesNotMatch(electronMain, /launcher:open-logs/);
+});
+
+test("MCP verification failures stay inside the structured setup report", () => {
+  assert.match(appSource, /next\.operation\.name !== "mcp-verification"/);
+  assert.match(appSource, /next\.name !== "mcp-verification"/);
+  assert.match(electronMain, /Finish the active Codex task before verifying the ChatGPT connector/);
+  assert.match(electronMain, /report\.checks\.filter\(\(check\) => check\.id !== "connector"\)/);
+  assert.match(electronMain, /mcp\.verification_requested/);
+  assert.match(electronMain, /launcherFocused:\s*mainWindow\?\.isFocused\(\) === true/);
+  assert.match(electronMain, /rendererFocused:\s*event\.sender\.isFocused\(\)/);
 });
 
 test("MCP verification proves runtime health before checking the connector", () => {

@@ -5,10 +5,19 @@ import { expandUserPath } from "./config";
 import { processRunning } from "./process";
 
 export const LAUNCHER_BROWSER_HOST_KIND = "codex-web-gpt-launcher";
+export type LauncherBrowserHostProfile = "production" | "development";
+
+export class LauncherBrowserTurnCancelledError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LauncherBrowserTurnCancelledError";
+  }
+}
 
 export interface LauncherBrowserHostDescriptor {
-  version: 1;
+  version: 2;
   kind: typeof LAUNCHER_BROWSER_HOST_KIND;
+  profile: LauncherBrowserHostProfile;
   pid: number;
   endpoint: string;
   control: {
@@ -51,8 +60,11 @@ function assertDescriptorShape(value: unknown): LauncherBrowserHostDescriptor {
     throw new Error("Launcher browser descriptor is not an object");
   }
   const descriptor = value as Partial<LauncherBrowserHostDescriptor>;
-  if (descriptor.version !== 1 || descriptor.kind !== LAUNCHER_BROWSER_HOST_KIND) {
+  if (descriptor.version !== 2 || descriptor.kind !== LAUNCHER_BROWSER_HOST_KIND) {
     throw new Error("Launcher browser descriptor has an unsupported identity or version");
+  }
+  if (descriptor.profile !== "production" && descriptor.profile !== "development") {
+    throw new Error("Launcher browser descriptor has an invalid profile");
   }
   if (!Number.isInteger(descriptor.pid) || descriptor.pid! < 1) {
     throw new Error("Launcher browser descriptor has an invalid pid");
@@ -76,7 +88,10 @@ function assertDescriptorShape(value: unknown): LauncherBrowserHostDescriptor {
   if (!helperScript || !existsSync(helperScript)) {
     throw new Error("Launcher browser descriptor helper script does not exist");
   }
-  if (descriptor.partition !== "persist:codex-web-gpt-chatgpt") {
+  const expectedPartition = descriptor.profile === "development"
+    ? "persist:codex-web-gpt-dev-chatgpt"
+    : "persist:codex-web-gpt-chatgpt";
+  if (descriptor.partition !== expectedPartition) {
     throw new Error("Launcher browser descriptor identifies an unexpected browser partition");
   }
   if (descriptor.idleUrl !== "about:blank#codex-web-gpt-browser-host") {
@@ -89,8 +104,9 @@ function assertDescriptorShape(value: unknown): LauncherBrowserHostDescriptor {
     throw new Error("Launcher browser descriptor has an invalid creation time");
   }
   return {
-    version: 1,
+    version: 2,
     kind: LAUNCHER_BROWSER_HOST_KIND,
+    profile: descriptor.profile,
     pid: descriptor.pid!,
     endpoint,
     control: { endpoint: controlEndpoint, token: descriptor.control.token },
@@ -216,9 +232,18 @@ export async function connectLauncherBrowserHost(
 
 export async function inspectLauncherBrowserHost(
   descriptorPath: string,
-  options: { detectCapabilities?: boolean; timeoutMs?: number } = {},
+  options: {
+    detectCapabilities?: boolean;
+    expectedProfile?: LauncherBrowserHostProfile;
+    timeoutMs?: number;
+  } = {},
 ): Promise<{ solAvailable?: boolean; proAvailable?: boolean; url: string }> {
   const descriptor = readLauncherBrowserHostDescriptor(descriptorPath);
+  if (options.expectedProfile && descriptor.profile !== options.expectedProfile) {
+    throw new Error(
+      `Launcher browser belongs to ${descriptor.profile}, but ${options.expectedProfile} was required`,
+    );
+  }
   const timeoutMs = options.timeoutMs ?? (options.detectCapabilities
     ? LAUNCHER_CAPABILITY_INSPECTION_TIMEOUT_MS
     : LAUNCHER_SESSION_INSPECTION_TIMEOUT_MS);
@@ -294,7 +319,7 @@ export async function notifyLauncherTurn(
     : activity.phase === "heartbeat"
       ? LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS
       : LAUNCHER_TURN_START_TIMEOUT_MS,
-): Promise<{ surfaceId?: string }> {
+): Promise<{ surfaceId?: string; cancelledByUser?: boolean }> {
   const descriptor = readLauncherBrowserHostDescriptor(descriptorPath);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -309,7 +334,13 @@ export async function notifyLauncherTurn(
       signal: controller.signal,
     });
     if (!response.ok) {
-      const detail = await response.text().catch(() => "");
+      const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+      if (response.status === 409 && body.code === "turn_cancelled") {
+        throw new LauncherBrowserTurnCancelledError(
+          typeof body.error === "string" ? body.error : `Browser turn ${activity.traceId} was cancelled by the user`,
+        );
+      }
+      const detail = typeof body.error === "string" ? body.error : "";
       throw new Error(`HTTP ${response.status}${detail ? `: ${detail}` : ""}`);
     }
     const body = await response.json().catch(() => ({})) as Record<string, unknown>;
@@ -319,8 +350,15 @@ export async function notifyLauncherTurn(
       }
       return { surfaceId: body.surfaceId };
     }
+    if (activity.phase === "end") {
+      if (typeof body.cancelledByUser !== "boolean") {
+        throw new Error("Launcher browser control channel returned an invalid turn release result");
+      }
+      return { cancelledByUser: body.cancelledByUser };
+    }
     return {};
   } catch (error) {
+    if (error instanceof LauncherBrowserTurnCancelledError) throw error;
     throw new Error(`Launcher browser control channel failed: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     clearTimeout(timer);

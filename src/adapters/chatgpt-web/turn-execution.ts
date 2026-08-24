@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AdapterEvent, CodexParsedRequest } from "../../types";
 import type { BrokerToolRequest } from "./turn-broker";
+import { chatGptBrowserTabClosedError } from "./adapter-error";
 import {
   extractChatGptCompactionSourceRevision,
   extractChatGptTurnIdentity,
@@ -118,7 +119,7 @@ interface ChatGptTurnRuntimeBase {
   browser: Promise<string>;
   trace: ChatGptTraceFeed;
   text: ChatGptTextFeed;
-  cancel: () => void;
+  cancel: (reason?: Error) => void;
 }
 
 export type ChatGptTurnRuntime =
@@ -195,7 +196,7 @@ export class ChatGptTurnSession {
   private settledBrowserOutcome?: ChatGptBrowserOutcome;
   private tail: Promise<void> = Promise.resolve();
 
-  constructor(readonly runtime: ChatGptTurnRuntime) {
+  constructor(readonly runtime: ChatGptTurnRuntime, readonly traceId?: string) {
     this.browserOutcome = runtime.browser
       .then(answer => ({ type: "final", answer }) as ChatGptBrowserOutcome)
       .catch(error => ({ type: "error", error: error instanceof Error ? error : new Error(String(error)) }) as ChatGptBrowserOutcome)
@@ -281,8 +282,8 @@ export class ChatGptTurnSession {
     return [...this.finalPrelude];
   }
 
-  cancel(): void {
-    this.runtime.cancel();
+  cancel(reason?: Error): void {
+    this.runtime.cancel(reason);
   }
 }
 
@@ -295,7 +296,7 @@ export class ChatGptTurnSessions {
     private readonly maxEntries = 256,
   ) {}
 
-  getOrCreate(key: string, start: () => ChatGptTurnRuntime): ChatGptTurnSession {
+  getOrCreate(key: string, start: () => ChatGptTurnRuntime, traceId?: string): ChatGptTurnSession {
     this.prune();
     const existing = this.entries.get(key);
     if (existing) {
@@ -309,7 +310,7 @@ export class ChatGptTurnSessions {
       );
     }
     if (this.entries.size >= this.maxEntries) throw new Error(`ChatGPT web session registry is full (${this.maxEntries} entries)`);
-    const session = new ChatGptTurnSession(start());
+    const session = new ChatGptTurnSession(start(), traceId);
     this.entries.set(key, session);
     return session;
   }
@@ -351,6 +352,24 @@ export class ChatGptTurnSessions {
     for (const session of this.entries.values()) session.cancel();
     this.entries.clear();
     return cancelled;
+  }
+
+  async cancelTrace(traceId: string, reason = chatGptBrowserTabClosedError()): Promise<number> {
+    const sessions = [...this.entries.values()]
+      .filter(session => session.traceId === traceId && session.isActive());
+    for (const session of sessions) session.cancel(reason);
+    await Promise.all(sessions.map(session => session.browserOutcome.then(() => undefined)));
+    return sessions.length;
+  }
+
+  cancelledError(traceId: string): Error | undefined {
+    for (const session of this.entries.values()) {
+      if (session.traceId !== traceId) continue;
+      const outcome = session.settledOutcome();
+      if (outcome?.type !== "error") continue;
+      if ("code" in outcome.error && outcome.error.code === "client_cancelled") return outcome.error;
+    }
+    return undefined;
   }
 
   activeCount(): number {

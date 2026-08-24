@@ -13,6 +13,7 @@ interface RunMessage {
   config: {
     appName: string;
     browserHostDescriptorPath: string;
+    browserDiagnosticsPath?: string;
     turnTimeoutMs: number;
     autoApproveToolCalls: boolean;
   };
@@ -118,6 +119,7 @@ async function run(message: RunMessage): Promise<void> {
       appName: message.config.appName,
       browserHost: "launcher",
       browserHostDescriptorPath: message.config.browserHostDescriptorPath,
+      browserDiagnosticsPath: message.config.browserDiagnosticsPath,
       turnTimeoutMs: message.config.turnTimeoutMs,
       autoApproveToolCalls: message.config.autoApproveToolCalls,
     },

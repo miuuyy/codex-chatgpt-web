@@ -1,7 +1,7 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { dirname } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { isWindowsPipeEndpoint } from "../../config";
 import type { ChatGptTurnEnvironment } from "./environment";
 
@@ -39,6 +39,7 @@ interface ToolWaiter {
 
 interface TurnChannel {
   traceId: string;
+  externalOwner: boolean;
   environment: PendingTurn;
   bindingId?: string;
   queuedCallIds: string[];
@@ -49,13 +50,28 @@ interface TurnChannel {
 
 interface BrokerRequest {
   id: string;
-  method: "claim" | "resolve" | "release" | "invoke";
+  method:
+    | "claim"
+    | "resolve"
+    | "release"
+    | "invoke"
+    | "owner_status"
+    | "owner_register"
+    | "owner_update"
+    | "owner_next"
+    | "owner_complete"
+    | "owner_revoke";
   token?: string;
   bindingId?: string;
   wireName?: string;
   freeform?: boolean;
   arguments?: Record<string, unknown>;
   input?: string;
+  environment?: ChatGptTurnEnvironment;
+  ttlMs?: number;
+  traceId?: string;
+  callId?: string;
+  toolResult?: BrokerToolResult;
 }
 
 interface BrokerResponse {
@@ -83,6 +99,10 @@ function opaqueId(prefix: string): string {
   return `${prefix}_${randomBytes(24).toString("base64url")}`;
 }
 
+function handleFingerprint(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 12);
+}
+
 function errorOf(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
 }
@@ -100,7 +120,37 @@ function environmentIdentity(environment: ChatGptTurnEnvironment): string {
   });
 }
 
-export class TurnBroker {
+function ownerEnvironment(value: unknown): ChatGptTurnEnvironment {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("turn owner environment is invalid");
+  const environment = value as Partial<ChatGptTurnEnvironment>;
+  const paths = (candidate: unknown): candidate is string[] => Array.isArray(candidate)
+    && candidate.length > 0
+    && candidate.every(path => typeof path === "string" && isAbsolute(path));
+  if (typeof environment.cwd !== "string" || !isAbsolute(environment.cwd)
+    || !paths(environment.roots) || !Array.isArray(environment.writableRoots)
+    || environment.writableRoots.some(path => typeof path !== "string" || !isAbsolute(path))
+    || !environment.roots.some(root => {
+      const nested = relative(resolve(root), resolve(environment.cwd!));
+      return nested === "" || (!nested.startsWith("..") && !isAbsolute(nested));
+    })
+    || !environment.sandboxPolicy || !["dangerFullAccess", "workspaceWrite", "readOnly"].includes(environment.sandboxPolicy.type)
+    || !Array.isArray(environment.tools)
+    || environment.tools.some(tool => !tool || typeof tool.name !== "string" || typeof tool.description !== "string"
+      || !tool.parameters || typeof tool.parameters !== "object" || Array.isArray(tool.parameters))) {
+    throw new Error("turn owner environment is invalid");
+  }
+  return structuredClone(environment as ChatGptTurnEnvironment);
+}
+
+export interface TurnBrokerOwner {
+  register(environment: ChatGptTurnEnvironment, ttlMs?: number, traceId?: string): Promise<string>;
+  updateEnvironment(token: string, environment: ChatGptTurnEnvironment): void | Promise<void>;
+  nextToolBatch(token: string, signal?: AbortSignal): Promise<BrokerToolRequest[]>;
+  completeTool(token: string, callId: string, result: BrokerToolResult): void | Promise<void>;
+  revoke(token: string, reason?: Error): void | Promise<void>;
+}
+
+export class TurnBroker implements TurnBrokerOwner {
   static forSocket(path: string): TurnBroker {
     let broker = brokers.get(path);
     if (!broker) {
@@ -118,6 +168,7 @@ export class TurnBroker {
   // previous turn's handle" from "this handle never existed".
   private readonly retiredBindings = new Map<string, string>();
   private readonly retiredTokens = new Map<string, string>();
+  private acceptingExternalOwners = true;
   private server?: Server;
   private startPromise?: Promise<void>;
 
@@ -133,15 +184,24 @@ export class TurnBroker {
     await this.start();
   }
 
-  async register(environment: ChatGptTurnEnvironment, ttlMs?: number, traceId = "unknown"): Promise<string> {
+  async register(
+    environment: ChatGptTurnEnvironment,
+    ttlMs?: number,
+    traceId = "unknown",
+    externalOwner = false,
+  ): Promise<string> {
     await this.start();
     this.prune();
+    if (externalOwner && !this.acceptingExternalOwners) {
+      throw new Error("turn broker is draining and does not accept new external owners");
+    }
     if (ttlMs !== undefined && (!Number.isFinite(ttlMs) || ttlMs <= 0)) {
       throw new Error("ChatGPT web turn broker TTL must be a positive finite number");
     }
     const token = opaqueId("turn");
     const channel: TurnChannel = {
       traceId,
+      externalOwner,
       environment: {
         ...environment,
         ...(ttlMs !== undefined ? { expiresAt: Date.now() + ttlMs } : {}),
@@ -152,6 +212,7 @@ export class TurnBroker {
     };
     this.channels.set(token, channel);
     this.pending.set(token, channel);
+    console.info(`[chatgpt-web] broker trace=${traceId} registered tokenHash=${handleFingerprint(token)}`);
     return token;
   }
 
@@ -202,7 +263,7 @@ export class TurnBroker {
     invocation.resolve(result);
   }
 
-  revoke(token: string): void {
+  revoke(token: string, reason = new Error("Codex turn binding was revoked")): void {
     const channel = this.channels.get(token);
     if (!channel) return;
     this.channels.delete(token);
@@ -212,7 +273,32 @@ export class TurnBroker {
       this.retire(this.retiredBindings, channel.bindingId, channel.traceId);
     }
     this.retire(this.retiredTokens, token, channel.traceId);
-    this.rejectChannel(channel, new Error("Codex turn binding was revoked"));
+    this.rejectChannel(channel, reason);
+  }
+
+  externalOwnerActiveCount(): number {
+    this.prune();
+    return [...this.channels.values()].filter(channel => channel.externalOwner).length;
+  }
+
+  revokeExternalOwners(): number {
+    const tokens = [...this.channels]
+      .filter(([, channel]) => channel.externalOwner)
+      .map(([token]) => token);
+    for (const token of tokens) this.revoke(token);
+    return tokens.length;
+  }
+
+  revokeTrace(traceId: string, reason = new Error("Codex turn binding was revoked")): number {
+    const tokens = [...this.channels]
+      .filter(([, channel]) => channel.traceId === traceId)
+      .map(([token]) => token);
+    for (const token of tokens) this.revoke(token, reason);
+    return tokens.length;
+  }
+
+  setExternalOwnersAccepted(accepted: boolean): void {
+    this.acceptingExternalOwners = accepted;
   }
 
   private retire(history: Map<string, string>, handle: string, traceId: string): void {
@@ -368,20 +454,53 @@ export class TurnBroker {
     if (!request || typeof request !== "object" || typeof request.id !== "string" || request.id.length === 0 || request.id.length > 256) {
       throw new Error("turn broker request id is invalid");
     }
-    if (request.method !== "claim" && request.method !== "resolve" && request.method !== "release" && request.method !== "invoke") {
+    if (!["claim", "resolve", "release", "invoke", "owner_status", "owner_register", "owner_update", "owner_next", "owner_complete", "owner_revoke"].includes(request.method)) {
       throw new Error("turn broker method is invalid");
     }
   }
 
   private dispatch(request: BrokerRequest): unknown | Promise<unknown> {
     this.prune();
+    if (request.method === "owner_status") {
+      return { protocolVersion: 1, acceptingExternalOwners: this.acceptingExternalOwners };
+    }
+    if (request.method === "owner_register") {
+      const environment = ownerEnvironment(request.environment);
+      if (request.traceId !== undefined && !/^[A-Za-z0-9_-]{6,128}$/.test(request.traceId)) {
+        throw new Error("turn owner trace id is invalid");
+      }
+      return this.register(environment, request.ttlMs, request.traceId, true).then(token => ({ token }));
+    }
+    if (request.method === "owner_update") {
+      if (!request.token) throw new Error("turn owner token is required");
+      this.updateEnvironment(request.token, ownerEnvironment(request.environment));
+      return { updated: true };
+    }
+    if (request.method === "owner_next") {
+      if (!request.token) throw new Error("turn owner token is required");
+      return this.nextToolBatch(request.token).then(requests => ({ requests }));
+    }
+    if (request.method === "owner_complete") {
+      if (!request.token) throw new Error("turn owner token is required");
+      if (!request.callId) throw new Error("turn owner call id is required");
+      if (!request.toolResult || !Array.isArray(request.toolResult.content)) {
+        throw new Error("turn owner tool result is invalid");
+      }
+      this.completeTool(request.token, request.callId, request.toolResult);
+      return { completed: true };
+    }
+    if (request.method === "owner_revoke") {
+      if (!request.token) throw new Error("turn owner token is required");
+      this.revoke(request.token);
+      return { revoked: true };
+    }
     if (request.method === "claim") {
       const token = request.token;
       if (typeof token !== "string" || token.length === 0) throw new Error("turn token is required");
       const channel = this.channels.get(token);
       const retiredTurn = channel ? undefined : this.retiredTokens.get(token);
       console.error(
-        `[chatgpt-web] broker claim received (tokenChars=${token.length}, valid=${Boolean(channel)}`
+        `[chatgpt-web] broker claim received (tokenChars=${token.length}, tokenHash=${handleFingerprint(token)}, valid=${Boolean(channel)}`
         + `${channel ? "" : `, retiredTurn=${retiredTurn ?? "unknown"}`})`,
       );
       if (!channel) {
@@ -507,22 +626,31 @@ export async function callTurnBroker<T>(
   socketPath: string,
   request: Omit<BrokerRequest, "id">,
   timeoutMs: number | null = 5_000,
+  signal?: AbortSignal,
 ): Promise<T> {
   const id = opaqueId("request");
   return new Promise<T>((resolveCall, rejectCall) => {
     const socket = createConnection(socketPath);
     let buffered = "";
     let settled = false;
+    const onAbort = () => finishError(new DOMException("ChatGPT web turn broker call aborted", "AbortError"));
+    const cleanup = () => signal?.removeEventListener("abort", onAbort);
     const finishError = (error: Error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      cleanup();
       socket.destroy();
       rejectCall(error);
     };
     const timer = timeoutMs === null
       ? undefined
       : setTimeout(() => finishError(new Error("ChatGPT web turn broker timed out")), timeoutMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) {
+      finishError(new DOMException("ChatGPT web turn broker call aborted", "AbortError"));
+      return;
+    }
     socket.setEncoding("utf8");
     socket.once("error", error => finishError(new Error(`ChatGPT web turn broker unavailable: ${error.message}`)));
     socket.once("close", () => finishError(new Error("ChatGPT web turn broker closed the connection")));
@@ -549,9 +677,86 @@ export async function callTurnBroker<T>(
       }
       settled = true;
       clearTimeout(timer);
+      cleanup();
       socket.end();
       if (response.error) rejectCall(new Error(response.error));
       else resolveCall(response.result as T);
     });
   });
+}
+
+/**
+ * Outer-harness client for a broker already owned by the live launcher runtime. It lets a
+ * working-tree DEV driver exercise the production adapter and MCP connector without binding a
+ * Responses port or replacing the active Codex route.
+ */
+export class RemoteTurnBroker implements TurnBrokerOwner {
+  constructor(readonly socketPath: string) {}
+
+  async assertCompatible(): Promise<void> {
+    let status: { protocolVersion?: unknown; acceptingExternalOwners?: unknown };
+    try {
+      status = await callTurnBroker(this.socketPath, { method: "owner_status" });
+    } catch (error) {
+      throw new Error(
+        "The running launcher runtime does not expose the DEV turn-owner protocol; update and restart Codex Web GPT once before using the working-tree DEV chat"
+        + ` (${error instanceof Error ? error.message : String(error)})`,
+      );
+    }
+    if (status.protocolVersion !== 1) {
+      throw new Error(`Unsupported DEV turn-owner protocol version: ${String(status.protocolVersion)}`);
+    }
+    if (status.acceptingExternalOwners !== true) {
+      throw new Error("The running launcher runtime is draining and is not accepting DEV chat turns");
+    }
+  }
+
+  async register(environment: ChatGptTurnEnvironment, ttlMs?: number, traceId = "unknown"): Promise<string> {
+    const response = await callTurnBroker<{ token?: unknown }>(this.socketPath, {
+      method: "owner_register",
+      environment,
+      ...(ttlMs !== undefined ? { ttlMs } : {}),
+      ...(traceId !== "unknown" ? { traceId } : {}),
+    });
+    if (typeof response.token !== "string" || !response.token.startsWith("turn_")) {
+      throw new Error("DEV turn owner received an invalid broker token");
+    }
+    return response.token;
+  }
+
+  async updateEnvironment(token: string, environment: ChatGptTurnEnvironment): Promise<void> {
+    await callTurnBroker(this.socketPath, { method: "owner_update", token, environment });
+  }
+
+  async nextToolBatch(token: string, signal?: AbortSignal): Promise<BrokerToolRequest[]> {
+    const response = await callTurnBroker<{ requests?: unknown }>(
+      this.socketPath,
+      { method: "owner_next", token },
+      null,
+      signal,
+    );
+    if (!Array.isArray(response.requests) || response.requests.some(value => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return true;
+      const request = value as Partial<BrokerToolRequest>;
+      return typeof request.callId !== "string" || typeof request.wireName !== "string"
+        || typeof request.freeform !== "boolean"
+        || (request.freeform
+          ? typeof request.input !== "string"
+          : !request.arguments || typeof request.arguments !== "object" || Array.isArray(request.arguments));
+    })) throw new Error("DEV turn owner received an invalid tool batch");
+    return response.requests as BrokerToolRequest[];
+  }
+
+  async completeTool(token: string, callId: string, result: BrokerToolResult): Promise<void> {
+    await callTurnBroker(this.socketPath, {
+      method: "owner_complete",
+      token,
+      callId,
+      toolResult: result,
+    }, null);
+  }
+
+  async revoke(token: string, _reason?: Error): Promise<void> {
+    await callTurnBroker(this.socketPath, { method: "owner_revoke", token });
+  }
 }

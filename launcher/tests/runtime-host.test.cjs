@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { CURRENT_CONNECTOR_NAME } = require("../electron/connector-identity.cjs");
+const { CURRENT_CONNECTOR_NAME, DEV_CONNECTOR_NAME } = require("../electron/connector-identity.cjs");
 const { RuntimeHost } = require("../electron/runtime.cjs");
 
 function hostFor(existingConfig) {
@@ -18,10 +18,38 @@ function hostFor(existingConfig) {
     supervisor: {
       readConfig: () => existingConfig,
       readSetupConfig: () => existingConfig,
+      stopForSetup: async () => ({ status: "stopped" }),
+      startIfConfigured: async () => ({ status: "ready" }),
     },
   });
   let invocation;
   host.runSetup = async (name, args) => {
+    invocation = { name, args };
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  return { host, invocation: () => invocation };
+}
+
+function devHostFor(existingConfig) {
+  const host = new RuntimeHost({
+    app: {
+      getPath: () => path.join(os.tmpdir(), "codex-web-gpt-dev-runtime-host-test"),
+      getVersion: () => "1.1.3",
+    },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: "/source",
+    browserDescriptorPath: "/dev/runtime/launcher-browser.json",
+    coreHome: "/dev",
+    launcherProfile: "development",
+    supervisor: {
+      readConfig: () => existingConfig,
+      readSetupConfig: () => existingConfig,
+      stopForSetup: async () => ({ status: "stopped" }),
+      startIfConfigured: async () => ({ status: "ready" }),
+    },
+  });
+  let invocation;
+  host.runDevSetup = async (name, args) => {
     invocation = { name, args };
     return { code: 0, stdout: "", stderr: "" };
   };
@@ -122,6 +150,143 @@ test("external provider uninstall reconnects a previously active local route", a
     ["provider-route", "uninstall", "--launcher-control"],
     ["route", "connect"],
   ]);
+});
+
+test("DEV core setup configures only the isolated harness contract", async () => {
+  const fixture = devHostFor(null);
+  const result = await fixture.host.setupDevCore();
+  assert.equal(result.mode, "browser-only");
+  assert.deepEqual(fixture.invocation(), {
+    name: "dev-profile-setup",
+    args: [
+      "dev",
+      "setup",
+      "--browser-only",
+      "--browser-host-descriptor",
+      "/dev/runtime/launcher-browser.json",
+      "--refresh-account-capabilities",
+      "--acknowledge-unofficial",
+    ],
+  });
+  assert.equal(fixture.invocation().args.includes("--replace-codex-route"), false);
+  assert.equal(fixture.invocation().args.includes("--restart-service"), false);
+});
+
+test("DEV setup child environment removes launcher-rebound production aliases", async () => {
+  const fixture = devHostFor(null);
+  assert.deepEqual(fixture.host.devSetupEnvironment({
+    KEEP_ME: "yes",
+    CODEX_CHATGPT_WEB_HOME: "/dev",
+    CODEX_HOME: "/dev/codex-home",
+    CODEX_WEB_GPT_DEV_HOME: "/stale-dev",
+    CODEX_WEB_GPT_LAUNCHER_DATA_DIR: "/dev/launcher",
+  }), {
+    KEEP_ME: "yes",
+    CODEX_WEB_GPT_DEV_HOME: path.resolve("/dev"),
+  });
+
+  let runOptions;
+  fixture.host.captureSetupCheckpoint = () => [];
+  fixture.host.devSetupEnvironment = () => ({ ISOLATED_DEV_ENV: "yes" });
+  fixture.host.run = async (_name, _args, options) => {
+    runOptions = options;
+    return { code: 0, stdout: "", stderr: "" };
+  };
+
+  await RuntimeHost.prototype.runDevSetup.call(fixture.host, "dev-environment-test", [], {});
+  assert.equal(runOptions.embedded, true);
+  assert.deepEqual(runOptions.environment, { ISOLATED_DEV_ENV: "yes" });
+});
+
+test("DEV MCP setup reuses only DEV-home credentials and targets its distinct connector", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-dev-mcp-host-"));
+  const runtimeKeyFile = path.join(root, "runtime.key");
+  fs.writeFileSync(runtimeKeyFile, "private key\n", { mode: 0o600 });
+  const fixture = devHostFor({
+    purpose: "dev-harness",
+    mode: "full",
+    browserHost: "launcher",
+    appName: "Codex Native2",
+    tunnel: {
+      tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
+      runtimeKeyFile,
+    },
+  });
+  try {
+    await fixture.host.setupDevMcp();
+    assert.deepEqual(fixture.invocation(), {
+      name: "dev-mcp-setup",
+      args: [
+        "dev",
+        "setup",
+        "--full",
+        "--browser-host-descriptor",
+        "/dev/runtime/launcher-browser.json",
+        "--app-name",
+        "Codex Native2 DEV",
+        "--acknowledge-unofficial",
+      ],
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("DEV doctor requires live tunnel readiness without probing a Responses listener", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-dev-doctor-"));
+  const runtimeKeyFile = path.join(root, "runtime.key");
+  fs.writeFileSync(runtimeKeyFile, "private key\n", { mode: 0o600 });
+  const fixture = devHostFor({
+    purpose: "dev-harness",
+    mode: "full",
+    appName: "Codex Native2 DEV",
+    tunnel: { runtimeKeyFile },
+  });
+  fixture.host.supervisor.readTunnelHealth = async () => ({
+    ready: true,
+    detail: "ready",
+  });
+  try {
+    const report = await fixture.host.devDoctor();
+    assert.equal(report.ok, true);
+    assert.deepEqual(report.checks.map(check => [check.id, check.status]), [
+      ["dev-profile", "ok"],
+      ["dev-tunnel-credentials", "ok"],
+      ["dev-tunnel-runtime", "ok"],
+      ["responses-listener", "ok"],
+    ]);
+    assert.match(report.checks.at(-1).message, /never starts a Responses listener/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("production doctor parses its structured unhealthy report from exit status one", async () => {
+  const fixture = hostFor(null);
+  let runOptions;
+  fixture.host.run = async (_name, _args, options) => {
+    runOptions = options;
+    return {
+      code: 1,
+      stdout: JSON.stringify({
+        ok: false,
+        mode: "full",
+        checks: [{ id: "browser-host", status: "error", message: "busy" }],
+      }),
+      stderr: "",
+    };
+  };
+
+  const report = await fixture.host.doctor();
+
+  assert.equal(report.ok, false);
+  assert.equal(report.checks[0].message, "busy");
+  assert.deepEqual(runOptions.acceptedExitCodes, [0, 1]);
+});
+
+test("production and DEV setup entrypoints reject the opposite launcher profile", async () => {
+  await assert.rejects(hostFor(null).host.setupDevCore(), /isolated DEV launcher/);
+  await assert.rejects(devHostFor(null).host.setupCore(), /unavailable in the isolated DEV launcher profile/);
 });
 
 test("launcher update transaction upgrades its owned full runtime with saved configuration", async () => {
@@ -539,6 +704,9 @@ test("connector verification uses the current identity and rejects a legacy loca
   const browserOnly = hostFor({ mode: "browser-only", appName: "Codex Native" });
   assert.equal(browserOnly.host.browserConnectorName(), "Codex Native2");
   assert.throws(() => browserOnly.host.mcpConnectorName(), /MCP runtime is not configured/);
+  const dev = devHostFor({ mode: "full", appName: "Codex Native2" });
+  assert.equal(dev.host.browserConnectorName(), DEV_CONNECTOR_NAME);
+  assert.equal(dev.host.mcpConnectorName(), DEV_CONNECTOR_NAME);
 });
 
 test("launcher-controlled CLI operations use the live descriptor token", () => {

@@ -16,7 +16,8 @@ export interface CodexParsedRequest {
   _compactionRequest?: boolean;
   /**
    * True when Codex MultiAgent V2 delegated an agent_message as provider-private encrypted_content.
-   * ChatGPT Web has no OpenAI backend key for that blob and must fail before opening the browser.
+   * ChatGPT Web has no OpenAI backend key for that blob; the Responses HTTP boundary rejects it
+   * before constructing the browser adapter.
    */
   _opaqueMultiAgentV2Payload?: boolean;
 }
@@ -242,6 +243,10 @@ export interface CodexProviderConfig {
     browserHost?: "managed-chrome" | "launcher";
     /** Owner-only descriptor containing the launcher's loopback CDP and control endpoints. */
     browserHostDescriptorPath?: string;
+    /** Explicit browser-helper bundle. DEV builds current source; the launcher still supplies Electron-as-Node. */
+    browserHelperScriptPath?: string;
+    /** Explicit private diagnostic root for isolated harnesses. */
+    browserDiagnosticsPath?: string;
     /** Playwright storage-state file created by the explicit browser login. */
     storageStatePath?: string;
     /** System Chrome executable. The runtime never downloads a browser. */
@@ -256,7 +261,7 @@ export interface CodexProviderConfig {
     turnTimeoutMs?: number;
     /** Keep the single controlled browser visible. */
     headed?: boolean;
-    /** Attach the turn-bound Codex MCP capability for non-Pro efforts. */
+    /** Attach the turn-bound Codex MCP capability for every connector-capable Web model. */
     localToolsEnabled?: boolean;
     /** Account capability proven by the authenticated browser probe. */
     solAvailable?: boolean;

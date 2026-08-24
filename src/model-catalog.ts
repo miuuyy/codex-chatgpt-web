@@ -9,9 +9,6 @@ import {
 
 type JsonObject = Record<string, unknown>;
 
-/** Keep all five routed models inside Codex's five-entry spawn-agent override registry. */
-export const CHATGPT_WEB_MODEL_PRIORITY = 0;
-
 function object(value: unknown, label: string): JsonObject {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${label} must be a JSON object`);
@@ -31,6 +28,33 @@ function reasoningLevel(template: JsonObject, effort: string, description: strin
     : [];
   const source = levels.find(level => level.effort === effort);
   return { ...(source ? structuredClone(source) : {}), effort, description };
+}
+
+function modelPriority(template: JsonObject): number | undefined {
+  const value = template.priority;
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) {
+    throw new Error("Native Codex model template priority must be an integer");
+  }
+  return value;
+}
+
+function routedModelPriority(
+  template: JsonObject,
+  route: ChatGptWebModelRoute,
+  config: AppConfig,
+): number | undefined {
+  const priority = modelPriority(template);
+  if (priority === undefined
+    || config.subagentProtocol !== "compatibility-v1"
+    || route.slug !== "chatgpt-web/light") return priority;
+  if (priority === Number.MAX_SAFE_INTEGER) {
+    throw new Error("Native Codex model template priority cannot reserve the Compatibility V1 roster");
+  }
+  // Codex V1 exposes at most five model overrides. Keep the native Sol row plus the four useful
+  // delegated Web efforts (Medium, High, Extra High, Pro); Instant remains a selectable root model
+  // but does not displace Pro from spawn_agent's bounded registry.
+  return priority + 1;
 }
 
 function nativeTemplateCandidate(value: unknown, requireTools: boolean): value is JsonObject {
@@ -59,12 +83,15 @@ function selectNativeTemplate(models: unknown[], config: AppConfig): JsonObject 
   );
 }
 
-function useReadableV1SubagentSurface(model: JsonObject): void {
-  // A native V2 parent encrypts delegated task content for OpenAI's backend. The browser adapter
-  // cannot decrypt that cross-backend payload, so the integration's catalog must keep every model
-  // that supports delegation on one readable V1 surface. Preserve an explicit disabled capability
-  // instead of advertising support that the native model denied.
+function useCompatibilityV1SubagentSurface(model: JsonObject): void {
+  // Compatibility V1 is an explicit whole-task protocol mode. Preserve an explicit disabled
+  // capability instead of advertising support that the native model denied.
   if (model.multi_agent_version !== "disabled") model.multi_agent_version = "v1";
+}
+
+function routedSubagentVersion(template: JsonObject, config: AppConfig): string | undefined {
+  if (config.subagentProtocol === "compatibility-v1") return "v1";
+  return typeof template.multi_agent_version === "string" ? template.multi_agent_version : undefined;
 }
 
 export function buildChatGptWebModel(
@@ -78,6 +105,8 @@ export function buildChatGptWebModel(
     throw new Error("ChatGPT Web model template must be a native Codex model");
   }
   const limits = resolveChatGptWebContextLimits(route.backendModel, route.adapterEffort, config);
+  const multiAgentVersion = routedSubagentVersion(template, config);
+  const priority = routedModelPriority(template, route, config);
   const model: JsonObject = {
     ...structuredClone(template),
     slug: route.slug,
@@ -88,11 +117,16 @@ export function buildChatGptWebModel(
     // These slugs are implemented by this local Responses-compatible bridge. Marking them false
     // makes Codex drop them from spawn_agent whenever openai_base_url points at the bridge.
     supported_in_api: true,
-    priority: CHATGPT_WEB_MODEL_PRIORITY,
-    // Codex MultiAgent V2 encrypts delegated task payloads for native OpenAI models. A browser
-    // provider cannot decrypt that cross-backend payload, so every routed Web model must stay on
-    // the native V1 surface where `message` and `fork_context` remain ordinary Codex context.
-    multi_agent_version: "v1",
+    // Follow the official template's ordering without outranking it. Codex advertises at most five
+    // spawn-agent overrides; forcing every routed row to priority 0 displaced gpt-5.6-sol from that
+    // registry and made an explicit native child model fail validation.
+    ...(priority === undefined ? {} : { priority }),
+    // In native mode the routed row follows the official template's protocol surface. Web-origin
+    // V2 collaboration calls carry the protocol's explicit plaintext marker; Compatibility V1
+    // instead pins the entire catalog and Codex feature override to V1.
+    ...(multiAgentVersion === undefined
+      ? {}
+      : { multi_agent_version: multiAgentVersion }),
     // Code mode collapses the outer registry into an exec gateway; routed models need the regular
     // Responses tool surface so MCP namespaces, deferred tool_search, and custom tools reach us.
     tool_mode: null,
@@ -128,16 +162,18 @@ export function augmentNativeModelCatalog(
   const nativeModels = structuredClone(
     catalog.models.filter(model => !slug(model)?.startsWith(CHATGPT_WEB_MODEL_PREFIX)),
   );
-  for (const candidate of nativeModels) {
-    if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
-      useReadableV1SubagentSurface(candidate as JsonObject);
+  if (config.subagentProtocol === "compatibility-v1") {
+    for (const candidate of nativeModels) {
+      if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+        useCompatibilityV1SubagentSurface(candidate as JsonObject);
+      }
     }
   }
   const template = selectNativeTemplate(nativeModels, config);
   if (contextOverride) {
-    // model_context_window is a single top-level Codex setting, not a per-model one. Binding it to
-    // the model named in the config makes it vanish the moment that line names a ChatGPT Web slug,
-    // leaving the model actually in use clamped to the catalog's smaller window.
+    // model_context_window is a single top-level Codex setting, not a per-model one. Apply its
+    // advertised maximum to every native row so switching native models cannot silently clamp the
+    // effective override. Codex itself applies context_window and auto-compaction configuration.
     for (const candidate of nativeModels) {
       const modelSlug = slug(candidate);
       if (!modelSlug) continue;

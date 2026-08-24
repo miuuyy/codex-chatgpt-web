@@ -16,6 +16,72 @@ function redactText(value) {
     : redacted;
 }
 
+function redactExportText(value) {
+  return redactText(value)
+    .replace(/\b[A-Za-z]:\\+Users\\+[^\\/\r\n"'`<>|]+/gi, "[user-home]")
+    .replace(/\/(?:Users|home)\/[^/\r\n"'`<>]+/g, "[user-home]")
+    .replace(/((?:visible rows|sidebar (?:rows|titles)|conversation titles):)\s*[^\r\n]*/gi, "$1 [redacted]");
+}
+
+function sanitizeForExport(value, seen = new WeakSet()) {
+  if (typeof value === "string") return redactExportText(value);
+  if (value === null || typeof value !== "object") return value;
+  if (seen.has(value)) return "[circular]";
+  seen.add(value);
+  if (Array.isArray(value)) return value.map((item) => sanitizeForExport(item, seen));
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      key,
+      /^(?:prompt|response|html|dom|content|visibleRows|sidebarRows|sidebarTitles|conversationTitle|conversationTitles|chatTitle|chatTitles)$/i.test(key)
+        ? "[redacted]"
+        : sanitizeForExport(item, seen),
+    ]),
+  );
+}
+
+function exportSanitizedLogs({ filePath, destinationPath }) {
+  const sourcePaths = [`${filePath}.1`, filePath];
+  const destination = path.resolve(destinationPath);
+  if (sourcePaths.some(sourcePath => path.resolve(sourcePath) === destination)) {
+    throw new Error("Refusing to overwrite a launcher source log with an exported diagnostic");
+  }
+  const records = [];
+  for (const sourcePath of sourcePaths) {
+    let lines;
+    try {
+      lines = fs.readFileSync(sourcePath, "utf8").split(/\r?\n/).filter(Boolean);
+    } catch (error) {
+      if (error && error.code === "ENOENT") continue;
+      throw error;
+    }
+    for (const line of lines) {
+      try {
+        const record = JSON.parse(line);
+        if (!record
+          || typeof record.at !== "string"
+          || !["debug", "info", "warning", "error"].includes(record.level)
+          || typeof record.event !== "string") continue;
+        records.push({
+          at: record.at,
+          level: record.level,
+          event: record.event,
+          detail: record.detail && typeof record.detail === "object"
+            ? sanitizeForExport(record.detail)
+            : {},
+        });
+      } catch {}
+    }
+  }
+  fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(
+    destination,
+    records.length > 0 ? `${records.map(record => JSON.stringify(record)).join("\n")}\n` : "",
+    { mode: 0o600 },
+  );
+  if (process.platform !== "win32") fs.chmodSync(destination, 0o600);
+  return records.length;
+}
+
 function sanitize(value, seen = new WeakSet()) {
   if (typeof value === "string") return redactText(value);
   if (value === null || typeof value !== "object") return value;
@@ -133,9 +199,12 @@ function registerLoggedIpc(ipcMain, logger, channel, handler) {
 
 module.exports = {
   createLogger,
+  exportSanitizedLogs,
   installProcessDiagnosticGuards,
   readRecent,
+  redactExportText,
   redactText,
   registerLoggedIpc,
   sanitize,
+  sanitizeForExport,
 };

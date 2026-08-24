@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { defaultBrokerEndpoint } from "../src/config";
@@ -46,6 +47,179 @@ test("setup validates the port before performing runtime work", async () => {
     expect(stderr).not.toContain("Choose either --chrome or --browser-host-descriptor");
     expect(stderr).not.toContain("Unknown arguments");
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("DEV chat list works without starting launcher, broker, or Responses services", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-dev-list-"));
+  try {
+    const result = await runCli(["dev", "list"], {
+      ...process.env,
+      CODEX_WEB_GPT_DEV_HOME: join(root, "dev"),
+      CODEX_CHATGPT_WEB_HOME: join(root, "app"),
+      CODEX_HOME: join(root, "codex"),
+    });
+    expect(result).toEqual({ exitCode: 0, stdout: "No named DEV chats yet.\n", stderr: "" });
+    expect(existsSync(join(root, "codex", "config.toml"))).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("DEV help exposes separate history-fill and live composer-fill operations", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-dev-help-"));
+  try {
+    const result = await runCli(["dev", "help"], {
+      ...process.env,
+      CODEX_WEB_GPT_DEV_HOME: join(root, "dev"),
+      CODEX_CHATGPT_WEB_HOME: join(root, "app"),
+      CODEX_HOME: join(root, "codex"),
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("/fill TOKENS");
+    expect(result.stdout).toContain("/send-fill TOKENS");
+    expect(result.stderr).toBe("");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("DEV status reports the isolated home without creating a Codex route", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-dev-status-"));
+  const devHome = join(root, "dev");
+  try {
+    const result = await runCli(["dev", "status", "--json"], {
+      ...process.env,
+      CODEX_WEB_GPT_DEV_HOME: devHome,
+      CODEX_CHATGPT_WEB_HOME: join(root, "production"),
+      CODEX_HOME: join(root, "production-codex"),
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      paths: {
+        home: devHome,
+        codexHome: join(devHome, "codex-home"),
+        launcherUserData: join(devHome, "launcher"),
+      },
+      launcher: { running: false },
+      config: { configured: false },
+    });
+    expect(existsSync(join(root, "production-codex", "config.toml"))).toBe(false);
+    expect(existsSync(join(devHome, "codex-home", "config.toml"))).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("DEV chat explains the isolated launcher setup when its profile is empty", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-dev-empty-"));
+  try {
+    const result = await runCli(["dev", "chat", "smoke", "hello"], {
+      ...process.env,
+      CODEX_WEB_GPT_DEV_HOME: join(root, "dev"),
+      CODEX_CHATGPT_WEB_HOME: join(root, "production"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("In the window labelled DEV");
+    expect(result.stderr).toContain("Complete optional MCP setup only for simulated tool rounds");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("generic --home cannot collapse DEV mode into another runtime home", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-dev-home-"));
+  try {
+    const result = await runCli(["--home", join(root, "shared"), "dev", "status"], {
+      ...process.env,
+      CODEX_WEB_GPT_DEV_HOME: join(root, "dev"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("--home does not apply to DEV mode");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("DEV browser-only setup persists only the isolated harness profile", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-dev-setup-"));
+  const devHome = join(root, "dev");
+  const descriptorPath = join(devHome, "runtime", "launcher-browser.json");
+  const helperScript = join(root, "helper.cjs");
+  const controlToken = "dev-launcher-control-token-0123456789abcdefghijklmnop";
+  let inspections = 0;
+  const control = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    inspections += 1;
+    expect(request.url).toBe("/v1/session/inspect");
+    expect(request.headers.authorization).toBe(`Bearer ${controlToken}`);
+    expect(JSON.parse(Buffer.concat(chunks).toString("utf8"))).toEqual({ detectCapabilities: true });
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      authenticated: true,
+      temporary: true,
+      solAvailable: true,
+      proAvailable: false,
+      url: "https://chatgpt.com/?temporary-chat=true",
+    }));
+  });
+  await new Promise<void>((resolveListen, rejectListen) => {
+    control.once("error", rejectListen);
+    control.listen(0, "127.0.0.1", resolveListen);
+  });
+  try {
+    const address = control.address();
+    if (!address || typeof address === "string") throw new Error("control server has no port");
+    mkdirSync(join(devHome, "runtime"), { recursive: true });
+    writeFileSync(helperScript, "module.exports = {};\n", { mode: 0o700 });
+    writeFileSync(descriptorPath, `${JSON.stringify({
+      version: 2,
+      kind: "codex-web-gpt-launcher",
+      profile: "development",
+      pid: process.pid,
+      endpoint: "http://127.0.0.1:48121",
+      control: { endpoint: `http://127.0.0.1:${address.port}`, token: controlToken },
+      helper: { executable: process.execPath, script: helperScript },
+      partition: "persist:codex-web-gpt-dev-chatgpt",
+      idleUrl: "about:blank#codex-web-gpt-browser-host",
+      surfaceId: "d".repeat(32),
+      createdAt: new Date().toISOString(),
+    })}\n`, { mode: 0o600 });
+
+    const result = await runCli([
+      "dev",
+      "setup",
+      "--browser-only",
+      "--browser-host-descriptor",
+      descriptorPath,
+      "--acknowledge-unofficial",
+    ], {
+      ...process.env,
+      CODEX_WEB_GPT_DEV_HOME: devHome,
+      CODEX_CHATGPT_WEB_HOME: join(root, "production"),
+      CODEX_HOME: join(root, "production-codex"),
+    });
+    expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" });
+    expect(result.stdout).toContain("No Codex route, Responses listener, or system service was installed");
+    expect(result.stdout).toContain("DEV launcher owns the isolated MCP tunnel");
+    expect(inspections).toBe(1);
+    expect(JSON.parse(readFileSync(join(devHome, "config.json"), "utf8"))).toMatchObject({
+      version: 3,
+      purpose: "dev-harness",
+      mode: "browser-only",
+      appName: "Codex Native2 DEV",
+      browserHost: "launcher",
+      browserHostDescriptorPath: descriptorPath,
+      solAvailable: true,
+      proAvailable: false,
+    });
+    expect(existsSync(join(root, "production-codex", "config.toml"))).toBe(false);
+    expect(existsSync(join(devHome, "codex-home", "config.toml"))).toBe(false);
+  } finally {
+    await new Promise<void>(resolveClose => control.close(() => resolveClose()));
     rmSync(root, { recursive: true, force: true });
   }
 });
@@ -105,8 +279,9 @@ test("authorized launcher uninstall does not re-probe an already stopped full ru
   writeFileSync(helperScript, "module.exports = {};\n");
   writeFileSync(runtimeKeyFile, "test-key\n");
   writeFileSync(descriptorPath, `${JSON.stringify({
-    version: 1,
+    version: 2,
     kind: "codex-web-gpt-launcher",
+    profile: "production",
     pid: process.pid,
     endpoint: "http://127.0.0.1:48111",
     control: { endpoint: "http://127.0.0.1:48112", token },

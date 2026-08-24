@@ -58,7 +58,7 @@ export function resolveChatGptWebModelMode(
       return { modelId, effort, displayLabel: "Extra High", uiEffortIndex: 3, localTools: capabilities.localToolsEnabled };
     case "max":
       if (!capabilities.proAvailable) throw new Error("ChatGPT Pro effort is not available for this account");
-      return { modelId, effort, displayLabel: "Pro", uiEffortIndex: 4, localTools: false };
+      return { modelId, effort, displayLabel: "Pro", uiEffortIndex: 4, localTools: capabilities.localToolsEnabled };
     default:
       throw new Error(`ChatGPT web effort is not supported: ${effort}`);
   }

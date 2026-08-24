@@ -32,11 +32,20 @@ process.env.CODEX_CHATGPT_WEB_HOME = join(root, "app");
 mkdirSync(process.env.CODEX_HOME, { recursive: true });
 const config = defaultConfig("browser-only");
 config.proAvailable = true;
+config.subagentProtocol = "compatibility-v1";
 const catalogPath = join(root, "augmented-models.json");
 writeFileSync(catalogPath, `${JSON.stringify(augmentNativeModelCatalog(sourceCatalog, config))}\n`);
-writeFileSync(join(process.env.CODEX_HOME, "config.toml"), `model_catalog_json = ${JSON.stringify(catalogPath)}\n`);
+writeFileSync(join(process.env.CODEX_HOME, "config.toml"), [
+  `model_catalog_json = ${JSON.stringify(catalogPath)}`,
+  "",
+  "[features]",
+  "multi_agent = true",
+  "multi_agent_v2 = false",
+  "",
+].join("\n"));
 try {
-  const result = runCodex(["debug", "models"], { ...process.env, CODEX_HOME: process.env.CODEX_HOME });
+  const isolatedEnv = { ...process.env, CODEX_HOME: process.env.CODEX_HOME };
+  const result = runCodex(["debug", "models"], isolatedEnv);
   const catalog = JSON.parse(result.stdout) as {
     models?: Array<{
       slug?: string;
@@ -62,16 +71,25 @@ try {
   const webPro = catalog.models?.find(model => model.slug === "chatgpt-web/pro");
   if (nativeSol?.multi_agent_version !== "v1" || webPro?.multi_agent_version !== "v1") {
     throw new Error(
-      `Codex did not preserve the readable V1 subagent surface: ${JSON.stringify({ nativeSol, webPro })}`,
+      `Codex did not preserve Compatibility V1 catalog metadata: ${JSON.stringify({ nativeSol, webPro })}`,
     );
+  }
+  const features = runCodex(["features", "list"], isolatedEnv).stdout;
+  if (!/^multi_agent\s+stable\s+true$/m.test(features)
+    || !/^multi_agent_v2\s+stable\s+false$/m.test(features)) {
+    throw new Error(`Codex did not load the Compatibility V1 feature override:\n${features}`);
   }
   const spawnOverrides = (catalog.models ?? [])
     .filter(model => model.supported_in_api === true && model.visibility === "list")
     .toSorted((left, right) => (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER))
     .slice(0, 5)
     .map(model => model.slug);
-  if (JSON.stringify(spawnOverrides) !== JSON.stringify(CHATGPT_WEB_MODEL_ROUTES.map(route => route.slug))) {
-    throw new Error(`Codex did not feature the five ChatGPT Web subagent overrides: ${JSON.stringify(spawnOverrides)}`);
+  const expectedSpawnOverrides = [
+    "gpt-5.6-sol",
+    ...CHATGPT_WEB_MODEL_ROUTES.slice(1).map(route => route.slug),
+  ];
+  if (JSON.stringify(spawnOverrides) !== JSON.stringify(expectedSpawnOverrides)) {
+    throw new Error(`Codex did not preserve the bounded V1 subagent roster: ${JSON.stringify(spawnOverrides)}`);
   }
   process.stdout.write("NATIVE_CODEX_CATALOG_SMOKE_OK\n");
 } finally {

@@ -44,17 +44,20 @@ test("Bun daemon streams a prepared browser turn through the persistent Node hel
       send({ type: "result", id: message.id, text: "done" });
     });
   `, { mode: 0o700 });
+  const descriptorHelper = join(root, "descriptor-helper.cjs");
+  writeFileSync(descriptorHelper, "process.exit(99);\n", { mode: 0o700 });
   const descriptorPath = join(root, "launcher.json");
   writeFileSync(descriptorPath, `${JSON.stringify({
-    version: 1,
+    version: 2,
     kind: LAUNCHER_BROWSER_HOST_KIND,
+    profile: "production",
     pid: process.pid,
     endpoint: "http://127.0.0.1:39001",
     control: {
       endpoint: "http://127.0.0.1:39002",
       token: "launcher-control-token-0123456789abcdefghijklmnop",
     },
-    helper: { executable: process.execPath, script: helper },
+    helper: { executable: process.execPath, script: descriptorHelper },
     partition: "persist:codex-web-gpt-chatgpt",
     idleUrl: "about:blank#codex-web-gpt-browser-host",
     surfaceId: "launcher_surface_id_0123456789AB",
@@ -64,6 +67,7 @@ test("Bun daemon streams a prepared browser turn through the persistent Node hel
     appName: "Codex Native",
     browserHost: "launcher",
     browserHostDescriptorPath: descriptorPath,
+    browserHelperScriptPath: helper,
     storageStatePath: join(root, "unused-state.json"),
     chromeExecutablePath: join(root, "unused-chrome"),
     turnTimeoutMs: 60_000,
