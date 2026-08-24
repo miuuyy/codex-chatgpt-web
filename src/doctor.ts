@@ -9,6 +9,7 @@ import { tunnelStatus } from "./tunnel";
 import { getTunnelServiceStatus } from "./tunnel-service";
 import { inspectLauncherBrowserHost, readLauncherBrowserHostDescriptor } from "./launcher-browser-host";
 import { processRunning } from "./process";
+import { ProjectRegistry } from "./project-registry";
 
 export type CheckStatus = "ok" | "warning" | "error";
 
@@ -165,6 +166,29 @@ export async function runDoctor(): Promise<DoctorReport> {
     checks.push({ id: "service", status: "ok", message: "macOS background service is loaded" });
   }
   checks.push(await proxyCheck(config));
+  const projectRegistryPath = join(getConfigDir(), "runtime", "project-registry.json");
+  const projectRegistry = new ProjectRegistry(projectRegistryPath);
+  const registryInspection = projectRegistry.inspect();
+  if (!registryInspection.ok) {
+    checks.push({
+      id: "project-registry",
+      status: "error",
+      message: "Project registry is corrupted or unreadable",
+      detail: registryInspection.error,
+    });
+  } else if (existsSync(projectRegistryPath) && !secureFile(projectRegistryPath)) {
+    checks.push({
+      id: "project-registry",
+      status: "error",
+      message: "Project registry file has unsafe permissions",
+    });
+  } else {
+    checks.push({
+      id: "project-registry",
+      status: "ok",
+      message: `Project registry is active (${registryInspection.count} project(s) registered)`,
+    });
+  }
 
   if (config.mode === "full") {
     const settings = config.tunnel!;

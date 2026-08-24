@@ -21,6 +21,7 @@ export interface CompiledChatGptWebPrompt {
 
 export interface CompileChatGptWebPromptOptions {
   captureLunaCheckpoint?: boolean;
+  projectContinuity?: string;
 }
 
 const RETIRED_TURN_HANDLE = /\b(turn|binding)_[A-Za-z0-9_-]{24,}/g;
@@ -281,11 +282,19 @@ export function compileChatGptWebPrompt(
     };
     const messages = sourceMessages.map(message => messageEnvelope(message, images, budget));
     const envelopeJson = withoutRetiredTurnHandles(JSON.stringify({ version: 3, system, messages }));
+    const projectContinuitySection = options?.projectContinuity?.trim()
+      ? [
+        "<project_continuity>",
+        options.projectContinuity.trim(),
+        "</project_continuity>",
+      ]
+      : [];
     const text = [
       ...sharedContract,
       ...transportContract,
       ...proDelegationContract,
       ...checkpointContract,
+      ...projectContinuitySection,
       captureLunaCheckpoint
         ? "Return the complete answer that the outer Codex task should receive, then the required private checkpoint tail."
         : "Return only the answer that the outer Codex task should receive.",

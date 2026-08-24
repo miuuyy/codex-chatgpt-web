@@ -19,3 +19,12 @@ test.each([
 ])("%s context uses tokenizer-derived usage without character-pressure inflation", (_label, text) => {
   expect(estimateChatGptWebInputTokens(request(text), capabilities)).toBeLessThan(100_000);
 });
+
+test("accurately counts input tokens with project continuity injected", () => {
+  const req = request("Hello world");
+  const baseTokens = estimateChatGptWebInputTokens(req, capabilities);
+  const withContinuity = estimateChatGptWebInputTokens(req, capabilities, {
+    projectContinuity: "[Project Continuity: test]\n- Summary: Long detailed project summary with architectural guidelines.",
+  });
+  expect(withContinuity).toBeGreaterThan(baseTokens);
+});
