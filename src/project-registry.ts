@@ -180,7 +180,8 @@ export class ProjectRegistry {
         if (cleanThreadId && !existing.threadIds.includes(cleanThreadId)) {
           existing.threadIds.push(cleanThreadId);
           if (existing.threadIds.length > MAX_PROJECT_THREADS) {
-            existing.threadIds.shift();
+            const evictedThreadId = existing.threadIds.shift();
+            if (evictedThreadId) this.threadToProject.delete(evictedThreadId);
           }
         }
         if (cleanThreadId) {
@@ -241,7 +242,8 @@ export class ProjectRegistry {
     if (!record.threadIds.includes(cleanChild)) {
       record.threadIds.push(cleanChild);
       if (record.threadIds.length > MAX_PROJECT_THREADS) {
-        record.threadIds.shift();
+        const evictedThreadId = record.threadIds.shift();
+        if (evictedThreadId) this.threadToProject.delete(evictedThreadId);
       }
     }
     record.updatedAt = this.now();
