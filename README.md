@@ -132,6 +132,37 @@ rows, but changing them cannot silently change the selected browser model. In Fu
 available effort receives the same turn-bound MCP capability. Pro has no separate restriction or
 reduced tool contract.
 
+## External Responses API
+
+An optional second listener exposes the available `chatgpt-web/*` routes to OpenAI Responses API
+clients. It is disabled by default, uses a separate bearer token, and never exposes native model
+passthrough, health, lifecycle, search, or compaction routes.
+
+Enable it during setup. Omitting `--external-api-token` generates and prints a 256-bit token:
+
+```bash
+codex-chatgpt-web setup --browser-only --external-api --external-api-host 127.0.0.1
+```
+
+Then point an OpenAI client at the external listener:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:17842/v1", api_key="YOUR_EXTERNAL_API_TOKEN")
+response = client.responses.create(model="chatgpt-web/high", input="Explain this API briefly.")
+print(response.output_text)
+```
+
+`GET /v1/models`, streaming Responses calls, `previous_response_id`, and standard function tools
+are supported. Function tools require Full harness setup; calls are returned to the API client for
+execution and run under a synthetic read-only environment with no local workspace authority.
+
+Keep the listener on `127.0.0.1` for local agents. To bind a LAN, VPN, or container-facing IP, use
+`--external-api-host`; plain HTTP does not protect the bearer token in transit, so non-loopback
+deployments require a trusted private network or a TLS reverse proxy. Disable it with
+`--no-external-api` and restart the owning launcher/service after changing setup.
+
 ## Full harness
 
 Full mode connects ChatGPT's tool calls back to the current Codex task through the official
@@ -197,7 +228,7 @@ codex-chatgpt-web subagents native
 
 ## Limitations and security
 
-- This is unofficial browser automation, not an OpenAI API. ChatGPT UI changes can break selectors;
+- This is unofficial browser automation, not the official OpenAI API. ChatGPT UI changes can break selectors;
   drift fails explicitly instead of silently switching model or transport.
 - ChatGPT's account-specific composer ceilings are smaller than some underlying model windows.
   The measured boundaries and requirements for a larger deterministic transport are tracked in

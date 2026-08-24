@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, openSync, closeSync, renameSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep, win32 } from "node:path";
+import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import type { CodexProviderConfig } from "./types";
 import { VERSION } from "./version";
@@ -61,6 +62,13 @@ export interface TunnelConfig {
   alias: string;
 }
 
+export interface ExternalApiConfig {
+  enabled: true;
+  host: string;
+  port: number;
+  token: string;
+}
+
 export interface AppConfig {
   version: 3;
   purpose?: "dev-harness";
@@ -84,6 +92,24 @@ export interface AppConfig {
   runtimeCommand: string[];
   acknowledgedUnofficialAt?: string;
   tunnel?: TunnelConfig;
+  externalApi?: ExternalApiConfig;
+}
+
+export function assertExternalApiConfig(config: AppConfig, path = "configuration"): void {
+  const external = config.externalApi;
+  if (external === undefined) return;
+  if (!external || typeof external !== "object" || external.enabled !== true) {
+    throw new Error(`Invalid externalApi in ${path}`);
+  }
+  if (external.host !== "localhost" && isIP(external.host) === 0) {
+    throw new Error(`externalApi.host must be localhost or an IP address in ${path}`);
+  }
+  if (!Number.isInteger(external.port) || external.port < 1 || external.port > 65_535) {
+    throw new Error(`Invalid externalApi.port in ${path}`);
+  }
+  if (external.port === config.port) throw new Error(`externalApi.port must differ from the Responses port in ${path}`);
+  if (!/^[A-Za-z0-9_-]{40,}$/.test(external.token)) throw new Error(`Invalid externalApi.token in ${path}`);
+  if (external.token === config.controlToken) throw new Error(`externalApi.token must differ from controlToken in ${path}`);
 }
 
 export function expandUserPath(value: string): string {
@@ -408,6 +434,7 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (proAvailable && !solAvailable) {
     throw new Error(`Invalid ChatGPT account capabilities in ${path}: Pro requires Sol`);
   }
+  assertExternalApiConfig(parsed as AppConfig, path);
   return { ...parsed, subagentProtocol, solAvailable, proAvailable } as AppConfig;
 }
 

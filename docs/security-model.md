@@ -64,6 +64,20 @@ request and long-lived browser/tool loop are idle, flush response state, and sto
 token does not turn loopback into a hostile-local-process security boundary; it prevents accidental
 or unauthenticated lifecycle control through ordinary requests.
 
+### External API callers
+
+The optional external listener is a separate opt-in trust boundary with its own random bearer
+token. It exposes only `GET /v1/models` and `POST /v1/responses`, accepts only `chatgpt-web/*`
+routes, strips the bearer credential before internal dispatch, and rejects native passthrough and
+native `additional_tools` payloads. Caller-supplied turn metadata and workspace authority are
+replaced with server-owned identity and a synthetic read-only environment.
+
+Requests without function tools are forced into browser-only mode even when the installed runtime
+uses Full harness. Standard function tools require Full harness because the connector transports
+the model's call back to the Responses client; the gateway never executes a caller tool itself.
+External response IDs carry only random thread/turn identity and are accepted for continuation only
+when they were issued in the external ID format.
+
 ### Browser/UI drift
 
 ChatGPT DOM and labels are not a stable API. Selectors are narrow and completion requires stable
@@ -91,7 +105,10 @@ response; the bridge does not fabricate or install a Codex history checkpoint.
 
 ## Network exposure
 
-- Responses and health listeners bind to `127.0.0.1` only.
+- The native Responses and health listener binds to `127.0.0.1` only.
+- The external Responses listener is disabled by default. Its default bind is `127.0.0.1`; a user
+  may explicitly select another local IP. Bearer authentication does not encrypt plain HTTP, so a
+  non-loopback bind requires a trusted private network or TLS termination.
 - Full mode uses OpenAI's outbound HTTPS Secure MCP Tunnel; it opens no public listener or inbound
   firewall rule.
 - The embedded browser connects to ChatGPT, the selected identity provider during explicit sign-in,
@@ -102,3 +119,4 @@ response; the bridge does not fabricate or install a Codex history checkpoint.
 - Defending against a compromised local OS user or compromised Codex/Electron binary.
 - Bypassing ChatGPT plan, workspace, usage, action-control, or model restrictions.
 - Making consumer browser automation equivalent to a supported OpenAI API contract.
+- Providing multi-tenant isolation, billing, or internet-facing TLS termination.

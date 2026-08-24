@@ -825,6 +825,7 @@ export function buildResponseJSON(
   events: AdapterEvent[],
   modelId: string,
   options?: {
+    responseId?: string;
     hideThinkingSummary?: boolean;
     toolNsMap?: Map<string, { namespace: string; name: string }>;
     freeformToolNames?: Set<string>;
@@ -834,7 +835,7 @@ export function buildResponseJSON(
     onProviderState?: (state: CodexProviderContinuationState) => void;
   },
 ): Record<string, unknown> {
-  const responseId = `resp_${uuid()}`;
+  const responseId = options?.responseId ?? `resp_${uuid()}`;
   const output: OutputItem[] = [];
   let usage: CodexUsage | undefined;
   let errorEvent: Extract<AdapterEvent, { type: "error" }> | undefined;

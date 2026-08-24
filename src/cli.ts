@@ -67,6 +67,11 @@ Setup options:
   --restart-service            Explicitly restart this project's daemon after an update
   --login                      Refresh the stored ChatGPT login even if one exists
   --auto-approve-tool-calls    Opt in to per-call browser clicks on "Allow once" prompts
+  --external-api               Enable the authenticated external Responses listener
+  --no-external-api            Disable the external Responses listener
+  --external-api-host HOST     External listener IP (default: 127.0.0.1)
+  --external-api-port NUMBER   External listener port (default: 17842)
+  --external-api-token TOKEN   Existing bearer token; otherwise setup generates one
   --acknowledge-unofficial     Accept the one-time unofficial-browser-automation notice
 
 Global:
@@ -180,6 +185,19 @@ async function setupCommand(args: string[]): Promise<void> {
   if (runtimeKeyFile) options.runtimeKeyFile = runtimeKeyFile;
   options.forceLogin = takeFlag(args, "--login");
   options.autoApproveToolCalls = takeFlag(args, "--auto-approve-tool-calls");
+  const externalApiEnabled = takeFlag(args, "--external-api");
+  const externalApiDisabled = takeFlag(args, "--no-external-api");
+  if (externalApiEnabled && externalApiDisabled) throw new Error("Choose --external-api or --no-external-api, not both");
+  const externalApiHost = takeOption(args, "--external-api-host");
+  const externalApiPort = takeOption(args, "--external-api-port");
+  const externalApiToken = takeOption(args, "--external-api-token");
+  if ((externalApiHost || externalApiPort || externalApiToken) && !externalApiEnabled) {
+    throw new Error("External API options require --external-api");
+  }
+  if (externalApiEnabled || externalApiDisabled) options.externalApiEnabled = externalApiEnabled;
+  if (externalApiHost) options.externalApiHost = externalApiHost;
+  if (externalApiPort) options.externalApiPort = Number(externalApiPort);
+  if (externalApiToken) options.externalApiToken = externalApiToken;
   options.replaceCodexRoute = takeFlag(args, "--replace-codex-route");
   options.restartService = takeFlag(args, "--restart-service");
   assertNoArgs(args);
@@ -217,6 +235,10 @@ async function setupCommand(args: string[]): Promise<void> {
   if (result.connectorSetupRequired) {
     stdout.write("One account-level step remains: attach the tunnel to the ChatGPT connector named in config.\n");
     stdout.write("Open: https://chatgpt.com/#settings/Plugins\n");
+  }
+  if (externalApiEnabled && result.externalApi) {
+    stdout.write(`External API: http://${result.externalApi.host}:${result.externalApi.port}/v1\n`);
+    stdout.write(`External API token: ${result.externalApi.token}\n`);
   }
   stdout.write("Restart the Codex app once so its native model catalog refreshes through the installed route.\n");
 }
@@ -413,6 +435,9 @@ async function main(): Promise<void> {
     const config = loadConfig();
     const server = startServer(config);
     stdout.write(`codex-chatgpt-web ${VERSION} listening on http://${config.host}:${server.port}/v1 (${config.mode})\n`);
+    if (config.externalApi?.enabled) {
+      stdout.write(`external Responses API listening on http://${config.externalApi.host}:${config.externalApi.port}/v1\n`);
+    }
     await new Promise<void>(() => {});
   } else if (command === "dev") await runDevCommand(args);
   else if (command === "mcp") await runChatGptMcpMain(args);

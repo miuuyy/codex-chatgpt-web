@@ -6,7 +6,7 @@ import { chatGptTurnSessions } from "./adapters/chatgpt-web/turn-execution";
 import { chatGptBrowserTabClosedError } from "./adapters/chatgpt-web/adapter-error";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse } from "./bridge";
 import type { AppConfig } from "./config";
-import { providerConfig } from "./config";
+import { assertExternalApiConfig, providerConfig } from "./config";
 import { AsyncEventQueue } from "./event-queue";
 import { readJsonRequestBody } from "./http-body";
 import { httpStatusFromTerminalError } from "./lib/errors";
@@ -36,6 +36,7 @@ import { namespacedToolName, type AdapterEvent, type CodexParsedRequest } from "
 import type { CodexProviderConfig } from "./types";
 import type { ProviderAdapter } from "./adapters/base";
 import { VERSION } from "./version";
+import { externalApiRequest } from "./external-api";
 
 export class HttpTurnCounter {
   private readonly active = new Map<number, {
@@ -173,13 +174,20 @@ export class HttpTurnCounter {
   }
 }
 
-type ChatGptWebAdapterFactory = (provider: CodexProviderConfig) => ProviderAdapter;
+export type ChatGptWebAdapterFactory = (provider: CodexProviderConfig) => ProviderAdapter;
 
 export interface ResponseRequestOptions {
+  /** Use a caller-owned Responses id. */
+  responseId?: string;
   /** DEV and other in-process harnesses can keep continuation state in their own canonical store. */
   rememberState?: boolean;
   /** Observe the exact production adapter stream when invoking the handler in-process. */
   onAdapterEvent?: (event: AdapterEvent) => void;
+}
+
+export interface AppServer {
+  port: number;
+  stop(closeActiveConnections?: boolean): Promise<void>;
 }
 
 export function routeChatGptWebRequest(parsed: CodexParsedRequest, config: AppConfig): ChatGptWebModelRoute {
@@ -383,6 +391,7 @@ export async function responseRequest(
       () => abort.abort(),
       2_000,
       {
+        ...(options.responseId ? { responseId: options.responseId } : {}),
         hideThinkingSummary: parsed.options.hideThinkingSummary,
         ...(compaction ? { compaction: true } : {
           ...(options.rememberState === false ? {} : {
@@ -404,6 +413,7 @@ export async function responseRequest(
   await run();
   const events = await queue.collect();
   const json = buildResponseJSON(events, responseModel, {
+    ...(options.responseId ? { responseId: options.responseId } : {}),
     hideThinkingSummary: parsed.options.hideThinkingSummary,
     toolNsMap: maps.toolNsMap,
     freeformToolNames: maps.freeformToolNames,
@@ -527,19 +537,13 @@ export async function compactRequest(
 export function startServer(
   config: AppConfig,
   dependencies: { fetchUpstream?: NativeFetch } = {},
-): ReturnType<typeof Bun.serve> {
+): AppServer {
   if (config.purpose === "dev-harness") {
     throw new Error("DEV harness configuration cannot start a Responses listener");
   }
+  assertExternalApiConfig(config);
   const startedAt = Date.now();
   const turnBroker = config.mode === "full" ? TurnBroker.forSocket(config.brokerSocketPath) : undefined;
-  if (config.mode === "full") {
-    void turnBroker!.listen().catch(error => {
-      console.error(
-        `[chatgpt-web] turn broker endpoint is unavailable: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    });
-  }
   let draining = false;
   let shutdownPromise: Promise<void> | undefined;
   let successfulModelCatalogRequests = 0;
@@ -692,6 +696,43 @@ export function startServer(
       return new Response("Not found", { status: 404 });
     },
   });
+  let externalServer: ReturnType<typeof Bun.serve> | undefined;
+  try {
+    if (config.externalApi?.enabled) {
+      externalServer = Bun.serve({
+        hostname: config.externalApi.host,
+        port: config.externalApi.port,
+        idleTimeout: 0,
+        fetch(req) {
+          if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
+          return httpTurns.track(
+            signal => externalApiRequest(
+              new Request(req, { signal }),
+              config,
+              (internal, scopedConfig, options) => responseRequest(internal, scopedConfig, createChatGptWebAdapter, options),
+            ),
+            req.signal,
+          );
+        },
+      });
+    }
+  } catch (error) {
+    void server.stop(true);
+    throw error;
+  }
+  if (config.mode === "full") {
+    void turnBroker!.listen().catch(error => {
+      console.error(
+        `[chatgpt-web] turn broker endpoint is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+  }
+  const stop = async (closeActiveConnections?: boolean): Promise<void> => {
+    await Promise.all([
+      ...(externalServer ? [externalServer.stop(closeActiveConnections)] : []),
+      server.stop(closeActiveConnections),
+    ]);
+  };
   function shutdown(): void {
     if (shutdownPromise) return;
     draining = true;
@@ -711,7 +752,7 @@ export function startServer(
           console.error(`[codex-chatgpt-web] shutdown cleanup failed: ${failure instanceof Error ? failure.message : String(failure)}`);
         }
       }
-      await server.stop(true);
+      await stop(true);
     })().catch(error => {
       process.exitCode = 1;
       console.error(`[codex-chatgpt-web] server shutdown failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -719,5 +760,5 @@ export function startServer(
   }
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
-  return server;
+  return { port: server.port!, stop };
 }
