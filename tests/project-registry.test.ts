@@ -7,6 +7,7 @@ import {
   computeProjectId,
   derivePrimaryProjectRoot,
   PROJECT_CONTINUITY_MAX_CHARS,
+  MAX_PROJECT_THREADS,
 } from "../src/project-registry";
 import type { ChatGptTurnEnvironment } from "../src/adapters/chatgpt-web/environment";
 
@@ -21,6 +22,18 @@ function mockEnv(cwd: string, roots: string[] = [cwd]): ChatGptTurnEnvironment {
 }
 
 describe("ProjectRegistry", () => {
+
+  it("removes evicted thread IDs from the in-memory lookup immediately", () => {
+    const registry = new ProjectRegistry();
+    const env = mockEnv("/workspace/thread-cap", ["/workspace/thread-cap"]);
+    for (let i = 0; i <= MAX_PROJECT_THREADS; i += 1) {
+      registry.resolveProject(env, `thread_${i}`);
+    }
+    expect(registry.getProjectForThread("thread_0")).toBeUndefined();
+    expect(registry.getProjectForThread(`thread_${MAX_PROJECT_THREADS}`)?.projectId).toBe(computeProjectId("/workspace/thread-cap"));
+  });
+
+
   it("computes deterministic project IDs based on normalized root path", () => {
     const root1 = "/workspace/project-alpha";
     const root2 = "/workspace/project-alpha/";
