@@ -121,6 +121,27 @@ bun run app
 
 This source path requires Bun 1.3.14. The command installs locked dependencies and opens the app.
 
+## Install an external Responses provider
+
+An OpenAI-compatible gateway can offer an **Open Codex Web GPT** link using this credential-free
+URL shape:
+
+```text
+codexwebgpt://install/responses?endpoint=https%3A%2F%2Fgateway.example%2Fv1&name=Example+Responses+bridge
+```
+
+The link may contain only the HTTPS `/v1` endpoint and a display name. It must never contain an API
+key. The launcher opens a local confirmation dialog, displays the exact endpoint, and asks for the
+downstream key in a masked field. On install it privately journals the current `config.toml` and
+`auth.json`, routes Codex through the gateway, and clears the model cache. Disconnecting the
+external provider restores the exact prior files and fails closed if either installed file was
+changed in the meantime.
+
+This installs routing and model discovery only. It does not give a hosted provider access to the
+local computer. Configure the **Full harness** separately if the selected ChatGPT Web tier must use
+local Codex tools. ChatGPT Web allowance remains unofficial browser automation and is not converted
+into OpenAI API credit.
+
 ## Modes
 
 | Mode | Models | Local Codex tools | Extra setup |

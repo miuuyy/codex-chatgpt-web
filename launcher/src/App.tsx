@@ -13,6 +13,7 @@ import { Icon, type IconName } from "./icons";
 import type {
   BrowserState,
   DoctorReport,
+  ExternalProviderInstallRequest,
   Language,
   LauncherSnapshot,
   LauncherState,
@@ -36,6 +37,7 @@ export function App() {
   const [operation, setOperation] = useState<OperationState | null>(null);
   const [logs, setLogs] = useState<LogRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [externalProviderInstall, setExternalProviderInstall] = useState<ExternalProviderInstallRequest | null>(null);
 
   useEffect(() => {
     if (!api) return;
@@ -46,6 +48,7 @@ export function App() {
       setBrowser(next.browser);
       setLogs(next.logs);
       setOperation(next.operation);
+      setExternalProviderInstall(next.externalProviderInstall);
       if (next.operation?.status === "failed") setError(next.operation.message);
     }).catch((cause) => setError(messageOf(cause)));
     const unsubscribeState = api.onStateChanged((state) => {
@@ -67,6 +70,7 @@ export function App() {
     const unsubscribeUpdate = api.onUpdateState((update) => {
       setSnapshot((current) => current ? { ...current, update } : current);
     });
+    const unsubscribeExternalProvider = api.onExternalProviderInstall(setExternalProviderInstall);
     return () => {
       cancelled = true;
       unsubscribeState();
@@ -74,6 +78,7 @@ export function App() {
       unsubscribeOperation();
       unsubscribeLog();
       unsubscribeUpdate();
+      unsubscribeExternalProvider();
     };
   }, []);
 
@@ -121,6 +126,18 @@ export function App() {
       </AnimatePresence>
       <AnimatePresence>
         {error ? <ErrorToast copy={copy} message={error} onDismiss={() => setError(null)} /> : null}
+      </AnimatePresence>
+      <AnimatePresence>
+        {externalProviderInstall ? (
+          <ExternalProviderInstallDialog
+            copy={copy}
+            key={`${externalProviderInstall.endpoint}\u0000${externalProviderInstall.name}`}
+            onDismiss={() => setExternalProviderInstall(null)}
+            request={externalProviderInstall}
+            setError={setError}
+            updateState={updateState}
+          />
+        ) : null}
       </AnimatePresence>
     </div>
   );
@@ -290,7 +307,9 @@ function LauncherShell({
   updateState: (state: LauncherState) => void;
 }) {
   const [surface, setSurface] = useState<Surface>(
-    snapshot.state.coreSetupComplete && snapshot.state.codexCatalogVerified ? "browser" : "setup",
+    snapshot.state.externalProviderActive
+      ? "settings"
+      : snapshot.state.coreSetupComplete && snapshot.state.codexCatalogVerified ? "browser" : "setup",
   );
   const compactAtMount = useRef(window.matchMedia(COMPACT_SIDEBAR_QUERY).matches).current;
   const [sidebarOpen, setSidebarOpen] = useState(!compactAtMount);
@@ -300,10 +319,12 @@ function LauncherShell({
   const [sessionReminderDue, setSessionReminderDue] = useState(false);
   const browserSlotRef = useCallback((node: HTMLDivElement | null) => setBrowserSlot(node), []);
   const browserSurfaceActive = surface === "browser" && !(compactSidebar && sidebarOpen);
-  const needsBrowser = browser?.authenticated !== true;
-  const needsSetup = !needsBrowser
+  const needsBrowser = !snapshot.state.externalProviderActive && browser?.authenticated !== true;
+  const needsSetup = !snapshot.state.externalProviderActive && !needsBrowser
     && (snapshot.state.coreSetupComplete !== true || snapshot.state.codexCatalogVerified !== true);
-  const mcpOptional = snapshot.state.codexCatalogVerified === true && snapshot.state.mcpSetupComplete !== true;
+  const mcpOptional = !snapshot.state.externalProviderActive
+    && snapshot.state.codexCatalogVerified === true
+    && snapshot.state.mcpSetupComplete !== true;
   const updateVisible = ["available", "downloading", "installing"].includes(snapshot.update.status);
   const updateBusy = snapshot.update.status === "downloading" || snapshot.update.status === "installing";
   const updateVersion = "version" in snapshot.update ? snapshot.update.version : null;
@@ -528,7 +549,7 @@ function LauncherShell({
               <SidebarItem
                 active={surface === "settings"}
                 badge={snapshot.state.coreSetupComplete
-                  ? <ActionDot tone={snapshot.state.bridgeEnabled ? "success" : "error"} />
+                  ? <ActionDot tone={snapshot.state.bridgeEnabled || snapshot.state.externalProviderActive ? "success" : "error"} />
                   : null}
                 icon="settings"
                 label={copy.settings}
@@ -1305,11 +1326,33 @@ function SettingsSurface({
       setBusy(false);
     }
   };
+  const uninstallExternalProvider = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api!.uninstallExternalProvider();
+      if (!result.cancelled && result.state) updateState(result.state);
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <ContentSurface narrow title={copy.settingsTitle}>
       <SectionHeading label={copy.general} />
       <div className="settings-list">
+        {snapshot.state.externalProviderActive ? (
+          <SettingRow
+            body={copy.externalProviderBody.replace("{name}", snapshot.state.externalProviderName || copy.externalProvider)}
+            label={copy.externalProvider}
+          >
+            <SecondaryButton disabled={busy} onClick={() => void uninstallExternalProvider()}>
+              {copy.disconnectExternalProvider}
+            </SecondaryButton>
+          </SettingRow>
+        ) : null}
         <SettingRow body={copy.launchAtLoginBody} label={copy.launchAtLogin}>
           <Switch
             checked={snapshot.state.autoStart}
@@ -1321,7 +1364,7 @@ function SettingsSurface({
         <SettingRow body={copy.bridgeRouteBody} label={copy.bridgeRoute}>
           <Switch
             checked={snapshot.state.bridgeEnabled}
-            disabled={busy || snapshot.state.coreSetupComplete !== true}
+            disabled={busy || snapshot.state.coreSetupComplete !== true || snapshot.state.externalProviderActive}
             onChange={(checked) => void setBridgeEnabled(checked)}
           />
         </SettingRow>
@@ -1363,7 +1406,7 @@ function SettingsSurface({
         </span>
         <Icon name="chevron" />
       </button>
-      <button className="diagnostic-row" disabled={busy} onClick={() => void uninstallIntegration()} type="button">
+      <button className="diagnostic-row" disabled={busy || snapshot.state.externalProviderActive} onClick={() => void uninstallIntegration()} type="button">
         <Icon name="close" />
         <span>
           <strong>{copy.uninstallIntegration}</strong>
@@ -1381,6 +1424,107 @@ function SettingsSurface({
         </span>
       </div>
     </ContentSurface>
+  );
+}
+
+function ExternalProviderInstallDialog({
+  copy,
+  onDismiss,
+  request,
+  setError,
+  updateState,
+}: {
+  copy: Copy;
+  onDismiss: () => void;
+  request: ExternalProviderInstallRequest;
+  setError: (error: string | null) => void;
+  updateState: (state: LauncherState) => void;
+}) {
+  const [apiKey, setApiKey] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const dismiss = async () => {
+    if (busy) return;
+    await api!.dismissExternalProviderInstall();
+    onDismiss();
+  };
+  const install = async () => {
+    if (busy || apiKey.trim().length < 8) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api!.installExternalProvider({
+        apiKey,
+        endpoint: request.endpoint,
+        name: request.name,
+      });
+      if (!result.cancelled && result.state) {
+        updateState(result.state);
+        setApiKey("");
+        onDismiss();
+      }
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <motion.div
+      animate={{ opacity: 1 }}
+      aria-labelledby="external-provider-install-title"
+      aria-modal="true"
+      className="provider-install-backdrop"
+      exit={{ opacity: 0 }}
+      initial={{ opacity: 0 }}
+      role="dialog"
+    >
+      <motion.div
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        className="provider-install-dialog"
+        exit={{ opacity: 0, scale: 0.98, y: 8 }}
+        initial={{ opacity: 0, scale: 0.98, y: 8 }}
+      >
+        <header>
+          <span className="provider-install-mark"><Icon name="setup" /></span>
+          <div>
+            <h2 id="external-provider-install-title">{copy.externalInstallTitle}</h2>
+            <p>{request.name}</p>
+          </div>
+        </header>
+        <p className="provider-install-body">{copy.externalInstallBody}</p>
+        <label className="provider-install-field">
+          <span>{copy.externalInstallEndpoint}</span>
+          <code>{request.endpoint}</code>
+        </label>
+        <label className="provider-install-field">
+          <span>{copy.externalInstallKey}</span>
+          <input
+            aria-label={copy.externalInstallKey}
+            autoComplete="off"
+            autoFocus
+            disabled={busy}
+            onChange={(event) => setApiKey(event.target.value)}
+            placeholder="••••••••••••••••"
+            spellCheck={false}
+            type="password"
+            value={apiKey}
+          />
+          <small>{copy.externalInstallKeyHint}</small>
+        </label>
+        <div className="provider-install-notices">
+          <p><Icon name="alert" />{copy.externalInstallAllowance}</p>
+          <p><Icon name="mcp" />{copy.externalInstallTools}</p>
+        </div>
+        <footer>
+          <SecondaryButton disabled={busy} onClick={() => void dismiss()}>{copy.cancel}</SecondaryButton>
+          <PrimaryButton disabled={busy || apiKey.trim().length < 8} onClick={() => void install()}>
+            {copy.installProvider}
+          </PrimaryButton>
+        </footer>
+      </motion.div>
+    </motion.div>
   );
 }
 

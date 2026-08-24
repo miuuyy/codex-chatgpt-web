@@ -55,6 +55,12 @@
         "to": "runtime"
       }
     ],
+    "protocols": [
+      {
+        "name": "Codex Web GPT provider install",
+        "schemes": ["codexwebgpt"]
+      }
+    ],
     "mac": {
       "category": "public.app-category.developer-tools",
       "icon": "assets/icon.png",

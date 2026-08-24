@@ -9,6 +9,8 @@ export interface LauncherState {
   xOpened: boolean;
   autoStart: boolean;
   bridgeEnabled: boolean;
+  externalProviderActive: boolean;
+  externalProviderName: string | null;
   keepRunningOnClose: boolean;
   showBrowserDuringTurns: boolean;
   sidebarOpen: boolean;
@@ -101,6 +103,12 @@ export interface LauncherSnapshot {
   smokePassed: boolean;
   operation: OperationState | null;
   update: UpdateState;
+  externalProviderInstall: ExternalProviderInstallRequest | null;
+}
+
+export interface ExternalProviderInstallRequest {
+  endpoint: string;
+  name: string;
 }
 
 export interface LauncherApi {
@@ -132,6 +140,13 @@ export interface LauncherApi {
     runtimeKey?: string;
     replace?: boolean;
   }): Promise<{ ok: boolean; stdout: string }>;
+  installExternalProvider(input: {
+    apiKey: string;
+    endpoint: string;
+    name: string;
+  }): Promise<{ cancelled: boolean; state?: LauncherState }>;
+  dismissExternalProviderInstall(): Promise<boolean>;
+  uninstallExternalProvider(): Promise<{ cancelled: boolean; state?: LauncherState }>;
   setMcpStep(step: number): Promise<LauncherState>;
   setAutostart(enabled: boolean): Promise<{ state: LauncherState; supported: boolean; enabled: boolean }>;
   setPreference(key: "keepRunningOnClose" | "showBrowserDuringTurns", value: boolean): Promise<LauncherState>;
@@ -147,6 +162,7 @@ export interface LauncherApi {
   onOperation(listener: (state: OperationState) => void): () => void;
   onLog(listener: (record: LogRecord) => void): () => void;
   onUpdateState(listener: (state: UpdateState) => void): () => void;
+  onExternalProviderInstall(listener: (request: ExternalProviderInstallRequest | null) => void): () => void;
 }
 
 declare global {

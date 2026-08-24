@@ -174,10 +174,11 @@ Type=Application
 Version=1.0
 Name=Codex Web GPT
 Comment=ChatGPT Web models inside the native Codex harness
-Exec="$DESKTOP_WRAPPER"
+Exec="$DESKTOP_WRAPPER" %u
 Icon=codex-web-gpt
 Terminal=false
 Categories=Development;
+MimeType=x-scheme-handler/codexwebgpt;
 StartupWMClass=codex-web-gpt
 EOF
 chmod 0644 "$APPLICATIONS_DIR/codex-web-gpt.desktop"

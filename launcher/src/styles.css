@@ -1920,6 +1920,136 @@ code {
 
 /* Shared marks and feedback */
 
+.provider-install-backdrop {
+  position: fixed;
+  z-index: 700;
+  inset: 0;
+  display: grid;
+  padding: 28px;
+  background: rgb(0 0 0 / 68%);
+  backdrop-filter: blur(18px) saturate(0.9);
+  -webkit-backdrop-filter: blur(18px) saturate(0.9);
+  place-items: center;
+}
+
+.provider-install-dialog {
+  width: min(560px, 100%);
+  max-height: calc(100vh - 56px);
+  overflow: auto;
+  padding: 22px;
+  border: 1px solid var(--color-border-heavy);
+  border-radius: var(--radius-lg);
+  background: var(--color-background-elevated);
+  box-shadow: 0 28px 80px -30px rgb(0 0 0 / 95%);
+}
+
+.provider-install-dialog > header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.provider-install-dialog h2 {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.provider-install-dialog header p,
+.provider-install-body {
+  margin: 4px 0 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.provider-install-mark {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: var(--radius-md);
+  background: var(--color-background-control-active);
+  color: var(--color-icon-primary);
+  place-items: center;
+}
+
+.provider-install-mark svg {
+  width: 18px;
+  height: 18px;
+}
+
+.provider-install-body {
+  margin-top: 18px;
+}
+
+.provider-install-field {
+  display: grid;
+  gap: 7px;
+  margin-top: 16px;
+}
+
+.provider-install-field > span {
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+
+.provider-install-field code,
+.provider-install-field input {
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-background-control);
+  color: var(--color-text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.provider-install-field small {
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+
+.provider-install-notices {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.provider-install-notices p {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 9px 10px;
+  border-left: 2px solid var(--color-text-warning);
+  background: var(--color-background-status-warning);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+
+.provider-install-notices svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  margin-top: 1px;
+  color: var(--color-text-warning);
+}
+
+.provider-install-dialog > footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
 .brand-mark {
   display: inline-grid;
   width: 28px;

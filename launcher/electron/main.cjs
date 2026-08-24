@@ -28,6 +28,10 @@ const { RuntimeHost } = require("./runtime.cjs");
 const { ensurePackagedRuntime } = require("./runtime-install.cjs");
 const { RuntimeSupervisor } = require("./runtime-supervisor.cjs");
 const { runtimeBundlePaths } = require("./runtime-command.cjs");
+const {
+  PROVIDER_INSTALL_SCHEME,
+  parseProviderInstallUrl,
+} = require("./provider-install-link.cjs");
 const { createUpdateController } = require("./update.cjs");
 const {
   createStateStore,
@@ -67,6 +71,12 @@ const APP_ICON_PATH = path.join(__dirname, "..", "assets", "icon.png");
 
 app.setName("Codex Web GPT");
 if (process.platform === "win32") app.setAppUserModelId("dev.codexwebgpt.launcher");
+const providerInstallScheme = PROVIDER_INSTALL_SCHEME.slice(0, -1);
+if (process.defaultApp && process.argv[1]) {
+  app.setAsDefaultProtocolClient(providerInstallScheme, process.execPath, [path.resolve(process.argv[1])]);
+} else {
+  app.setAsDefaultProtocolClient(providerInstallScheme);
+}
 const configuredUserData = process.env.CODEX_WEB_GPT_LAUNCHER_DATA_DIR?.trim();
 const launcherUserData = configuredUserData
   ? resolveUserPath(configuredUserData)
@@ -93,6 +103,23 @@ let lastOperation = null;
 let catalogVerificationTimer = null;
 let catalogVerificationInFlight = false;
 let updateController = null;
+let pendingProviderInstall = null;
+
+function acceptProviderInstallUrl(value) {
+  const request = parseProviderInstallUrl(value);
+  if (!request) return false;
+  pendingProviderInstall = request;
+  if (mainWindow) {
+    showMainWindow();
+    send("launcher:external-provider-request", request);
+  }
+  return true;
+}
+
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  acceptProviderInstallUrl(url);
+});
 
 function findFreePort() {
   return new Promise((resolve, reject) => {
@@ -375,6 +402,7 @@ function registerIpc({ logger, stateStore }) {
     smokePassed: smokePassedThisSession || smokePassedForCurrentVersion(stateStore.read()),
     operation: lastOperation,
     update: updateController?.getState() ?? { status: "disabled" },
+    externalProviderInstall: pendingProviderInstall,
   }));
 
   handle("launcher:set-language", (_event, language) => stateStore.update({ language: validateLanguage(language) }));
@@ -470,6 +498,9 @@ function registerIpc({ logger, stateStore }) {
   handle("launcher:doctor", () => runtimeHost.doctor());
   handle("launcher:cancel-turns", () => runtimeHost.cancelBrowserTurns());
   handle("launcher:bridge-enabled", async (_event, enabled) => {
+    if (stateStore.read().externalProviderActive) {
+      throw new Error("Disconnect the external Responses provider before changing the local Codex bridge route");
+    }
     const result = await runtimeHost.setBridgeEnabled(enabled === true);
     const state = stateStore.update({
       bridgeEnabled: result.active,
@@ -481,6 +512,9 @@ function registerIpc({ logger, stateStore }) {
     return state;
   });
   handle("launcher:uninstall-integration", async () => {
+    if (stateStore.read().externalProviderActive) {
+      throw new Error("Disconnect the external Responses provider before removing the local Codex integration");
+    }
     const language = stateStore.read().language;
     const chinese = language === "zh-CN";
     const confirmation = await dialog.showMessageBox(mainWindow, {
@@ -517,6 +551,9 @@ function registerIpc({ logger, stateStore }) {
     return { cancelled: false, state };
   });
   handle("launcher:setup-core", async () => {
+    if (stateStore.read().externalProviderActive) {
+      throw new Error("Disconnect the external Responses provider before reinstalling the local Codex route");
+    }
     const browser = await browserHost.probeAuthentication();
     if (!browser.authenticated) throw new Error("Sign in to ChatGPT before installing the Codex integration");
     const setupState = stateStore.read();
@@ -549,6 +586,9 @@ function registerIpc({ logger, stateStore }) {
     return { ok: true, stdout: result.stdout, restartRequired: true };
   });
   handle("launcher:setup-mcp", async (_event, input) => {
+    if (stateStore.read().externalProviderActive) {
+      throw new Error("Disconnect the external Responses provider before changing the Full MCP runtime");
+    }
     await browserHost.reveal();
     const result = await runtimeHost.setupMcp({
       tunnelId: typeof input?.tunnelId === "string" ? input.tunnelId.trim() : "",
@@ -562,6 +602,100 @@ function registerIpc({ logger, stateStore }) {
       codexRestartRequired: true,
     });
     return { ok: true, stdout: result.stdout };
+  });
+  handle("launcher:external-provider-dismiss", () => {
+    pendingProviderInstall = null;
+    send("launcher:external-provider-request", null);
+    return true;
+  });
+  handle("launcher:external-provider-install", async (_event, input) => {
+    const request = pendingProviderInstall;
+    if (!request) throw new Error("No external Responses provider install request is pending");
+    if (input?.endpoint !== request.endpoint || input?.name !== request.name) {
+      throw new Error("The external Responses provider request changed; review the new endpoint before installing");
+    }
+    const apiKey = typeof input?.apiKey === "string" ? input.apiKey : "";
+    const language = stateStore.read().language;
+    const chinese = language === "zh-CN";
+    const confirmation = await dialog.showMessageBox(mainWindow, {
+      type: "warning",
+      buttons: chinese ? ["取消", "安装"] : ["Cancel", "Install"],
+      defaultId: 0,
+      cancelId: 0,
+      title: chinese ? "安装外部 Responses 提供方" : "Install external Responses provider",
+      message: chinese
+        ? `让 Codex 通过 ${request.name} 路由？`
+        : `Route Codex through ${request.name}?`,
+      detail: chinese
+        ? `端点：${request.endpoint}\n当前 Codex 路由和认证文件会被私密保存，并在断开时恢复。`
+        : `Endpoint: ${request.endpoint}\nThe current Codex route and authentication files will be saved privately and restored on disconnect.`,
+      noLink: true,
+    });
+    if (confirmation.response !== 1) return { cancelled: true };
+    await runtimeHost.installExternalProvider({
+      baseUrl: request.endpoint,
+      apiKey,
+      displayName: request.name,
+    });
+    pendingProviderInstall = null;
+    send("launcher:external-provider-request", null);
+    stopCatalogVerificationMonitor();
+    const state = stateStore.update({
+      externalProviderActive: true,
+      externalProviderName: request.name,
+      bridgeEnabled: false,
+      codexCatalogVerified: false,
+      codexRestartRequired: true,
+    });
+    send("launcher:state-changed", state);
+    return { cancelled: false, state };
+  });
+  handle("launcher:external-provider-uninstall", async () => {
+    const stateBefore = stateStore.read();
+    if (!stateBefore.externalProviderActive) return { cancelled: false, state: stateBefore };
+    const chinese = stateBefore.language === "zh-CN";
+    const confirmation = await dialog.showMessageBox(mainWindow, {
+      type: "warning",
+      buttons: chinese ? ["取消", "断开"] : ["Cancel", "Disconnect"],
+      defaultId: 0,
+      cancelId: 0,
+      title: chinese ? "断开外部 Responses 提供方" : "Disconnect external Responses provider",
+      message: chinese
+        ? "恢复安装前的 Codex 路由和认证文件？"
+        : "Restore the Codex route and authentication files from before installation?",
+      detail: chinese ? "Codex 需要重启一次。" : "Codex must be restarted once.",
+      noLink: true,
+    });
+    if (confirmation.response !== 1) return { cancelled: true };
+    let result;
+    try {
+      result = await runtimeHost.uninstallExternalProvider();
+    } catch (error) {
+      const status = await runtimeHost.externalProviderStatus("external-provider-uninstall-reconcile")
+        .catch(() => null);
+      if (status && !status.active) {
+        const state = stateStore.update({
+          externalProviderActive: false,
+          externalProviderName: null,
+          bridgeEnabled: false,
+          codexCatalogVerified: false,
+          codexRestartRequired: true,
+        });
+        send("launcher:state-changed", state);
+      }
+      throw error;
+    }
+    const bridgeEnabled = result.previousLocalRouteActive === true;
+    const state = stateStore.update({
+      externalProviderActive: false,
+      externalProviderName: null,
+      bridgeEnabled,
+      codexCatalogVerified: false,
+      codexRestartRequired: true,
+    });
+    send("launcher:state-changed", state);
+    if (bridgeEnabled) startCatalogVerificationMonitor({ logger, stateStore });
+    return { cancelled: false, state };
   });
   handle("launcher:set-mcp-step", (_event, step) => {
     if (!Number.isInteger(step) || step < 0 || step > 2) throw new Error("Invalid MCP guide step");
@@ -653,7 +787,10 @@ async function start() {
     app.quit();
     return;
   }
-  app.on("second-instance", () => showMainWindow());
+  app.on("second-instance", (_event, argv) => {
+    argv.some(acceptProviderInstallUrl);
+    showMainWindow();
+  });
   await app.whenReady();
   let installedRuntimeRoot = null;
   let runtimeRootResolved = false;
@@ -750,6 +887,21 @@ async function start() {
     logger,
   });
   registerIpc({ logger, stateStore });
+  process.argv.some(acceptProviderInstallUrl);
+  void runtimeHost.externalProviderStatus("external-provider-startup-status").then((status) => {
+    const state = stateStore.update({
+      externalProviderActive: status.active === true,
+      externalProviderName: status.active === true && typeof status.displayName === "string"
+        ? status.displayName
+        : null,
+      ...(status.active === true ? { bridgeEnabled: false } : {}),
+    });
+    send("launcher:state-changed", state);
+  }).catch((error) => {
+    logger.warn("external_provider.status_failed", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+  });
   const trayAvailable = createTray(logger);
   if (startHidden && !trayAvailable) mainWindow.once("ready-to-show", () => showMainWindow());
   const launcherSmokeTest = process.argv.includes("--launcher-smoke-test");

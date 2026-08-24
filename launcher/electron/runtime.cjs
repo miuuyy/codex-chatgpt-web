@@ -384,6 +384,7 @@ class RuntimeHost {
         ? embeddedRuntimeInvocation({ app: this.app, sourceRoot: this.sourceRoot, args })
         : this.command(args);
       const result = await new Promise((resolve, reject) => {
+        const hasStdin = typeof options.stdinText === "string";
         const child = spawn(invocation.executable, invocation.args, {
           cwd: invocation.cwd,
           detached: DETACH_OWNED_CHILD,
@@ -392,7 +393,7 @@ class RuntimeHost {
             CODEX_CHATGPT_WEB_BROWSER_HOST_DESCRIPTOR: this.browserDescriptorPath,
             ...(options.env || {}),
           },
-          stdio: ["ignore", "pipe", "pipe"],
+          stdio: [hasStdin ? "pipe" : "ignore", "pipe", "pipe"],
           windowsHide: true,
         });
         this.activeChild = child;
@@ -402,7 +403,12 @@ class RuntimeHost {
         const recordPipeError = (stream) => (error) => {
           pipeErrors.push(`${name} ${stream} pipe failed: ${error instanceof Error ? error.message : String(error)}`);
         };
+        if (hasStdin) {
+          child.stdin.on("error", recordPipeError("stdin"));
+          child.stdin.end(options.stdinText);
+        }
         collect(child.stdout, stdout, (line) => {
+          if (options.sensitiveOutput) return;
           this.logger.info("runtime.stdout", { operation: name, line });
           this.publishOperation?.({ name, status: "running", message: redactText(line) });
         }, recordPipeError("stdout"));
@@ -534,6 +540,108 @@ class RuntimeHost {
       timeoutMs: 15_000,
     });
     return parseBridgeRouteResult(result.stdout, { requireInstalled: true });
+  }
+
+  async externalProviderStatus(operationName = "external-provider-status") {
+    const result = await this.run(operationName, ["provider-route", "status"], {
+      embedded: true,
+      message: "Checking external Responses route",
+      successMessage: "External Responses route checked",
+      timeoutMs: 15_000,
+      sensitiveOutput: true,
+    });
+    let status;
+    try { status = JSON.parse(result.stdout); }
+    catch { throw new Error("External Responses route command returned invalid JSON"); }
+    if (typeof status?.installed !== "boolean"
+      || typeof status?.active !== "boolean"
+      || !Array.isArray(status?.errors)) {
+      throw new Error("External Responses route command returned an invalid status");
+    }
+    if (status.errors.length > 0) {
+      throw new Error(`External Responses route is inconsistent: ${status.errors.join("; ")}`);
+    }
+    return status;
+  }
+
+  async installExternalProvider({ baseUrl, apiKey, displayName }) {
+    const name = "external-provider-install";
+    if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
+    this.lifecycleOperation = name;
+    let previousLocalRouteActive = false;
+    try {
+      const external = await this.externalProviderStatus(name);
+      if (!external.active) {
+        const local = await this.bridgeStatus(name);
+        previousLocalRouteActive = local.installed && local.active;
+        if (previousLocalRouteActive) await this.restoreBridgeRouteWithinOperation(name);
+      } else {
+        previousLocalRouteActive = external.previousLocalRouteActive === true;
+      }
+      try {
+        const result = await this.run(name, [
+          "provider-route",
+          "install",
+          "--launcher-control",
+          ...(previousLocalRouteActive ? ["--previous-local-route-active"] : []),
+        ], {
+          embedded: true,
+          env: this.launcherControlEnvironment(),
+          stdinText: JSON.stringify({ baseUrl, apiKey, displayName }),
+          message: "Installing external Responses route",
+          successMessage: "External Responses route installed",
+          timeoutMs: 30_000,
+          sensitiveOutput: true,
+        });
+        return JSON.parse(result.stdout);
+      } catch (error) {
+        if (previousLocalRouteActive) {
+          await this.run(name, ["route", "connect"], {
+            embedded: true,
+            message: "Restoring the local Codex route",
+            successMessage: "Local Codex route restored",
+            timeoutMs: 15_000,
+          }).catch(() => {});
+        }
+        throw error;
+      }
+    } finally {
+      this.lifecycleOperation = null;
+    }
+  }
+
+  async uninstallExternalProvider() {
+    const name = "external-provider-uninstall";
+    if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
+    this.lifecycleOperation = name;
+    try {
+      const status = await this.externalProviderStatus(name);
+      if (!status.installed) return { changed: false, previousLocalRouteActive: false };
+      const result = await this.run(name, ["provider-route", "uninstall", "--launcher-control"], {
+        embedded: true,
+        env: this.launcherControlEnvironment(),
+        message: "Restoring the previous Codex provider",
+        successMessage: "Previous Codex provider restored",
+        timeoutMs: 30_000,
+        sensitiveOutput: true,
+      });
+      const parsed = JSON.parse(result.stdout);
+      if (parsed.previousLocalRouteActive === true) {
+        const runtime = await this.supervisor.startIfConfigured();
+        if (runtime.status !== "ready") {
+          throw new Error(`Previous route was restored, but the local runtime is ${runtime.status}`);
+        }
+        await this.run(name, ["route", "connect"], {
+          embedded: true,
+          message: "Reconnecting the local Codex route",
+          successMessage: "Local Codex route reconnected",
+          timeoutMs: 15_000,
+        });
+      }
+      return parsed;
+    } finally {
+      this.lifecycleOperation = null;
+    }
   }
 
   async restoreBridgeRouteWithinOperation(operationName) {

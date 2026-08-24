@@ -62,6 +62,68 @@ test("core setup starts in browser-only mode when no installation exists", async
   assert.equal(fixture.invocation().args.includes("--chrome"), false);
 });
 
+test("external provider install keeps the endpoint and key out of process arguments", async () => {
+  const fixture = hostFor({ mode: "browser-only", browserHost: "launcher" });
+  const calls = [];
+  fixture.host.externalProviderStatus = async () => ({ installed: false, active: false, errors: [] });
+  fixture.host.bridgeStatus = async () => ({ installed: true, active: true, errors: [] });
+  fixture.host.restoreBridgeRouteWithinOperation = async () => ({ installed: true, active: false });
+  fixture.host.launcherControlEnvironment = () => ({ CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: "control-token" });
+  fixture.host.run = async (name, args, options) => {
+    calls.push({ name, args, options });
+    return { stdout: JSON.stringify({ installed: true, active: true, errors: [] }) };
+  };
+
+  await fixture.host.installExternalProvider({
+    baseUrl: "https://gateway.example/v1",
+    apiKey: "downstream-secret-key",
+    displayName: "Example Responses bridge",
+  });
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].args, [
+    "provider-route",
+    "install",
+    "--launcher-control",
+    "--previous-local-route-active",
+  ]);
+  assert.equal(calls[0].args.join(" ").includes("gateway.example"), false);
+  assert.equal(calls[0].args.join(" ").includes("downstream-secret-key"), false);
+  assert.deepEqual(JSON.parse(calls[0].options.stdinText), {
+    baseUrl: "https://gateway.example/v1",
+    apiKey: "downstream-secret-key",
+    displayName: "Example Responses bridge",
+  });
+});
+
+test("external provider uninstall reconnects a previously active local route", async () => {
+  const fixture = hostFor({ mode: "browser-only", browserHost: "launcher" });
+  const calls = [];
+  fixture.host.externalProviderStatus = async () => ({
+    installed: true,
+    active: true,
+    previousLocalRouteActive: true,
+    errors: [],
+  });
+  fixture.host.launcherControlEnvironment = () => ({ CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: "control-token" });
+  fixture.host.supervisor.startIfConfigured = async () => ({ status: "ready" });
+  fixture.host.run = async (_name, args) => {
+    calls.push(args);
+    return {
+      stdout: JSON.stringify(args[1] === "uninstall"
+        ? { changed: true, previousLocalRouteActive: true }
+        : { active: true }),
+    };
+  };
+
+  await fixture.host.uninstallExternalProvider();
+
+  assert.deepEqual(calls, [
+    ["provider-route", "uninstall", "--launcher-control"],
+    ["route", "connect"],
+  ]);
+});
+
 test("launcher update transaction upgrades its owned full runtime with saved configuration", async () => {
   const fixture = hostFor({
     mode: "full",

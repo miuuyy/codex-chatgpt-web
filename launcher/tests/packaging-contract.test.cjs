@@ -39,6 +39,8 @@ test("release installers resolve checksummed native launcher assets", () => {
   assert.match(shellInstaller, /PLATFORM="mac"/);
   assert.match(shellInstaller, /PLATFORM="linux"/);
   assert.match(shellInstaller, /codex-web-gpt\.desktop/);
+  assert.match(shellInstaller, /Exec="\$DESKTOP_WRAPPER" %u/);
+  assert.match(shellInstaller, /MimeType=x-scheme-handler\/codexwebgpt;/);
   assert.match(shellInstaller, /--appimage-extract/);
   assert.match(packager, /-linux-x86_64\(\?=\\\.\).*?-linux-x64/);
   assert.match(packager, /process\.execPath/);

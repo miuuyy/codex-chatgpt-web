@@ -830,6 +830,14 @@ function installRoute(
   return { text: renderDocument(document), previous };
 }
 
+export function patchCodexRouteText(
+  text: string,
+  installedUrl: string,
+  replaceExistingRoute = false,
+): string {
+  return installRoute(text, installedUrl, replaceExistingRoute).text;
+}
+
 function verifyInstalledRoute(text: string, journal: ManagedRouteJournal): void {
   const lines = splitLines(text);
   const current = assignments(lines);

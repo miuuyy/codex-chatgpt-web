@@ -31,6 +31,9 @@ contextBridge.exposeInMainWorld("codexWebLauncher", {
   uninstallIntegration: () => ipcRenderer.invoke("launcher:uninstall-integration"),
   setupCore: () => ipcRenderer.invoke("launcher:setup-core"),
   setupMcp: (input) => ipcRenderer.invoke("launcher:setup-mcp", input),
+  installExternalProvider: (input) => ipcRenderer.invoke("launcher:external-provider-install", input),
+  dismissExternalProviderInstall: () => ipcRenderer.invoke("launcher:external-provider-dismiss"),
+  uninstallExternalProvider: () => ipcRenderer.invoke("launcher:external-provider-uninstall"),
   setMcpStep: (step) => ipcRenderer.invoke("launcher:set-mcp-step", step),
   setAutostart: (enabled) => ipcRenderer.invoke("launcher:autostart", enabled),
   setPreference: (key, value) => ipcRenderer.invoke("launcher:set-preference", key, value),
@@ -46,4 +49,5 @@ contextBridge.exposeInMainWorld("codexWebLauncher", {
   onOperation: (listener) => subscription("launcher:operation", listener),
   onLog: (listener) => subscription("launcher:log", listener),
   onUpdateState: (listener) => subscription("launcher:update-state", listener),
+  onExternalProviderInstall: (listener) => subscription("launcher:external-provider-request", listener),
 });

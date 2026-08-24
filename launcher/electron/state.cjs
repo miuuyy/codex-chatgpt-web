@@ -12,6 +12,8 @@ const DEFAULT_STATE = Object.freeze({
   xOpened: false,
   autoStart: true,
   bridgeEnabled: true,
+  externalProviderActive: false,
+  externalProviderName: null,
   keepRunningOnClose: true,
   showBrowserDuringTurns: true,
   browserSmokePassed: false,
@@ -41,12 +43,17 @@ function readState(filePath) {
       "xOpened",
       "autoStart",
       "bridgeEnabled",
+      "externalProviderActive",
       "keepRunningOnClose",
       "showBrowserDuringTurns",
       "browserSmokePassed",
       "sidebarOpen",
     ]) {
       if (typeof state[key] !== "boolean") state[key] = DEFAULT_STATE[key];
+    }
+    if (state.externalProviderName !== null
+      && (typeof state.externalProviderName !== "string" || state.externalProviderName.length > 80)) {
+      state.externalProviderName = DEFAULT_STATE.externalProviderName;
     }
     if (state.browserSmokeVersion !== null
       && (typeof state.browserSmokeVersion !== "string" || state.browserSmokeVersion.length > 128)) {

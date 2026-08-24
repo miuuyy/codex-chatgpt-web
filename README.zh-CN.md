@@ -110,6 +110,23 @@ bun run app
 
 源码方式需要 Bun 1.3.14。该命令会安装锁定版本的依赖并打开应用。
 
+## 安装外部 Responses 提供方
+
+兼容 OpenAI Responses 的网关可以提供 **打开 Codex Web GPT** 链接，使用不含凭据的格式：
+
+```text
+codexwebgpt://install/responses?endpoint=https%3A%2F%2Fgateway.example%2Fv1&name=Example+Responses+bridge
+```
+
+链接只能包含 HTTPS `/v1` 端点和显示名称，绝不能包含 API key。启动器会打开本机确认框、
+显示准确端点，并在遮蔽输入框中请求下游密钥。安装时会以私有权限记录当前
+`config.toml` 与 `auth.json`、让 Codex 通过该网关路由，并清除模型缓存。断开外部提供方
+时会准确恢复原文件；若安装后的文件已被修改，则会失败关闭而不是覆盖新改动。
+
+此流程只安装路由和模型发现，不会让托管提供方访问本地电脑。若所选 ChatGPT Web 档位
+需要使用本地 Codex 工具，仍须另行配置 **Full harness**。ChatGPT Web 用量仍来自非官方
+浏览器自动化，不会转换为 OpenAI API 余额。
+
 ## 模式
 
 | 模式 | 模型 | 本地 Codex 工具 | 额外设置 |

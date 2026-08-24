@@ -13,6 +13,11 @@ import {
   inspectCodexIntegration,
   uninstallCodexIntegration,
 } from "./codex-integration";
+import {
+  inspectExternalResponsesIntegration,
+  installExternalResponsesIntegration,
+  uninstallExternalResponsesIntegration,
+} from "./external-responses-integration";
 import { formatDoctorReport, runDoctor } from "./doctor";
 import { runChatGptMcpMain } from "./adapters/chatgpt-web/mcp-main";
 import { runCommand } from "./process";
@@ -33,6 +38,7 @@ Usage:
   codex-chatgpt-web login
   codex-chatgpt-web doctor [--json]
   codex-chatgpt-web route <status|connect|disconnect>
+  codex-chatgpt-web provider-route <status|install|uninstall>
   codex-chatgpt-web browser check
   codex-chatgpt-web serve
   codex-chatgpt-web mcp [--broker-socket PATH]
@@ -234,6 +240,67 @@ async function routeCommand(args: string[]): Promise<void> {
   stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
+async function readProviderInstallInput(): Promise<{
+  baseUrl: string;
+  apiKey: string;
+  displayName?: string;
+}> {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const chunk of stdin) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytes += buffer.length;
+    if (bytes > 16 * 1024) throw new Error("Provider install input is too large");
+    chunks.push(buffer);
+  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+  catch { throw new Error("Provider install input must be valid JSON"); }
+  if (!parsed || typeof parsed !== "object") throw new Error("Provider install input is invalid");
+  const input = parsed as Record<string, unknown>;
+  if (typeof input.baseUrl !== "string" || typeof input.apiKey !== "string") {
+    throw new Error("Provider install input requires an endpoint and downstream API key");
+  }
+  return {
+    baseUrl: input.baseUrl,
+    apiKey: input.apiKey,
+    ...(typeof input.displayName === "string" ? { displayName: input.displayName } : {}),
+  };
+}
+
+async function providerRouteCommand(args: string[]): Promise<void> {
+  const action = args.shift() ?? "status";
+  const launcherControl = takeFlag(args, "--launcher-control");
+  const previousLocalRouteActive = takeFlag(args, "--previous-local-route-active");
+  assertNoArgs(args);
+  if (action === "status") {
+    stdout.write(`${JSON.stringify(inspectExternalResponsesIntegration(), null, 2)}\n`);
+    return;
+  }
+  if (!launcherControl) throw new Error(`Provider route ${action} requires launcher control`);
+  authorizeLauncherControl(`provider route ${action}`);
+  if (action === "install") {
+    const input = await readProviderInstallInput();
+    const result = installExternalResponsesIntegration({
+      ...input,
+      previousLocalRouteActive,
+    });
+    stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+  if (action === "uninstall") {
+    const before = inspectExternalResponsesIntegration();
+    if (before.errors.length > 0) throw new Error(before.errors.join("; "));
+    const result = uninstallExternalResponsesIntegration();
+    stdout.write(`${JSON.stringify({
+      ...result,
+      previousLocalRouteActive: before.previousLocalRouteActive === true,
+    }, null, 2)}\n`);
+    return;
+  }
+  throw new Error(`Unknown provider route action: ${action}`);
+}
+
 async function serviceCommand(args: string[]): Promise<void> {
   const action = args.shift() ?? "status";
   assertNoArgs(args);
@@ -349,6 +416,7 @@ async function main(): Promise<void> {
   else if (command === "login") await loginCommand(args);
   else if (command === "doctor" || command === "status") await doctorCommand(args);
   else if (command === "route") await routeCommand(args);
+  else if (command === "provider-route") await providerRouteCommand(args);
   else if (command === "browser") {
     const action = args.shift();
     assertNoArgs(args);
