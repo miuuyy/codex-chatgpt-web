@@ -239,9 +239,14 @@ class RuntimeHost {
   }
 
   runtimeConfigSnapshot() {
-    const setupConfig = this.supervisor.readSetupConfig
-      ? this.supervisor.readSetupConfig()
-      : this.supervisor.readConfig();
+    let setupConfig;
+    try {
+      setupConfig = this.supervisor.readSetupConfig
+        ? this.supervisor.readSetupConfig()
+        : this.supervisor.readConfig();
+    } catch {
+      setupConfig = null;
+    }
     if (!setupConfig) {
       return {
         configured: false,
@@ -251,11 +256,22 @@ class RuntimeHost {
       };
     }
     const launcherOwned = setupConfig.browserHost === "launcher";
-    const config = launcherOwned ? this.supervisor.readConfig() : setupConfig;
+    let config = setupConfig;
+    if (launcherOwned) {
+      try {
+        const fullConfig = this.supervisor.readConfig();
+        if (fullConfig) config = fullConfig;
+      } catch {
+        // Stale or older versioned config (e.g. 2.0.0) fails strict v3 runtime validation;
+        // fallback to setupConfig so managed upgrade can cleanly upgrade it to 3.0.1.
+        config = setupConfig;
+      }
+    }
+    const mode = config.mode === "full" ? "full" : "browser-only";
     return {
       configured: true,
       owner: launcherOwned ? "launcher" : "external",
-      mode: config.mode === "full" ? "full" : "browser-only",
+      mode,
       serialized: JSON.stringify(config),
       config: structuredClone(config),
     };
@@ -892,8 +908,9 @@ class RuntimeHost {
     if (existing.mode === "full") {
       args.push("--app-name", connectorNameForSetup(existing.config?.appName));
     }
+    const fromVersion = existing.config?.releaseVersion || "2.0.0";
     const result = await this.runSetup("runtime-upgrade", args, {
-      message: `Upgrading launcher runtime from ${existing.config.releaseVersion} to ${currentVersion}`,
+      message: `Upgrading launcher runtime from ${fromVersion} to ${currentVersion}`,
       successMessage: `Launcher runtime upgraded to ${currentVersion}`,
       timeoutMs: existing.mode === "full" ? MCP_SETUP_TIMEOUT_MS : CORE_SETUP_TIMEOUT_MS,
     });
@@ -902,7 +919,7 @@ class RuntimeHost {
       updated: true,
       mode: existing.mode,
       bridgeEnabled: route.active,
-      fromVersion: existing.config.releaseVersion,
+      fromVersion,
       toVersion: currentVersion,
       connectorMigrated: connectorMigrationRequired,
       stdout: result.stdout,

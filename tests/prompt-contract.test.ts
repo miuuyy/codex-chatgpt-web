@@ -419,3 +419,27 @@ test("keeps large contexts intact in the inline text envelope", () => {
   expect(compiled.text).not.toContain("sha256");
   expect(compiled.text).not.toContain("SHA-256");
 });
+
+test("injects bounded project continuity into prompt when provided", () => {
+  const continuity = "[Project Continuity: my-project]\n- Summary: An awesome project\n- Decisions:\n  * Use TypeScript";
+  const compiledWithContinuity = compileChatGptWebPrompt(
+    request("high"),
+    { localToolsEnabled: true, solAvailable: true, proAvailable: true },
+    "turn_12345678901234567890123456789012",
+    { projectContinuity: continuity },
+  );
+
+  expect(compiledWithContinuity.text).toContain("<project_continuity>");
+  expect(compiledWithContinuity.text).toContain("An awesome project");
+  expect(compiledWithContinuity.text).toContain("Use TypeScript");
+  expect(compiledWithContinuity.text).toContain("</project_continuity>");
+
+  const compiledWithoutContinuity = compileChatGptWebPrompt(
+    request("high"),
+    { localToolsEnabled: true, solAvailable: true, proAvailable: true },
+    "turn_12345678901234567890123456789012",
+  );
+
+  expect(compiledWithoutContinuity.text).not.toContain("<project_continuity>");
+});
+

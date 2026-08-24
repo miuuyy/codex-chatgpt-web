@@ -227,18 +227,93 @@ test("production and DEV setup entrypoints reject the opposite launcher profile"
   await assert.rejects(devHostFor(null).host.setupCore(), /unavailable in the isolated DEV launcher profile/);
 });
 
-test("launcher update transaction upgrades its owned full runtime with saved configuration", async () => {
-  const fixture = hostFor({
+test("launcher update transaction upgrades a 2.0.0 runtime config where strict readConfig fails", async () => {
+  const oldV2Config = {
+    version: 2,
+    releaseVersion: "2.0.0",
+    mode: "browser-only",
+    browserHost: "launcher",
+  };
+  const host = new RuntimeHost({
+    app: {
+      getPath: () => path.join(os.tmpdir(), "codex-web-gpt-upgrade-v2-test"),
+      getVersion: () => "3.0.1",
+    },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: "/source",
+    browserDescriptorPath: "/runtime/launcher-browser.json",
+    supervisor: {
+      readSetupConfig: () => oldV2Config,
+      readConfig: () => {
+        throw new Error("Runtime configuration is missing or unsupported");
+      },
+      stopForSetup: async () => ({ status: "stopped" }),
+      startIfConfigured: async () => ({ status: "ready" }),
+    },
+  });
+  let invocation;
+  host.runSetup = async (name, args) => {
+    invocation = { name, args };
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  host.bridgeStatus = async () => ({ installed: true, active: true, errors: [] });
+
+  const result = await host.upgradeManagedRuntime();
+
+  assert.deepEqual(invocation.args, [
+    "setup",
+    "--browser-only",
+    "--browser-host-descriptor",
+    "/runtime/launcher-browser.json",
+    "--acknowledge-unofficial",
+    "--restart-service",
+  ]);
+  assert.deepEqual(result, {
+    updated: true,
+    mode: "browser-only",
+    bridgeEnabled: true,
+    fromVersion: "2.0.0",
+    toVersion: "3.0.1",
+    connectorMigrated: false,
+    stdout: "",
+  });
+});
+
+test("launcher update transaction upgrades a 2.0.0 full runtime and migrates legacy connector", async () => {
+  const oldV2FullConfig = {
+    version: 2,
+    releaseVersion: "2.0.0",
     mode: "full",
     browserHost: "launcher",
-    appName: "Codex Native2",
-    releaseVersion: "1.1.1",
+    appName: "Codex Native",
+  };
+  const host = new RuntimeHost({
+    app: {
+      getPath: () => path.join(os.tmpdir(), "codex-web-gpt-upgrade-v2-full-test"),
+      getVersion: () => "3.0.1",
+    },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: "/source",
+    browserDescriptorPath: "/runtime/launcher-browser.json",
+    supervisor: {
+      readSetupConfig: () => oldV2FullConfig,
+      readConfig: () => {
+        throw new Error("Runtime configuration is missing or unsupported");
+      },
+      stopForSetup: async () => ({ status: "stopped" }),
+      startIfConfigured: async () => ({ status: "ready" }),
+    },
   });
-  fixture.host.bridgeStatus = async () => ({ installed: true, active: true, errors: [] });
+  let invocation;
+  host.runSetup = async (name, args) => {
+    invocation = { name, args };
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  host.bridgeStatus = async () => ({ installed: true, active: true, errors: [] });
 
-  const result = await fixture.host.upgradeManagedRuntime();
+  const result = await host.upgradeManagedRuntime();
 
-  assert.deepEqual(fixture.invocation().args, [
+  assert.deepEqual(invocation.args, [
     "setup",
     "--full",
     "--browser-host-descriptor",
@@ -252,9 +327,9 @@ test("launcher update transaction upgrades its owned full runtime with saved con
     updated: true,
     mode: "full",
     bridgeEnabled: true,
-    fromVersion: "1.1.1",
-    toVersion: "1.1.3",
-    connectorMigrated: false,
+    fromVersion: "2.0.0",
+    toVersion: "3.0.1",
+    connectorMigrated: true,
     stdout: "",
   });
 });

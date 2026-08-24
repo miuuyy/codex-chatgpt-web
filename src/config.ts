@@ -443,6 +443,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       brokerSocketPath: config.brokerSocketPath,
       threadEnvironmentStatePath: join(getConfigDir(), "runtime", "thread-environments.json"),
       lunaCheckpointStatePath: join(getConfigDir(), "runtime", "luna-checkpoints.json"),
+      projectRegistryStatePath: join(getConfigDir(), "runtime", "project-registry.json"),
       headed: config.headed,
       localToolsEnabled: config.mode === "full",
       solAvailable: config.solAvailable,

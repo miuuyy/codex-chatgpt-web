@@ -6,14 +6,16 @@ import type { ProviderAdapter } from "../base";
 import { parseDataUrl } from "../image";
 import { ChatGptWebAdapterError } from "./adapter-error";
 import { ChatGptBrowserWorker } from "./browser-worker";
-import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "./environment";
+import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, extractChatGptThreadSpawnLineage } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt";
 import { chatGptWebTurnRetryPolicy } from "./retry-policy";
 import { TurnBroker, type BrokerToolRequest, type BrokerToolResult, type TurnBrokerOwner } from "./turn-broker";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptCompactionSourceExecutionKey, chatGptTurnExecutionKey, chatGptTurnRetryKey, chatGptTurnSessions, type ChatGptBrowserOutcome, type ChatGptTraceEvent, type ChatGptTurnRuntime, type ChatGptTurnSession } from "./turn-execution";
-import { estimateChatGptWebUsage } from "./usage";
+import { estimateChatGptWebInputTokens, estimateChatGptWebUsage } from "./usage";
+import { CHATGPT_LUNA_BROWSER_INPUT_TOKEN_BUDGET } from "./input-tokens";
 import { ChatGptThreadEnvironmentStore } from "./thread-environment";
+import { ProjectRegistry } from "../../project-registry";
 import {
   ChatGptLunaCheckpointStore,
   type CapturedChatGptLunaCheckpoint,
@@ -223,6 +225,11 @@ export function createChatGptWebAdapter(
       ? resolve(expandUserPath(provider.chatgptWeb.lunaCheckpointStatePath))
       : undefined,
   );
+  const projectRegistry = new ProjectRegistry(
+    provider.chatgptWeb?.projectRegistryStatePath
+      ? resolve(expandUserPath(provider.chatgptWeb.projectRegistryStatePath))
+      : undefined,
+  );
   const currentUsageInput = (parsed: CodexParsedRequest): CodexParsedRequest => (
     parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID && !parsed._compactionRequest
       ? lunaCheckpointStore.apply(parsed).parsed
@@ -234,6 +241,7 @@ export function createChatGptWebAdapter(
     environment: ReturnType<typeof extractChatGptTurnEnvironment> | undefined,
     traceId: string,
     turnCapabilities: ChatGptWebCapabilities,
+    projectContinuity?: string,
   ): ChatGptTurnRuntime => {
     const mode = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, turnCapabilities);
     const identity = extractChatGptTurnIdentity(parsed);
@@ -260,7 +268,23 @@ export function createChatGptWebAdapter(
     const finalizeCheckpoint = (browser: Promise<string>): Promise<string> => browser.then(answer => {
       if (!captureLunaCheckpoint) return answer;
       if (checkpointCaptureError) throw checkpointCaptureError;
-      if (capturedCheckpoint) lunaCheckpointStore.commit(parsed, capturedCheckpoint, answer);
+      if (capturedCheckpoint) {
+        lunaCheckpointStore.commit(parsed, capturedCheckpoint, answer);
+        if (identity.threadId) {
+          const project = projectRegistry.getProjectForThread(identity.threadId);
+          if (project) {
+            if ("summary" in capturedCheckpoint.checkpoint) {
+              projectRegistry.updateSemanticState(project.projectId, { summary: capturedCheckpoint.checkpoint.summary });
+            } else if ("objective" in capturedCheckpoint.checkpoint) {
+              projectRegistry.updateSemanticState(project.projectId, {
+                summary: capturedCheckpoint.checkpoint.objective,
+                keyDecisions: capturedCheckpoint.checkpoint.decisions,
+                activeTasks: capturedCheckpoint.checkpoint.pending,
+              });
+            }
+          }
+        }
+      }
       return answer;
     });
     const browserAbort = new AbortController();
@@ -277,7 +301,7 @@ export function createChatGptWebAdapter(
             checkpointInput.parsed,
             turnCapabilities,
             undefined,
-            { captureLunaCheckpoint },
+            { captureLunaCheckpoint, ...(projectContinuity ? { projectContinuity } : {}) },
           ),
           release: () => {},
         }),
@@ -322,7 +346,7 @@ export function createChatGptWebAdapter(
             checkpointInput.parsed,
             turnCapabilities,
             turnToken,
-            { captureLunaCheckpoint },
+            { captureLunaCheckpoint, ...(projectContinuity ? { projectContinuity } : {}) },
           );
           return { ...compiled, release: () => {} };
         } catch (error) {
@@ -384,17 +408,30 @@ export function createChatGptWebAdapter(
         return;
       }
       let environment: ReturnType<typeof extractChatGptTurnEnvironment> | undefined;
+      const identity = extractChatGptTurnIdentity(parsed);
+      const lineage = extractChatGptThreadSpawnLineage(parsed);
+      if (lineage) {
+        projectRegistry.linkThreadToParent(lineage.threadId, lineage.parentThreadId);
+      }
       if (mode.localTools) {
         try {
           environment = environmentStore.resolve(parsed);
+          if (identity.threadId) {
+            projectRegistry.resolveProject(environment, identity.threadId);
+          }
         } catch (error) {
-          const identity = extractChatGptTurnIdentity(parsed);
           console.warn(
             `[chatgpt-web] trusted environment unavailable (thread_id=${identity.threadId ? "present" : "missing"}, turn_id=${identity.turnId ? "present" : "missing"}, previous_response_id=${parsed.previousResponseId ?? "none"}, replay_prefix_items=${parsed._replayPrefixLen ?? 0}, context_messages=${parsed.context.messages.length})`,
           );
           throw error;
         }
       }
+      const currentProject = environment
+        ? projectRegistry.resolveProject(environment, identity.threadId)
+        : (identity.threadId ? projectRegistry.getProjectForThread(identity.threadId) : undefined);
+      const projectContinuity = currentProject
+        ? projectRegistry.getProjectContinuityContext(currentProject.projectId)
+        : undefined;
       if (parsed._compactionRequest) {
         const responseExecutionKey = `${executionNamespace}:${chatGptCompactionSourceExecutionKey(parsed)}`;
         await chatGptTurnSessions.retireAndWait(responseExecutionKey);
@@ -404,7 +441,7 @@ export function createChatGptWebAdapter(
       const traceId = createHash("sha256").update(executionKey).digest("hex").slice(0, 12);
       const session = chatGptTurnSessions.getOrCreate(
         executionKey,
-        () => startRuntime(parsed, environment, traceId, turnCapabilities),
+        () => startRuntime(parsed, environment, traceId, turnCapabilities, projectContinuity),
         traceId,
       );
       const heartbeat = setInterval(() => emit({ type: "heartbeat" }), 10_000);
@@ -435,7 +472,7 @@ export function createChatGptWebAdapter(
               session.setFinalReasoning(reasoning);
               session.setFinalEvents(events);
             }
-            emitBrowserCompletion(settled, estimateChatGptWebUsage(currentUsageInput(parsed), { answer: settled.answer, reasoning }, turnCapabilities), emit);
+            emitBrowserCompletion(settled, estimateChatGptWebUsage(currentUsageInput(parsed), { answer: settled.answer, reasoning }, turnCapabilities, { projectContinuity }), emit);
             chatGptWebTurnRetryPolicy.clear(retryKey);
             return;
           }
@@ -452,7 +489,7 @@ export function createChatGptWebAdapter(
               if (results.length === 0) {
                 const reasoning = session.reasoningForOutstandingReplay();
                 replayEvents(session.eventsForOutstandingReplay(), emit);
-                emitToolBatch(outstanding, estimateChatGptWebUsage(currentUsageInput(parsed), { reasoning, toolRequests: outstanding }, turnCapabilities), emit);
+                emitToolBatch(outstanding, estimateChatGptWebUsage(currentUsageInput(parsed), { reasoning, toolRequests: outstanding }, turnCapabilities, { projectContinuity }), emit);
                 return;
               }
               if (results.length !== outstanding.length) {
@@ -461,6 +498,16 @@ export function createChatGptWebAdapter(
               for (const message of results) {
                 await broker.completeTool(turnToken, message.toolCallId, brokerResult(message));
                 session.markResultDelivered(message.toolCallId);
+              }
+              const recheckedTokens = estimateChatGptWebInputTokens(
+                currentUsageInput(parsed),
+                turnCapabilities,
+                { projectContinuity },
+              );
+              if (recheckedTokens > CHATGPT_LUNA_BROWSER_INPUT_TOKEN_BUDGET) {
+                console.warn(
+                  `[chatgpt-web] context size after tools reached ${recheckedTokens.toLocaleString("en-US")} tokens (budget: ${CHATGPT_LUNA_BROWSER_INPUT_TOKEN_BUDGET.toLocaleString("en-US")})`,
+                );
               }
             }
           } else if (session.outstanding().length > 0) {
@@ -521,7 +568,7 @@ export function createChatGptWebAdapter(
                 }
                 emitBrowserCompletion(
                   next.outcome,
-                  estimateChatGptWebUsage(currentUsageInput(parsed), { answer: next.outcome.answer, reasoning: roundReasoning }, turnCapabilities),
+                  estimateChatGptWebUsage(currentUsageInput(parsed), { answer: next.outcome.answer, reasoning: roundReasoning }, turnCapabilities, { projectContinuity }),
                   emit,
                 );
                 chatGptWebTurnRetryPolicy.clear(retryKey);
@@ -535,7 +582,7 @@ export function createChatGptWebAdapter(
               session.setOutstanding(next.requests, roundReasoning, roundEvents);
               emitToolBatch(
                 next.requests,
-                estimateChatGptWebUsage(currentUsageInput(parsed), { reasoning: roundReasoning, toolRequests: next.requests }, turnCapabilities),
+                estimateChatGptWebUsage(currentUsageInput(parsed), { reasoning: roundReasoning, toolRequests: next.requests }, turnCapabilities, { projectContinuity }),
                 emit,
               );
               return;
