@@ -28,4 +28,3 @@ test("accurately counts input tokens with project continuity injected", () => {
   });
   expect(withContinuity).toBeGreaterThan(baseTokens);
 });
-

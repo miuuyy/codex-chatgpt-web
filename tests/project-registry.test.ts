@@ -253,4 +253,3 @@ describe("ProjectRegistry", () => {
     }
   });
 });
-

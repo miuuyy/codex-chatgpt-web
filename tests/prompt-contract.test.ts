@@ -442,4 +442,3 @@ test("injects bounded project continuity into prompt when provided", () => {
 
   expect(compiledWithoutContinuity.text).not.toContain("<project_continuity>");
 });
-
