@@ -1424,6 +1424,7 @@ test("response DOM separates streaming commentary from the final Markdown answer
   expect(workerSource).toContain("const renderedRoots = allMarkdownRoots.filter");
   expect(workerSource).toContain('fullHtml: renderedRoots.map(candidate => candidate.innerHTML).join("")');
   expect(workerSource).toContain("const markdownSegments = renderedRoots.flatMap");
+  expect(workerSource).toContain("new ChatGptMarkdownBuffer(markdown => markdown, 750, false)");
   expect(workerSource).toContain('key: `${rootIndex}:${childIndex}:${tag}:${itemIndex}`');
   expect(workerSource).toContain("streamable: childIsComplete || itemIndex < listItems.length - 1");
   expect(workerSource).toContain("markdownBuffer.observe(snapshot.markdownSegments)");

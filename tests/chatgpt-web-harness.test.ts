@@ -1207,6 +1207,30 @@ describe("ChatGPT outer-native harness v4", () => {
     ], 200)).toThrow("completed text block");
   });
 
+  test("defers mutable final-answer blocks until browser completion", () => {
+    const buffer = new ChatGptMarkdownBuffer(markdown => markdown, 100, false);
+    const initial = [{
+      key: "artifact",
+      html: "<p>draft artifact</p>",
+      text: "draft artifact",
+      streamable: true,
+    }];
+    expect(buffer.observe(initial, 0)).toBe("");
+    expect(buffer.observe(initial, 100)).toBe("");
+
+    const completed = [{
+      key: "artifact",
+      html: "<p>completed artifact</p>",
+      text: "completed artifact",
+      streamable: true,
+    }];
+    expect(buffer.observe(completed, 200)).toBe("");
+    expect(buffer.finish()).toEqual({
+      delta: "completed artifact",
+      markdown: "completed artifact",
+    });
+  });
+
   test("drops decorative HTML images without removing textual links", () => {
     const markdown = chatGptHtmlToMarkdown([
       '<p>Source card: <a href="https://github.com/example/repo"><img alt="GitHub" src="data:image/png;base64,AAAA"></a></p>',

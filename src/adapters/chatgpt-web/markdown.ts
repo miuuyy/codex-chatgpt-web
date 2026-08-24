@@ -78,6 +78,7 @@ export class ChatGptMarkdownBuffer {
   constructor(
     private readonly transform: (markdown: string) => string = markdown => markdown,
     private readonly stabilityMs = 750,
+    private readonly incremental = true,
   ) {
     if (!Number.isFinite(stabilityMs) || stabilityMs < 0) {
       throw new Error("ChatGPT Markdown stability window must be a non-negative finite number");
@@ -109,6 +110,12 @@ export class ChatGptMarkdownBuffer {
     for (const index of this.candidates.keys()) {
       if (index >= segments.length) this.candidates.delete(index);
     }
+
+    // ChatGPT can revise blocks long after they looked complete, especially after a browser-native
+    // search or Python artifact finishes. Responses deltas are append-only, so the browser worker
+    // defers final-answer text until response-scoped completion is proven. The incremental mode
+    // remains available for isolated serializer tests and consumers with an immutable source.
+    if (!this.incremental) return "";
 
     let delta = "";
     while (this.committed.length < segments.length) {
