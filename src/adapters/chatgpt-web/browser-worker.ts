@@ -88,6 +88,8 @@ export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
 export const CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS = 60_000;
 export const MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS = 3;
 const CHATGPT_CONVERSATION_TURN_SELECTOR = '[data-testid^="conversation-turn-"]';
+const CHATGPT_TOOL_MARKER_SELECTOR = '[data-testid^="cot-v5-tool-"], [data-testid^="cot-v5-native-tool-"]';
+const CHATGPT_SCREENSHOT_CONTENT_SELECTOR = "[data-conversation-screenshot-content]";
 const CHATGPT_SMOKE_TEXT = "Reply with exactly: CODEX WEB GPT READY";
 const CHATGPT_SMOKE_EXPECTED = "CODEX WEB GPT READY";
 /**
@@ -1838,8 +1840,13 @@ export class ChatGptBrowserWorker {
   }
 
   private async responseDomSnapshot(responseTurn: Locator): Promise<ChatGptResponseDomSnapshot> {
-    const snapshot = await responseTurn.evaluate((element, completionActionSelector) => {
+    const snapshot = await responseTurn.evaluate((element, selectors) => {
       const root = element as HTMLElement;
+      const {
+        completionActionSelector,
+        screenshotContentSelector,
+        toolMarkerSelector,
+      } = selectors;
       // Browser turn WebContents are intentionally allowed to run while their Electron view is
       // hidden or has no measured width. Layout geometry is therefore not response visibility:
       // completed Markdown can have width=0 while remaining connected, rendered and readable.
@@ -1856,9 +1863,19 @@ export class ChatGptBrowserWorker {
       // render a completed commentary Markdown root immediately before that live status container.
       // Final-answer Markdown follows the live status instead, so DOM order remains the semantic
       // boundary without relying on localized labels such as "Pro thinking".
+      const toolOwnedMarkdownRoot = (candidate: HTMLElement): boolean => {
+        let container = candidate.parentElement;
+        while (container && container !== root) {
+          if (container.querySelector(toolMarkerSelector)) return true;
+          if (container.matches(screenshotContentSelector)) break;
+          container = container.parentElement;
+        }
+        return false;
+      };
       const allMarkdownRoots = [...root.querySelectorAll<HTMLElement>(".markdown")]
         .filter(candidate => !candidate.parentElement?.closest(".markdown"))
-        .filter(renderedInDom);
+        .filter(renderedInDom)
+        .filter(candidate => !toolOwnedMarkdownRoot(candidate));
       const streamingStatusContainers = [...root.querySelectorAll<HTMLElement>("[data-streaming-response-status]")]
         .filter(renderedInDom);
       const commentaryRoots = allMarkdownRoots.filter(candidate => (
@@ -2015,7 +2032,11 @@ export class ChatGptBrowserWorker {
         completionActionVisible: completionAction !== undefined,
         traceBlocks,
       };
-    }, CHATGPT_COMPLETION_ACTION_SELECTOR, { timeout: 2_000 }).catch(() => {
+    }, {
+      completionActionSelector: CHATGPT_COMPLETION_ACTION_SELECTOR,
+      screenshotContentSelector: CHATGPT_SCREENSHOT_CONTENT_SELECTOR,
+      toolMarkerSelector: CHATGPT_TOOL_MARKER_SELECTOR,
+    }, { timeout: 2_000 }).catch(() => {
       if (responseTurn.page().isClosed()) {
         throw chatGptBrowserTabClosedError();
       }

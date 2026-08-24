@@ -1625,6 +1625,20 @@ test("response DOM separates streaming commentary from the final Markdown answer
   expect(workerSource).not.toContain('fullHtml: rendered?.innerHTML ?? ""');
 });
 
+test("response DOM excludes mutable native tool Markdown without disabling live answer streaming", () => {
+  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
+  const markdownSource = readFileSync(new URL("../src/adapters/chatgpt-web/markdown.ts", import.meta.url), "utf8");
+  expect(workerSource).toContain('const CHATGPT_TOOL_MARKER_SELECTOR = \'[data-testid^="cot-v5-tool-"], [data-testid^="cot-v5-native-tool-"]\'');
+  expect(workerSource).toContain('const CHATGPT_SCREENSHOT_CONTENT_SELECTOR = "[data-conversation-screenshot-content]"');
+  expect(workerSource).toContain("const toolOwnedMarkdownRoot = (candidate: HTMLElement): boolean");
+  expect(workerSource).toContain("container.querySelector(toolMarkerSelector)");
+  expect(workerSource).toContain("if (container.matches(screenshotContentSelector)) break");
+  expect(workerSource).toContain(".filter(candidate => !toolOwnedMarkdownRoot(candidate))");
+  expect(workerSource).toContain("markdownBuffer.observe(snapshot.markdownSegments)");
+  expect(markdownSource).toContain("while (this.committed.length < segments.length)");
+  expect(markdownSource).not.toContain("incremental = false");
+});
+
 test("visible DOM trace keeps a complete action phrase instead of a nested count", () => {
   expect(new ChatGptVisibleTraceTracker(0).observe([
     { kind: "status", text: "Searched\n5\nsites" },
