@@ -16,8 +16,11 @@ interface RetryBudgetEntry {
 }
 
 function exhaustedError(entry: RetryBudgetEntry): ChatGptWebAdapterError {
+  const retryMessage = entry.lastError.code === "rate_limit_exceeded"
+    ? "ChatGPT cooldown detected; browser retry suppressed so reconnects cannot extend the cooldown."
+    : `Automatic browser-turn retry limit reached after ${MAX_CHATGPT_WEB_TURN_RETRIES} retries; refusing to send another message.`;
   return new ChatGptWebAdapterError(
-    `${entry.lastError.message} Automatic browser-turn retry limit reached after ${MAX_CHATGPT_WEB_TURN_RETRIES} retries; refusing to send another message.`,
+    `${entry.lastError.message} ${retryMessage}`,
     {
       status: entry.lastError.status,
       errorType: entry.lastError.errorType,
@@ -39,8 +42,11 @@ export class ChatGptWebTurnRetryPolicy {
   recordRetryableFailure(key: string, error: ChatGptWebAdapterError, now = Date.now()): ChatGptWebAdapterError {
     this.prune(now);
     const previous = this.entries.get(key);
+    const suppressBrowserRetry = error.code === "rate_limit_exceeded" || error.status === 429;
     const entry: RetryBudgetEntry = {
-      retries: (previous?.retries ?? 0) + 1,
+      retries: suppressBrowserRetry
+        ? MAX_CHATGPT_WEB_TURN_RETRIES + 1
+        : (previous?.retries ?? 0) + 1,
       updatedAt: now,
       lastError: {
         message: error.message,

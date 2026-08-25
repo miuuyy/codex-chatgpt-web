@@ -14,7 +14,6 @@ import { chatGptWebTraceId, createChatGptWebAdapter } from "../src/adapters/chat
 import { chatGptHtmlToMarkdown, ChatGptMarkdownBuffer } from "../src/adapters/chatgpt-web/markdown";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt, withoutSupersededModelSwitchContracts } from "../src/adapters/chatgpt-web/prompt";
-import { MAX_CHATGPT_WEB_TURN_RETRIES } from "../src/adapters/chatgpt-web/retry-policy";
 import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSessions, chatGptCompactionSourceExecutionKey, chatGptTurnExecutionKey, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, TurnBroker, type BrokerToolResult } from "../src/adapters/chatgpt-web/turn-broker";
 import { defaultBrokerEndpoint } from "../src/config";
@@ -769,7 +768,7 @@ describe("ChatGPT outer-native harness v4", () => {
     }
   });
 
-  test("caps automatic rate-limit browser sends at three retries for one native turn", async () => {
+  test("suppresses browser retries after the first ChatGPT rate limit for one native turn", async () => {
     const socketPath = brokerTestEndpoint(`cgw-h4-retry-budget-${process.pid}-${Date.now()}`);
     const provider: CodexProviderConfig = {
       adapter: "chatgpt-web",
@@ -789,7 +788,7 @@ describe("ChatGPT outer-native harness v4", () => {
       });
     };
     try {
-      for (let attempt = 0; attempt < MAX_CHATGPT_WEB_TURN_RETRIES + 2; attempt += 1) {
+      for (let attempt = 0; attempt < 4; attempt += 1) {
         const events: AdapterEvent[] = [];
         await createChatGptWebAdapter(provider).runTurn!(
           rawWireRequest(environmentXml),
@@ -797,15 +796,15 @@ describe("ChatGPT outer-native harness v4", () => {
           event => events.push(event),
         );
         const error = events.at(-1);
-        expect(error).toMatchObject({ type: "error", code: "rate_limit_exceeded" });
-        expect((error as Extract<AdapterEvent, { type: "error" }>).retryable)
-          .toBe(attempt < MAX_CHATGPT_WEB_TURN_RETRIES);
-        if (attempt === MAX_CHATGPT_WEB_TURN_RETRIES) {
-          expect((error as Extract<AdapterEvent, { type: "error" }>).message)
-            .toContain("Try again in a few minutes.");
-        }
+        expect(error).toMatchObject({
+          type: "error",
+          code: "rate_limit_exceeded",
+          retryable: false,
+        });
+        expect((error as Extract<AdapterEvent, { type: "error" }>).message)
+          .toContain("browser retry suppressed");
       }
-      expect(browserStarts).toBe(MAX_CHATGPT_WEB_TURN_RETRIES + 1);
+      expect(browserStarts).toBe(1);
     } finally {
       (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
       await TurnBroker.forSocket(socketPath).close();
