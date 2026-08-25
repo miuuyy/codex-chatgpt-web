@@ -73,6 +73,7 @@ export interface AppConfig {
   appName: string;
   browserHost: BrowserHostMode;
   browserHostDescriptorPath?: string;
+  browserHelperScriptPath?: string;
   chromeExecutablePath: string;
   storageStatePath: string;
   brokerSocketPath: string;
@@ -364,6 +365,11 @@ function parseConfig(value: unknown, path: string): AppConfig {
     && !isAbsolute(expandUserPath(parsed.browserHostDescriptorPath!))) {
     throw new Error(`Launcher browserHostDescriptorPath must be absolute in ${path}`);
   }
+  if (parsed.browserHelperScriptPath !== undefined
+    && (typeof parsed.browserHelperScriptPath !== "string" || !parsed.browserHelperScriptPath.trim()
+      || !isAbsolute(expandUserPath(parsed.browserHelperScriptPath)))) {
+    throw new Error(`browserHelperScriptPath must be an absolute path in ${path}`);
+  }
   const brokerEndpoint = expandUserPath(parsed.brokerSocketPath!);
   if (process.platform === "win32") {
     if (!isWindowsPipeEndpoint(brokerEndpoint)) {
@@ -451,6 +457,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       appName: config.appName,
       browserHost: config.browserHost,
       browserHostDescriptorPath: config.browserHostDescriptorPath,
+      browserHelperScriptPath: config.browserHelperScriptPath,
       storageStatePath: config.storageStatePath,
       chromeExecutablePath: config.chromeExecutablePath,
       brokerSocketPath: config.brokerSocketPath,

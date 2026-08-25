@@ -409,6 +409,18 @@ export function createChatGptWebAdapter(
         : configuredCapabilities;
       const mode = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, turnCapabilities);
       const retryKey = `${executionNamespace}:${chatGptTurnRetryKey(parsed)}`;
+      const activeCooldown = chatGptWebTurnRetryPolicy.cooldownError(executionNamespace);
+      if (activeCooldown) {
+        emit({
+          type: "error",
+          message: activeCooldown.message,
+          status: activeCooldown.status,
+          errorType: activeCooldown.errorType,
+          code: activeCooldown.code,
+          retryable: false,
+        });
+        return;
+      }
       const exhaustedRetry = chatGptWebTurnRetryPolicy.exhaustedError(retryKey);
       if (exhaustedRetry) {
         emit({
@@ -607,7 +619,9 @@ export function createChatGptWebAdapter(
         });
       } catch (error) {
         const handledError = error instanceof ChatGptWebAdapterError && error.retryable
-          ? chatGptWebTurnRetryPolicy.recordRetryableFailure(retryKey, error)
+          ? (error.code === "rate_limit_exceeded" || error.status === 429
+            ? chatGptWebTurnRetryPolicy.recordRateLimit(executionNamespace, retryKey, error)
+            : chatGptWebTurnRetryPolicy.recordRetryableFailure(retryKey, error))
           : error;
         if (!(error instanceof ChatGptWebAdapterError && error.retryable)) {
           chatGptWebTurnRetryPolicy.clear(retryKey);

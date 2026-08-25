@@ -1372,6 +1372,16 @@ export class ChatGptBrowserWorker {
     // document and made the first verification race a second SPA bootstrap. A leased turn starts on
     // about:blank and therefore still performs exactly one navigation through this same method.
     if (page.url() !== CHATGPT_TEMPORARY_CHAT_URL) {
+      try {
+        const currentComposer = await this.activeComposer(page, 1_500);
+        if (await this.connectorIsSelected(currentComposer)) {
+          await assertAuthenticatedChatGptPage(page);
+          await captureDiagnostic?.("connector-work-surface-preserved");
+          return currentComposer;
+        }
+      } catch {
+        // No hydrated connector Work composer yet; fall back to the normal Temporary Chat bootstrap.
+      }
       await page.goto(CHATGPT_TEMPORARY_CHAT_URL, {
         waitUntil: "domcontentloaded",
         timeout: 60_000,
@@ -1528,15 +1538,21 @@ export class ChatGptBrowserWorker {
   }
 
   private selectedConnectorControl(composer: Locator): Locator {
-    return composer
-      .locator('[data-id^="plugin:"][data-keyword]')
+    const composerForm = composer.locator("xpath=ancestor::form[1]");
+    return composerForm
+      .locator('[data-id^="plugin:"][data-keyword], [data-system-hint-type^="plugin:"] button[aria-label]')
       .filter({ hasText: this.config.appName, visible: true });
   }
 
   private async connectorIsSelected(composer: Locator): Promise<boolean> {
     const selected = this.selectedConnectorControl(composer);
     const keywords = await selected.evaluateAll(elements => (
-      elements.map(element => element.getAttribute("data-keyword"))
+      elements.map(element => {
+        const keyword = element.getAttribute("data-keyword");
+        if (keyword) return keyword;
+        const aria = element.getAttribute("aria-label") ?? "";
+        return aria.replace(/,\s*click to remove.*$/i, "").trim();
+      })
     ));
     const exactMatches = keywords.filter(keyword => keyword === this.config.appName).length;
     if (exactMatches > 1) {

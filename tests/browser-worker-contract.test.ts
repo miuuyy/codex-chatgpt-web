@@ -477,6 +477,60 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
   ]);
 });
 
+test("custom connector selection stays on the composer instead of searching the public plugin directory", async () => {
+  let selected = false;
+  let directoryActivationCalls = 0;
+  const selectedConnector = {
+    waitFor: async () => {},
+    count: async () => 1,
+  };
+  const appResult = {
+    waitFor: async () => {},
+    count: async () => 1,
+    getAttribute: async (name: string) => name === "data-highlighted" ? "" : null,
+  };
+  const menuRows = {
+    evaluateAll: async () => [],
+    filter: (options: { visible?: boolean }) => options.visible
+      ? { count: async () => 1 }
+      : appResult,
+  };
+  const initialComposer = {
+    fill: async () => {},
+    focus: async () => {},
+    pressSequentially: async (value: string) => { expect(value).toBe("@codex"); },
+  };
+  const selectedComposer = { selected: true };
+  const page = {
+    goto: async () => {},
+    getByText: () => ({ exactConnectorLabel: true }),
+    locator: () => menuRows,
+    keyboard: {
+      press: async (key: string) => {
+        expect(key).toBe("Enter");
+        selected = true;
+      },
+    },
+  };
+  const selectConnector = (ChatGptBrowserWorker.prototype as unknown as {
+    selectConnector(page: unknown): Promise<unknown>;
+  }).selectConnector;
+
+  const resolved = await selectConnector.call({
+    config: { appName: "Codex Native2" },
+    connectorIsSelected: async () => selected,
+    selectedConnectorControl: () => selectedConnector,
+    activeComposer: async () => selected ? selectedComposer : initialComposer,
+    activateConnectorFromPluginDirectory: async () => {
+      directoryActivationCalls += 1;
+      return undefined;
+    },
+  }, page);
+
+  expect(resolved).toBe(selectedComposer);
+  expect(directoryActivationCalls).toBe(0);
+});
+
 test("connector selection moves highlight to the exact hidden-viewport row before Enter", async () => {
   const keys: string[] = [];
   let arrowCount = 0;

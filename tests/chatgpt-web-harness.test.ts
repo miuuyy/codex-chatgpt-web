@@ -811,6 +811,61 @@ describe("ChatGPT outer-native harness v4", () => {
     }
   });
 
+  test("a ChatGPT 429 pauses distinct native turns on the same browser account", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-h4-account-cooldown-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: `browser://chatgpt-account-cooldown-${Date.now()}`,
+      chatgptWeb: { brokerSocketPath: socketPath, localToolsEnabled: false, solAvailable: true, proAvailable: true },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    let browserStarts = 0;
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async () => {
+      browserStarts += 1;
+      throw new ChatGptWebAdapterError("ChatGPT rate limit: too many requests. Try again in a few minutes.", {
+        status: 429,
+        errorType: "rate_limit_error",
+        code: "rate_limit_exceeded",
+        retryable: true,
+      });
+    };
+    const distinctTurn = (turnId: string): CodexParsedRequest => {
+      const request = rawWireRequest(environmentXml);
+      const raw = request._rawBody as {
+        client_metadata: Record<string, unknown>;
+        input: Array<{ internal_chat_message_metadata_passthrough?: { turn_id?: string } }>;
+      };
+      raw.client_metadata["x-codex-turn-metadata"] = JSON.stringify({ thread_id: "thread_test_123", turn_id: turnId });
+      for (const item of raw.input) {
+        if (item.internal_chat_message_metadata_passthrough) item.internal_chat_message_metadata_passthrough = { turn_id: turnId };
+      }
+      return request;
+    };
+    try {
+      const firstEvents: AdapterEvent[] = [];
+      await createChatGptWebAdapter(provider).runTurn!(
+        distinctTurn("turn_account_cooldown_a"),
+        { headers: new Headers() },
+        event => firstEvents.push(event),
+      );
+      expect(firstEvents.at(-1)).toMatchObject({ type: "error", code: "rate_limit_exceeded", retryable: false });
+
+      const secondEvents: AdapterEvent[] = [];
+      await createChatGptWebAdapter(provider).runTurn!(
+        distinctTurn("turn_account_cooldown_b"),
+        { headers: new Headers() },
+        event => secondEvents.push(event),
+      );
+      expect(secondEvents.at(-1)).toMatchObject({ type: "error", code: "rate_limit_exceeded", retryable: false });
+      expect((secondEvents.at(-1) as Extract<AdapterEvent, { type: "error" }>).message).toContain("browser-wide cooldown");
+      expect(browserStarts).toBe(1);
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
+
   test("a non-retryable browser failure remains replayable without starting another browser turn", async () => {
     const socketPath = brokerTestEndpoint(`cgw-h4-nonretryable-${process.pid}-${Date.now()}`);
     const provider: CodexProviderConfig = {
