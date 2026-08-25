@@ -433,6 +433,7 @@ test("logout clears only the owned ChatGPT session and returns to the sign-in su
           currentUrl = url;
         },
         session: {
+          clearData: async () => calls.push(["clearData"]),
           clearStorageData: async () => calls.push(["clearStorageData"]),
         },
       },
@@ -466,7 +467,8 @@ test("logout clears only the owned ChatGPT session and returns to the sign-in su
   assert.equal(result.status, "signed-out");
   assert.deepEqual(calls[0], ["manualOperation", "ChatGPT logout"]);
   assert.deepEqual(calls[1], ["closeAuthView", authView, true, false]);
-  assert.deepEqual(calls[2], ["clearStorageData"]);
+  assert.deepEqual(calls[2], ["clearData"]);
+  assert.equal(calls.some(([name]) => name === "clearStorageData"), false);
   assert.deepEqual(calls[4], ["loadURL", "https://chatgpt.com/?temporary-chat=true"]);
   assert.ok(calls.some(([name]) => name === "activateHomeSurface"));
   assert.ok(calls.some(([name]) => name === "show"));

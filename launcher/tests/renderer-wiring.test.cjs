@@ -150,5 +150,5 @@ test("session reminders expose dismissal and a real storage-clearing logout", ()
   assert.match(electronMain, /launcher:browser-logout[\s\S]*?browserHost\.logout\(\)/);
   assert.match(preloadSource, /dismissSessionReminder:[\s\S]*?launcher:session-reminder-dismiss/);
   assert.match(preloadSource, /logoutChatGpt:[\s\S]*?launcher:browser-logout/);
-  assert.match(browserHostSource, /session\.clearStorageData\(\)/);
+  assert.match(browserHostSource, /session\.clearData\(\)/);
 });

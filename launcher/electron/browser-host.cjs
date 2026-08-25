@@ -1247,7 +1247,7 @@ class BrowserHost {
     return await this.withManualOperation("ChatGPT logout", async () => {
       if (this.authView) this.closeAuthView(this.authView, true, false);
       const contents = this.view.webContents;
-      await contents.session.clearStorageData();
+      await contents.session.clearData();
       this.setState({
         authenticated: false,
         loading: true,
