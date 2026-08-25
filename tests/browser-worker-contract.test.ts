@@ -1091,27 +1091,36 @@ test("an unrelated Continue dialog is never auto-accepted", async () => {
   expect(lookedForButton).toBeFalse();
 });
 
-function dialogPage(text: string): { page: Page; pressed: string[] } {
-  let matches = true;
+function dialogPage(text: string, buttonText = "Got it"): { page: Page; pressed: string[] } {
   const pressed: string[] = [];
-  const button = {
-    last: () => button,
-    isVisible: async () => matches,
-    press: async (key: string) => { pressed.push(key); },
-  };
-  const dialog = {
-    filter: ({ hasText }: { hasText: string | RegExp }) => {
-      matches &&= typeof hasText === "string" ? text.includes(hasText) : hasText.test(text);
-      return dialog;
-    },
-    last: () => dialog,
-    isVisible: async () => matches,
-    getByRole: () => button,
+  const createDialog = () => {
+    let matches = true;
+    let buttonMatches = true;
+    const button = {
+      last: () => button,
+      isVisible: async () => matches && buttonMatches,
+      press: async (key: string) => { pressed.push(key); },
+    };
+    const dialog = {
+      filter: ({ hasText }: { hasText: string | RegExp }) => {
+        matches &&= typeof hasText === "string" ? text.includes(hasText) : hasText.test(text);
+        return dialog;
+      },
+      last: () => dialog,
+      isVisible: async () => matches,
+      getByRole: (_role: string, options?: { name?: string | RegExp }) => {
+        const name = options?.name;
+        buttonMatches = name === undefined
+          || (typeof name === "string" ? buttonText === name : name.test(buttonText));
+        return button;
+      },
+    };
+    return dialog;
   };
   return {
     page: {
-      locator: () => dialog,
-      getByText: (hasText: string | RegExp) => dialog.filter({ hasText }),
+      locator: () => createDialog(),
+      getByText: (hasText: string | RegExp) => createDialog().filter({ hasText }),
     } as unknown as Page,
     pressed,
   };
@@ -1127,6 +1136,32 @@ test("the known ChatGPT rate-limit dialog is acknowledged and returns a structur
     code: "rate_limit_exceeded",
     retryable: true,
     message: "ChatGPT rate limit: too many requests. Try again in a few minutes.",
+  });
+  expect(fixture.pressed).toEqual(["Enter"]);
+});
+
+test("the Traditional Chinese ChatGPT rate-limit dialog is acknowledged and returns a structured 429", async () => {
+  const fixture = dialogPage("太多要求。你提出要求的頻率過於頻繁。", "知道了");
+
+  await expect(throwIfChatGptRateLimitDialog(fixture.page)).rejects.toMatchObject({
+    name: "ChatGptWebAdapterError",
+    status: 429,
+    errorType: "rate_limit_error",
+    code: "rate_limit_exceeded",
+    retryable: true,
+  });
+  expect(fixture.pressed).toEqual(["Enter"]);
+});
+
+test("the Simplified Chinese ChatGPT rate-limit dialog is acknowledged and returns a structured 429", async () => {
+  const fixture = dialogPage("太多请求。你提出请求的频率过于频繁。", "知道了");
+
+  await expect(throwIfChatGptRateLimitDialog(fixture.page)).rejects.toMatchObject({
+    name: "ChatGptWebAdapterError",
+    status: 429,
+    errorType: "rate_limit_error",
+    code: "rate_limit_exceeded",
+    retryable: true,
   });
   expect(fixture.pressed).toEqual(["Enter"]);
 });
@@ -1164,6 +1199,143 @@ test("a failed subscription fetch is retryable and does not falsely invalidate C
     errorType: "server_error",
     code: "chatgpt_subscription_unavailable",
     retryable: true,
+  });
+});
+
+test.each([
+  "Your session has expired. Please log in again to continue using the app. Log in",
+  "你的工作階段已過期 請重新登入以繼續使用應用程式。 登入",
+  "您的会话已过期 请重新登录以继续使用该应用。 登录",
+])("an expired ChatGPT session returns a non-retryable authentication failure: %s", async alertText => {
+  const fixture = dialogPage(alertText);
+
+  await expect(throwIfChatGptSessionFailureAlert(fixture.page)).rejects.toMatchObject({
+    name: "ChatGptWebAdapterError",
+    status: 401,
+    errorType: "authentication_error",
+    code: "chatgpt_session_expired",
+    retryable: false,
+  });
+});
+
+test("effort selection stops as soon as ChatGPT reports an expired session", async () => {
+  const neverVisible = new Promise<void>(() => {});
+  const effortControl = {
+    last() { return this; },
+    waitFor: async () => await neverVisible,
+  };
+  const composerForm = { locator: () => effortControl };
+  const composer = { locator: () => composerForm };
+  const sessionAlert = {
+    filter() { return this; },
+    last() { return this; },
+    waitFor: async () => {},
+    isVisible: async () => true,
+  };
+  const hiddenDialog = {
+    filter() { return this; },
+    last() { return this; },
+    waitFor: async () => await neverVisible,
+    isVisible: async () => false,
+  };
+  const selectModelAndEffort = (ChatGptBrowserWorker.prototype as unknown as {
+    selectModelAndEffort(
+      page: unknown,
+      modelId: string,
+      reasoning: string,
+      capabilities: { localToolsEnabled: boolean; solAvailable: boolean; proAvailable: boolean },
+    ): Promise<unknown>;
+  }).selectModelAndEffort;
+
+  const selection = selectModelAndEffort.call({
+    activeComposer: async () => composer,
+  }, {
+    locator: (selector: string) => selector.includes('[role="alert"]') ? sessionAlert : hiddenDialog,
+  }, "gpt-5.6-sol", "high", {
+    localToolsEnabled: true,
+    solAvailable: true,
+    proAvailable: true,
+  });
+  const result = await Promise.race([
+    selection.catch(error => error),
+    new Promise(resolve => setTimeout(() => resolve("still waiting"), 100)),
+  ]);
+
+  expect(result).toMatchObject({
+    name: "ChatGptWebAdapterError",
+    status: 401,
+    code: "chatgpt_session_expired",
+    retryable: false,
+  });
+});
+
+test("effort menu waiting stops when ChatGPT reports an expired session", async () => {
+  const neverVisible = new Promise<void>(() => {});
+  const effortControl = {
+    last() { return this; },
+    waitFor: async () => {},
+    getAttribute: async () => "true",
+  };
+  const composerForm = { locator: () => effortControl };
+  const composer = { locator: () => composerForm };
+  const effortChoice = { waitFor: async () => await neverVisible };
+  const effortChoices = { nth: () => effortChoice, count: async () => 3 };
+  const effortMenu = {
+    last() { return this; },
+    isVisible: async () => true,
+    locator: () => effortChoices,
+  };
+  const effortSlider = {
+    filter() { return this; },
+    last() { return this; },
+    waitFor: async () => await neverVisible,
+  };
+  const sessionAlert = {
+    filter() { return this; },
+    last() { return this; },
+    waitFor: async () => {},
+    isVisible: async () => true,
+  };
+  const hiddenDialog = {
+    filter() { return this; },
+    last() { return this; },
+    waitFor: async () => await neverVisible,
+    isVisible: async () => false,
+  };
+  const selectModelAndEffort = (ChatGptBrowserWorker.prototype as unknown as {
+    selectModelAndEffort(
+      page: unknown,
+      modelId: string,
+      reasoning: string,
+      capabilities: { localToolsEnabled: boolean; solAvailable: boolean; proAvailable: boolean },
+    ): Promise<unknown>;
+  }).selectModelAndEffort;
+
+  const selection = selectModelAndEffort.call({
+    activeComposer: async () => composer,
+  }, {
+    locator: (selector: string) => {
+      if (selector.includes('[role="alert"]')) return sessionAlert;
+      if (selector.includes('[role="menu"]') || selector.includes("composer-intelligence-picker-content")) return effortMenu;
+      if (selector.includes("data-model-reasoning-effort-slider")) return effortSlider;
+      if (selector.includes('[role="dialog"]')) return hiddenDialog;
+      return effortMenu;
+    },
+  }, "gpt-5.6-sol", "high", {
+    localToolsEnabled: true,
+    solAvailable: true,
+    proAvailable: true,
+  });
+  const result = await Promise.race([
+    selection.catch(error => error),
+    new Promise(resolve => setTimeout(() => resolve("still waiting"), 400)),
+  ]);
+
+  expect(result).toMatchObject({
+    name: "ChatGptWebAdapterError",
+    status: 401,
+    code: "chatgpt_session_expired",
+    retryable: false,
   });
 });
 
