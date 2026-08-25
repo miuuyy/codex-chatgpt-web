@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { CodexAssistantContentPart, CodexContentPart, CodexMessage, CodexParsedRequest } from "../../types";
+import { namespacedToolName, type CodexAssistantContentPart, type CodexContentPart, type CodexMessage, type CodexParsedRequest } from "../../types";
 import { isOnePixelPngDataUrl, isReadableCompactionSummaryText } from "../../responses/compaction";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import {
@@ -210,7 +210,7 @@ function assistantContent(content: CodexAssistantContentPart[]): unknown[] {
   return content.map(part => {
     if (part.type === "text") return { type: "text", text: part.text };
     if (part.type === "thinking") return { type: "thinking_summary", text: part.thinking };
-    return { type: "tool_call", id: part.id, name: part.name, arguments: part.arguments };
+    return { type: "tool_call", id: part.id, name: namespacedToolName(part.namespace, part.name), arguments: part.arguments };
   });
 }
 
@@ -265,7 +265,7 @@ function messageEnvelope(
     return {
       role: "tool_result",
       tool_call_id: message.toolCallId,
-      tool_name: message.toolName,
+      tool_name: namespacedToolName(message.toolNamespace, message.toolName),
       is_error: message.isError,
       content: inputContent(message.content, images, budget),
     };

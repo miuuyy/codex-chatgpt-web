@@ -97,6 +97,8 @@ export interface CodexToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  /** Original validated custom-tool wire name used to preserve custom call/result ABI on replay. */
+  customWireName?: string;
   thoughtSignature?: string;
   /** MCP namespace (e.g. "mcp__context7") when this call targets a namespaced tool. */
   namespace?: string;
@@ -113,8 +115,12 @@ export interface CodexTool {
   namespace?: string;
   /** Freeform/custom tool (e.g. apply_patch): the model's call must be relayed as a custom_tool_call. */
   freeform?: boolean;
+  /** Validated Responses custom-tool input format, retained for ABI collision detection. */
+  customFormat?: { type: "text" } | { type: "grammar"; syntax: "lark" | "regex"; definition: string };
   /** Client-executed tool discovery (tool_search): the model's call must be relayed as a tool_search_call. */
   toolSearch?: boolean;
+  /** Tool definition restored from a prior tool_search output. */
+  loadedFromToolSearch?: boolean;
 }
 
 /**

@@ -1,0 +1,72 @@
+{
+  "type": "additional_tools",
+  "role": "developer",
+  "tools": [
+    {
+      "type": "namespace",
+      "name": "functions",
+      "description": "",
+      "tools": [
+        {
+          "type": "custom",
+          "name": "exec",
+          "description": "Run JavaScript code to orchestrate and compose tool calls.",
+          "format": {
+            "type": "grammar",
+            "syntax": "lark",
+            "definition": "start: source\nsource: /[\\s\\S]+/"
+          }
+        },
+        {
+          "type": "function",
+          "name": "wait",
+          "description": "Wait on a yielded exec cell.",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "cell_id": { "type": "string" }
+            },
+            "required": ["cell_id"]
+          }
+        },
+        {
+          "type": "function",
+          "name": "request_user_input",
+          "description": "Request short user input.",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "questions": { "type": "array" }
+            },
+            "required": ["questions"]
+          }
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "top_function",
+      "description": "A top-level function tool.",
+      "strict": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "value": { "type": "string" }
+        },
+        "required": ["value"]
+      }
+    },
+    {
+      "type": "custom",
+      "name": "top_custom",
+      "description": "A top-level custom tool.",
+      "format": {
+        "type": "grammar",
+        "syntax": "lark",
+        "definition": "start: /.+/"
+      }
+    }
+  ]
+}

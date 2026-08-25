@@ -33,6 +33,14 @@ test("browser turn orchestration retains owned prompt insertion and semantic sub
   expect(runBrowserTurn.slice(finalEffortSelected, promptAttached)).toContain(
     "this.selectModelAndEffort(",
   );
+  const effortSelections = runBrowserTurn.split("this.selectModelAndEffort(").slice(1);
+  expect(effortSelections).toHaveLength(3);
+  for (const effortSelection of effortSelections) {
+    expect(effortSelection.slice(0, 800)).toContain(
+      "turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal",
+    );
+  }
+  expect(runBrowserTurn).toContain("writeBrowserLoginVerificationMarker(this.config.storageStatePath, capabilities)");
   expect(runBrowserTurn).not.toContain("userTurns.nth(initialUserTurnCount).waitFor");
   expect(workerSource).not.toMatch(/\bclipboard\b|pbcopy|pbpaste/i);
 });
@@ -896,13 +904,14 @@ test("image attachment readiness uses exact file tiles and not localized remove-
   ]);
 });
 
-test("effort selection uses structural menu and slider indices instead of localized labels", () => {
+test("effort selection uses bounded structural menu and slider indices with passive current-state recognition", () => {
   const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
   const sessionSource = readFileSync(new URL("../src/chatgpt-session.ts", import.meta.url), "utf8");
   expect(workerSource).toContain("mode.uiEffortIndex");
-  expect(workerSource).toContain("CHATGPT_EFFORT_MENU_SELECTOR");
+  expect(workerSource).toContain("resolveChatGptEffortMenu");
   expect(workerSource).toContain("CHATGPT_EFFORT_ITEM_SELECTOR");
-  expect(workerSource).toContain('timeout: 70_000');
+  expect(workerSource).toContain("Date.now() + 60_000");
+  expect(workerSource).toContain("stageSignal =>");
   expect(sessionSource).toContain('[role="menu"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider])');
   expect(sessionSource).toContain('[role="group"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider])');
   expect(sessionSource).toContain('[role="menuitemradio"]');
@@ -912,9 +921,9 @@ test("effort selection uses structural menu and slider indices instead of locali
   expect(workerSource).toContain('getAttribute("aria-checked")');
   expect(workerSource).toContain('getAttribute("aria-expanded")');
   expect(workerSource).toContain('getAttribute("aria-valuenow")');
-  expect(workerSource).toContain("sliderControl.press(key)");
-  expect(workerSource).not.toContain("currentLabel === targetLabel");
-  expect(workerSource).not.toContain("chatGptEffortLabelsMatch");
+  expect(workerSource).toContain("control.press(key");
+  expect(workerSource).toContain("chatGptEffortIndexFromControlLabel");
+  expect(workerSource).toContain("label === state.targetLabel");
   expect(workerSource).not.toMatch(/getByRole\("button", \{\s*name: "(?:Instant|Medium|High|Extra High|Pro)"/);
 });
 
@@ -950,6 +959,7 @@ test("Luna-only browser turns verify selector absence instead of opening an effo
       modelId: string,
       reasoning: string,
       capabilities: { localToolsEnabled: boolean; solAvailable: boolean; proAvailable: boolean },
+      signal: AbortSignal,
       captureDiagnostic: (checkpoint: string) => Promise<void>,
     ): Promise<{ displayLabel: string; uiEffortIndex: number | null }>;
   }).selectModelAndEffort;
@@ -962,7 +972,7 @@ test("Luna-only browser turns verify selector absence instead of opening an effo
     localToolsEnabled: true,
     solAvailable: false,
     proAvailable: false,
-  }, async checkpoint => { checkpoints.push(checkpoint); });
+  }, new AbortController().signal, async checkpoint => { checkpoints.push(checkpoint); });
 
   expect(mode).toMatchObject({ displayLabel: "Luna", uiEffortIndex: null });
   expect(checkpoints).toEqual(["luna-default-confirmed"]);
@@ -974,16 +984,16 @@ test("effort selection handles the known ChatGPT rate-limit dialog before backgr
   const selectionEnd = workerSource.indexOf("private async activeComposer", selectionStart);
   const selectionSource = workerSource.slice(selectionStart, selectionEnd);
   const guard = selectionSource.indexOf("throwIfChatGptRateLimitDialog(page)");
-  const activation = selectionSource.indexOf("currentEffort.click({ force: true })");
+  const activation = selectionSource.indexOf("control.click({ force: true");
 
   expect(workerSource).toContain("Too many requests");
   expect(workerSource).toContain("making requests too quickly");
   expect(guard).toBeGreaterThan(-1);
   expect(activation).toBeGreaterThan(guard);
-  expect(selectionSource).not.toContain('currentEffort.press("Enter")');
-  expect(selectionSource).not.toContain("currentEffort.evaluate(");
-  expect(selectionSource).toContain('effortChoice.press("Enter")');
-  expect(selectionSource).not.toContain("effortChoice.click(");
+  expect(selectionSource).not.toContain('control.press("Enter"');
+  expect(selectionSource).toContain("control.click({ force: true");
+  expect(selectionSource).toContain('choices.nth(desired).press("Enter"');
+  expect(selectionSource).not.toContain("choices.nth(desired).click(");
   expect(selectionSource).not.toContain("is unavailable");
 });
 
@@ -1167,8 +1177,9 @@ test.each([
 test("effort selection stops as soon as ChatGPT reports an expired session", async () => {
   const neverVisible = new Promise<void>(() => {});
   const effortControl = {
-    last() { return this; },
-    waitFor: async () => await neverVisible,
+    filter() { return this; },
+    count: async () => 0,
+    first() { return this; },
   };
   const composerForm = { locator: () => effortControl };
   const composer = { locator: () => composerForm };
@@ -1190,6 +1201,7 @@ test("effort selection stops as soon as ChatGPT reports an expired session", asy
       modelId: string,
       reasoning: string,
       capabilities: { localToolsEnabled: boolean; solAvailable: boolean; proAvailable: boolean },
+      abortSignal: AbortSignal,
     ): Promise<unknown>;
   }).selectModelAndEffort;
 
@@ -1201,7 +1213,7 @@ test("effort selection stops as soon as ChatGPT reports an expired session", asy
     localToolsEnabled: true,
     solAvailable: true,
     proAvailable: true,
-  });
+  }, new AbortController().signal);
   const result = await Promise.race([
     selection.catch(error => error),
     new Promise(resolve => setTimeout(() => resolve("still waiting"), 100)),
@@ -1218,8 +1230,9 @@ test("effort selection stops as soon as ChatGPT reports an expired session", asy
 test("effort menu waiting stops when ChatGPT reports an expired session", async () => {
   const neverVisible = new Promise<void>(() => {});
   const effortControl = {
-    last() { return this; },
-    waitFor: async () => {},
+    filter() { return this; },
+    count: async () => 1,
+    first() { return this; },
     getAttribute: async () => "true",
   };
   const composerForm = { locator: () => effortControl };
@@ -1254,6 +1267,7 @@ test("effort menu waiting stops when ChatGPT reports an expired session", async 
       modelId: string,
       reasoning: string,
       capabilities: { localToolsEnabled: boolean; solAvailable: boolean; proAvailable: boolean },
+      abortSignal: AbortSignal,
     ): Promise<unknown>;
   }).selectModelAndEffort;
 
@@ -1271,7 +1285,7 @@ test("effort menu waiting stops when ChatGPT reports an expired session", async 
     localToolsEnabled: true,
     solAvailable: true,
     proAvailable: true,
-  });
+  }, new AbortController().signal);
   const result = await Promise.race([
     selection.catch(error => error),
     new Promise(resolve => setTimeout(() => resolve("still waiting"), 400)),
@@ -1605,6 +1619,40 @@ test("routine browser diagnostics avoid screenshots unless full capture is reque
   expect(browserDiagnosticIncludesScreenshot("response-stalled-30s", false)).toBeTrue();
   expect(browserDiagnosticIncludesScreenshot("turn-failed", false)).toBeTrue();
   expect(browserDiagnosticIncludesScreenshot("send-ready", true)).toBeTrue();
+});
+
+test("browser stage diagnostics preserve every critical local checkpoint", () => {
+  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
+  for (const checkpoint of [
+    "browser-page-acquired",
+    "temporary-chat-navigation-complete",
+    "composer-ready",
+    "session-verified",
+    "effort-control-ready",
+    "effort-menu-open-requested",
+    "effort-selected",
+    "connector-mention-triggered",
+    "connector-menu-visible",
+    "connector-menu-missing",
+    "connector-selected",
+    "prompt-attachment-complete",
+    "file-attachment-complete",
+    "send-ready",
+    "send-accepted",
+    "tool-confirmation-visible",
+    "response-visible",
+    "response-stalled-30s",
+    "turn-completed",
+    "turn-failed",
+  ]) {
+    expect(workerSource).toContain(`"${checkpoint}"`);
+  }
+  expect(workerSource).toContain('join(getConfigDir(), "diagnostics", "browser-turns")');
+  expect(workerSource).toContain("CHATGPT_BROWSER_DIAGNOSTIC_SCREENSHOT_TIMEOUT_MS = 1_000");
+  expect(workerSource).toContain('page.screenshot({');
+  expect(workerSource).toContain("effortSliders: rows(effortSliderSelector, 10)");
+  expect(workerSource).toContain("atomicWriteFile(join(this.directory, `${stem}.png`), screenshot)");
+  expect(workerSource).toContain("CHATGPT_BROWSER_DIAGNOSTIC_TRACE_LIMIT = 10");
 });
 
 test("visible DOM trace interleaves statuses and explicit intermediate commentary", () => {

@@ -230,7 +230,7 @@ export class ChatGptTurnSession {
   }
 
   isActive(): boolean {
-    return this.settledBrowserOutcome === undefined;
+    return this.settledBrowserOutcome === undefined || this.outstandingById.size > 0;
   }
 
   setOutstanding(requests: BrokerToolRequest[], reasoning: string[] = [], prelude: AdapterEvent[] = []): void {

@@ -233,7 +233,7 @@ export async function nativeSearchRequest(
   }
 }
 
-function toolBridgeMaps(parsed: CodexParsedRequest): {
+export function toolBridgeMaps(parsed: CodexParsedRequest): {
   toolNsMap: Map<string, { namespace: string; name: string }>;
   freeformToolNames: Set<string>;
   toolSearchToolNames: Set<string>;
@@ -242,9 +242,10 @@ function toolBridgeMaps(parsed: CodexParsedRequest): {
   const freeformToolNames = new Set<string>();
   const toolSearchToolNames = new Set<string>();
   for (const tool of parsed.context.tools ?? []) {
-    if (tool.namespace) toolNsMap.set(namespacedToolName(tool.namespace, tool.name), { namespace: tool.namespace, name: tool.name });
-    if (tool.freeform) freeformToolNames.add(tool.name);
-    if (tool.toolSearch) toolSearchToolNames.add(tool.name);
+    const wireName = namespacedToolName(tool.namespace, tool.name);
+    if (tool.namespace) toolNsMap.set(wireName, { namespace: tool.namespace, name: tool.name });
+    if (tool.freeform) freeformToolNames.add(wireName);
+    if (tool.toolSearch) toolSearchToolNames.add(wireName);
   }
   return { toolNsMap, freeformToolNames, toolSearchToolNames };
 }

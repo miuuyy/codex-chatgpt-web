@@ -1,12 +1,14 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { chromium, type BrowserContextOptions } from "playwright-core";
+import { chromium, type BrowserContextOptions, type Page } from "playwright-core";
 import type { AppConfig } from "./config";
 import { atomicWriteFile } from "./config";
 import {
   assertAuthenticatedChatGptPage,
   assertTemporaryChatPage,
+  CHATGPT_COMPOSER_SELECTOR,
   CHATGPT_TEMPORARY_CHAT_URL,
   detectChatGptAccountCapabilities,
 } from "./chatgpt-session";
@@ -20,9 +22,10 @@ export interface BrowserLoginResult {
 }
 
 interface LoginVerificationMarker {
-  version: 1;
+  version: 2;
   authenticated: true;
   verifiedAt: string;
+  storageStateSha256: string;
   solAvailable?: boolean;
   proAvailable?: boolean;
 }
@@ -31,17 +34,30 @@ export function loginVerificationMarkerPath(storageStatePath: string): string {
   return `${storageStatePath}.verified.json`;
 }
 
-function writeVerificationMarker(
+export function writeBrowserLoginVerificationMarker(
   storageStatePath: string,
-  capabilities: ChatGptWebAccountCapabilities,
+  capabilities: Partial<ChatGptWebAccountCapabilities>,
 ): void {
   const marker: LoginVerificationMarker = {
-    version: 1,
+    version: 2,
     authenticated: true,
     verifiedAt: new Date().toISOString(),
+    storageStateSha256: createHash("sha256").update(readFileSync(storageStatePath)).digest("hex"),
     ...capabilities,
   };
   atomicWriteFile(loginVerificationMarkerPath(storageStatePath), `${JSON.stringify(marker)}\n`);
+}
+
+async function waitForAuthenticatedComposer(page: Page, timeoutMs = 60_000): Promise<void> {
+  try {
+    await page.locator(CHATGPT_COMPOSER_SELECTOR)
+      .filter({ visible: true })
+      .first()
+      .waitFor({ state: "visible", timeout: timeoutMs });
+  } catch {
+    throw new Error("The authenticated ChatGPT page did not produce a visible composer");
+  }
+  await assertAuthenticatedChatGptPage(page);
 }
 
 async function inspectStoredState(
@@ -59,8 +75,7 @@ async function inspectStoredState(
     try {
       const verifierPage = await verifierContext.newPage();
       await verifierPage.goto(CHATGPT_TEMPORARY_CHAT_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
-      await verifierPage.getByRole("textbox", { name: "Chat with ChatGPT" }).waitFor({ state: "visible", timeout: 60_000 });
-      await assertAuthenticatedChatGptPage(verifierPage);
+      await waitForAuthenticatedComposer(verifierPage);
       await assertTemporaryChatPage(verifierPage);
       return { ...await detectChatGptAccountCapabilities(verifierPage), url: verifierPage.url() };
     } finally {
@@ -74,12 +89,12 @@ async function inspectStoredState(
 export async function inspectBrowserLoginCapabilities(config: AppConfig): Promise<ChatGptWebAccountCapabilities> {
   if (!browserLoginStateExists(config)) throw new Error("ChatGPT login state is missing or unverified");
   const inspected = await inspectStoredState(config, config.storageStatePath);
-  writeVerificationMarker(config.storageStatePath, inspected);
+  writeBrowserLoginVerificationMarker(config.storageStatePath, inspected);
   return { solAvailable: inspected.solAvailable, proAvailable: inspected.proAvailable };
 }
 
 export function storedBrowserLoginCapabilities(
-  config: AppConfig,
+  config: Pick<AppConfig, "storageStatePath">,
 ): Partial<ChatGptWebAccountCapabilities> {
   if (!browserLoginStateExists(config)) return {};
   try {
@@ -134,21 +149,13 @@ export async function loginToChatGpt(
       waitUntil: "domcontentloaded",
       timeout: 60_000,
     });
-    const composer = page.getByRole("textbox", { name: "Chat with ChatGPT" }).or(
-      page.locator('[data-testid="prompt-textarea"], [contenteditable="true"][data-lexical-editor="true"]'),
-    ).first();
-    try {
-      await composer.waitFor({ state: "visible", timeout: options.timeoutMs ?? 60_000 });
-    } catch {
-      throw new Error("The authenticated ChatGPT page did not produce a visible composer");
-    }
-    await assertAuthenticatedChatGptPage(page);
+    await waitForAuthenticatedComposer(page, options.timeoutMs);
     await assertTemporaryChatPage(page);
     const state = await context.storageState();
 
     const inspected = await inspectStoredState(config, state);
     atomicWriteFile(config.storageStatePath, `${JSON.stringify(state)}\n`);
-    writeVerificationMarker(config.storageStatePath, inspected);
+    writeBrowserLoginVerificationMarker(config.storageStatePath, inspected);
     return {
       storageStatePath: config.storageStatePath,
       accountSurfaceUrl: page.url(),
@@ -161,13 +168,19 @@ export async function loginToChatGpt(
   }
 }
 
-export function browserLoginStateExists(config: AppConfig): boolean {
+export function browserLoginStateExists(config: Pick<AppConfig, "storageStatePath">): boolean {
   if (!existsSync(config.storageStatePath)) return false;
   const markerPath = loginVerificationMarkerPath(config.storageStatePath);
   if (!existsSync(markerPath)) return false;
   try {
     const marker = JSON.parse(readFileSync(markerPath, "utf8")) as Partial<LoginVerificationMarker>;
-    return marker.version === 1 && marker.authenticated === true && typeof marker.verifiedAt === "string";
+    const storageStateSha256 = createHash("sha256")
+      .update(readFileSync(config.storageStatePath))
+      .digest("hex");
+    return marker.version === 2
+      && marker.authenticated === true
+      && typeof marker.verifiedAt === "string"
+      && marker.storageStateSha256 === storageStateSha256;
   } catch {
     return false;
   }

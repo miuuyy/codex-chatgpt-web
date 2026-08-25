@@ -50,15 +50,19 @@ import {
   CHATGPT_COMPOSER_SELECTOR,
   CHATGPT_EFFORT_CONTROL_SELECTOR,
   CHATGPT_EFFORT_ITEM_SELECTOR,
-  CHATGPT_EFFORT_MENU_SELECTOR,
   CHATGPT_EFFORT_SLIDER_SELECTOR,
   CHATGPT_STOP_BUTTON_SELECTOR,
   CHATGPT_TEMPORARY_CHAT_URL,
   CHATGPT_USER_TURN_SELECTOR,
   detectChatGptAccountCapabilities,
   parseChatGptEffortSliderState,
+  resolveChatGptEffortMenu,
 } from "../../chatgpt-session";
-import { loginVerificationMarkerPath } from "../../browser-login";
+import {
+  browserLoginStateExists,
+  storedBrowserLoginCapabilities,
+  writeBrowserLoginVerificationMarker,
+} from "../../browser-login";
 import {
   connectLauncherBrowserHost,
   LauncherBrowserTurnCancelledError,
@@ -77,6 +81,13 @@ import {
   chatGptBrowserTabClosedError,
   chatGptStoppedThinkingError,
 } from "./adapter-error";
+import {
+  chatGptEffortIndexFromControlLabel,
+  ChatGptEffortStaleDomError,
+  ensureChatGptEffortSelection,
+  type ChatGptEffortIndex,
+  type ChatGptEffortOpenState,
+} from "./effort-selection";
 import {
   ChatGptLunaCheckpointStream,
   type CapturedChatGptLunaCheckpoint,
@@ -156,14 +167,14 @@ const chatGptRateLimitDialog = (page: Page): Locator => page.locator('[role="dia
   .filter({ hasText: /making requests too quickly|過於頻繁|过于频繁/i })
   .last();
 
-export async function throwIfChatGptRateLimitDialog(page: Page): Promise<void> {
+export async function throwIfChatGptRateLimitDialog(page: Page, timeoutMs = 2_000): Promise<void> {
   const dialog = chatGptRateLimitDialog(page);
-  if (!await dialog.isVisible().catch(() => false)) return;
+  if (!await dialog.isVisible({ timeout: timeoutMs }).catch(() => false)) return;
 
   const acknowledge = dialog.getByRole("button", { name: /^(Got it|知道了)$/ }).last();
-  if (await acknowledge.isVisible().catch(() => false)) {
+  if (await acknowledge.isVisible({ timeout: timeoutMs }).catch(() => false)) {
     try {
-      await acknowledge.press("Enter");
+      await acknowledge.press("Enter", { timeout: timeoutMs });
     } catch (error) {
       throw new ChatGptWebAdapterError(
         `ChatGPT rate limit: too many requests, and the dialog could not be dismissed (${error instanceof Error ? error.message : String(error)}). Try again in a few minutes.`,
@@ -740,6 +751,22 @@ export function redactChatGptUiDiagnostic(value: string): string {
 }
 
 const CHATGPT_BROWSER_DIAGNOSTIC_TRACE_LIMIT = 10;
+const CHATGPT_BROWSER_DIAGNOSTIC_SCREENSHOT_TIMEOUT_MS = 1_000;
+const CHATGPT_BROWSER_DIAGNOSTIC_STATE_TIMEOUT_MS = 1_500;
+
+async function boundedBrowserDiagnostic<T>(operation: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, rejectTimeout) => {
+        timer = setTimeout(() => rejectTimeout(new Error("browser diagnostic state capture timed out")), CHATGPT_BROWSER_DIAGNOSTIC_STATE_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 export function browserDiagnosticCheckpoint(value: string): string {
   const safe = value.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
@@ -794,11 +821,20 @@ class ChatGptBrowserDiagnostics {
       const sequence = String(++this.sequence).padStart(2, "0");
       const stem = `${sequence}-${browserDiagnosticCheckpoint(checkpoint)}`;
       const includeScreenshot = browserDiagnosticIncludesScreenshot(checkpoint);
+      let screenshotError: string | undefined;
       const [screenshot, state] = await Promise.all([
         includeScreenshot
-          ? page.screenshot({ animations: "disabled", caret: "hide", timeout: 5_000, type: "png" })
+          ? page.screenshot({
+            animations: "disabled",
+            caret: "hide",
+            timeout: CHATGPT_BROWSER_DIAGNOSTIC_SCREENSHOT_TIMEOUT_MS,
+            type: "png",
+          }).catch(error => {
+            screenshotError = redactChatGptUiDiagnostic(error instanceof Error ? error.message : String(error));
+            return undefined;
+          })
           : Promise.resolve(undefined),
-        page.evaluate(({ composerSelector, effortControlSelector, effortItemSelector, assistantTurnSelector }) => {
+        boundedBrowserDiagnostic(page.evaluate(({ composerSelector, effortControlSelector, effortItemSelector, effortSliderSelector, assistantTurnSelector }) => {
           const rendered = (element: Element): boolean => {
             const candidate = element as HTMLElement;
             const style = getComputedStyle(candidate);
@@ -825,6 +861,10 @@ class ChatGptBrowserDiagnostics {
                 testId: element.getAttribute("data-testid"),
                 ariaExpanded: element.getAttribute("aria-expanded"),
                 ariaChecked: element.getAttribute("aria-checked"),
+                ariaValueMin: element.getAttribute("aria-valuemin"),
+                ariaValueMax: element.getAttribute("aria-valuemax"),
+                ariaValueNow: element.getAttribute("aria-valuenow"),
+                ariaValueText: element.getAttribute("aria-valuetext"),
                 dataState: element.getAttribute("data-state"),
                 dataHighlighted: element.getAttribute("data-highlighted"),
                 rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
@@ -847,6 +887,7 @@ class ChatGptBrowserDiagnostics {
             },
             effortControls: rows(effortControlSelector, 10),
             effortItems: rows(effortItemSelector, 20),
+            effortSliders: rows(effortSliderSelector, 10),
             menus: rows('[role="menu"], [role="listbox"], [data-testid="composer-intelligence-picker-content"]', 20),
             connectorRows: rows('.__menu-item[tabindex="0"]', 40),
             overlays: rows('[role="dialog"], [role="alert"], [role="status"]', 30),
@@ -862,8 +903,9 @@ class ChatGptBrowserDiagnostics {
           composerSelector: CHATGPT_COMPOSER_SELECTOR,
           effortControlSelector: CHATGPT_EFFORT_CONTROL_SELECTOR,
           effortItemSelector: CHATGPT_EFFORT_ITEM_SELECTOR,
+          effortSliderSelector: CHATGPT_EFFORT_SLIDER_SELECTOR,
           assistantTurnSelector: CHATGPT_ASSISTANT_TURN_SELECTOR,
-        }),
+        })),
       ]);
       const capturedAt = new Date().toISOString();
       if (screenshot) atomicWriteFile(join(this.directory, `${stem}.png`), screenshot);
@@ -872,6 +914,7 @@ class ChatGptBrowserDiagnostics {
         capturedAt,
         traceId: this.traceId,
         checkpoint,
+        ...(screenshotError ? { screenshotError } : {}),
         ...(error !== undefined ? {
           error: redactChatGptUiDiagnostic(error instanceof Error ? error.message : String(error)),
         } : {}),
@@ -1146,7 +1189,7 @@ export class ChatGptBrowserWorker {
       this.page = connection.page;
       return this.page;
     }
-    if (!existsSync(this.config.storageStatePath) || !existsSync(loginVerificationMarkerPath(this.config.storageStatePath))) {
+    if (!browserLoginStateExists(this.config)) {
       throw new Error(`ChatGPT web login state is missing: ${this.config.storageStatePath}`);
     }
     if (!existsSync(this.config.chromeExecutablePath)) {
@@ -1164,7 +1207,7 @@ export class ChatGptBrowserWorker {
   private async ensureManagedBrowser(): Promise<{ browser: Browser; context: BrowserContext }> {
     if (this.managedBrowserReady) return this.managedBrowserReady;
     const opening = (async () => {
-      if (!existsSync(this.config.storageStatePath) || !existsSync(loginVerificationMarkerPath(this.config.storageStatePath))) {
+      if (!browserLoginStateExists(this.config)) {
         throw new Error(`ChatGPT web login state is missing: ${this.config.storageStatePath}`);
       }
       if (!existsSync(this.config.chromeExecutablePath)) {
@@ -1206,6 +1249,7 @@ export class ChatGptBrowserWorker {
     modelId: string,
     reasoning: string | undefined,
     capabilities: ChatGptWebCapabilities,
+    abortSignal: AbortSignal,
     captureDiagnostic?: (checkpoint: string) => Promise<void>,
   ): Promise<ChatGptWebModelMode> {
     const mode = resolveChatGptWebModelMode(modelId, reasoning, capabilities);
@@ -1224,153 +1268,211 @@ export class ChatGptBrowserWorker {
       await captureDiagnostic?.("luna-default-confirmed");
       return mode;
     }
-    const currentEffort = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).last();
-    const effortWaitAbort = new AbortController();
-    try {
-      const ready = await Promise.race([
-        currentEffort.waitFor({ state: "visible", timeout: 70_000, signal: effortWaitAbort.signal }).then(() => "effort" as const),
-        chatGptExpiredSessionAlert(page).waitFor({ state: "visible", timeout: 70_000, signal: effortWaitAbort.signal }).then(() => "session-expired" as const),
-      ]);
-      if (ready === "session-expired") await throwIfChatGptSessionFailureAlert(page);
-    } catch (error) {
-      if (error instanceof ChatGptWebAdapterError) throw error;
-      await throwIfChatGptSessionFailureAlert(page);
-      throw new Error("ChatGPT rendered the composer but its model/effort control did not become ready");
-    } finally {
-      effortWaitAbort.abort();
-    }
-    await settleChatGptUi();
-    await throwIfChatGptRateLimitDialog(page);
-    await captureDiagnostic?.("effort-control-ready");
-    const effortMenu = page.locator(CHATGPT_EFFORT_MENU_SELECTOR).last();
-    const menuVisible = await effortMenu.isVisible().catch(() => false);
-    const menuExpanded = await currentEffort.getAttribute("aria-expanded").catch(() => null);
-    if (!menuVisible && menuExpanded !== "true") {
-      await throwIfChatGptRateLimitDialog(page);
-      // ChatGPT's current Radix trigger no longer responds to synthetic Enter/Space on background
-      // Electron surfaces. Force only the exact, visible effort control; the menu/slider state
-      // below remains the authoritative postcondition, so this cannot become an unproved click.
-      await currentEffort.click({ force: true });
-    }
-    await captureDiagnostic?.("effort-menu-open-requested");
-    const effortChoices = effortMenu.locator(CHATGPT_EFFORT_ITEM_SELECTOR);
-    const effortChoice = effortChoices.nth(uiEffortIndex);
-    const effortSlider = page.locator(CHATGPT_EFFORT_SLIDER_SELECTOR).filter({ visible: true }).last();
-    const waitAbort = new AbortController();
-    let ready: "effort" | "slider" | "rate-limit" | "session-expired";
-    try {
-      ready = await Promise.race([
-        effortChoice.waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal }).then(() => "effort" as const),
-        effortSlider.waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal }).then(() => "slider" as const),
-        chatGptRateLimitDialog(page).waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal }).then(() => "rate-limit" as const),
-        chatGptExpiredSessionAlert(page).waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal }).then(() => "session-expired" as const),
-      ]);
-      if (ready === "rate-limit") await throwIfChatGptRateLimitDialog(page);
-      if (ready === "session-expired") await throwIfChatGptSessionFailureAlert(page);
-      await captureDiagnostic?.(ready === "slider" ? "effort-slider-visible" : "effort-choice-visible");
-    } catch (error) {
-      if (error instanceof ChatGptWebAdapterError) throw error;
-      await throwIfChatGptRateLimitDialog(page);
-      await throwIfChatGptSessionFailureAlert(page);
-      throw new ChatGptWebAdapterError(
-        `ChatGPT effort menu did not expose item index ${uiEffortIndex}`
-        + `; item count: ${await effortChoices.count().catch(() => 0)}`,
-        { status: 502, errorType: "server_error", code: "upstream_server_error", retryable: false },
-      );
-    } finally {
-      waitAbort.abort();
-    }
-    if (ready === "slider") {
-      let sliderState = parseChatGptEffortSliderState(
-        await effortSlider.getAttribute("aria-valuemin"),
-        await effortSlider.getAttribute("aria-valuemax"),
-        await effortSlider.getAttribute("aria-valuenow"),
-      );
-      if (!sliderState) {
-        throw new ChatGptWebAdapterError(
-          "ChatGPT effort slider exposed an invalid ARIA range",
-          { status: 502, errorType: "server_error", code: "upstream_server_error", retryable: false },
-        );
-      }
-      const targetValue = sliderState.min + uiEffortIndex;
-      if (targetValue > sliderState.max) {
-        throw new ChatGptWebAdapterError(
-          `ChatGPT effort slider does not expose item index ${uiEffortIndex}`
-          + ` (min=${sliderState.min}; max=${sliderState.max})`,
-          { status: 502, errorType: "server_error", code: "upstream_server_error", retryable: false },
-        );
-      }
-      const sliderControl = effortSlider.locator("xpath=ancestor::*[@role='menuitem'][1]");
-      while (sliderState.value !== targetValue) {
-        await throwIfChatGptRateLimitDialog(page);
-        const direction = targetValue > sliderState.value ? 1 : -1;
-        const key = direction > 0 ? "ArrowRight" : "ArrowLeft";
-        const previousValue = sliderState.value;
-        await sliderControl.press(key);
-        const changeDeadline = Date.now() + 5_000;
-        do {
-          sliderState = parseChatGptEffortSliderState(
-            await effortSlider.getAttribute("aria-valuemin"),
-            await effortSlider.getAttribute("aria-valuemax"),
-            await effortSlider.getAttribute("aria-valuenow"),
-          );
-          if (!sliderState) throw new Error("ChatGPT effort slider lost its semantic ARIA state");
-          if (sliderState.value !== previousValue) break;
-          await new Promise(resolveSleep => setTimeout(resolveSleep, 50));
-        } while (Date.now() < changeDeadline);
-        if (sliderState.value !== previousValue + direction) {
-          throw new Error(
-            `ChatGPT effort slider did not move exactly one step with ${key}`
-            + ` (before=${previousValue}; after=${sliderState.value})`,
-          );
+    const targetIndex = uiEffortIndex as ChatGptEffortIndex;
+    const deadline = Date.now() + 60_000;
+    const remaining = (cap = 15_000): number => {
+      if (abortSignal.aborted) throw new DOMException("ChatGPT effort selection aborted", "AbortError");
+      const value = Math.min(cap, deadline - Date.now());
+      if (value <= 0) throw new Error("ChatGPT effort selection did not reach an authoritative state within 60000ms");
+      return value;
+    };
+    const pause = async (): Promise<void> => {
+      await new Promise<void>((resolveSleep, rejectSleep) => {
+        const onAbort = () => {
+          clearTimeout(timer);
+          rejectSleep(new DOMException("ChatGPT effort selection aborted", "AbortError"));
+        };
+        const timer = setTimeout(() => {
+          abortSignal.removeEventListener("abort", onAbort);
+          resolveSleep();
+        }, Math.min(50, remaining(50)));
+        abortSignal.addEventListener("abort", onAbort, { once: true });
+      });
+    };
+    const resolveControl = async (waitMs = 0): Promise<Locator> => {
+      const waitDeadline = Math.min(deadline, Date.now() + waitMs);
+      while (true) {
+        const controls = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).filter({ visible: true });
+        const count = await controls.count();
+        if (count === 1) return controls.first();
+        if (count > 1) throw new Error(`ChatGPT effort control is ambiguous (visibleCount=${count})`);
+        if (Date.now() >= waitDeadline) {
+          await throwIfChatGptSessionFailureAlert(page);
+          throw new Error(`ChatGPT effort control is absent (visibleCount=${count})`);
         }
+        await throwIfChatGptSessionFailureAlert(page);
+        await pause();
       }
-      await captureDiagnostic?.("effort-selected");
-      await page.keyboard.press("Escape");
-      return mode;
-    }
-    const selected = await effortChoice.getAttribute("aria-checked");
-    if (selected !== "true" && selected !== "false") {
-      throw new Error(`ChatGPT effort item index ${uiEffortIndex} has no semantic checked state`);
-    }
-    if (selected === "true") {
-      await captureDiagnostic?.("effort-selected");
-      await page.keyboard.press("Escape");
-      return mode;
-    }
-    await throwIfChatGptRateLimitDialog(page);
-    await effortChoice.press("Enter");
-    await captureDiagnostic?.("effort-choice-activated");
-
-    const deadline = Date.now() + 40_000;
-    let confirmed: string | null = null;
-    while (Date.now() < deadline) {
-      if (!await effortMenu.isVisible().catch(() => false)) {
-        const expanded = await currentEffort.getAttribute("aria-expanded").catch(() => null);
-        if (expanded !== "true") {
-          await throwIfChatGptRateLimitDialog(page);
-          await currentEffort.click({ force: true });
-        }
-        await effortChoice.waitFor({
-          state: "visible",
-          timeout: Math.max(1, Math.min(5_000, deadline - Date.now())),
-        });
-      }
-      confirmed = await effortChoice.getAttribute("aria-checked");
-      if (confirmed === "true") {
-        await captureDiagnostic?.("effort-selected");
-        await page.keyboard.press("Escape");
-        return mode;
-      }
-      if (confirmed !== "false") {
-        throw new Error(`ChatGPT effort item index ${uiEffortIndex} lost its semantic checked state`);
-      }
-      await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
-    }
-    throw new Error(
-      `ChatGPT did not confirm effort item index ${uiEffortIndex}`
-      + ` (aria-checked=${JSON.stringify(confirmed)})`,
+    };
+    const resolveMenu = async (): Promise<Locator | undefined> => {
+      const control = await resolveControl(5_000);
+      return await resolveChatGptEffortMenu(page, control, remaining(2_000));
+    };
+    const sliderState = async (slider: Locator) => parseChatGptEffortSliderState(
+      await slider.getAttribute("aria-valuemin", { timeout: remaining() }),
+      await slider.getAttribute("aria-valuemax", { timeout: remaining() }),
+      await slider.getAttribute("aria-valuenow", { timeout: remaining() }),
     );
+    const readOpenState = async (): Promise<ChatGptEffortOpenState | undefined> => {
+      const menu = await resolveMenu();
+      if (!menu) return undefined;
+      const choices = menu.locator(CHATGPT_EFFORT_ITEM_SELECTOR).filter({ visible: true });
+      const sliders = menu.locator(CHATGPT_EFFORT_SLIDER_SELECTOR).filter({ visible: true });
+      const [choiceCount, sliderCount] = await Promise.all([choices.count(), sliders.count()]);
+      if (choiceCount > 0 && sliderCount > 0) {
+        throw new Error(`ChatGPT effort menu exposes conflicting controls (items=${choiceCount}; sliders=${sliderCount})`);
+      }
+      if (sliderCount > 1) throw new Error(`ChatGPT effort slider is ambiguous (visibleCount=${sliderCount})`);
+      if (sliderCount === 1) {
+        const parsed = await sliderState(sliders.first());
+        if (!parsed) throw new Error("ChatGPT effort slider exposed an invalid ARIA range");
+        return { kind: "slider", ...parsed };
+      }
+      if (choiceCount > 0) {
+        if (choiceCount > 5 || targetIndex >= choiceCount) {
+          return { kind: "menu", optionCount: choiceCount, targetLabel: "" };
+        }
+        const checked = await Promise.all(Array.from({ length: choiceCount }, (_, index) => (
+          choices.nth(index).getAttribute("aria-checked", { timeout: remaining() })
+        )));
+        if (checked.some(value => value !== "true" && value !== "false")) {
+          throw new Error("ChatGPT effort menu lost its semantic checked state");
+        }
+        const selected = checked.flatMap((value, index) => value === "true" ? [index] : []);
+        if (selected.length !== 1) {
+          throw new Error(`ChatGPT effort menu current state is ambiguous (selectedCount=${selected.length})`);
+        }
+        const targetLabel = (await choices.nth(targetIndex).innerText({ timeout: remaining() })).replace(/\s+/g, " ").trim();
+        if (!targetLabel) throw new Error(`ChatGPT effort item index ${targetIndex} has no visible label`);
+        return { kind: "menu", optionCount: choiceCount, currentIndex: selected[0], targetLabel };
+      }
+      return undefined;
+    };
+    const waitForOpenState = async (): Promise<ChatGptEffortOpenState> => {
+      while (true) {
+        try {
+          const state = await readOpenState();
+          if (state) return state;
+        } catch (error) {
+          if (abortSignal.aborted) throw error;
+          const message = error instanceof Error ? error.message : String(error);
+          if (!/detached|not attached|not connected/i.test(message)) throw error;
+          throw new ChatGptEffortStaleDomError(message);
+        }
+        await throwIfChatGptRateLimitDialog(page, remaining(2_000));
+        await throwIfChatGptSessionFailureAlert(page);
+        await pause();
+      }
+    };
+    let openedBySelection = false;
+    await ensureChatGptEffortSelection({
+      readCurrent: async () => {
+        await resolveControl(30_000);
+        await settleChatGptUi();
+        await throwIfChatGptRateLimitDialog(page, remaining(2_000));
+        await throwIfChatGptSessionFailureAlert(page);
+        await captureDiagnostic?.("effort-control-ready");
+        const control = await resolveControl(5_000);
+        const label = await control.innerText({ timeout: remaining() });
+        return chatGptEffortIndexFromControlLabel(label);
+      },
+      openAndRead: async () => {
+        try {
+          const control = await resolveControl(5_000);
+          const expanded = await control.getAttribute("aria-expanded", { timeout: remaining() });
+          openedBySelection = true;
+          if (expanded !== "true") {
+            await throwIfChatGptRateLimitDialog(page, remaining(2_000));
+            await throwIfChatGptSessionFailureAlert(page);
+            // The launcher-owned background Electron surface does not reliably open the current
+            // Radix trigger with synthetic keyboard activation. The composer-scoped unique control
+            // and owned-menu postcondition keep this single forced pointer activation target-safe.
+            await control.click({ force: true, timeout: remaining(5_000) });
+          }
+          await captureDiagnostic?.("effort-menu-open-requested");
+          const state = await waitForOpenState();
+          await captureDiagnostic?.(state.kind === "slider" ? "effort-slider-visible" : "effort-choice-visible");
+          return state;
+        } catch (error) {
+          if (abortSignal.aborted) throw error;
+          const message = error instanceof Error ? error.message : String(error);
+          if (/detached|not attached|not connected|effort control is absent/i.test(message)) {
+            throw new ChatGptEffortStaleDomError(message);
+          }
+          throw error;
+        }
+      },
+      transition: async (state, desired) => {
+        await throwIfChatGptRateLimitDialog(page, remaining(2_000));
+        await throwIfChatGptSessionFailureAlert(page);
+        if (state.kind === "menu") {
+          const menu = await resolveMenu();
+          if (!menu) throw new Error("ChatGPT effort menu disappeared before transition");
+          const choices = menu.locator(CHATGPT_EFFORT_ITEM_SELECTOR).filter({ visible: true });
+          if (await choices.count() !== state.optionCount) {
+            throw new Error("ChatGPT effort menu changed shape before transition");
+          }
+          await choices.nth(desired).press("Enter", { timeout: remaining(5_000) });
+          await captureDiagnostic?.("effort-choice-activated");
+          return { changed: true };
+        }
+        const targetValue = state.min + desired;
+        let current = state.value;
+        for (let step = 0; current !== targetValue && step < state.max - state.min + 1; step += 1) {
+          const menu = await resolveMenu();
+          if (!menu) throw new Error("ChatGPT effort slider disappeared before transition completed");
+          const sliders = menu.locator(CHATGPT_EFFORT_SLIDER_SELECTOR).filter({ visible: true });
+          if (await sliders.count() !== 1) throw new Error("ChatGPT effort slider became absent or ambiguous");
+          const slider = sliders.first();
+          const control = slider.locator("xpath=ancestor::*[@role='menuitem'][1]");
+          if (await control.count() !== 1) throw new Error("ChatGPT effort slider has no unique semantic menu item");
+          const direction = targetValue > current ? 1 : -1;
+          const key = direction > 0 ? "ArrowRight" : "ArrowLeft";
+          const previous = current;
+          await control.press(key, { timeout: remaining(5_000) });
+          while (current === previous) {
+            const observed = await readOpenState();
+            if (observed?.kind !== "slider") throw new Error("ChatGPT effort slider lost its semantic ARIA state");
+            current = observed.value;
+            if (current !== previous) break;
+            await pause();
+          }
+          if (current !== previous + direction) {
+            throw new Error(`ChatGPT effort slider did not move exactly one step with ${key} (before=${previous}; after=${current})`);
+          }
+        }
+        return { changed: current !== state.value };
+      },
+      readActual: async (state, desired) => {
+        const acknowledgementDeadline = Math.min(deadline, Date.now() + 15_000);
+        while (Date.now() < acknowledgementDeadline) {
+          await throwIfChatGptSessionFailureAlert(page);
+          const control = await resolveControl(5_000);
+          const label = (await control.innerText({ timeout: remaining() })).replace(/\s+/g, " ").trim();
+          if (state.kind === "menu" && label === state.targetLabel) return desired;
+          const recognized = chatGptEffortIndexFromControlLabel(label);
+          if (recognized === desired) return desired;
+          const observed = await readOpenState();
+          if (observed?.kind === "slider") {
+            const actual = observed.value - observed.min;
+            if (actual === desired) return actual;
+          } else if (observed?.kind === "menu" && observed.currentIndex === desired) {
+            return observed.currentIndex;
+          }
+          await pause();
+        }
+        return undefined;
+      },
+      close: async () => {
+        if (!openedBySelection) return;
+        const control = await resolveControl(5_000);
+        if (await control.getAttribute("aria-expanded", { timeout: remaining() }) === "true") {
+          await control.press("Escape", { timeout: remaining(2_000) });
+        }
+        await captureDiagnostic?.("effort-selected");
+      },
+    }, targetIndex, abortSignal);
+    return mode;
   }
 
   private async activeComposer(page: Page, timeoutMs = 30_000): Promise<Locator> {
@@ -2460,12 +2562,13 @@ export class ChatGptBrowserWorker {
           checkpoint => diagnostics.capture(page, checkpoint),
         ),
       );
-      let mode = await this.runStage(turn.traceId, "effort_selection", browserStageTimeouts.effortSelection, () => (
+      let mode = await this.runStage(turn.traceId, "effort_selection", browserStageTimeouts.effortSelection, stageSignal => (
         this.selectModelAndEffort(
           page,
           turn.modelId,
           stagingMode.effort,
           turn.capabilities,
+          turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal,
           checkpoint => diagnostics.capture(page, checkpoint),
         )
       ));
@@ -2523,11 +2626,12 @@ export class ChatGptBrowserWorker {
             turn.traceId,
             "final_part_effort_selection",
             browserStageTimeouts.effortSelection,
-            () => this.selectModelAndEffort(
+            stageSignal => this.selectModelAndEffort(
               page,
               turn.modelId,
               requestedMode.effort,
               turn.capabilities,
+              turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal,
               checkpoint => diagnostics.capture(page, `final-part-${checkpoint}`),
             ),
           );
@@ -2566,7 +2670,7 @@ export class ChatGptBrowserWorker {
             turn.traceId,
             "connector_catalog_refresh",
             browserStageTimeouts.temporaryChatPreparation,
-            async () => {
+            async stageSignal => {
               await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
               await this.prepareTemporaryChatSurface(
                 page,
@@ -2577,6 +2681,7 @@ export class ChatGptBrowserWorker {
                 turn.modelId,
                 turn.reasoning,
                 turn.capabilities,
+                turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal,
                 checkpoint => diagnostics.capture(page, checkpoint),
               );
               submissionBaseline = await this.captureSubmissionBaseline(page);
@@ -2745,8 +2850,11 @@ export class ChatGptBrowserWorker {
       }
 
       if (this.context && this.config.browserHost === "managed-chrome") {
+        await assertAuthenticatedChatGptPage(page);
+        const capabilities = storedBrowserLoginCapabilities(this.config);
         const state = await this.context.storageState();
         atomicWriteFile(this.config.storageStatePath, `${JSON.stringify(state)}\n`);
+        writeBrowserLoginVerificationMarker(this.config.storageStatePath, capabilities);
       }
       await diagnostics.capture(page, "turn-completed");
       console.info(`[chatgpt-web] browser turn ${turn.traceId} completed (markdownChars=${finalText.length})`);

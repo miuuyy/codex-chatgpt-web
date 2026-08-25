@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildResponseJSON } from "../src/bridge";
@@ -24,8 +24,12 @@ import { parseRequest } from "../src/responses/parser";
 import type { AdapterEvent, CodexParsedRequest, CodexProviderConfig, CodexTool } from "../src/types";
 
 const tempRoot = join(tmpdir(), `codex-chatgpt-web-harness-${process.pid}-${Date.now()}`);
+const brokerRoot = mkdtempSync(join(tmpdir(), "cgw-h-"));
 mkdirSync(tempRoot, { recursive: true });
-afterAll(() => rmSync(tempRoot, { recursive: true, force: true }));
+afterAll(() => {
+  rmSync(tempRoot, { recursive: true, force: true });
+  rmSync(brokerRoot, { recursive: true, force: true });
+});
 
 const tools: CodexTool[] = [
   { name: "exec", description: "Run nested Codex tools", parameters: {}, freeform: true },
@@ -46,7 +50,7 @@ const browserOnlyCapabilities = { localToolsEnabled: false, solAvailable: true, 
 function brokerTestEndpoint(name: string): string {
   return process.platform === "win32"
     ? defaultBrokerEndpoint(join(tmpdir(), name), "win32")
-    : join(tmpdir(), `${name}.sock`);
+    : join(brokerRoot, `${name}.sock`);
 }
 
 interface GatewayProgramCall {
@@ -54,27 +58,43 @@ interface GatewayProgramCall {
   input: unknown;
 }
 
+interface GatewayProgramOptions {
+  descriptions?: Record<string, string>;
+  invoke?: (name: string, input: unknown) => Promise<unknown>;
+  textOutput?: unknown[];
+}
+
+const escalationCapableExecDescription = `exec tool declaration:
+declare const tools: { exec_command(args: {
+  justification?: string;
+  sandbox_permissions?: "use_default" | "require_escalated";
+}): Promise<unknown>; };`;
+
 async function executeGatewayProgram(
   program: string,
   availableToolNames: string[],
   calls: GatewayProgramCall[],
+  options: GatewayProgramOptions = {},
 ): Promise<void> {
   const nestedTools = Object.fromEntries(availableToolNames.map(name => [
     name,
     async (input: unknown) => {
       calls.push({ name, input });
-      return { output: name, exit_code: 0 };
+      return options.invoke
+        ? await options.invoke(name, input)
+        : { output: name, exit_code: 0 };
     },
   ]));
   const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
     ...args: string[]
   ) => (...values: unknown[]) => Promise<void>;
   const execute = new AsyncFunction("tools", "ALL_TOOLS", "text", "image", "audio", "generatedImage", program);
+  const emitText = (value: unknown): void => { options.textOutput?.push(value); };
   const ignoreOutput = (_value: unknown): void => {};
   await execute(
     nestedTools,
-    availableToolNames.map(name => ({ name, description: `${name} test tool` })),
-    ignoreOutput,
+    availableToolNames.map(name => ({ name, description: options.descriptions?.[name] ?? `${name} test tool` })),
+    emitText,
     ignoreOutput,
     ignoreOutput,
     ignoreOutput,
@@ -162,6 +182,109 @@ function toolResult(value: Record<string, unknown>): BrokerToolResult {
     content: [{ type: "text", text: JSON.stringify(value) }],
     structuredContent: value,
   };
+}
+
+function textToolResult(text: string, isError = false): BrokerToolResult {
+  return {
+    content: [{ type: "text", text }],
+    ...(isError ? { isError: true } : {}),
+  };
+}
+
+function pendingToolResult(cellId: string): BrokerToolResult {
+  return textToolResult(`Script running with cell ID ${cellId}\nWall time 0.1 seconds\nOutput:\n`);
+}
+
+function gatewayOuterResult(result: Record<string, unknown>): BrokerToolResult {
+  return textToolResult(
+    `Script completed\nWall time 0.1 seconds\nOutput:\n${JSON.stringify({
+      protocol: "codex_exec_gateway_result_v1",
+      result,
+    })}`,
+  );
+}
+
+function gatewayOuterFinalResult(result: Record<string, unknown>): BrokerToolResult {
+  return textToolResult(
+    `Script completed\nWall time 0.1 seconds\nProcess exited with code 0\nFinal output:\n${JSON.stringify({
+      protocol: "codex_exec_gateway_result_v1",
+      result,
+    })}`,
+  );
+}
+
+function gatewayCommandEnvironment(waitAvailable = true) {
+  const environment = extractChatGptTurnEnvironment(parsed(environmentXml));
+  environment.tools = [
+    { name: "exec", description: "Run nested Codex tools", parameters: {}, freeform: true },
+    ...(waitAvailable
+      ? [{ name: "wait", description: "Wait for an outer exec cell", parameters: { type: "object" } } satisfies CodexTool]
+      : []),
+  ];
+  return environment;
+}
+
+function directCommandEnvironment() {
+  const environment = extractChatGptTurnEnvironment(parsed(environmentXml));
+  environment.tools = [
+    { name: "exec_command", description: "Run command", parameters: { type: "object" } },
+    { name: "wait", description: "Wait for an outer exec cell", parameters: { type: "object" } },
+  ];
+  return environment;
+}
+
+function realAdditionalToolsEnvironment() {
+  const additionalTools = JSON.parse(readFileSync(
+    join(import.meta.dir, "fixtures/real-additional-tools.json"),
+    "utf8",
+  ));
+  const request = parseRequest({
+    model: CHATGPT_WEB_MODEL_ID,
+    instructions: environmentXml,
+    input: [additionalTools],
+  });
+  return extractChatGptTurnEnvironment(request);
+}
+
+async function openMcpHarness(
+  name: string,
+  environment = gatewayCommandEnvironment(),
+  ttlMs: number | undefined = 60_000,
+) {
+  const socketPath = brokerTestEndpoint(`${name}-${process.pid}-${Date.now()}`);
+  const broker = TurnBroker.forSocket(socketPath);
+  const token = await broker.register(environment, ttlMs);
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: ["src/cli.ts", "mcp", "--broker-socket", socketPath],
+    cwd: process.cwd(),
+    stderr: "pipe",
+  });
+  const client = new Client({ name: "codex-chatgpt-web-approval-result-test", version: "1.0.0" });
+  await client.connect(transport);
+  const call = (toolName: string, args: Record<string, unknown>, signal?: AbortSignal) => client.callTool(
+    { name: toolName, arguments: { turn_token: token, ...args } },
+    undefined,
+    signal ? { signal } : undefined,
+  );
+  return {
+    broker,
+    call,
+    client,
+    token,
+    close: async () => {
+      await client.close().catch(() => {});
+      broker.revoke(token);
+      await broker.close();
+    },
+  };
+}
+
+async function expectNoQueuedTool(broker: TurnBroker, token: string): Promise<void> {
+  const abort = new AbortController();
+  const waiting = broker.nextToolBatch(token, abort.signal);
+  setTimeout(() => abort.abort(), 25);
+  await expect(waiting).rejects.toThrow("aborted");
 }
 
 function canonicalJson(value: unknown): string {
@@ -1479,6 +1602,119 @@ describe("ChatGPT outer-native harness v4", () => {
     }
   });
 
+  test("delivers an outstanding native result before finalizing an already settled browser outcome", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-v4-settled-race-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: "browser://chatgpt-settled-race-test",
+      chatgptWeb: {
+        brokerSocketPath: socketPath,
+        turnTimeoutMs: 30_000,
+        localToolsEnabled: true,
+        solAvailable: true,
+        proAvailable: true,
+      },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    let browserStarts = 0;
+    let nativeExecCalls = 0;
+    let releaseBrowser!: () => void;
+    let browserReturned!: () => void;
+    let settledTurnToken = "";
+    const browserRelease = new Promise<void>(resolveRelease => { releaseBrowser = resolveRelease; });
+    const browserFinished = new Promise<void>(resolveFinished => { browserReturned = resolveFinished; });
+    let nativeResultPromise: Promise<BrokerToolResult> | undefined;
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+      browserStarts += 1;
+      const prepared = await turn.prepare();
+      try {
+        const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
+        if (!token) throw new Error("turn token missing from compiled prompt");
+        settledTurnToken = token;
+        const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
+        nativeExecCalls += 1;
+        nativeResultPromise = callTurnBroker<BrokerToolResult>(socketPath, {
+          method: "invoke",
+          bindingId: claimed.bindingId,
+          wireName: "exec_command",
+          freeform: false,
+          arguments: { cmd: "pwd", workdir: tempRoot },
+        }, 30_000);
+        await browserRelease;
+        const answer = "Browser settled while the native result was outstanding.";
+        turn.onTextDelta(answer);
+        browserReturned();
+        return answer;
+      } finally {
+        prepared.release();
+      }
+    };
+
+    const adapter = createChatGptWebAdapter(provider);
+    const firstRequest = rawWireRequest(environmentXml);
+    const firstEvents: AdapterEvent[] = [];
+    try {
+      await adapter.runTurn!(firstRequest, { headers: new Headers() }, event => firstEvents.push(event));
+      const callStart = firstEvents.find(
+        (event): event is Extract<AdapterEvent, { type: "tool_call_start" }> => event.type === "tool_call_start",
+      );
+      expect(callStart?.name).toBe("exec_command");
+      expect(firstEvents.at(-1)).toMatchObject({ type: "done", stopReason: "tool_use", endTurn: false });
+      expect(browserStarts).toBe(1);
+
+      releaseBrowser();
+      await browserFinished;
+      await Bun.sleep(0);
+
+      const denial = {
+        role: "toolResult" as const,
+        toolCallId: callStart!.id,
+        toolName: "exec_command",
+        content: "Script failed\nWall time 0.1 seconds\nError: rejected by user",
+        isError: true,
+        timestamp: Date.now(),
+      };
+      const secondRequest = rawWireRequest(environmentXml);
+      secondRequest.context.messages.push({
+        role: "assistant",
+        content: [{ type: "toolCall", id: callStart!.id, name: "exec_command", arguments: { cmd: "pwd", workdir: tempRoot } }],
+        timestamp: denial.timestamp - 1,
+      }, denial);
+      ((secondRequest._rawBody as { input: unknown[] }).input).push(
+        {
+          type: "function_call",
+          call_id: callStart!.id,
+          name: "exec_command",
+          arguments: JSON.stringify({ cmd: "pwd", workdir: tempRoot }),
+        },
+        {
+          type: "function_call_output",
+          call_id: callStart!.id,
+          output: denial.content,
+        },
+      );
+
+      const secondEvents: AdapterEvent[] = [];
+      await adapter.runTurn!(secondRequest, { headers: new Headers() }, event => secondEvents.push(event));
+      expect(await nativeResultPromise).toMatchObject({ isError: true });
+      expect(nativeExecCalls).toBe(1);
+      expect(secondEvents.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+      expect(secondEvents.some(event => event.type === "done" && event.stopReason === "tool_use")).toBe(false);
+      expect(browserStarts).toBe(1);
+      await expect(callTurnBroker(socketPath, { method: "claim", token: settledTurnToken }))
+        .rejects.toThrow("has already finished");
+
+      const replay: AdapterEvent[] = [];
+      await adapter.runTurn!(secondRequest, { headers: new Headers() }, event => replay.push(event));
+      expect(replay).toEqual(secondEvents);
+      expect(browserStarts).toBe(1);
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  }, 30_000);
+
   test("replaces the active browser response after Codex compacts mid-tool-loop", async () => {
     const socketPath = brokerTestEndpoint(`cgw-h3-adapter-${process.pid}-${Date.now()}`);
     const provider: CodexProviderConfig = {
@@ -1809,6 +2045,823 @@ describe("ChatGPT outer-native harness v4", () => {
     }
   });
 
+  test.each([
+    {
+      name: "success",
+      outer: toolResult({ output: tempRoot, exit_code: 0 }),
+      isError: false,
+    },
+    {
+      name: "isError denial",
+      outer: textToolResult("command rejected by user", true),
+      isError: true,
+    },
+    {
+      name: "failure",
+      outer: toolResult({ output: "failed", exit_code: 2 }),
+      isError: true,
+    },
+    {
+      name: "cancellation",
+      outer: { ...toolResult({ status: "cancelled", output: "cancelled" }) },
+      isError: true,
+    },
+    {
+      name: "valid session result",
+      outer: toolResult({ session_id: 42, output: "still running" }),
+      isError: false,
+    },
+    {
+      name: "pending-looking direct result",
+      outer: pendingToolResult("direct-cell"),
+      isError: true,
+    },
+    {
+      name: "gateway failure-looking direct text",
+      outer: textToolResult("Script failed\nWall time 0.1 seconds\nError: ordinary direct output"),
+      isError: true,
+    },
+  ])("keeps direct command path semantics for $name", async ({ outer, isError }) => {
+    const harness = await openMcpHarness("cgw-v4-direct-result", directCommandEnvironment());
+    try {
+      const execPromise = harness.call("codex_exec", { cmd: "pwd", workdir: tempRoot });
+      const requests = await harness.broker.nextToolBatch(harness.token);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({ wireName: "exec_command", freeform: false });
+      harness.broker.completeTool(harness.token, requests[0]!.callId, outer);
+      const response = await execPromise;
+      expect(response.isError === true).toBe(isError);
+      await expectNoQueuedTool(harness.broker, harness.token);
+    } finally {
+      await harness.close();
+    }
+  }, 30_000);
+
+  test.each([
+    ["terminal plus session", { status: "completed", session_id: 42 }],
+    ["exit plus session", { exit_code: 0, session_id: 42 }],
+    ["pending cell plus session", { status: "running", cell_id: "cell-one", session_id: 42 }],
+    ["failure plus zero exit", { status: "failed", exit_code: 0 }],
+    ["conflicting terminal states", { status: "completed", state: "failed" }],
+  ])("fails closed on contradictory direct command state: %s", async (_name, state) => {
+    const harness = await openMcpHarness("cgw-v4-direct-malformed", directCommandEnvironment());
+    try {
+      const execPromise = harness.call("codex_exec", { cmd: "pwd" });
+      const [request] = await harness.broker.nextToolBatch(harness.token);
+      harness.broker.completeTool(harness.token, request!.callId, toolResult(state));
+      const response = await execPromise;
+      expect(response.isError).toBe(true);
+      expect(JSON.stringify(response.content)).toContain("UNRESOLVED_UNKNOWN_OUTCOME");
+      const alternate = await harness.call("codex_exec", { cmd: "git status --short" });
+      expect(alternate.isError).toBe(true);
+      expect(JSON.stringify(alternate.content)).toContain("already active");
+      await expectNoQueuedTool(harness.broker, harness.token);
+    } finally {
+      await harness.close();
+    }
+  }, 30_000);
+
+  test("rejects multiple advertised direct command ABIs before dispatch", async () => {
+    const environment = directCommandEnvironment();
+    environment.tools.push({ name: "shell_command", description: "Legacy command", parameters: { type: "object" } });
+    const harness = await openMcpHarness("cgw-v4-direct-ambiguous", environment);
+    try {
+      const response = await harness.call("codex_exec", { cmd: "pwd" });
+      expect(response.isError).toBe(true);
+      expect(JSON.stringify(response.content)).toContain("multiple native command tools");
+      await expectNoQueuedTool(harness.broker, harness.token);
+    } finally {
+      await harness.close();
+    }
+  }, 30_000);
+
+  test("rejects duplicate advertised direct command ABI before dispatch", async () => {
+    const environment = directCommandEnvironment();
+    environment.tools.push({ name: "exec_command", description: "Duplicate command", parameters: { type: "object" } });
+    const harness = await openMcpHarness("cgw-v4-direct-duplicate", environment);
+    try {
+      const response = await harness.call("codex_exec", { cmd: "pwd" });
+      expect(response.isError).toBe(true);
+      expect(JSON.stringify(response.content)).toContain("duplicate native tools: exec_command");
+      await expectNoQueuedTool(harness.broker, harness.token);
+    } finally {
+      await harness.close();
+    }
+  }, 30_000);
+
+  test("routes a parsed nested custom exec only through the dedicated command bridge", async () => {
+    const environment = realAdditionalToolsEnvironment();
+    environment.tools.push({
+      namespace: "shadow",
+      name: "exec",
+      description: "Namespaced command alias",
+      parameters: { type: "object" },
+      freeform: true,
+    });
+    environment.tools.push({
+      name: " exec ",
+      description: "Whitespace-padded command alias",
+      parameters: { type: "object" },
+      freeform: true,
+    });
+    for (const name of ["exec-command", "exec.command"]) {
+      environment.tools.push({
+        name,
+        description: "Normalized command alias",
+        parameters: { type: "object" },
+      });
+    }
+    const harness = await openMcpHarness("cgw-v4-parser-custom-exec", environment);
+    try {
+      expect(environment.tools.find(tool => tool.name === "exec" && !tool.namespace)).toMatchObject({
+        name: "exec",
+        freeform: true,
+      });
+
+      const execPromise = harness.call("codex_exec", { cmd: "pwd", workdir: tempRoot });
+      const [request] = await harness.broker.nextToolBatch(harness.token);
+      expect(request).toMatchObject({ wireName: "exec", freeform: true });
+      harness.broker.completeTool(
+        harness.token,
+        request!.callId,
+        gatewayOuterResult({ output: tempRoot, exit_code: 0 }),
+      );
+      expect((await execPromise).isError).not.toBe(true);
+
+      for (const wireName of ["exec", "shadow__exec"]) {
+        const generic = await harness.call("codex_tool_call", {
+          wire_name: wireName,
+          input: JSON.stringify({
+            cmd: "alternate execution",
+            sandbox_permissions: "require_escalated",
+            justification: "generic escalation injection",
+          }),
+        });
+        expect(generic.isError).toBe(true);
+        expect(JSON.stringify(generic.content)).toContain("reserved for codex_exec");
+      }
+      const dotAlias = await harness.call("codex_tool_call", {
+        wire_name: "shadow.exec",
+        input: "alternate execution",
+      });
+      expect(dotAlias.isError).toBe(true);
+      expect(JSON.stringify(dotAlias.content)).toContain("not available in this turn");
+      const paddedAlias = await harness.call("codex_tool_call", {
+        wire_name: " exec ",
+        input: "alternate execution",
+      });
+      expect(paddedAlias.isError).toBe(true);
+      expect(JSON.stringify(paddedAlias.content)).toContain("wire tool name must be canonical");
+      for (const wireName of ["exec-command", "exec.command"]) {
+        const normalizedAlias = await harness.call("codex_tool_call", {
+          wire_name: wireName,
+          arguments: {
+            sandbox_permissions: "require_escalated",
+            justification: "generic alias escalation injection",
+          },
+        });
+        expect(normalizedAlias.isError).toBe(true);
+        expect(JSON.stringify(normalizedAlias.content)).toContain("reserved for codex_exec");
+      }
+      await expectNoQueuedTool(harness.broker, harness.token);
+    } finally {
+      await harness.close();
+    }
+  }, 30_000);
+
+  test.each([
+    {
+      name: "success",
+      outer: gatewayOuterResult({ output: "/working", exit_code: 0 }),
+      isError: false,
+    },
+    {
+      name: "legacy wrapper success",
+      outer: gatewayOuterFinalResult({ output: "/working", exit_code: 0 }),
+      isError: false,
+    },
+    {
+      name: "denial",
+      outer: gatewayOuterResult({ status: "denied", output: "rejected by user" }),
+      isError: true,
+    },
+    {
+      name: "failure",
+      outer: gatewayOuterResult({ output: "failed", exit_code: 2 }),
+      isError: true,
+    },
+    {
+      name: "cancellation",
+      outer: gatewayOuterResult({ status: "cancelled", output: "cancelled" }),
+      isError: true,
+    },
+  ])("classifies initial gateway terminal $name without calling wait", async ({ outer, isError }) => {
+    const harness = await openMcpHarness("cgw-v4-gateway-initial");
+    try {
+      const execPromise = harness.call("codex_exec", { cmd: "pwd" });
+      const originalBatch = await harness.broker.nextToolBatch(harness.token);
+      expect(originalBatch).toHaveLength(1);
+      const original = originalBatch[0]!;
+      expect(original).toMatchObject({ wireName: "exec", freeform: true });
+      expect(original.input?.match(/await nativeCommand\(/g)).toHaveLength(1);
+      harness.broker.completeTool(harness.token, original.callId, outer);
+      const response = await execPromise;
+      expect(response.isError === true).toBe(isError);
+      await expectNoQueuedTool(harness.broker, harness.token);
+    } finally {
+      await harness.close();
+    }
+  }, 30_000);
+
+  test.each([
+    ["failure", "Script failed\nWall time 0.1 seconds\nError: outer wrapper failed"],
+    ["cancellation", "Script terminated\nWall time 0.1 seconds\nTermination requested"],
+  ])("quarantines an initial bare gateway wrapper %s without redispatch", async (_name, text) => {
+    const harness = await openMcpHarness("cgw-v4-gateway-initial-wrapper-unknown");
+    try {
+      const execPromise = harness.call("codex_exec", { cmd: "pwd" });
+      const [original] = await harness.broker.nextToolBatch(harness.token);
+      harness.broker.completeTool(harness.token, original!.callId, textToolResult(text, true));
+
+      const response = await execPromise;
+      expect(response.isError).toBe(true);
+      expect(JSON.stringify(response.content)).toContain("UNRESOLVED_UNKNOWN_OUTCOME");
+      const alternate = await harness.call("codex_exec", { cmd: "git status --short" });
+      expect(alternate.isError).toBe(true);
+      expect(JSON.stringify(alternate.content)).toContain("already active");
+      await expectNoQueuedTool(harness.broker, harness.token);
+    } finally {
+      await harness.close();
+    }
+  }, 30_000);
+
+  test("quarantines a sessionless initial UNKNOWN without redispatch or unrelated command overlap", async () => {
+    const harness = await openMcpHarness("cgw-v4-gateway-initial-unknown");
+    try {
+      const firstExec = harness.call("codex_exec", { cmd: "pwd" });
+      const [original] = await harness.broker.nextToolBatch(harness.token);
+      harness.broker.completeTool(
+        harness.token,
+        original!.callId,
+        gatewayOuterResult({ output: "/ambiguous-without-terminal-discriminant" }),
+      );
+
+      const firstResponse = await firstExec;
+      expect(firstResponse.isError).toBe(true);
+      expect(JSON.stringify(firstResponse.content)).toContain("UNRESOLVED_UNKNOWN_OUTCOME");
+      expect(JSON.stringify(firstResponse.content)).toContain("outcome remains UNKNOWN");
+      await expectNoQueuedTool(harness.broker, harness.token);
+
+      const retry = await harness.call("codex_exec", { cmd: "pwd" });
+      expect(retry.isError).toBe(true);
+      expect(JSON.stringify(retry.content)).toContain("outcome remains UNKNOWN");
+      await expectNoQueuedTool(harness.broker, harness.token);
+
+      const unrelatedExec = await harness.call("codex_exec", { cmd: "git status --short" });
+      expect(unrelatedExec.isError).toBe(true);
+      expect(JSON.stringify(unrelatedExec.content)).toContain("already active");
+      const generic = await harness.call("codex_tool_call", { wire_name: "exec", input: "alternate execution" });
+      expect(generic.isError).toBe(true);
+      expect(JSON.stringify(generic.content)).toContain("reserved for codex_exec");
+      await expectNoQueuedTool(harness.broker, harness.token);
+    } finally {
+      await harness.close();
+    }
+  }, 30_000);
+
+  test.each([
+    {
+      name: "success",
+      waited: gatewayOuterResult({ output: "/working", exit_code: 0 }),
+      isError: false,
+    },
+    {
+      name: "denial",
+      waited: gatewayOuterResult({ status: "denied", output: "rejected by user" }),
+      isError: true,
+    },
+    {
+      name: "failure",
+      waited: gatewayOuterResult({ status: "failed", output: "failed" }),
+      isError: true,
+    },
+    {
+      name: "cancellation",
+      waited: gatewayOuterResult({ status: "cancelled", output: "cancelled" }),
+      isError: true,
+    },
+  ])("awaits one gateway pending result through one wait and returns terminal $name", async ({ waited, isError }) => {
+    const harness = await openMcpHarness("cgw-v4-gateway-pending");
+    try {
+      const execPromise = harness.call("codex_exec", { cmd: "pwd" });
+      const originalBatch = await harness.broker.nextToolBatch(harness.token);
+      expect(originalBatch).toHaveLength(1);
+      const original = originalBatch[0]!;
+      harness.broker.completeTool(harness.token, original.callId, pendingToolResult("cell-pending"));
+
+      const waitBatch = await harness.broker.nextToolBatch(harness.token);
+      expect(waitBatch).toHaveLength(1);
+      const wait = waitBatch[0]!;
+      expect(wait).toMatchObject({ wireName: "wait", freeform: false, arguments: { cell_id: "cell-pending" } });
+      harness.broker.completeTool(harness.token, wait.callId, waited);
+
+      const response = await execPromise;
+      expect(response.isError === true).toBe(isError);
+      expect(original.input?.match(/await nativeCommand\(/g)).toHaveLength(1);
+      await expectNoQueuedTool(harness.broker, harness.token);
+    } finally {
+      await harness.close();
+    }
+  }, 30_000);
+
+  test.each([
+    ["failure", "Script failed\nWall time 0.2 seconds\nError: outer wait wrapper failed"],
+    ["cancellation", "Script terminated\nWall time 0.2 seconds\nTermination requested"],
+  ])("keeps a gateway command quarantined after bare wait wrapper %s", async (_name, text) => {
+    const harness = await openMcpHarness("cgw-v4-gateway-wait-wrapper-unknown");
+    try {
+      const execPromise = harness.call("codex_exec", { cmd: "pwd" });
+      const [original] = await harness.broker.nextToolBatch(harness.token);
+      harness.broker.completeTool(harness.token, original!.callId, pendingToolResult("cell-wrapper-unknown"));
+      const [wait] = await harness.broker.nextToolBatch(harness.token);
+      harness.broker.completeTool(harness.token, wait!.callId, textToolResult(text, true));
+
+      const response = await execPromise;
+      expect(response.isError).toBe(true);
+      expect(JSON.stringify(response.content)).toContain("UNRESOLVED_UNKNOWN_OUTCOME");
+      const alternate = await harness.call("codex_exec", { cmd: "git status --short" });
+      expect(alternate.isError).toBe(true);
+      expect(JSON.stringify(alternate.content)).toContain("already active");
+      await expectNoQueuedTool(harness.broker, harness.token);
+    } finally {
+      await harness.close();
+    }
+  }, 30_000);
+
+  test("rejects duplicate and alternate native execution while the first gateway command is pending", async () => {
+    const environment = gatewayCommandEnvironment();
+    environment.tools.push({ name: "view_image", description: "View an image", parameters: { type: "object" } });
+    const harness = await openMcpHarness("cgw-v4-gateway-operation-lock", environment);
+    try {
+      const firstExec = harness.call("codex_exec", { cmd: "pwd" });
+      const [original] = await harness.broker.nextToolBatch(harness.token);
+      harness.broker.completeTool(harness.token, original!.callId, pendingToolResult("cell-operation-lock"));
+
+      const [wait] = await harness.broker.nextToolBatch(harness.token);
+      expect(wait).toMatchObject({ wireName: "wait", freeform: false, arguments: { cell_id: "cell-operation-lock" } });
+
+      const duplicate = harness.call("codex_exec", { cmd: "pwd" });
+      await expectNoQueuedTool(harness.broker, harness.token);
+      const alternate = await harness.call("codex_exec", { cmd: "git status --short" });
+      expect(alternate.isError).toBe(true);
+      expect(JSON.stringify(alternate.content)).toContain("codex_exec operation is already active");
+      const genericCommand = await harness.call("codex_tool_call", { wire_name: "exec", input: "alternate execution" });
+      expect(genericCommand.isError).toBe(true);
+      expect(JSON.stringify(genericCommand.content)).toContain("reserved for codex_exec");
+      environment.tools.push({
+        namespace: "functions",
+        name: "write_stdin",
+        description: "Continue a command",
+        parameters: { type: "object" },
+      });
+      const namespacedContinuation = await harness.call("codex_tool_call", {
+        wire_name: "functions__write_stdin",
+        arguments: { session_id: 1 },
+      });
+      expect(namespacedContinuation.isError).toBe(true);
+      expect(JSON.stringify(namespacedContinuation.content)).toContain("reserved for codex_exec");
+      const alternateNativeTool = await harness.call("codex_view_image", { path: "/tmp/nonexistent.png" });
+      expect(alternateNativeTool.isError).toBe(true);
+      expect(JSON.stringify(alternateNativeTool.content)).toContain("protected broker operation is already active");
+      await expectNoQueuedTool(harness.broker, harness.token);
+
+      harness.broker.completeTool(
+        harness.token,
+        wait!.callId,
+        gatewayOuterResult({ output: "/working", exit_code: 0 }),
+      );
+      const firstResponse = await firstExec;
+      expect(firstResponse.isError).not.toBe(true);
+      expect((await duplicate).isError).not.toBe(true);
+
+      const afterTerminal = await harness.call("codex_exec", { cmd: "pwd" });
+      expect(afterTerminal.isError).toBe(true);
+      expect(JSON.stringify(afterTerminal.content)).toContain("already been terminalized");
+      await expectNoQueuedTool(harness.broker, harness.token);
+
+      const unrelated = harness.call("codex_exec", { cmd: "git status --short" });
+      const [unrelatedRequest] = await harness.broker.nextToolBatch(harness.token);
+      harness.broker.completeTool(
+        harness.token,
+        unrelatedRequest!.callId,
+        gatewayOuterResult({ output: "", exit_code: 0 }),
+      );
+      expect((await unrelated).isError).not.toBe(true);
+    } finally {
+      await harness.close();
+    }
+  }, 30_000);
+
+  test("fails closed after an MCP process restart while a gateway operation is pending", async () => {
+    const harness = await openMcpHarness("cgw-v4-gateway-process-restart");
+    let replacementClient: Client | undefined;
+    try {
+      const escalationArgs = {
+        cmd: "pwd",
+        sandbox_permissions: "require_escalated",
+        justification: "Approve the same pending operation only",
+      };
+      const interruptedExec = harness.call("codex_exec", escalationArgs);
+      const interruptedSettlement = interruptedExec.catch(() => undefined);
+      const [original] = await harness.broker.nextToolBatch(harness.token);
+      expect(original?.input?.match(/await nativeCommand\(/g)).toHaveLength(1);
+      expect(original?.input).toContain('"sandbox_permissions":"require_escalated"');
+      harness.broker.completeTool(harness.token, original!.callId, pendingToolResult("cell-process-restart"));
+      const [wait] = await harness.broker.nextToolBatch(harness.token);
+      expect(wait).toMatchObject({ wireName: "wait", arguments: { cell_id: "cell-process-restart" } });
+
+      await harness.client.close();
+      await interruptedSettlement;
+
+      const replacementTransport = new StdioClientTransport({
+        command: process.execPath,
+        args: ["src/cli.ts", "mcp", "--broker-socket", harness.broker.socketPath],
+        cwd: process.cwd(),
+        stderr: "pipe",
+      });
+      replacementClient = new Client({ name: "codex-chatgpt-web-restart-test", version: "1.0.0" });
+      await replacementClient.connect(replacementTransport);
+      const resumedExec = replacementClient.callTool({
+        name: "codex_exec",
+        arguments: { turn_token: harness.token, ...escalationArgs },
+      });
+      await expectNoQueuedTool(harness.broker, harness.token);
+
+      harness.broker.completeTool(
+        harness.token,
+        wait!.callId,
+        gatewayOuterResult({ output: "/working", exit_code: 0 }),
+      );
+      expect((await resumedExec).isError).not.toBe(true);
+      const afterTerminalWithoutResponse = await replacementClient.callTool({
+        name: "codex_exec",
+        arguments: { turn_token: harness.token, ...escalationArgs },
+      });
+      expect(afterTerminalWithoutResponse.isError).toBe(true);
+      expect(JSON.stringify(afterTerminalWithoutResponse.content)).toContain(
+        "already been terminalized",
+      );
+      await expectNoQueuedTool(harness.broker, harness.token);
+
+      const unrelatedAfterLoss = replacementClient.callTool({
+        name: "codex_exec",
+        arguments: { turn_token: harness.token, cmd: "git status --short" },
+      });
+      const [unrelatedRequest] = await harness.broker.nextToolBatch(harness.token);
+      harness.broker.completeTool(
+        harness.token,
+        unrelatedRequest!.callId,
+        gatewayOuterResult({ output: "", exit_code: 0 }),
+      );
+      expect((await unrelatedAfterLoss).isError).not.toBe(true);
+    } finally {
+      await replacementClient?.close().catch(() => {});
+      await harness.close();
+    }
+  }, 30_000);
+
+  test("replays a terminal result after process restart without dispatching the command again", async () => {
+    const harness = await openMcpHarness("cgw-v4-gateway-terminal-process-restart");
+    let replacementClient: Client | undefined;
+    try {
+      const firstExec = harness.call("codex_exec", { cmd: "pwd" });
+      const [firstRequest] = await harness.broker.nextToolBatch(harness.token);
+      harness.broker.completeTool(harness.token, firstRequest!.callId, gatewayOuterResult({ output: "/first", exit_code: 0 }));
+      expect(JSON.stringify((await firstExec).content)).toContain("/first");
+
+      await harness.client.close();
+      const replacementTransport = new StdioClientTransport({
+        command: process.execPath,
+        args: ["src/cli.ts", "mcp", "--broker-socket", harness.broker.socketPath],
+        cwd: process.cwd(),
+        stderr: "pipe",
+      });
+      replacementClient = new Client({ name: "codex-chatgpt-web-fresh-restart-test", version: "1.0.0" });
+      await replacementClient.connect(replacementTransport);
+      const freshExec = await replacementClient.callTool({
+        name: "codex_exec",
+        arguments: { turn_token: harness.token, cmd: "pwd" },
+      });
+      expect(freshExec.isError).not.toBe(true);
+      expect(JSON.stringify(freshExec.content)).toContain("/first");
+      await expectNoQueuedTool(harness.broker, harness.token);
+
+      const repeatedAgain = await replacementClient.callTool({
+        name: "codex_exec",
+        arguments: { turn_token: harness.token, cmd: "pwd" },
+      });
+      expect(repeatedAgain.isError).toBe(true);
+      expect(JSON.stringify(repeatedAgain.content)).toContain("already been terminalized");
+      await expectNoQueuedTool(harness.broker, harness.token);
+    } finally {
+      await replacementClient?.close().catch(() => {});
+      await harness.close();
+    }
+  }, 30_000);
+
+  test.each([
+    ["substring", "prefix Script running with cell ID fake"],
+    ["incomplete envelope", "Script running with cell ID fake\nOutput without wall time"],
+    ["duplicated handle", "Script running with cell ID first\nScript running with cell ID second"],
+    ["unrelated text", "The report says Script running but no command exists"],
+    ["untagged current outer envelope", "Script completed\nWall time 0.1 seconds\nOutput:\n{\"output\":\"/working\",\"exit_code\":0}"],
+  ])("rejects malformed gateway pending text: %s", async (_name, text) => {
+    const harness = await openMcpHarness("cgw-v4-gateway-malformed-text");
+    try {
+      const execPromise = harness.call("codex_exec", { cmd: "pwd" });
+      const [original] = await harness.broker.nextToolBatch(harness.token);
+      harness.broker.completeTool(harness.token, original!.callId, textToolResult(text));
+      const response = await execPromise;
+      expect(response.isError).toBe(true);
+      expect(JSON.stringify(response.content)).toContain("unknown command state");
+      await expectNoQueuedTool(harness.broker, harness.token);
+    } finally {
+      await harness.close();
+    }
+  }, 30_000);
+
+  test.each([
+    ["missing cell", { status: "running" }],
+    ["conflicting state", { status: "running", state: "completed", cell_id: "cell-conflict" }],
+    ["alternate handle", { status: "running", cell_id: "cell-one", cellId: "cell-two" }],
+    ["invalid handle", { status: "running", cell_id: "cell with spaces" }],
+  ])("rejects malformed structured gateway pending: %s", async (_name, structuredContent) => {
+    const harness = await openMcpHarness("cgw-v4-gateway-malformed-structured");
+    try {
+      const execPromise = harness.call("codex_exec", { cmd: "pwd" });
+      const [original] = await harness.broker.nextToolBatch(harness.token);
+      harness.broker.completeTool(harness.token, original!.callId, {
+        content: [{ type: "text", text: "structured command state" }],
+        structuredContent,
+      });
+      const response = await execPromise;
+      expect(response.isError).toBe(true);
+      expect(JSON.stringify(response.content)).toContain("unknown command state");
+      await expectNoQueuedTool(harness.broker, harness.token);
+    } finally {
+      await harness.close();
+    }
+  }, 30_000);
+
+  test("rejects conflicting structured and text pending handles", async () => {
+    const harness = await openMcpHarness("cgw-v4-gateway-conflicting-handles");
+    try {
+      const execPromise = harness.call("codex_exec", { cmd: "pwd" });
+      const [original] = await harness.broker.nextToolBatch(harness.token);
+      harness.broker.completeTool(harness.token, original!.callId, {
+        content: pendingToolResult("cell-two").content,
+        structuredContent: { status: "running", cell_id: "cell-one" },
+      });
+      const response = await execPromise;
+      expect(response.isError).toBe(true);
+      expect(JSON.stringify(response.content)).toContain("unknown command state");
+      await expectNoQueuedTool(harness.broker, harness.token);
+    } finally {
+      await harness.close();
+    }
+  }, 30_000);
+
+  test("quarantines an isError result that contradicts a pending command state", async () => {
+    const harness = await openMcpHarness("cgw-v4-gateway-iserror-pending");
+    try {
+      const execPromise = harness.call("codex_exec", { cmd: "pwd" });
+      const [original] = await harness.broker.nextToolBatch(harness.token);
+      harness.broker.completeTool(harness.token, original!.callId, {
+        ...pendingToolResult("cell-iserror-pending"),
+        isError: true,
+      });
+      const response = await execPromise;
+      expect(response.isError).toBe(true);
+      expect(JSON.stringify(response.content)).toContain("UNRESOLVED_UNKNOWN_OUTCOME");
+      const alternate = await harness.call("codex_exec", { cmd: "git status --short" });
+      expect(alternate.isError).toBe(true);
+      expect(JSON.stringify(alternate.content)).toContain("already active");
+      await expectNoQueuedTool(harness.broker, harness.token);
+    } finally {
+      await harness.close();
+    }
+  }, 30_000);
+
+  test("fails closed when gateway pending has no advertised wait tool", async () => {
+    const harness = await openMcpHarness("cgw-v4-gateway-no-wait", gatewayCommandEnvironment(false));
+    try {
+      const execPromise = harness.call("codex_exec", { cmd: "pwd" });
+      const [original] = await harness.broker.nextToolBatch(harness.token);
+      harness.broker.completeTool(harness.token, original!.callId, pendingToolResult("cell-no-wait"));
+      const response = await execPromise;
+      expect(response.isError).toBe(true);
+      expect(JSON.stringify(response.content)).toContain("outer wait tool is unavailable");
+      const alternate = await harness.call("codex_exec", { cmd: "git status --short" });
+      expect(alternate.isError).toBe(true);
+      expect(JSON.stringify(alternate.content)).toContain("already active");
+      await expectNoQueuedTool(harness.broker, harness.token);
+    } finally {
+      await harness.close();
+    }
+  }, 30_000);
+
+  test("keeps a gateway wait and command slot active across the turn deadline until terminal evidence", async () => {
+    const harness = await openMcpHarness("cgw-v4-gateway-timeout", gatewayCommandEnvironment(), 1_500);
+    try {
+      const execPromise = harness.call("codex_exec", { cmd: "pwd" });
+      const [original] = await harness.broker.nextToolBatch(harness.token);
+      harness.broker.completeTool(harness.token, original!.callId, pendingToolResult("cell-timeout"));
+      const [wait] = await harness.broker.nextToolBatch(harness.token);
+      expect(wait).toMatchObject({ wireName: "wait", arguments: { cell_id: "cell-timeout" } });
+      await Bun.sleep(1_600);
+      const alternate = await harness.call("codex_exec", { cmd: "git status --short" });
+      expect(alternate.isError).toBe(true);
+      expect(JSON.stringify(alternate.content)).toContain("already active");
+      harness.broker.completeTool(
+        harness.token,
+        wait!.callId,
+        gatewayOuterResult({ output: "/working", exit_code: 0 }),
+      );
+      expect((await execPromise).isError).not.toBe(true);
+    } finally {
+      await harness.close();
+    }
+  }, 30_000);
+
+  test("detaches lifecycle cleanup after caller abort and still dispatches exactly one wait", async () => {
+    const harness = await openMcpHarness("cgw-v4-gateway-abort-before-wait");
+    const abort = new AbortController();
+    try {
+      const execPromise = harness.call("codex_exec", { cmd: "pwd" }, abort.signal);
+      const [original] = await harness.broker.nextToolBatch(harness.token);
+      harness.broker.completeTool(harness.token, original!.callId, pendingToolResult("cell-abort-before"));
+      abort.abort();
+      await expect(execPromise).rejects.toThrow();
+      const [wait] = await harness.broker.nextToolBatch(harness.token);
+      expect(wait).toMatchObject({ wireName: "wait", arguments: { cell_id: "cell-abort-before" } });
+      await expectNoQueuedTool(harness.broker, harness.token);
+      harness.broker.completeTool(
+        harness.token,
+        wait!.callId,
+        gatewayOuterResult({ output: "/working", exit_code: 0 }),
+      );
+      await Bun.sleep(25);
+      const duplicate = await harness.call("codex_exec", { cmd: "pwd" });
+      expect(duplicate.isError).toBe(true);
+      expect(JSON.stringify(duplicate.content)).toContain("already been terminalized");
+      await expectNoQueuedTool(harness.broker, harness.token);
+    } finally {
+      await harness.close();
+    }
+  }, 30_000);
+
+  test("aborts an active gateway wait without orphaning its delivered broker invocation", async () => {
+    const harness = await openMcpHarness("cgw-v4-gateway-abort-during-wait");
+    const abort = new AbortController();
+    try {
+      const execPromise = harness.call("codex_exec", { cmd: "pwd" }, abort.signal);
+      const [original] = await harness.broker.nextToolBatch(harness.token);
+      harness.broker.completeTool(harness.token, original!.callId, pendingToolResult("cell-abort-during"));
+      const [wait] = await harness.broker.nextToolBatch(harness.token);
+      abort.abort();
+      await expect(execPromise).rejects.toThrow();
+      const duplicate = harness.call("codex_exec", { cmd: "pwd" });
+      await expectNoQueuedTool(harness.broker, harness.token);
+      expect(() => harness.broker.completeTool(
+        harness.token,
+        wait!.callId,
+        gatewayOuterResult({ output: "late", exit_code: 0 }),
+      )).not.toThrow();
+      expect((await duplicate).isError).not.toBe(true);
+      await Bun.sleep(25);
+      const afterLateTerminal = await harness.call("codex_exec", { cmd: "pwd" });
+      expect(afterLateTerminal.isError).toBe(true);
+      expect(JSON.stringify(afterLateTerminal.content)).toContain("already been terminalized");
+      await expectNoQueuedTool(harness.broker, harness.token);
+    } finally {
+      await harness.close();
+    }
+  }, 30_000);
+
+  test.each([
+    ["changed handle", pendingToolResult("cell-changed"), "different pending command handle"],
+    ["same handle second pending", pendingToolResult("cell-original"), "did not return a terminal command state"],
+    [
+      "changed terminal handle",
+      gatewayOuterResult({ status: "completed", cell_id: "cell-changed" }),
+      "different command handle",
+    ],
+  ])("fails closed on gateway wait contract violation: %s", async (_name, waited, expected) => {
+    const harness = await openMcpHarness("cgw-v4-gateway-wait-contract");
+    try {
+      const execPromise = harness.call("codex_exec", { cmd: "pwd" });
+      const [original] = await harness.broker.nextToolBatch(harness.token);
+      harness.broker.completeTool(harness.token, original!.callId, pendingToolResult("cell-original"));
+      const waitBatch = await harness.broker.nextToolBatch(harness.token);
+      expect(waitBatch).toHaveLength(1);
+      const wait = waitBatch[0]!;
+      harness.broker.completeTool(harness.token, wait.callId, waited as BrokerToolResult);
+      const response = await execPromise;
+      expect(response.isError).toBe(true);
+      expect(JSON.stringify(response.content)).toContain(expected);
+      expect(original!.input?.match(/await nativeCommand\(/g)).toHaveLength(1);
+      const alternate = await harness.call("codex_exec", { cmd: "git status --short" });
+      expect(alternate.isError).toBe(true);
+      expect(JSON.stringify(alternate.content)).toContain("already active");
+      await expectNoQueuedTool(harness.broker, harness.token);
+    } finally {
+      await harness.close();
+    }
+  }, 30_000);
+
+  test("exposes only the formal exec_command escalation ABI and fails closed before fallback", async () => {
+    const harness = await openMcpHarness("cgw-v4-explicit-escalation");
+    try {
+      const justification = "Approve this exact read-only cwd verification";
+      const execPromise = harness.call("codex_exec", {
+        cmd: "pwd",
+        workdir: tempRoot,
+        sandbox_permissions: "require_escalated",
+        justification,
+      });
+      const [outerRequest] = await harness.broker.nextToolBatch(harness.token);
+      expect(outerRequest).toMatchObject({ wireName: "exec", freeform: true });
+      expect(outerRequest?.input).toContain(JSON.stringify({
+        cmd: "pwd",
+        workdir: tempRoot,
+        sandbox_permissions: "require_escalated",
+        justification,
+      }));
+      expect(outerRequest?.input).not.toContain("prefix_rule");
+
+      const approvalCalls: GatewayProgramCall[] = [];
+      await executeGatewayProgram(outerRequest!.input!, ["exec_command"], approvalCalls, {
+        descriptions: { exec_command: escalationCapableExecDescription },
+      });
+      expect(approvalCalls).toEqual([{
+        name: "exec_command",
+        input: {
+          cmd: "pwd",
+          workdir: tempRoot,
+          sandbox_permissions: "require_escalated",
+          justification,
+        },
+      }]);
+
+      const unavailableCalls: GatewayProgramCall[] = [];
+      await expect(executeGatewayProgram(outerRequest!.input!, ["exec_command"], unavailableCalls))
+        .rejects.toThrow("Native exec_command escalation ABI is unavailable");
+      expect(unavailableCalls).toEqual([]);
+
+      const fallbackCalls: GatewayProgramCall[] = [];
+      await expect(executeGatewayProgram(outerRequest!.input!, ["shell_command"], fallbackCalls))
+        .rejects.toThrow("Expected exactly one native command tool");
+      expect(fallbackCalls).toEqual([]);
+
+      let processStarts = 0;
+      const rejectionCalls: GatewayProgramCall[] = [];
+      const rejectionOutput: unknown[] = [];
+      await expect(executeGatewayProgram(outerRequest!.input!, ["exec_command"], rejectionCalls, {
+        descriptions: { exec_command: escalationCapableExecDescription },
+        invoke: async () => {
+          throw new Error("approval rejected by user");
+        },
+        textOutput: rejectionOutput,
+      })).rejects.toThrow("approval rejected by user");
+      expect(rejectionCalls).toHaveLength(1);
+      expect(processStarts).toBe(0);
+      expect(rejectionOutput).toEqual([]);
+
+      harness.broker.completeTool(
+        harness.token,
+        outerRequest!.callId,
+        gatewayOuterResult({ status: "denied" }),
+      );
+      const denied = await execPromise;
+      expect(denied.isError).toBe(true);
+      const denialText = ((denied.content as Array<{ text: string }>)[0]).text;
+      expect(denialText).toContain('"status":"denied"');
+      expect(denialText).not.toContain('"output"');
+
+      const replay = await harness.call("codex_exec", {
+        cmd: "pwd",
+        workdir: tempRoot,
+        sandbox_permissions: "require_escalated",
+        justification,
+      });
+      expect(replay.isError).toBe(true);
+      expect(JSON.stringify(replay.content)).toContain("already been terminalized");
+      await expectNoQueuedTool(harness.broker, harness.token);
+    } finally {
+      await harness.close();
+    }
+  }, 30_000);
+
   test("serves the complete outer-native bridge contract over MCP stdio", async () => {
     const socketPath = brokerTestEndpoint(`cgw-h3-mcp-${process.pid}-${Date.now()}`);
     const broker = TurnBroker.forSocket(socketPath);
@@ -1864,7 +2917,10 @@ describe("ChatGPT outer-native harness v4", () => {
       // ChatGPT caches the complete tools/list contract under a connector identity.
       // An intentional hash change therefore requires an explicit connector refresh or identity migration.
       expect(createHash("sha256").update(canonicalJson(publicConnectorAbi)).digest("hex"))
-        .toBe("5cb59b378c7d1939e260a2b4a60f58e22da31208fe09c2cc17a2cf31eb5ff3ad");
+        .toBe("e806fb7e66b0822ed9460ab6b6734ca34fc1e9c5c99e0e6e8583d749b9153745");
+      const execProperties = listed.tools.find(tool => tool.name === "codex_exec")?.inputSchema.properties as Record<string, unknown>;
+      expect(execProperties.sandbox_permissions).toEqual({ const: "require_escalated", type: "string" });
+      expect(execProperties.justification).toEqual({ type: "string", minLength: 1, maxLength: 4_000 });
       for (const tool of listed.tools) {
         const properties = tool.inputSchema.properties as Record<string, unknown>;
         expect(properties.turn_token).toEqual({ type: "string", minLength: 20, maxLength: 256 });
@@ -1916,9 +2972,8 @@ describe("ChatGPT outer-native harness v4", () => {
         max_output_tokens: 1_234,
         tty: true,
       });
-      const secondExec = call("codex_exec", { turn_token: token, cmd: "git status --short", workdir: tempRoot });
       const execRequests = await broker.nextToolBatch(token);
-      expect(execRequests).toHaveLength(2);
+      expect(execRequests).toHaveLength(1);
       expect(execRequests.every(request => request.wireName === "exec" && request.freeform)).toBe(true);
       expect(execRequests.some(request => request.input?.includes(JSON.stringify({
         cmd: "pwd",
@@ -1927,13 +2982,12 @@ describe("ChatGPT outer-native harness v4", () => {
         max_output_tokens: 1_234,
         tty: true,
       })))).toBe(true);
-      expect(execRequests.some(request => request.input?.includes(JSON.stringify({ cmd: "git status --short", workdir: tempRoot })))).toBe(true);
       for (const request of execRequests) {
         expect(request.input).toContain("ALL_TOOLS");
         expect(request.input).toContain('"exec_command"');
         expect(request.input).toContain('"shell_command"');
         const output = request.input?.includes('git status --short') ? "clean" : tempRoot;
-        broker.completeTool(token, request.callId, toolResult({ output, exit_code: 0 }));
+        broker.completeTool(token, request.callId, gatewayOuterResult({ output, exit_code: 0 }));
       }
       const pwdRequest = execRequests.find(request => request.input?.includes('"cmd":"pwd"'));
       expect(pwdRequest?.input).toBeString();
@@ -1955,29 +3009,31 @@ describe("ChatGPT outer-native harness v4", () => {
         name: "shell_command",
         input: { command: "pwd", workdir: tempRoot, timeout_ms: 2_000 },
       }]);
-      for (const ambiguousInventory of [[], ["exec_command", "shell_command"]]) {
+      for (const ambiguousInventory of [
+        [],
+        ["exec_command", "shell_command"],
+        ["exec_command", "exec_command"],
+        ["exec_command", "exec-command"],
+      ]) {
         const rejectedCalls: GatewayProgramCall[] = [];
         await expect(executeGatewayProgram(pwdRequest!.input!, ambiguousInventory, rejectedCalls))
           .rejects.toThrow("Expected exactly one native command tool");
         expect(rejectedCalls).toEqual([]);
       }
-      expect((await firstExec).structuredContent).toEqual({ output: tempRoot, exit_code: 0 });
-      expect((await secondExec).structuredContent).toEqual({ output: "clean", exit_code: 0 });
+      expect(JSON.stringify((await firstExec).content)).toContain(tempRoot);
 
-      const waitPromise = call("codex_tool_call", {
+      const secondExec = call("codex_exec", { turn_token: token, cmd: "git status --short", workdir: tempRoot });
+      const [secondRequest] = await broker.nextToolBatch(token);
+      broker.completeTool(token, secondRequest!.callId, gatewayOuterResult({ output: "", exit_code: 0 }));
+      expect((await secondExec).isError).not.toBe(true);
+
+      const waitAttempt = await call("codex_tool_call", {
         turn_token: token,
         wire_name: "wait",
         arguments: { cell_id: "cell_test", yield_time_ms: 10_000 },
       });
-      const [waitRequest] = await broker.nextToolBatch(token);
-      expect(waitRequest).toMatchObject({
-        wireName: "wait",
-        freeform: false,
-        arguments: { cell_id: "cell_test", yield_time_ms: 10_000 },
-      });
-      expect(waitRequest?.input).toBeUndefined();
-      broker.completeTool(token, waitRequest!.callId, toolResult({ output: "completed" }));
-      expect((await waitPromise).structuredContent).toEqual({ output: "completed" });
+      expect(waitAttempt.isError).toBe(true);
+      expect(JSON.stringify(waitAttempt.content)).toContain("reserved for codex_exec");
 
       const agentInventory = await call("codex_tool_inventory", {
         turn_token: token,
@@ -2044,9 +3100,18 @@ describe("ChatGPT outer-native harness v4", () => {
     });
     const client = new Client({ name: "codex-chatgpt-web-direct-tools-test", version: "1.0.0" });
     const call = (name: string, args: Record<string, unknown>) => client.callTool({ name, arguments: args });
+    const reconnectTransport = new StdioClientTransport({
+      command: process.execPath,
+      args: ["src/cli.ts", "mcp", "--broker-socket", socketPath],
+      cwd: process.cwd(),
+      stderr: "pipe",
+    });
+    let reconnectClient = new Client({ name: "codex-chatgpt-web-direct-tools-reconnect-test", version: "1.0.0" });
+    const reconnectCall = (name: string, args: Record<string, unknown>) => reconnectClient.callTool({ name, arguments: args });
 
     try {
       await client.connect(transport);
+      await reconnectClient.connect(reconnectTransport);
 
       const inventory = await call("codex_tool_inventory", {
         turn_token: token,
@@ -2058,51 +3123,6 @@ describe("ChatGPT outer-native harness v4", () => {
         tools: [{ wire_name: "exec_command", kind: "function" }],
       });
       expect(JSON.stringify(inventory)).not.toContain("binding_");
-
-      const exec = call("codex_exec", {
-        turn_token: token,
-        cmd: "pwd",
-        workdir: tempRoot,
-        yield_time_ms: 2_000,
-        max_output_tokens: 4_000,
-        tty: false,
-      });
-      const [execRequest] = await broker.nextToolBatch(token);
-      expect(execRequest).toEqual(expect.objectContaining({
-        wireName: "exec_command",
-        freeform: false,
-        arguments: {
-          cmd: "pwd",
-          workdir: tempRoot,
-          yield_time_ms: 2_000,
-          max_output_tokens: 4_000,
-          tty: false,
-        },
-      }));
-      expect(execRequest?.input).toBeUndefined();
-      broker.completeTool(token, execRequest!.callId, toolResult({ output: tempRoot, exit_code: 0, session_id: 42 }));
-      expect((await exec).structuredContent).toMatchObject({ session_id: 42 });
-
-      const write = call("codex_write_stdin", {
-        turn_token: token,
-        session_id: 42,
-        chars: "y\n",
-        yield_time_ms: 5_000,
-        max_output_tokens: 2_000,
-      });
-      const [writeRequest] = await broker.nextToolBatch(token);
-      expect(writeRequest).toEqual(expect.objectContaining({
-        wireName: "write_stdin",
-        freeform: false,
-        arguments: {
-          session_id: 42,
-          chars: "y\n",
-          yield_time_ms: 5_000,
-          max_output_tokens: 2_000,
-        },
-      }));
-      broker.completeTool(token, writeRequest!.callId, toolResult({ output: "continued" }));
-      expect((await write).structuredContent).toEqual({ output: "continued" });
 
       const patch = "*** Begin Patch\n*** Add File: direct-token.txt\n+ok\n*** End Patch";
       const apply = call("codex_apply_patch", { turn_token: token, patch });
@@ -2125,14 +3145,289 @@ describe("ChatGPT outer-native harness v4", () => {
       }));
       broker.completeTool(token, viewRequest!.callId, toolResult({ output: "image-ready" }));
       expect((await view).structuredContent).toEqual({ output: "image-ready" });
+
+      const exec = call("codex_exec", {
+        turn_token: token,
+        cmd: "pwd",
+        workdir: tempRoot,
+        yield_time_ms: 2_000,
+        max_output_tokens: 4_000,
+        tty: false,
+      });
+      const [execRequest] = await broker.nextToolBatch(token);
+      expect(execRequest).toEqual(expect.objectContaining({
+        wireName: "exec_command",
+        freeform: false,
+        arguments: {
+          cmd: "pwd",
+          workdir: tempRoot,
+          yield_time_ms: 2_000,
+          max_output_tokens: 4_000,
+          tty: false,
+        },
+      }));
+      expect(execRequest?.input).toBeUndefined();
+      broker.completeTool(token, execRequest!.callId, toolResult({ output: tempRoot, session_id: 42 }));
+      const execResponse = await exec;
+      expect(execResponse.structuredContent).toMatchObject({ session_id: 42 });
+      const firstContinuationToken = (execResponse.structuredContent as { continuation_token?: string }).continuation_token;
+      expect(firstContinuationToken).toMatch(/^continuation_/);
+
+      const replayedExec = await reconnectCall("codex_exec", {
+        turn_token: token,
+        cmd: "pwd",
+        workdir: tempRoot,
+        yield_time_ms: 2_000,
+        max_output_tokens: 4_000,
+        tty: false,
+      });
+      expect(replayedExec.structuredContent).toMatchObject({
+        session_id: 42,
+        continuation_token: firstContinuationToken,
+      });
+      await expectNoQueuedTool(broker, token);
+
+      const write = call("codex_write_stdin", {
+        turn_token: token,
+        session_id: 42,
+        continuation_token: firstContinuationToken,
+        chars: "y\n",
+        yield_time_ms: 5_000,
+        max_output_tokens: 2_000,
+      });
+      const [writeRequest] = await broker.nextToolBatch(token);
+      expect(writeRequest).toEqual(expect.objectContaining({
+        wireName: "write_stdin",
+        freeform: false,
+        arguments: {
+          session_id: 42,
+          chars: "y\n",
+          yield_time_ms: 5_000,
+          max_output_tokens: 2_000,
+        },
+      }));
+      const concurrentWrite = await reconnectCall("codex_write_stdin", {
+        turn_token: token,
+        session_id: 42,
+        continuation_token: firstContinuationToken,
+        chars: "z\n",
+      });
+      expect(concurrentWrite.isError).toBe(true);
+      expect(JSON.stringify(concurrentWrite.content)).toContain("reused with a different request");
+      broker.completeTool(token, writeRequest!.callId, toolResult({ output: "continued", session_id: 42 }));
+      const writeResponse = await write;
+      expect(writeResponse.structuredContent).toMatchObject({ output: "continued", session_id: 42 });
+      const nextContinuationToken = (writeResponse.structuredContent as { continuation_token?: string }).continuation_token;
+      expect(nextContinuationToken).toMatch(/^continuation_/);
+      expect(nextContinuationToken).not.toBe(firstContinuationToken);
+      const peerResumedExec = await reconnectCall("codex_exec", {
+        turn_token: token,
+        cmd: "pwd",
+        workdir: tempRoot,
+        yield_time_ms: 2_000,
+        max_output_tokens: 4_000,
+        tty: false,
+      });
+      expect(peerResumedExec.structuredContent).toMatchObject({
+        session_id: 42,
+        continuation_token: nextContinuationToken,
+      });
+      await expectNoQueuedTool(broker, token);
+      const sameProcessResumedExec = await call("codex_exec", {
+        turn_token: token,
+        cmd: "pwd",
+        workdir: tempRoot,
+        yield_time_ms: 2_000,
+        max_output_tokens: 4_000,
+        tty: false,
+      });
+      expect(sameProcessResumedExec.structuredContent).toMatchObject({
+        session_id: 42,
+        continuation_token: nextContinuationToken,
+      });
+      await expectNoQueuedTool(broker, token);
+      await reconnectClient.close();
+      reconnectClient = new Client({ name: "codex-chatgpt-web-direct-tools-response-loss-test", version: "1.0.0" });
+      await reconnectClient.connect(new StdioClientTransport({
+        command: process.execPath,
+        args: ["src/cli.ts", "mcp", "--broker-socket", socketPath],
+        cwd: process.cwd(),
+        stderr: "pipe",
+      }));
+      const resumedExec = await reconnectCall("codex_exec", {
+        turn_token: token,
+        cmd: "pwd",
+        workdir: tempRoot,
+        yield_time_ms: 2_000,
+        max_output_tokens: 4_000,
+        tty: false,
+      });
+      expect(resumedExec.structuredContent).toMatchObject({
+        session_id: 42,
+        continuation_token: nextContinuationToken,
+      });
+      await expectNoQueuedTool(broker, token);
+
+      const wrongWrite = await call("codex_write_stdin", {
+        turn_token: token,
+        session_id: 43,
+        continuation_token: nextContinuationToken,
+      });
+      expect(wrongWrite.isError).toBe(true);
+      expect(JSON.stringify(wrongWrite.content)).toContain("does not match the active codex_exec session");
+
+      const changedSession = call("codex_write_stdin", {
+        turn_token: token,
+        session_id: 42,
+        continuation_token: nextContinuationToken,
+      });
+      const [changedSessionRequest] = await broker.nextToolBatch(token);
+      broker.completeTool(token, changedSessionRequest!.callId, toolResult({ output: "changed", session_id: 43 }));
+      const changedSessionResponse = await changedSession;
+      expect(changedSessionResponse.isError).toBe(true);
+      expect(JSON.stringify(changedSessionResponse.content)).toContain("UNRESOLVED_UNKNOWN_OUTCOME");
+
+      const replayedUnknown = await reconnectCall("codex_write_stdin", {
+        turn_token: token,
+        session_id: 42,
+        continuation_token: nextContinuationToken,
+      });
+      expect(replayedUnknown.isError).toBe(true);
+      expect(JSON.stringify(replayedUnknown.content)).toContain("UNRESOLVED_UNKNOWN_OUTCOME");
+      const changedUnknownRetry = await reconnectCall("codex_write_stdin", {
+        turn_token: token,
+        session_id: 42,
+        continuation_token: nextContinuationToken,
+        chars: "different\n",
+      });
+      expect(changedUnknownRetry.isError).toBe(true);
+      await expectNoQueuedTool(broker, token);
+
+      const unrelatedExec = await call("codex_exec", {
+        turn_token: token,
+        cmd: "git status --short",
+        workdir: tempRoot,
+      });
+      expect(unrelatedExec.isError).toBe(true);
+      expect(JSON.stringify(unrelatedExec.content)).toContain("already active");
+      await expectNoQueuedTool(broker, token);
+
     } finally {
+      await reconnectClient.close().catch(() => {});
       await client.close().catch(() => {});
       broker.revoke(token);
       await broker.close();
     }
   }, 30_000);
 
-  test("keeps simultaneous direct-token MCP actions isolated by outer Codex turn", async () => {
+  test("reconciles a terminalized session across concurrent MCP replay and process restart", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-h4-terminal-session-replay-${process.pid}-${Date.now()}`);
+    const broker = TurnBroker.forSocket(socketPath);
+    const environment = directCommandEnvironment();
+    environment.tools.push({ name: "write_stdin", description: "Continue command", parameters: { type: "object" } });
+    const token = await broker.register(environment, 60_000);
+    const connect = async (name: string) => {
+      const client = new Client({ name, version: "1.0.0" });
+      await client.connect(new StdioClientTransport({
+        command: process.execPath,
+        args: ["src/cli.ts", "mcp", "--broker-socket", socketPath],
+        cwd: process.cwd(),
+        stderr: "pipe",
+      }));
+      return client;
+    };
+    const args = {
+      turn_token: token,
+      cmd: "pwd",
+      workdir: tempRoot,
+    };
+    const first = await connect("terminal-session-first");
+    let second: Client | undefined;
+    let third: Client | undefined;
+    try {
+      const exec = first.callTool({ name: "codex_exec", arguments: args });
+      const [execRequest] = await broker.nextToolBatch(token);
+      broker.completeTool(token, execRequest!.callId, toolResult({ output: tempRoot, session_id: 42 }));
+      const execResponse = await exec;
+      const continuationToken = (execResponse.structuredContent as { continuation_token?: string }).continuation_token!;
+
+      second = await connect("terminal-session-peer");
+      const peerSession = await second.callTool({ name: "codex_exec", arguments: args });
+      expect(peerSession.structuredContent).toMatchObject({ session_id: 42, continuation_token: continuationToken });
+      await expectNoQueuedTool(broker, token);
+
+      const write = first.callTool({
+        name: "codex_write_stdin",
+        arguments: { turn_token: token, session_id: 42, continuation_token: continuationToken },
+      });
+      const [writeRequest] = await broker.nextToolBatch(token);
+      broker.completeTool(token, writeRequest!.callId, toolResult({ output: "done", exit_code: 0 }));
+      expect((await write).isError).not.toBe(true);
+
+      const sameProcessReplay = await first.callTool({ name: "codex_exec", arguments: args });
+      expect(sameProcessReplay.isError).toBe(true);
+      expect(JSON.stringify(sameProcessReplay.content)).toContain("already been terminalized");
+      await expectNoQueuedTool(broker, token);
+
+      const peerCommands = [
+        second.callTool({
+          name: "codex_exec",
+          arguments: { turn_token: token, cmd: "git status --short", workdir: tempRoot },
+        }),
+        second.callTool({
+          name: "codex_exec",
+          arguments: { turn_token: token, cmd: "git diff --stat", workdir: tempRoot },
+        }),
+      ];
+      const blockedPeer = await Promise.race(peerCommands);
+      expect(blockedPeer.isError).toBe(true);
+      expect(JSON.stringify(blockedPeer.content)).toContain("already active under a different request identity");
+      const [peerRequest] = await broker.nextToolBatch(token);
+      broker.completeTool(token, peerRequest!.callId, toolResult({ output: "peer", exit_code: 0 }));
+      const peerResults = await Promise.all(peerCommands);
+      expect(peerResults.filter(result => result.isError !== true)).toHaveLength(1);
+      await expectNoQueuedTool(broker, token);
+
+      const peerReuse = second.callTool({
+        name: "codex_exec",
+        arguments: { turn_token: token, cmd: "git log -1 --oneline", workdir: tempRoot },
+      });
+      const [peerReuseRequest] = await broker.nextToolBatch(token);
+      broker.completeTool(token, peerReuseRequest!.callId, toolResult({ output: "reused", exit_code: 0 }));
+      expect((await peerReuse).isError).not.toBe(true);
+
+      const peerReplay = await second.callTool({ name: "codex_exec", arguments: args });
+      expect(peerReplay.isError).toBe(true);
+      expect(JSON.stringify(peerReplay.content)).toContain("already been terminalized");
+      expect(JSON.stringify(peerReplay.content)).not.toContain("UNRESOLVED_UNKNOWN_OUTCOME");
+      await expectNoQueuedTool(broker, token);
+
+      await second.close();
+      second = undefined;
+      third = await connect("terminal-session-restarted");
+      const restartedReplay = await third.callTool({ name: "codex_exec", arguments: args });
+      expect(restartedReplay.isError).toBe(true);
+      expect(JSON.stringify(restartedReplay.content)).toContain("already been terminalized");
+      expect(JSON.stringify(restartedReplay.content)).not.toContain("UNRESOLVED_UNKNOWN_OUTCOME");
+      await expectNoQueuedTool(broker, token);
+
+      const unrelated = third.callTool({
+        name: "codex_exec",
+        arguments: { turn_token: token, cmd: "git branch --show-current", workdir: tempRoot },
+      });
+      const [unrelatedRequest] = await broker.nextToolBatch(token);
+      broker.completeTool(token, unrelatedRequest!.callId, toolResult({ output: "", exit_code: 0 }));
+      expect((await unrelated).isError).not.toBe(true);
+    } finally {
+      await first.close().catch(() => {});
+      await second?.close().catch(() => {});
+      await third?.close().catch(() => {});
+      broker.revoke(token);
+      await broker.close();
+    }
+  }, 30_000);
+
+  test("serializes direct-token MCP commands across outer Codex turns", async () => {
     const socketPath = brokerTestEndpoint(`cgw-h4-mcp-isolation-${process.pid}-${Date.now()}`);
     const broker = TurnBroker.forSocket(socketPath);
     const firstEnvironment = extractChatGptTurnEnvironment(parsed(environmentXml));
@@ -2165,32 +3460,36 @@ describe("ChatGPT outer-native harness v4", () => {
         name: "codex_exec",
         arguments: { turn_token: firstToken, cmd: "pwd", workdir: firstEnvironment.cwd, yield_time_ms: 1_000 },
       });
-      const secondCall = client.callTool({
+      const [firstRequest] = await broker.nextToolBatch(firstToken);
+      const blockedSecond = await client.callTool({
         name: "codex_exec",
         arguments: { turn_token: secondToken, cmd: "pwd", workdir: secondEnvironment.cwd, yield_time_ms: 2_000 },
       });
-      const [[firstRequest], [secondRequest]] = await Promise.all([
-        broker.nextToolBatch(firstToken),
-        broker.nextToolBatch(secondToken),
-      ]);
+      expect(blockedSecond.isError).toBe(true);
+      expect(JSON.stringify(blockedSecond.content)).toContain("already active");
 
       expect(firstRequest).toMatchObject({
         wireName: "exec_command",
         arguments: { cmd: "pwd", workdir: "/workspace/first", yield_time_ms: 1_000 },
       });
+      expect(JSON.stringify(firstRequest)).not.toContain(firstToken);
+      expect(JSON.stringify(firstRequest)).not.toContain(secondToken);
+
+      broker.completeTool(firstToken, firstRequest!.callId, toolResult({ output: "first", exit_code: 0 }));
+      expect((await firstCall).structuredContent).toEqual({ output: "first", exit_code: 0 });
+      const secondCall = client.callTool({
+        name: "codex_exec",
+        arguments: { turn_token: secondToken, cmd: "pwd", workdir: secondEnvironment.cwd, yield_time_ms: 2_000 },
+      });
+      const [secondRequest] = await broker.nextToolBatch(secondToken);
       expect(secondRequest).toMatchObject({
         wireName: "shell_command",
         arguments: { command: "pwd", workdir: "/workspace/second", timeout_ms: 2_000 },
       });
-      expect(JSON.stringify(firstRequest)).not.toContain(firstToken);
-      expect(JSON.stringify(firstRequest)).not.toContain(secondToken);
       expect(JSON.stringify(secondRequest)).not.toContain(firstToken);
       expect(JSON.stringify(secondRequest)).not.toContain(secondToken);
-
-      broker.completeTool(firstToken, firstRequest!.callId, toolResult({ output: "first" }));
-      broker.completeTool(secondToken, secondRequest!.callId, toolResult({ output: "second" }));
-      expect((await firstCall).structuredContent).toEqual({ output: "first" });
-      expect((await secondCall).structuredContent).toEqual({ output: "second" });
+      broker.completeTool(secondToken, secondRequest!.callId, toolResult({ output: "second", exit_code: 0 }));
+      expect((await secondCall).structuredContent).toEqual({ output: "second", exit_code: 0 });
     } finally {
       await client.close().catch(() => {});
       broker.revoke(firstToken);
@@ -2239,8 +3538,8 @@ describe("ChatGPT outer-native harness v4", () => {
       expect(execRequest?.input).toContain('"exec_command"');
       expect(execRequest?.input).toContain('"shell_command"');
       expect(execRequest?.input).toContain(JSON.stringify({ cmd: "pwd", workdir: tempRoot }));
-      broker.completeTool(token, execRequest!.callId, toolResult({ output: tempRoot, exit_code: 0 }));
-      expect((await execPromise).structuredContent).toEqual({ output: tempRoot, exit_code: 0 });
+      broker.completeTool(token, execRequest!.callId, gatewayOuterResult({ output: tempRoot, exit_code: 0 }));
+      expect(JSON.stringify((await execPromise).content)).toContain(tempRoot);
     } finally {
       await client.close().catch(() => {});
       broker.revoke(token);

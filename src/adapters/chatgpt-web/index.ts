@@ -424,6 +424,31 @@ export function createChatGptWebAdapter(
       try {
         emit({ type: "heartbeat" });
         await session.runExclusive(async () => {
+          let turnToken: string | undefined;
+          const outstanding = session.outstanding();
+          if (outstanding.length > 0 && session.runtime.mode === "tools") {
+            turnToken = await withAbort(session.runtime.token, incoming.abortSignal);
+            if (!environment) throw new Error("Tool-capable ChatGPT web runtime lost its trusted environment");
+            await broker.updateEnvironment(turnToken, environment);
+
+            const results = currentToolResults(parsed, session);
+            if (results.length === 0) {
+              const reasoning = session.reasoningForOutstandingReplay();
+              replayEvents(session.eventsForOutstandingReplay(), emit);
+              emitToolBatch(outstanding, estimateChatGptWebUsage(currentUsageInput(parsed), { reasoning, toolRequests: outstanding }, turnCapabilities), emit);
+              return;
+            }
+            if (results.length !== outstanding.length) {
+              throw new Error(`Codex returned ${results.length} of ${outstanding.length} results for a parallel ChatGPT tool batch`);
+            }
+            for (const message of results) {
+              await broker.completeTool(turnToken, message.toolCallId, brokerResult(message));
+              session.markResultDelivered(message.toolCallId);
+            }
+          } else if (outstanding.length > 0) {
+            throw new Error("Read-only ChatGPT Web runtime cannot own local tool calls");
+          }
+
           const settled = session.settledOutcome();
           if (settled) {
             if (settled.type === "error") throw settled.error;
@@ -448,36 +473,16 @@ export function createChatGptWebAdapter(
               session.setFinalReasoning(reasoning);
               session.setFinalEvents(events);
             }
+            if (turnToken) await broker.revoke(turnToken);
             emitBrowserCompletion(settled, estimateChatGptWebUsage(currentUsageInput(parsed), { answer: settled.answer, reasoning }, turnCapabilities), emit);
             chatGptWebTurnRetryPolicy.clear(retryKey);
             return;
           }
 
-          let turnToken: string | undefined;
-          if (session.runtime.mode === "tools") {
+          if (session.runtime.mode === "tools" && !turnToken) {
             turnToken = await withAbort(session.runtime.token, incoming.abortSignal);
             if (!environment) throw new Error("Tool-capable ChatGPT web runtime lost its trusted environment");
             await broker.updateEnvironment(turnToken, environment);
-
-            const outstanding = session.outstanding();
-            if (outstanding.length > 0) {
-              const results = currentToolResults(parsed, session);
-              if (results.length === 0) {
-                const reasoning = session.reasoningForOutstandingReplay();
-                replayEvents(session.eventsForOutstandingReplay(), emit);
-                emitToolBatch(outstanding, estimateChatGptWebUsage(currentUsageInput(parsed), { reasoning, toolRequests: outstanding }, turnCapabilities), emit);
-                return;
-              }
-              if (results.length !== outstanding.length) {
-                throw new Error(`Codex returned ${results.length} of ${outstanding.length} results for a parallel ChatGPT tool batch`);
-              }
-              for (const message of results) {
-                await broker.completeTool(turnToken, message.toolCallId, brokerResult(message));
-                session.markResultDelivered(message.toolCallId);
-              }
-            }
-          } else if (session.outstanding().length > 0) {
-            throw new Error("Read-only ChatGPT Web runtime cannot own local tool calls");
           }
 
           const toolWaitAbort = new AbortController();

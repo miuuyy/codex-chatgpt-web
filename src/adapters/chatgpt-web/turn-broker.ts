@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isWindowsPipeEndpoint } from "../../config";
 import type { ChatGptTurnEnvironment } from "./environment";
 
@@ -26,8 +27,19 @@ export interface BrokerToolResult {
 
 interface PendingInvocation {
   request: BrokerToolRequest;
+  invocationKey: string;
+  fingerprint: string;
+  promise: Promise<BrokerToolResult>;
   resolve: (result: BrokerToolResult) => void;
   reject: (error: Error) => void;
+  operationKey?: string;
+  operationRequestKey?: string;
+  continuationToken?: string;
+}
+
+interface OperationContinuation {
+  currentToken: string;
+  uses: Map<string, { invocationKey: string; nextToken?: string }>;
 }
 
 interface ToolWaiter {
@@ -41,9 +53,17 @@ interface TurnChannel {
   traceId: string;
   externalOwner: boolean;
   environment: PendingTurn;
+  retiring: boolean;
   bindingId?: string;
   queuedCallIds: string[];
   invocations: Map<string, PendingInvocation>;
+  invocationsByKey: Map<string, PendingInvocation>;
+  replayCacheChars: number;
+  replayCacheExhausted: boolean;
+  activeOperations: Map<string, string>;
+  operationContinuations: Map<string, OperationContinuation>;
+  terminalizedOperationRequests: Set<string>;
+  terminalizedOperationFingerprints: Map<string, Set<string>>;
   waiters: Set<ToolWaiter>;
   batchTimer?: ReturnType<typeof setTimeout>;
 }
@@ -55,6 +75,10 @@ interface BrokerRequest {
     | "resolve"
     | "release"
     | "invoke"
+    | "terminalize"
+    | "operation_status"
+    | "continuation"
+    | "advance_continuation"
     | "owner_status"
     | "owner_register"
     | "owner_update"
@@ -72,6 +96,10 @@ interface BrokerRequest {
   traceId?: string;
   callId?: string;
   toolResult?: BrokerToolResult;
+  invocationKey?: string;
+  operationKey?: string;
+  operationRequestKey?: string;
+  continuationToken?: string;
 }
 
 interface BrokerResponse {
@@ -82,7 +110,18 @@ interface BrokerResponse {
 
 const brokers = new Map<string, TurnBroker>();
 const MAX_BROKER_LINE_CHARS = 67_108_864;
+const MAX_REPLAY_CACHE_ENTRIES = 512;
+const MAX_REPLAY_CACHE_CHARS = 16_777_216;
+const MAX_REPLAY_RESULT_CHARS = 8_388_608;
 const MAX_RETIRED_TURN_HANDLES = 64;
+
+const REPLAY_CACHE_EXHAUSTED_RESULT: BrokerToolResult = {
+  content: [{
+    type: "text",
+    text: "UNRESOLVED_BROKER_RESULT_TOO_LARGE: the native result exceeded the bounded replay cache; redispatch is forbidden",
+  }],
+  isError: true,
+};
 
 export async function closeTurnBrokers(): Promise<void> {
   const active = [...brokers.values()];
@@ -105,6 +144,10 @@ function handleFingerprint(value: string): string {
 
 function errorOf(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
+}
+
+function opaqueLogId(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 12);
 }
 
 function retiredTurnLabel(traceId: string): string {
@@ -169,10 +212,24 @@ export class TurnBroker implements TurnBrokerOwner {
   private readonly retiredBindings = new Map<string, string>();
   private readonly retiredTokens = new Map<string, string>();
   private acceptingExternalOwners = true;
+  private protectedOperation?: {
+    token: string;
+    channel: TurnChannel;
+    operationKey: string;
+    operationRequestKey: string;
+    delivered: boolean;
+  };
+  private readonly commandQuarantinePath: string;
+  private orphanedCommandQuarantine: boolean;
   private server?: Server;
   private startPromise?: Promise<void>;
 
-  private constructor(readonly socketPath: string) {}
+  private constructor(readonly socketPath: string) {
+    this.commandQuarantinePath = isWindowsPipeEndpoint(socketPath)
+      ? join(tmpdir(), `codex-chatgpt-web-command-${opaqueLogId(socketPath)}.lock`)
+      : `${socketPath}.command-quarantine`;
+    this.orphanedCommandQuarantine = existsSync(this.commandQuarantinePath);
+  }
 
   /**
    * A ChatGPT turn outlives the request that started it, and its Codex Native calls arrive from a
@@ -206,8 +263,16 @@ export class TurnBroker implements TurnBrokerOwner {
         ...environment,
         ...(ttlMs !== undefined ? { expiresAt: Date.now() + ttlMs } : {}),
       },
+      retiring: false,
       queuedCallIds: [],
       invocations: new Map(),
+      invocationsByKey: new Map(),
+      replayCacheChars: 0,
+      replayCacheExhausted: false,
+      activeOperations: new Map(),
+      operationContinuations: new Map(),
+      terminalizedOperationRequests: new Set(),
+      terminalizedOperationFingerprints: new Map(),
       waiters: new Set(),
     };
     this.channels.set(token, channel);
@@ -256,16 +321,51 @@ export class TurnBroker implements TurnBrokerOwner {
     const channel = this.channels.get(token);
     if (!channel) throw new Error("turn token is invalid or expired");
     const invocation = channel.invocations.get(callId);
-    if (!invocation) throw new Error(`tool call is not pending: ${callId}`);
-    if (channel.queuedCallIds.includes(callId)) throw new Error(`tool call was completed before it was delivered: ${callId}`);
+    if (!invocation) throw new Error(`tool call is not pending: ${opaqueLogId(callId)}`);
+    if (channel.queuedCallIds.includes(callId)) {
+      throw new Error(`tool call was completed before it was delivered: ${opaqueLogId(callId)}`);
+    }
     channel.invocations.delete(callId);
-    console.info(`[chatgpt-web] broker trace=${channel.traceId} completed call=${callId.slice(0, 17)} pending=${channel.invocations.size}`);
-    invocation.resolve(result);
+    // Keep the resolved promise addressable by invocationKey until the turn is revoked. A retry
+    // after transport loss must observe the original terminal result, never enqueue the tool again.
+    let replayResult = result;
+    let resultChars = 0;
+    try {
+      resultChars = JSON.stringify(result).length;
+    } catch {
+      channel.replayCacheExhausted = true;
+      replayResult = REPLAY_CACHE_EXHAUSTED_RESULT;
+      resultChars = JSON.stringify(replayResult).length;
+    }
+    if (resultChars > MAX_REPLAY_RESULT_CHARS
+      || channel.replayCacheChars + resultChars > MAX_REPLAY_CACHE_CHARS) {
+      channel.replayCacheExhausted = true;
+      replayResult = REPLAY_CACHE_EXHAUSTED_RESULT;
+      resultChars = JSON.stringify(replayResult).length;
+    }
+    channel.replayCacheChars += resultChars;
+    console.info(`[chatgpt-web] broker trace=${channel.traceId} completed callHash=${opaqueLogId(callId)} pending=${channel.invocations.size}`);
+    invocation.resolve(replayResult);
   }
 
   revoke(token: string, reason = new Error("Codex turn binding was revoked")): void {
     const channel = this.channels.get(token);
     if (!channel) return;
+    const protectedOperation = this.protectedOperation;
+    if (protectedOperation?.channel === channel && protectedOperation.delivered) {
+      channel.retiring = true;
+      this.pending.delete(token);
+      return;
+    }
+    if (protectedOperation?.channel === channel) this.releaseCommandQuarantine();
+    this.retireChannel(token, channel, reason);
+  }
+
+  private retireChannel(
+    token: string,
+    channel: TurnChannel,
+    reason = new Error("Codex turn binding was revoked"),
+  ): void {
     this.channels.delete(token);
     this.pending.delete(token);
     if (channel.bindingId) {
@@ -309,6 +409,32 @@ export class TurnBroker implements TurnBrokerOwner {
       if (oldest.done) return;
       history.delete(oldest.value);
     }
+  }
+
+  private acquireCommandQuarantine(): void {
+    if (this.orphanedCommandQuarantine || existsSync(this.commandQuarantinePath)) {
+      this.orphanedCommandQuarantine = true;
+      throw new Error("an unresolved command quarantine is already active");
+    }
+    mkdirSync(dirname(this.commandQuarantinePath), { recursive: true, mode: 0o700 });
+    const temporaryPath = `${this.commandQuarantinePath}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
+    try {
+      writeFileSync(temporaryPath, "unresolved-command\n", { encoding: "utf8", mode: 0o600, flag: "wx" });
+      renameSync(temporaryPath, this.commandQuarantinePath);
+    } catch (error) {
+      try { unlinkSync(temporaryPath); } catch { /* best effort for an unpublished temporary file */ }
+      throw error;
+    }
+  }
+
+  private releaseCommandQuarantine(): void {
+    if (!existsSync(this.commandQuarantinePath)) {
+      this.orphanedCommandQuarantine = true;
+      throw new Error("command quarantine marker disappeared before terminal evidence was committed");
+    }
+    unlinkSync(this.commandQuarantinePath);
+    this.orphanedCommandQuarantine = false;
+    this.protectedOperation = undefined;
   }
 
   async close(): Promise<void> {
@@ -411,8 +537,10 @@ export class TurnBroker implements TurnBrokerOwner {
   private handleSocket(socket: Socket): void {
     let buffered = "";
     let handled = false;
+    const abort = new AbortController();
     socket.setEncoding("utf8");
     socket.on("error", () => {});
+    socket.once("close", () => abort.abort());
     socket.on("data", chunk => {
       if (handled) return;
       buffered += chunk;
@@ -434,7 +562,7 @@ export class TurnBroker implements TurnBrokerOwner {
         this.writeSocketResponse(socket, { id: request?.id ?? "unknown", error: errorOf(error).message });
         return;
       }
-      void Promise.resolve().then(() => this.dispatch(request!)).then(
+      void Promise.resolve().then(() => this.dispatch(request!, abort.signal)).then(
         result => this.writeSocketResponse(socket, { id: request!.id, result }),
         error => this.writeSocketResponse(socket, { id: request!.id, error: errorOf(error).message }),
       );
@@ -454,12 +582,12 @@ export class TurnBroker implements TurnBrokerOwner {
     if (!request || typeof request !== "object" || typeof request.id !== "string" || request.id.length === 0 || request.id.length > 256) {
       throw new Error("turn broker request id is invalid");
     }
-    if (!["claim", "resolve", "release", "invoke", "owner_status", "owner_register", "owner_update", "owner_next", "owner_complete", "owner_revoke"].includes(request.method)) {
+    if (!["claim", "resolve", "release", "invoke", "terminalize", "operation_status", "continuation", "advance_continuation", "owner_status", "owner_register", "owner_update", "owner_next", "owner_complete", "owner_revoke"].includes(request.method)) {
       throw new Error("turn broker method is invalid");
     }
   }
 
-  private dispatch(request: BrokerRequest): unknown | Promise<unknown> {
+  private dispatch(request: BrokerRequest, signal?: AbortSignal): unknown | Promise<unknown> {
     this.prune();
     if (request.method === "owner_status") {
       return { protocolVersion: 1, acceptingExternalOwners: this.acceptingExternalOwners };
@@ -478,7 +606,7 @@ export class TurnBroker implements TurnBrokerOwner {
     }
     if (request.method === "owner_next") {
       if (!request.token) throw new Error("turn owner token is required");
-      return this.nextToolBatch(request.token).then(requests => ({ requests }));
+      return this.nextToolBatch(request.token, signal).then(requests => ({ requests }));
     }
     if (request.method === "owner_complete") {
       if (!request.token) throw new Error("turn owner token is required");
@@ -529,7 +657,7 @@ export class TurnBroker implements TurnBrokerOwner {
     if (!binding) {
       const retiredTurn = this.retiredBindings.get(bindingId);
       console.error(
-        `[chatgpt-web] broker rejected ${request.method} (binding=${bindingId.slice(0, 17)},`
+        `[chatgpt-web] broker rejected ${request.method} (bindingHash=${opaqueLogId(bindingId)},`
         + ` retiredTurn=${retiredTurn ?? "unknown"})`,
       );
       throw new Error(retiredTurn !== undefined
@@ -541,9 +669,237 @@ export class TurnBroker implements TurnBrokerOwner {
       return { released: true };
     }
     if (request.method === "resolve") return { environment: binding.channel.environment };
-
-    const wireName = request.wireName?.trim();
-    if (!wireName) throw new Error("wire tool name is required");
+    if (request.method === "operation_status") {
+      const operationKey = request.operationKey;
+      const operationRequestKey = request.operationRequestKey;
+      this.validateOperationIdentity(operationKey, operationRequestKey);
+      if (!operationKey || !operationRequestKey) throw new Error("broker operation identity is incomplete");
+      const identityKey = this.operationIdentityKey(operationKey, operationRequestKey);
+      return {
+        terminalized: binding.channel.terminalizedOperationRequests.has(identityKey),
+        active: binding.channel.activeOperations.get(operationKey) === operationRequestKey,
+      };
+    }
+    if (this.orphanedCommandQuarantine) {
+      throw new Error("an unresolved command quarantine from an earlier broker process is active");
+    }
+    if (request.method === "continuation" || request.method === "advance_continuation") {
+      const operationKey = request.operationKey;
+      const operationRequestKey = request.operationRequestKey;
+      this.validateOperationIdentity(operationKey, operationRequestKey);
+      if (!operationKey || !operationRequestKey) throw new Error("broker operation identity is incomplete");
+      const identityKey = this.operationIdentityKey(operationKey, operationRequestKey);
+      const owner = binding.channel.activeOperations.get(operationKey);
+      const protectedOperation = this.protectedOperation;
+      if (owner !== operationRequestKey
+        || !protectedOperation
+        || protectedOperation.channel !== binding.channel
+        || protectedOperation.operationKey !== operationKey
+        || protectedOperation.operationRequestKey !== operationRequestKey) {
+        throw new Error("broker protected operation identity does not match the active command");
+      }
+      let continuation = binding.channel.operationContinuations.get(identityKey);
+      if (request.method === "continuation") {
+        if (!continuation) {
+          continuation = { currentToken: opaqueId("continuation"), uses: new Map() };
+          binding.channel.operationContinuations.set(identityKey, continuation);
+        }
+        return { continuationToken: continuation.currentToken };
+      }
+      const continuationToken = request.continuationToken;
+      const invocationKey = request.invocationKey;
+      if (!continuation
+        || !continuationToken
+        || !/^[A-Za-z0-9_-]{20,256}$/.test(continuationToken)
+        || !invocationKey
+        || !/^[A-Za-z0-9_-]{1,256}$/.test(invocationKey)) {
+        throw new Error("broker continuation identity is incomplete");
+      }
+      const use = continuation.uses.get(continuationToken);
+      if (!use || use.invocationKey !== invocationKey) {
+        throw new Error("broker continuation token does not identify the completed invocation");
+      }
+      if (use.nextToken) return { continuationToken: use.nextToken };
+      if (continuation.currentToken !== continuationToken) {
+        throw new Error("broker continuation token is no longer current");
+      }
+      const invocationStillPending = [...binding.channel.invocations.values()]
+        .some(invocation => invocation.invocationKey === invocationKey);
+      if (invocationStillPending) throw new Error("broker continuation invocation is still pending");
+      const nextToken = opaqueId("continuation");
+      use.nextToken = nextToken;
+      continuation.currentToken = nextToken;
+      return { continuationToken: nextToken };
+    }
+    if (request.method === "terminalize") {
+      const operationKey = request.operationKey;
+      const operationRequestKey = request.operationRequestKey;
+      this.validateOperationIdentity(operationKey, operationRequestKey);
+      if (!operationKey || !operationRequestKey) throw new Error("broker operation identity is incomplete");
+      const identityKey = this.operationIdentityKey(operationKey, operationRequestKey);
+      if (binding.channel.terminalizedOperationRequests.has(identityKey)) {
+        return { terminalized: true, pending: false };
+      }
+      const protectedOperation = this.protectedOperation;
+      if (!protectedOperation
+        || protectedOperation.channel !== binding.channel
+        || protectedOperation.operationKey !== operationKey
+        || protectedOperation.operationRequestKey !== operationRequestKey) {
+        throw new Error("broker protected operation identity does not match the active command");
+      }
+      const owner = binding.channel.activeOperations.get(operationKey);
+      if (owner !== operationRequestKey) {
+        throw new Error(owner === undefined
+          ? "broker operation is not active"
+          : "broker operation is already active under a different request identity");
+      }
+      const invocationStillPending = [...binding.channel.invocations.values()].some(invocation => (
+        invocation.operationKey === operationKey && invocation.operationRequestKey === operationRequestKey
+      ));
+      if (invocationStillPending) return { terminalized: false, pending: true };
+      const fingerprints = binding.channel.terminalizedOperationFingerprints.get(operationKey) ?? new Set<string>();
+      for (const invocation of binding.channel.invocationsByKey.values()) {
+        if (invocation.operationKey === operationKey && invocation.operationRequestKey === operationRequestKey) {
+          fingerprints.add(invocation.fingerprint);
+        }
+      }
+      binding.channel.terminalizedOperationFingerprints.set(operationKey, fingerprints);
+      binding.channel.activeOperations.delete(operationKey);
+      binding.channel.operationContinuations.delete(identityKey);
+      binding.channel.terminalizedOperationRequests.add(identityKey);
+      this.releaseCommandQuarantine();
+      if (binding.channel.retiring) this.retireChannel(binding.token, binding.channel);
+      return { terminalized: true, pending: false };
+    }
+    const wireName = request.wireName;
+    if (typeof wireName !== "string" || wireName.length === 0) {
+      throw new Error("wire tool name is required");
+    }
+    if (wireName.trim() !== wireName || /[\x00-\x1f\x7f]/.test(wireName)) {
+      throw new Error("wire tool name must be canonical");
+    }
+    const invocationKey = request.invocationKey ?? request.id;
+    if (!/^[A-Za-z0-9_-]{1,256}$/.test(invocationKey)) throw new Error("broker invocation key is invalid");
+    const fingerprint = createHash("sha256").update(JSON.stringify({
+      wireName,
+      freeform: request.freeform === true,
+      ...(request.freeform === true ? { input: request.input ?? "" } : { arguments: request.arguments ?? {} }),
+    })).digest("hex");
+    const operationKey = request.operationKey;
+    const operationRequestKey = request.operationRequestKey;
+    this.validateOperationIdentity(operationKey, operationRequestKey, true);
+    const continuationToken = request.continuationToken;
+    if (continuationToken !== undefined) {
+      if (!operationKey || !operationRequestKey || !/^[A-Za-z0-9_-]{20,256}$/.test(continuationToken)) {
+        throw new Error("broker continuation identity is invalid");
+      }
+    }
+    const protectedOperation = this.protectedOperation;
+    const matchesProtectedOperation = Boolean(
+      protectedOperation
+      && operationKey
+      && operationRequestKey
+      && protectedOperation.channel === binding.channel
+      && protectedOperation.operationKey === operationKey
+      && protectedOperation.operationRequestKey === operationRequestKey
+    );
+    if (protectedOperation && !matchesProtectedOperation) {
+      if (protectedOperation.channel === binding.channel
+        && protectedOperation.operationKey === operationKey) {
+        throw new Error("broker operation is already active under a different request identity");
+      }
+      throw new Error("a protected broker operation is already active");
+    }
+    if (binding.channel.retiring && !matchesProtectedOperation) {
+      throw new Error("Codex turn binding is retiring with an unresolved protected operation");
+    }
+    const replay = binding.channel.invocationsByKey.get(invocationKey);
+    if (replay) {
+      if (replay.fingerprint !== fingerprint) throw new Error("broker invocation key was reused with a different request");
+      if (replay.continuationToken !== continuationToken) {
+        throw new Error("broker invocation continuation identity changed during replay");
+      }
+      if (request.operationKey !== replay.operationKey || request.operationRequestKey !== replay.operationRequestKey) {
+        throw new Error("broker invocation operation identity changed during replay");
+      }
+      if (replay.operationKey && replay.operationRequestKey
+        && !binding.channel.terminalizedOperationRequests.has(
+          this.operationIdentityKey(replay.operationKey, replay.operationRequestKey),
+        )) {
+        const owner = binding.channel.activeOperations.get(replay.operationKey);
+        if (owner !== undefined && owner !== replay.operationRequestKey) {
+          throw new Error("broker operation is already active under a different request identity");
+        }
+        binding.channel.activeOperations.set(replay.operationKey, replay.operationRequestKey);
+      }
+      return replay.promise;
+    }
+    if (binding.channel.replayCacheExhausted
+      || binding.channel.invocationsByKey.size >= MAX_REPLAY_CACHE_ENTRIES) {
+      throw new Error("broker replay cache is exhausted; new native dispatch is forbidden");
+    }
+    if (operationKey && binding.channel.terminalizedOperationFingerprints.get(operationKey)?.has(fingerprint)) {
+      throw new Error("broker operation invocation has already been terminalized");
+    }
+    if (operationKey === undefined && binding.channel.activeOperations.size > 0) {
+      throw new Error("a protected broker operation is already active");
+    }
+    let continuation: OperationContinuation | undefined;
+    let continuationUseClaimed = false;
+    if (continuationToken && operationKey && operationRequestKey) {
+      continuation = binding.channel.operationContinuations.get(
+        this.operationIdentityKey(operationKey, operationRequestKey),
+      );
+      if (!continuation || continuation.currentToken !== continuationToken) {
+        throw new Error("broker continuation token is invalid or no longer current");
+      }
+      const priorUse = continuation.uses.get(continuationToken);
+      if (priorUse && priorUse.invocationKey !== invocationKey) {
+        throw new Error("broker continuation token was already used by another invocation");
+      }
+      if (priorUse) {
+        throw new Error("broker continuation invocation is unresolved and cannot be redispatched");
+      }
+    }
+    let claimedOperation = false;
+    let claimedProtectedOperation = false;
+    if (operationKey && operationRequestKey) {
+      if (binding.channel.terminalizedOperationRequests.has(
+        this.operationIdentityKey(operationKey, operationRequestKey),
+      )) {
+        throw new Error("broker operation request has already been terminalized");
+      }
+      const owner = binding.channel.activeOperations.get(operationKey);
+      if (owner !== undefined && owner !== operationRequestKey) {
+        throw new Error("broker operation is already active under a different request identity");
+      }
+      if (owner === undefined) {
+        binding.channel.activeOperations.set(operationKey, operationRequestKey);
+        claimedOperation = true;
+      }
+      if (!this.protectedOperation) {
+        this.acquireCommandQuarantine();
+        this.protectedOperation = {
+          token: binding.token,
+          channel: binding.channel,
+          operationKey,
+          operationRequestKey,
+          delivered: false,
+        };
+        claimedProtectedOperation = true;
+      }
+    }
+    const equivalentInFlight = [...binding.channel.invocations.values()]
+      .some(invocation => invocation.fingerprint === fingerprint);
+    if (equivalentInFlight) {
+      if (claimedOperation && operationKey) binding.channel.activeOperations.delete(operationKey);
+      if (claimedProtectedOperation) this.releaseCommandQuarantine();
+      throw new Error("an equivalent broker invocation is already executing under a different request identity");
+    }
+    if (continuation && continuationToken) {
+      continuation.uses.set(continuationToken, { invocationKey });
+      continuationUseClaimed = true;
+    }
     const callId = opaqueId("call");
     const toolRequest: BrokerToolRequest = {
       callId,
@@ -551,18 +907,74 @@ export class TurnBroker implements TurnBrokerOwner {
       freeform: request.freeform === true,
       ...(request.freeform === true ? { input: request.input ?? "" } : { arguments: request.arguments ?? {} }),
     };
-    return new Promise<BrokerToolResult>((resolveInvoke, rejectInvoke) => {
-      binding.channel.invocations.set(callId, { request: toolRequest, resolve: resolveInvoke, reject: rejectInvoke });
-      binding.channel.queuedCallIds.push(callId);
-      console.info(
-        `[chatgpt-web] broker trace=${binding.channel.traceId} queued call=${callId.slice(0, 17)} tool=${wireName} waiters=${binding.channel.waiters.size}`,
-      );
-      this.scheduleToolWaiters(binding.channel);
+    if (signal?.aborted) {
+      if (continuationUseClaimed && continuationToken) continuation?.uses.delete(continuationToken);
+      if (claimedOperation && operationKey) binding.channel.activeOperations.delete(operationKey);
+      if (claimedProtectedOperation) this.releaseCommandQuarantine();
+      throw new DOMException("broker invocation aborted", "AbortError");
+    }
+    let resolveInvoke!: (result: BrokerToolResult) => void;
+    let rejectInvoke!: (error: Error) => void;
+    const promise = new Promise<BrokerToolResult>((resolve, reject) => {
+      resolveInvoke = resolve;
+      rejectInvoke = reject;
     });
+    const invocation: PendingInvocation = {
+      request: toolRequest,
+      invocationKey,
+      fingerprint,
+      promise,
+      resolve: value => finish(() => resolveInvoke(value)),
+      reject: error => finish(() => rejectInvoke(error)),
+      ...(operationKey && operationRequestKey ? { operationKey, operationRequestKey } : {}),
+      ...(continuationToken ? { continuationToken } : {}),
+    };
+    const finish = (callback: () => void) => {
+      if (signal) signal.removeEventListener("abort", onAbort);
+      callback();
+    };
+    const onAbort = () => {
+      if (binding.channel.queuedCallIds.includes(callId)) {
+        binding.channel.invocations.delete(callId);
+        binding.channel.invocationsByKey.delete(invocationKey);
+        binding.channel.queuedCallIds = binding.channel.queuedCallIds.filter(id => id !== callId);
+        if (continuationUseClaimed && continuationToken) continuation?.uses.delete(continuationToken);
+        if (claimedOperation && operationKey
+          && binding.channel.activeOperations.get(operationKey) === operationRequestKey) {
+          binding.channel.activeOperations.delete(operationKey);
+        }
+        if (claimedProtectedOperation && this.protectedOperation?.delivered === false) {
+          this.releaseCommandQuarantine();
+        }
+        finish(() => rejectInvoke(new DOMException("broker invocation aborted", "AbortError")));
+        return;
+      }
+      // Delivery transfers execution ownership to the adapter. Keep the invocation until the
+      // adapter reports its terminal result so a disconnected caller cannot orphan an already
+      // executing command and make a later retry appear safe.
+      if (signal) signal.removeEventListener("abort", onAbort);
+    };
+    binding.channel.invocations.set(callId, invocation);
+    binding.channel.invocationsByKey.set(invocationKey, invocation);
+    if (signal) signal.addEventListener("abort", onAbort, { once: true });
+    binding.channel.queuedCallIds.push(callId);
+    console.info(
+      `[chatgpt-web] broker trace=${binding.channel.traceId} queued callHash=${opaqueLogId(callId)} tool=${wireName} waiters=${binding.channel.waiters.size}`,
+    );
+    this.scheduleToolWaiters(binding.channel);
+    return promise;
   }
 
   private takeQueued(channel: TurnChannel): BrokerToolRequest[] {
     const ids = channel.queuedCallIds.splice(0);
+    if (this.protectedOperation?.channel === channel) {
+      const deliveredProtectedCall = ids.some(id => {
+        const invocation = channel.invocations.get(id);
+        return invocation?.operationKey === this.protectedOperation?.operationKey
+          && invocation?.operationRequestKey === this.protectedOperation?.operationRequestKey;
+      });
+      if (deliveredProtectedCall) this.protectedOperation.delivered = true;
+    }
     return ids.map(id => channel.invocations.get(id)?.request).filter((request): request is BrokerToolRequest => Boolean(request));
   }
 
@@ -604,7 +1016,35 @@ export class TurnBroker implements TurnBrokerOwner {
     channel.waiters.clear();
     for (const invocation of channel.invocations.values()) invocation.reject(error);
     channel.invocations.clear();
+    channel.invocationsByKey.clear();
+    channel.replayCacheChars = 0;
+    channel.replayCacheExhausted = false;
+    channel.activeOperations.clear();
+    channel.operationContinuations.clear();
+    channel.terminalizedOperationRequests.clear();
+    channel.terminalizedOperationFingerprints.clear();
     channel.queuedCallIds = [];
+  }
+
+  private operationIdentityKey(operationKey: string, operationRequestKey: string): string {
+    return `${operationKey}\0${operationRequestKey}`;
+  }
+
+  private validateOperationIdentity(
+    operationKey: string | undefined,
+    operationRequestKey: string | undefined,
+    optional = false,
+  ): asserts operationKey is string {
+    if (optional && operationKey === undefined && operationRequestKey === undefined) return;
+    if (operationKey === undefined || operationRequestKey === undefined) {
+      throw new Error("broker operation identity is incomplete");
+    }
+    if (!/^[A-Za-z0-9_-]{1,256}$/.test(operationKey)) {
+      throw new Error("broker operation key is invalid");
+    }
+    if (!/^[A-Za-z0-9_-]{1,256}$/.test(operationRequestKey)) {
+      throw new Error("broker operation request key is invalid");
+    }
   }
 
   private prune(): void {
@@ -628,6 +1068,7 @@ export async function callTurnBroker<T>(
   timeoutMs: number | null = 5_000,
   signal?: AbortSignal,
 ): Promise<T> {
+  if (signal?.aborted) throw new DOMException("broker call aborted", "AbortError");
   const id = opaqueId("request");
   return new Promise<T>((resolveCall, rejectCall) => {
     const socket = createConnection(socketPath);
