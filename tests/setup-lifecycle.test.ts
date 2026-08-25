@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { launcherCapabilityProbeRequired, setupProxyIsReady } from "../src/setup";
+import { launcherCapabilityProbeRequired, setupProxyIsReady, trustedLauncherMigrationCanReuseCapabilities } from "../src/setup";
 
 const config = {
   mode: "browser-only" as const,
@@ -35,4 +35,18 @@ test("launcher setup refreshes account capabilities only when missing or explici
     proAvailable: false,
   } as never)).toBe(true);
   expect(launcherCapabilityProbeRequired(verifiedLauncher, true)).toBe(true);
+});
+
+
+test("trusted launcher migration reuses stored capabilities without requiring a live ChatGPT session", () => {
+  const verifiedLauncher = {
+    browserHost: "launcher",
+    solAvailable: true,
+    proAvailable: false,
+  } as never;
+
+  expect(trustedLauncherMigrationCanReuseCapabilities(verifiedLauncher, false, true)).toBe(true);
+  expect(trustedLauncherMigrationCanReuseCapabilities(verifiedLauncher, true, true)).toBe(false);
+  expect(trustedLauncherMigrationCanReuseCapabilities(verifiedLauncher, false, false)).toBe(false);
+  expect(trustedLauncherMigrationCanReuseCapabilities(undefined, false, true)).toBe(false);
 });

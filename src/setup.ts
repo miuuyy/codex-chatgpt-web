@@ -49,6 +49,7 @@ export interface SetupOptions {
   chromeExecutablePath?: string;
   browserHostDescriptorPath?: string;
   refreshAccountCapabilities?: boolean;
+  launcherControl?: boolean;
   appName?: string;
   forceLogin?: boolean;
   autoApproveToolCalls?: boolean;
@@ -90,6 +91,16 @@ export function launcherCapabilityProbeRequired(
     || existing?.browserHost !== "launcher"
     || typeof existing.solAvailable !== "boolean"
     || typeof existing.proAvailable !== "boolean";
+}
+
+export function trustedLauncherMigrationCanReuseCapabilities(
+  existing: AppConfig | undefined,
+  refreshAccountCapabilities = false,
+  launcherControl = false,
+): boolean {
+  return launcherControl
+    && existing?.browserHost === "launcher"
+    && !launcherCapabilityProbeRequired(existing, refreshAccountCapabilities);
 }
 
 export function existingFullSetupCredentials(existing: AppConfig | undefined): ExistingFullSetupCredentials {
@@ -236,8 +247,12 @@ async function inspectLauncherCapabilities(
   existing: AppConfig | undefined,
   refreshAccountCapabilities: boolean,
   expectedProfile: "production" | "development",
+  launcherControl = false,
 ): Promise<{ solAvailable: boolean; proAvailable: boolean }> {
   const detectCapabilities = launcherCapabilityProbeRequired(existing, refreshAccountCapabilities);
+  if (trustedLauncherMigrationCanReuseCapabilities(existing, refreshAccountCapabilities, launcherControl)) {
+    return { solAvailable: existing!.solAvailable, proAvailable: existing!.proAvailable };
+  }
   const inspected = await inspectLauncherBrowserHost(config.browserHostDescriptorPath!, {
     detectCapabilities,
     expectedProfile,
@@ -349,6 +364,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
       existing,
       options.refreshAccountCapabilities === true,
       "production",
+      options.launcherControl === true,
     );
     solAvailable = capabilities.solAvailable;
     proAvailable = capabilities.proAvailable;

@@ -904,6 +904,7 @@ class RuntimeHost {
       this.browserDescriptorPath,
       "--acknowledge-unofficial",
       "--restart-service",
+      "--launcher-control",
     ];
     if (existing.mode === "full") {
       args.push("--app-name", connectorNameForSetup(existing.config?.appName));
@@ -913,6 +914,7 @@ class RuntimeHost {
       message: `Upgrading launcher runtime from ${fromVersion} to ${currentVersion}`,
       successMessage: `Launcher runtime upgraded to ${currentVersion}`,
       timeoutMs: existing.mode === "full" ? MCP_SETUP_TIMEOUT_MS : CORE_SETUP_TIMEOUT_MS,
+      environment: this.launcherControlEnvironment(),
     });
     if (!route.active) await this.setBridgeEnabled(false);
     return {
