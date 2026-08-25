@@ -374,6 +374,7 @@ test("authentication windows stay inside the launcher-owned browser partition", 
 test("concurrent embedded login requests share one authentication operation", async () => {
   let resolveLogin;
   let waits = 0;
+  let inspections = 0;
   const fixture = {
     state: { authenticated: false },
     authNavigationError: null,
@@ -381,11 +382,20 @@ test("concurrent embedded login requests share one authentication operation", as
     show() {},
     snapshot() { return { authenticated: false }; },
     logger: { info() {} },
-    view: { webContents: { getURL: () => "https://chatgpt.com/", loadURL: async () => {} } },
+    view: {
+      webContents: {
+        getURL: () => "https://chatgpt.com/?temporary-chat=true",
+        loadURL: async () => {},
+      },
+    },
     probeAuthentication: async () => {},
     waitForAuthenticated: async () => {
       waits += 1;
       return await new Promise((resolve) => { resolveLogin = resolve; });
+    },
+    runSessionInspection: async (detectCapabilities) => {
+      assert.equal(detectCapabilities, false);
+      inspections += 1;
     },
     activateHomeSurface() {},
     withManualOperation: async (_name, action) => await action(),
@@ -397,6 +407,7 @@ test("concurrent embedded login requests share one authentication operation", as
   assert.equal(waits, 1);
   resolveLogin({ authenticated: true });
   assert.deepEqual(await first, { authenticated: true });
+  assert.equal(inspections, 1);
 });
 
 test("launcher quit remains gated through an active embedded-browser operation", () => {
@@ -533,6 +544,43 @@ test("OAuth completion is re-proved on the primary Temporary Chat surface before
   const result = await BrowserHost.prototype.probeAuthentication.call(fixture);
   assert.equal(result.authenticated, true);
   assert.equal(fixture.authView, null);
+  assert.equal(result.url, "https://chatgpt.com/?temporary-chat=true");
+});
+
+test("a successful primary login redirect is re-proved on Temporary Chat before login completes", async () => {
+  let currentUrl = "https://chatgpt.com/";
+  const loadedUrls = [];
+  const fixture = {
+    activeTraceId: null,
+    manualOperation: "ChatGPT login",
+    authView: null,
+    state: { authenticated: false },
+    logger: { info() {} },
+    view: {
+      webContents: {
+        getURL: () => currentUrl,
+        isDestroyed: () => false,
+        executeJavaScript: async () => ({
+          composer: true,
+          temporary: currentUrl === "https://chatgpt.com/?temporary-chat=true",
+          sessionAuthenticated: true,
+          readyState: "complete",
+          url: currentUrl,
+        }),
+        loadURL: async (url) => {
+          loadedUrls.push(url);
+          currentUrl = url;
+        },
+      },
+    },
+    setState(patch) { this.state = { ...this.state, ...patch }; },
+    snapshot() { return this.state; },
+  };
+
+  const result = await BrowserHost.prototype.probeAuthentication.call(fixture);
+
+  assert.deepEqual(loadedUrls, ["https://chatgpt.com/?temporary-chat=true"]);
+  assert.equal(result.authenticated, true);
   assert.equal(result.url, "https://chatgpt.com/?temporary-chat=true");
 });
 

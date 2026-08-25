@@ -1230,13 +1230,30 @@ describe("ChatGPT outer-native harness v4", () => {
       { key: "source", html: `${linked}<button>Copy</button>`, text: "Source", streamable: true },
     ], 200)).toBe("");
 
-    const rewritten = new ChatGptMarkdownBuffer(markdown => markdown, 100);
+    const rewritten = new ChatGptMarkdownBuffer(markdown => markdown, 100, 500);
     const source = [{ key: "source", html: plain, text: "Source", streamable: true }];
     expect(rewritten.observe(source, 0)).toBe("");
     expect(rewritten.observe(source, 100)).toBe("Source");
-    expect(() => rewritten.observe([
+    const different = [
       { key: "source", html: "<p>Different</p>", text: "Different", streamable: true },
-    ], 200)).toThrow("completed text block");
+    ];
+    expect(rewritten.observe(different, 200)).toBe("");
+    expect(rewritten.currentSnapshotIsConsistent()).toBe(false);
+    expect(() => rewritten.finish()).toThrow("completed text block");
+    expect(() => rewritten.observe(different, 700)).toThrow("completed text block");
+  });
+
+  test("recovers from a transient React frame that omits already-streamed Markdown blocks", () => {
+    const buffer = new ChatGptMarkdownBuffer(markdown => markdown, 100, 500);
+    const first = { key: "first", html: "<p>First</p>", text: "First", streamable: true };
+    const second = { key: "second", html: "<p>Second</p>", text: "Second", streamable: false };
+    expect(buffer.observe([first], 0)).toBe("");
+    expect(buffer.observe([first], 100)).toBe("First");
+    expect(buffer.observe([], 150)).toBe("");
+    expect(buffer.currentSnapshotIsConsistent()).toBe(false);
+    expect(buffer.observe([first, second], 200)).toBe("");
+    expect(buffer.currentSnapshotIsConsistent()).toBe(true);
+    expect(buffer.finish()).toEqual({ markdown: "First\n\nSecond", delta: "\n\nSecond" });
   });
 
   test("drops decorative HTML images without removing textual links", () => {

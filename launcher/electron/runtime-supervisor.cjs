@@ -234,6 +234,10 @@ function validateConfig(config, descriptorPath, platform = process.platform, lau
       throw new Error(`Runtime configuration has an invalid ${key}`);
     }
   }
+  if (config.experimentalBiggerContext !== undefined
+    && typeof config.experimentalBiggerContext !== "boolean") {
+    throw new Error("Runtime configuration has an invalid experimentalBiggerContext");
+  }
   if (config.proAvailable && !config.solAvailable) {
     throw new Error("Runtime configuration cannot enable Pro without Sol");
   }

@@ -93,6 +93,47 @@ test("new DEV chats default to the cheapest account-supported browser model", ()
   expect(defaultDevChatModel({ ...defaultConfig("full"), solAvailable: false })).toBe("chatgpt-web/luna");
 });
 
+test("Bigger Context triples the DEV compaction window and fails closed for Luna", async () => {
+  const root = scratch("cgw-dev-bigger-context");
+  const config = {
+    ...defaultConfig("browser-only"),
+    purpose: "dev-harness" as const,
+    solAvailable: true,
+    proAvailable: true,
+  };
+  const factory = (): ProviderAdapter => ({
+    name: "dev-bigger-context-test",
+    async runTurn(_parsed, _incoming, emit) {
+      emit({ type: "text_delta", text: "unused", phase: "final_answer" });
+      emit({
+        type: "done", stopReason: "stop", endTurn: true,
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, estimated: true },
+      });
+    },
+  });
+  const store = new DevChatStore(join(root, "chats"));
+  const normal = new DevChatDriver(config, store, factory, root);
+  const normalState = normal.open("normal-window", "chatgpt-web/high").state;
+  expect(normal.status(normalState).autoCompactTokenLimit).toBe(95_000);
+
+  const biggerConfig = { ...config, experimentalBiggerContext: true };
+  const bigger = new DevChatDriver(biggerConfig, store, factory, root, { biggerContext: true });
+  const biggerState = bigger.open("bigger-window", "chatgpt-web/high").state;
+  const biggerStatus = bigger.status(biggerState);
+  expect(biggerStatus).toMatchObject({
+    autoCompactTokenLimit: 285_000,
+    contextWindow: 333_579,
+  });
+  expect(biggerStatus.percent).toBe(Math.round((biggerStatus.inputTokens / 285_000) * 1_000) / 10);
+  const luna = new DevChatDriver({
+    ...biggerConfig,
+    solAvailable: false,
+    proAvailable: false,
+  }, store, factory, root, { biggerContext: true });
+  expect(() => luna.open("luna-window", "chatgpt-web/luna")).toThrow("unavailable for Luna");
+  await Promise.all([normal.close(), bigger.close(), luna.close()]);
+});
+
 test("browser-only DEV driver runs real turns without advertising simulated tools", async () => {
   const root = scratch("cgw-dev-browser-only");
   const config = {

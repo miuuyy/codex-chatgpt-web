@@ -187,7 +187,15 @@ export class LauncherBrowserHelperClient {
             modelId: turn.modelId,
             reasoning: turn.reasoning,
             capabilities: turn.capabilities,
-            prepared: { text: prepared.text, images: prepared.images } satisfies CompiledChatGptWebPrompt,
+            prepared: {
+              text: prepared.text,
+              images: prepared.images,
+              ...(prepared.multipart ? { multipart: prepared.multipart } : {}),
+              ...(prepared.trimmedCompactionMessages !== undefined
+                ? { trimmedCompactionMessages: prepared.trimmedCompactionMessages }
+                : {}),
+            } satisfies CompiledChatGptWebPrompt,
+            ...(turn.compaction ? { compaction: true } : {}),
             ...(turn.captureLunaCheckpoint ? { captureLunaCheckpoint: true } : {}),
           },
         }).catch(error => this.finishWithError(turn.traceId, error instanceof Error ? error : new Error(String(error))));

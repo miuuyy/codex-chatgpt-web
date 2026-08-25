@@ -59,6 +59,18 @@ interface CommittedChatGptMarkdownSegment {
   text: string;
 }
 
+export class ChatGptMarkdownConsistencyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ChatGptMarkdownConsistencyError";
+  }
+}
+
+interface ChatGptMarkdownPrefixMismatch {
+  error: ChatGptMarkdownConsistencyError;
+  firstSeenAt: number;
+}
+
 /**
  * Converts structurally completed ChatGPT DOM blocks into an append-only Markdown stream.
  *
@@ -74,18 +86,33 @@ export class ChatGptMarkdownBuffer {
   private latest: ChatGptMarkdownSegment[] = [];
   private markdown = "";
   private lastGroup: string | undefined;
+  private prefixMismatch: ChatGptMarkdownPrefixMismatch | undefined;
 
   constructor(
     private readonly transform: (markdown: string) => string = markdown => markdown,
     private readonly stabilityMs = 750,
+    private readonly prefixRecoveryMs = 2_000,
   ) {
     if (!Number.isFinite(stabilityMs) || stabilityMs < 0) {
       throw new Error("ChatGPT Markdown stability window must be a non-negative finite number");
     }
+    if (!Number.isFinite(prefixRecoveryMs) || prefixRecoveryMs < 0) {
+      throw new Error("ChatGPT Markdown prefix recovery window must be a non-negative finite number");
+    }
   }
 
   observe(segments: ChatGptMarkdownSegment[], now = Date.now()): string {
-    this.assertCommittedPrefix(segments);
+    const prefixError = this.committedPrefixError(segments);
+    if (prefixError) {
+      if (!this.prefixMismatch || this.prefixMismatch.error.message !== prefixError.message) {
+        this.prefixMismatch = { error: prefixError, firstSeenAt: now };
+      }
+      if (now - this.prefixMismatch.firstSeenAt >= this.prefixRecoveryMs) {
+        throw this.prefixMismatch.error;
+      }
+      return "";
+    }
+    this.prefixMismatch = undefined;
     this.latest = segments.map(segment => ({ ...segment }));
 
     for (let index = this.committed.length; index < segments.length; index += 1) {
@@ -109,7 +136,6 @@ export class ChatGptMarkdownBuffer {
     for (const index of this.candidates.keys()) {
       if (index >= segments.length) this.candidates.delete(index);
     }
-
     let delta = "";
     while (this.committed.length < segments.length) {
       const index = this.committed.length;
@@ -124,7 +150,9 @@ export class ChatGptMarkdownBuffer {
   }
 
   finish(): { markdown: string; delta: string } {
-    this.assertCommittedPrefix(this.latest);
+    if (this.prefixMismatch) throw this.prefixMismatch.error;
+    const prefixError = this.committedPrefixError(this.latest);
+    if (prefixError) throw prefixError;
     let delta = "";
     for (let index = this.committed.length; index < this.latest.length; index += 1) {
       const segment = this.latest[index]!;
@@ -135,17 +163,26 @@ export class ChatGptMarkdownBuffer {
     return { markdown: this.markdown, delta };
   }
 
-  private assertCommittedPrefix(segments: ChatGptMarkdownSegment[]): void {
+  currentSnapshotIsConsistent(): boolean {
+    return this.prefixMismatch === undefined;
+  }
+
+  private committedPrefixError(segments: ChatGptMarkdownSegment[]): ChatGptMarkdownConsistencyError | undefined {
     if (segments.length < this.committed.length) {
-      throw new Error("ChatGPT removed a completed text block that was already streamed to Codex");
+      return new ChatGptMarkdownConsistencyError(
+        "ChatGPT removed a completed text block that was already streamed to Codex",
+      );
     }
     for (let index = 0; index < this.committed.length; index += 1) {
       const previous = this.committed[index]!;
       const current = segments[index]!;
       if (current.key !== previous.key || current.text !== previous.text) {
-        throw new Error("ChatGPT changed a completed text block that was already streamed to Codex");
+        return new ChatGptMarkdownConsistencyError(
+          "ChatGPT changed a completed text block that was already streamed to Codex",
+        );
       }
     }
+    return undefined;
   }
 
   private commit(segment: ChatGptMarkdownSegment): string {

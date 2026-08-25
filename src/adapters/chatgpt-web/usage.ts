@@ -1,7 +1,15 @@
 import { estimateTokens } from "../../lib/token-estimate";
+import {
+  CHATGPT_WEB_BACKEND_MODEL,
+  resolveChatGptWebContextLimits,
+} from "../../chatgpt-web-models";
 import type { CodexParsedRequest, CodexUsage } from "../../types";
 import { estimateCompiledChatGptWebInputTokens } from "./input-tokens";
-import { compileChatGptWebPrompt } from "./prompt";
+import {
+  CHATGPT_BIGGER_CONTEXT_PARTS,
+  compileChatGptWebPrompt,
+  type ChatGptWebMultipartPartCount,
+} from "./prompt";
 import { extractChatGptTurnIdentity } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import type { BrokerToolRequest } from "./turn-broker";
@@ -39,6 +47,40 @@ export function estimateChatGptWebInputTokens(
     },
   );
   return estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId);
+}
+
+/**
+ * Use the existing model/account compaction threshold as the size of one context part. Normal
+ * turns stay on the original one-message transport until they actually need the experiment;
+ * compaction itself always receives all three parts so it can summarize the expanded window.
+ */
+export function resolveBiggerContextMultipartParts(
+  parsed: CodexParsedRequest,
+  capabilities: ChatGptWebCapabilities,
+): ChatGptWebMultipartPartCount | undefined {
+  if (parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID) {
+    throw new Error("Bigger Context is unavailable for Luna because its accumulated browser transcript still shares one 28,000-token transport budget");
+  }
+  const mode = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
+
+  const onePartLimit = resolveChatGptWebContextLimits(
+    CHATGPT_WEB_BACKEND_MODEL,
+    mode.effort,
+    capabilities,
+  ).autoCompactTokenLimit;
+  const inputTokens = estimateChatGptWebInputTokens(parsed, capabilities);
+  return biggerContextPartCount(inputTokens, onePartLimit, parsed._compactionRequest === true);
+}
+
+export function biggerContextPartCount(
+  inputTokens: number,
+  onePartLimit: number,
+  compaction: boolean,
+): ChatGptWebMultipartPartCount | undefined {
+  if (compaction) return CHATGPT_BIGGER_CONTEXT_PARTS;
+  if (inputTokens < onePartLimit) return undefined;
+  if (inputTokens < onePartLimit * 2) return 2;
+  return CHATGPT_BIGGER_CONTEXT_PARTS;
 }
 
 function roundEvidenceText(evidence: ChatGptWebRoundEvidence): string {

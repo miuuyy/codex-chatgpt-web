@@ -54,6 +54,12 @@ export interface DevChatTurnResult {
   status: DevContextStatus;
 }
 
+export interface DevChatFeatures {
+  biggerContext: boolean;
+}
+
+const DEFAULT_DEV_CHAT_FEATURES: DevChatFeatures = { biggerContext: false };
+
 interface ResponsesEnvelope {
   id?: string;
   status?: string;
@@ -329,7 +335,10 @@ export function prepareWorkingTreeBrowserHelper(): string | undefined {
 export function createLauncherDevAdapter(
   config: AppConfig,
   runtimeStateRoot: string,
-  options: { broker?: TurnBrokerOwner; browserHelperScriptPath?: string } = {},
+  options: {
+    broker?: TurnBrokerOwner;
+    browserHelperScriptPath?: string;
+  } = {},
 ): { broker: TurnBrokerOwner; adapterFactory: AdapterFactory } {
   const broker = options.broker ?? new RemoteTurnBroker(config.brokerSocketPath);
   const browserHelperScriptPath = options.browserHelperScriptPath ?? prepareWorkingTreeBrowserHelper();
@@ -342,6 +351,9 @@ export function createLauncherDevAdapter(
       threadEnvironmentStatePath: join(runtimeStateRoot, "thread-environments.json"),
       lunaCheckpointStatePath: join(runtimeStateRoot, "luna-checkpoints.json"),
       turnTimeoutMs: 60 * 60_000,
+      ...(config.experimentalBiggerContext
+        ? { experimentalBiggerContext: true }
+        : {}),
     },
   }, { broker });
   return { broker, adapterFactory };
@@ -353,22 +365,26 @@ export class DevChatDriver {
     readonly store: DevChatStore,
     readonly adapterFactory: AdapterFactory,
     readonly cwd = process.cwd(),
+    readonly features: DevChatFeatures = DEFAULT_DEV_CHAT_FEATURES,
   ) {}
 
   open(name: string, requestedModel?: DevChatModel): { state: DevChatState; created: boolean } {
     const model = requestedModel ?? defaultDevChatModel(this.config);
     requireChatGptWebModelRoute(model, this.config);
+    this.assertBiggerContextModel(model);
     const opened = this.store.loadOrCreate(name, model, this.cwd);
     if (resolve(opened.state.cwd) !== resolve(this.cwd)) {
       throw new Error(`DEV chat ${JSON.stringify(name)} belongs to ${opened.state.cwd}; use another name for ${this.cwd}`);
     }
     requireChatGptWebModelRoute(opened.state.model, this.config);
+    this.assertBiggerContextModel(opened.state.model);
     if (opened.created) this.store.save(opened.state);
     return opened;
   }
 
   setModel(state: DevChatState, model: DevChatModel): void {
     requireChatGptWebModelRoute(model, this.config);
+    this.assertBiggerContextModel(model);
     state.model = model;
     this.store.save(state);
   }
@@ -506,6 +522,14 @@ export class DevChatDriver {
     return state.model !== "chatgpt-web/luna" && context.inputTokens >= context.autoCompactTokenLimit;
   }
 
+  private assertBiggerContextModel(model: DevChatModel): void {
+    if (this.features.biggerContext && model === "chatgpt-web/luna") {
+      throw new Error(
+        "Bigger Context is unavailable for Luna because its accumulated browser transcript still shares one 28,000-token transport budget",
+      );
+    }
+  }
+
   private statusForInput(state: DevChatState, turnId: string, input: unknown[]): DevContextStatus {
     const parsed = parseRequest(requestBody(
       state,
@@ -522,15 +546,17 @@ export class DevChatDriver {
       proAvailable: this.config.proAvailable,
     });
     const limits = resolveChatGptWebContextLimits(route.backendModel, route.adapterEffort, this.config);
+    const autoCompactTokenLimit = limits.autoCompactTokenLimit;
+    const contextWindow = limits.contextWindow;
     return {
       model: state.model,
       inputTokens,
-      autoCompactTokenLimit: limits.autoCompactTokenLimit,
-      contextWindow: limits.contextWindow,
+      autoCompactTokenLimit,
+      contextWindow,
       ...(route.backendModel === CHATGPT_WEB_LUNA_BACKEND_MODEL
         ? { browserInputTokenLimit: CHATGPT_LUNA_BROWSER_INPUT_TOKEN_BUDGET }
         : {}),
-      percent: Math.round((inputTokens / limits.autoCompactTokenLimit) * 1_000) / 10,
+      percent: Math.round((inputTokens / autoCompactTokenLimit) * 1_000) / 10,
       inputItems: input.length,
     };
   }

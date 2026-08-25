@@ -62,6 +62,10 @@ test("DEV launcher exposes its profile and supervises only its Full-mode MCP run
   assert.match(electronMain, /onboardingComplete:\s*true,[\s\S]*?autoStart:\s*false/);
   assert.match(appSource, /snapshot\.profile === "development"/);
   assert.match(appSource, /data-profile=\{snapshot\.profile\}/);
+  assert.match(appSource, /<SettingRow body=\{copy\.biggerContextBody\} label=\{copy\.biggerContext\}>/);
+  assert.match(appSource, /api!\.setBiggerContext\(enabled\)/);
+  assert.match(electronMain, /runtimeHost\.setBiggerContext\(enabled === true\)/);
+  assert.doesNotMatch(electronMain, /IS_DEV_PROFILE && key === "experimentalBiggerContext"/);
 });
 
 test("the renderer bridge switch reaches the fail-closed runtime route", () => {

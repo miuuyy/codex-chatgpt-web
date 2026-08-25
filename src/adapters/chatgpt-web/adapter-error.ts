@@ -32,3 +32,15 @@ export function chatGptBrowserTabClosedError(): ChatGptWebAdapterError {
     },
   );
 }
+
+export function chatGptStoppedThinkingError(): ChatGptWebAdapterError {
+  return new ChatGptWebAdapterError(
+    "ChatGPT remained in 'Stopped thinking' for 5 seconds, so the Codex turn was cancelled.",
+    {
+      status: 499,
+      errorType: "client_closed_request",
+      code: "client_cancelled",
+      retryable: false,
+    },
+  );
+}
