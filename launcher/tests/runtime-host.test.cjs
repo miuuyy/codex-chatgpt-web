@@ -22,6 +22,7 @@ function hostFor(existingConfig) {
       startIfConfigured: async () => ({ status: "ready" }),
     },
   });
+  host.launcherControlEnvironment = () => ({ CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: "trusted-token" });
   let invocation;
   host.runSetup = async (name, args) => {
     invocation = { name, args };
@@ -252,8 +253,9 @@ test("launcher update transaction upgrades a 2.0.0 runtime config where strict r
     },
   });
   let invocation;
-  host.runSetup = async (name, args) => {
-    invocation = { name, args };
+  host.launcherControlEnvironment = () => ({ CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: "trusted-token" });
+  host.runSetup = async (name, args, options) => {
+    invocation = { name, args, options };
     return { code: 0, stdout: "", stderr: "" };
   };
   host.bridgeStatus = async () => ({ installed: true, active: true, errors: [] });
@@ -267,7 +269,9 @@ test("launcher update transaction upgrades a 2.0.0 runtime config where strict r
     "/runtime/launcher-browser.json",
     "--acknowledge-unofficial",
     "--restart-service",
+    "--launcher-control",
   ]);
+  assert.deepEqual(invocation.options.environment, { CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: "trusted-token" });
   assert.deepEqual(result, {
     updated: true,
     mode: "browser-only",
@@ -304,6 +308,7 @@ test("launcher update transaction upgrades a 2.0.0 full runtime and migrates leg
       startIfConfigured: async () => ({ status: "ready" }),
     },
   });
+  host.launcherControlEnvironment = () => ({ CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: "trusted-token" });
   let invocation;
   host.runSetup = async (name, args) => {
     invocation = { name, args };
@@ -320,6 +325,7 @@ test("launcher update transaction upgrades a 2.0.0 full runtime and migrates leg
     "/runtime/launcher-browser.json",
     "--acknowledge-unofficial",
     "--restart-service",
+    "--launcher-control",
     "--app-name",
     "Codex Native2",
   ]);
@@ -352,6 +358,7 @@ test("launcher migrates the legacy connector identity even when the release vers
     "/runtime/launcher-browser.json",
     "--acknowledge-unofficial",
     "--restart-service",
+    "--launcher-control",
     "--app-name",
     "Codex Native2",
   ]);
