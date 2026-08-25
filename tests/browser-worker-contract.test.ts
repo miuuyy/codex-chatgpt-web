@@ -52,12 +52,13 @@ test("conversation turn identity survives ChatGPT DOM virtualization", () => {
   )).toThrow("2 new conversation turns");
 });
 
-test("browser turns run concurrently up to the five-tab limit", async () => {
-  expect(MAX_CHATGPT_BROWSER_TABS).toBe(5);
+test("browser turns are single-flight and queue instead of opening parallel ChatGPT tabs", async () => {
+  expect(MAX_CHATGPT_BROWSER_TABS).toBe(1);
   const releases = new Map<string, () => void>();
   const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
     config: { browserHost: "managed-chrome" },
     activeRuns: new Map(),
+    turnTail: Promise.resolve(),
     runExclusive: (turn: { traceId: string }) => new Promise<string>(resolve => {
       releases.set(turn.traceId, () => resolve(turn.traceId));
     }),
@@ -70,20 +71,20 @@ test("browser turns run concurrently up to the five-tab limit", async () => {
     onTextDelta() {},
   });
 
-  const active = Array.from({ length: 5 }, (_unused, index) => worker.run(browserTurn(`trace_${index + 1}`)));
+  const first = worker.run(browserTurn("trace_1"));
+  const second = worker.run(browserTurn("trace_2"));
   await Promise.resolve();
-  expect(releases.size).toBe(5);
-  await expect(worker.run(browserTurn("trace_6"))).rejects.toThrow("at most 5 simultaneous browser turns");
+  await Promise.resolve();
+  expect(releases.has("trace_1")).toBeTrue();
+  expect(releases.has("trace_2")).toBeFalse();
 
   releases.get("trace_1")?.();
-  await active[0];
-  const sixth = worker.run(browserTurn("trace_6"));
+  await first;
   await Promise.resolve();
-  expect(releases.has("trace_6")).toBeTrue();
-  for (const traceId of ["trace_2", "trace_3", "trace_4", "trace_5", "trace_6"]) {
-    releases.get(traceId)?.();
-  }
-  await Promise.all([...active.slice(1), sixth]);
+  await Promise.resolve();
+  expect(releases.has("trace_2")).toBeTrue();
+  releases.get("trace_2")?.();
+  await second;
 });
 
 test("browser turns have no absolute deadline unless one is explicitly configured", () => {

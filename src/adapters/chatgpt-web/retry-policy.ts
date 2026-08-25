@@ -2,8 +2,9 @@ import { ChatGptWebAdapterError } from "./adapter-error";
 
 /** Maximum number of automatic browser-turn retries after the initial send. */
 export const MAX_CHATGPT_WEB_TURN_RETRIES = 3;
-export const CHATGPT_WEB_RATE_LIMIT_COOLDOWN_MS = 5 * 60_000;
+export const CHATGPT_WEB_RATE_LIMIT_COOLDOWN_SCHEDULE_MS = [15 * 60_000, 30 * 60_000, 60 * 60_000] as const;
 const RETRY_BUDGET_TTL_MS = 30 * 60_000;
+const RATE_LIMIT_STRIKE_TTL_MS = 6 * 60 * 60_000;
 
 interface RetryBudgetEntry {
   retries: number;
@@ -18,6 +19,8 @@ interface RetryBudgetEntry {
 
 interface RateLimitCooldownEntry {
   until: number;
+  strikes: number;
+  lastRateLimitAt: number;
   lastError: RetryBudgetEntry["lastError"];
 }
 
@@ -59,8 +62,12 @@ export class ChatGptWebTurnRetryPolicy {
 
   constructor(
     private readonly ttlMs = RETRY_BUDGET_TTL_MS,
-    private readonly rateLimitCooldownMs = CHATGPT_WEB_RATE_LIMIT_COOLDOWN_MS,
-  ) {}
+    private readonly rateLimitCooldownScheduleMs: readonly number[] = CHATGPT_WEB_RATE_LIMIT_COOLDOWN_SCHEDULE_MS,
+  ) {
+    if (this.rateLimitCooldownScheduleMs.length === 0 || this.rateLimitCooldownScheduleMs.some(duration => duration <= 0)) {
+      throw new Error("ChatGPT rate-limit cooldown schedule must contain positive durations");
+    }
+  }
 
   recordRetryableFailure(key: string, error: ChatGptWebAdapterError, now = Date.now()): ChatGptWebAdapterError {
     this.prune(now);
@@ -84,8 +91,16 @@ export class ChatGptWebTurnRetryPolicy {
 
   recordRateLimit(scope: string, key: string, error: ChatGptWebAdapterError, now = Date.now()): ChatGptWebAdapterError {
     this.recordRetryableFailure(key, error, now);
+    const previous = this.cooldowns.get(scope);
+    const previousIsRecent = previous !== undefined && now - previous.lastRateLimitAt < RATE_LIMIT_STRIKE_TTL_MS;
+    const strikes = previousIsRecent ? previous.strikes + 1 : 1;
+    const duration = this.rateLimitCooldownScheduleMs[
+      Math.min(strikes - 1, this.rateLimitCooldownScheduleMs.length - 1)
+    ]!;
     const entry: RateLimitCooldownEntry = {
-      until: now + this.rateLimitCooldownMs,
+      until: now + duration,
+      strikes,
+      lastRateLimitAt: now,
       lastError: {
         message: error.message,
         status: error.status,
@@ -114,12 +129,17 @@ export class ChatGptWebTurnRetryPolicy {
     this.entries.delete(key);
   }
 
+  recordSuccess(scope: string, key: string): void {
+    this.entries.delete(key);
+    this.cooldowns.delete(scope);
+  }
+
   private prune(now: number): void {
     for (const [key, entry] of this.entries) {
       if (now - entry.updatedAt >= this.ttlMs) this.entries.delete(key);
     }
     for (const [scope, entry] of this.cooldowns) {
-      if (entry.until <= now) this.cooldowns.delete(scope);
+      if (now - entry.lastRateLimitAt >= RATE_LIMIT_STRIKE_TTL_MS) this.cooldowns.delete(scope);
     }
   }
 }

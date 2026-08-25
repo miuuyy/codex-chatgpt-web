@@ -71,7 +71,7 @@ import {
   resolveChatGptWebTransportLimits,
 } from "../../chatgpt-web-models";
 import { LauncherBrowserHelperClient } from "./launcher-helper-client";
-import { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
+import { MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_PENDING_TURNS } from "./concurrency";
 import {
   ChatGptWebAdapterError,
   chatGptBrowserTabClosedError,
@@ -82,7 +82,7 @@ import {
   type CapturedChatGptLunaCheckpoint,
 } from "./rolling-checkpoint";
 
-export { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
+export { MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_PENDING_TURNS } from "./concurrency";
 
 const workers = new Map<string, ChatGptBrowserWorker>();
 
@@ -984,6 +984,7 @@ export class ChatGptBrowserWorker {
   private managedBrowserReady?: Promise<{ browser: Browser; context: BrowserContext }>;
   private launcherHelper?: LauncherBrowserHelperClient;
   private maintenanceTail: Promise<void> = Promise.resolve();
+  private turnTail: Promise<void> = Promise.resolve();
   private readonly activeRuns = new Map<string, Promise<string>>();
 
   private constructor(private readonly config: ResolvedBrowserConfig) {}
@@ -1044,16 +1045,20 @@ export class ChatGptBrowserWorker {
     if (this.activeRuns.has(turn.traceId)) {
       return Promise.reject(new Error(`Duplicate ChatGPT web browser turn: ${turn.traceId}`));
     }
-    if (this.activeRuns.size >= MAX_CHATGPT_BROWSER_TABS) {
+    if (this.activeRuns.size >= MAX_CHATGPT_PENDING_TURNS) {
       return Promise.reject(new Error(
-        `ChatGPT Web supports at most ${MAX_CHATGPT_BROWSER_TABS} simultaneous browser turns; close or finish a browser tab before starting another`,
+        `ChatGPT Web supports at most ${MAX_CHATGPT_PENDING_TURNS} pending turns while browser traffic is single-flight`,
       ));
     }
     const useHelper = this.config.browserHost === "launcher" && process.env.CODEX_CHATGPT_WEB_BROWSER_HELPER_PROCESS !== "1";
     if (useHelper) {
       this.launcherHelper ??= new LauncherBrowserHelperClient(this.config);
     }
-    const run = Promise.resolve().then(() => useHelper ? this.launcherHelper!.run(turn) : this.runExclusive(turn));
+    const previous = this.turnTail;
+    const run = previous
+      .catch(() => {})
+      .then(() => useHelper ? this.launcherHelper!.run(turn) : this.runExclusive(turn));
+    this.turnTail = run.then(() => undefined, () => undefined);
     this.activeRuns.set(turn.traceId, run);
     void run.finally(() => {
       if (this.activeRuns.get(turn.traceId) === run) this.activeRuns.delete(turn.traceId);

@@ -7,7 +7,7 @@ import {
   extractChatGptTurnIdentity,
   extractChatGptTurnUserRevision,
 } from "./environment";
-import { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
+import { MAX_CHATGPT_PENDING_TURNS } from "./concurrency";
 
 export type ChatGptBrowserOutcome =
   | { type: "final"; answer: string }
@@ -304,9 +304,9 @@ export class ChatGptTurnSessions {
       return existing;
     }
     const active = [...this.entries.values()].filter(session => session.isActive()).length;
-    if (active >= MAX_CHATGPT_BROWSER_TABS) {
+    if (active >= MAX_CHATGPT_PENDING_TURNS) {
       throw new Error(
-        `ChatGPT Web supports at most ${MAX_CHATGPT_BROWSER_TABS} simultaneous browser turns; close or finish a browser tab before starting another`,
+        `ChatGPT Web supports at most ${MAX_CHATGPT_PENDING_TURNS} pending turns while browser traffic is single-flight`,
       );
     }
     if (this.entries.size >= this.maxEntries) throw new Error(`ChatGPT web session registry is full (${this.maxEntries} entries)`);

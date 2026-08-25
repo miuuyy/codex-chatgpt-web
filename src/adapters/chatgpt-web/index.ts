@@ -499,7 +499,7 @@ export function createChatGptWebAdapter(
               session.setFinalEvents(events);
             }
             emitBrowserCompletion(settled, estimateChatGptWebUsage(currentUsageInput(parsed), { answer: settled.answer, reasoning }, turnCapabilities, { projectContinuity }), emit);
-            chatGptWebTurnRetryPolicy.clear(retryKey);
+            chatGptWebTurnRetryPolicy.recordSuccess(executionNamespace, retryKey);
             return;
           }
 
@@ -597,7 +597,7 @@ export function createChatGptWebAdapter(
                   estimateChatGptWebUsage(currentUsageInput(parsed), { answer: next.outcome.answer, reasoning: roundReasoning }, turnCapabilities, { projectContinuity }),
                   emit,
                 );
-                chatGptWebTurnRetryPolicy.clear(retryKey);
+                chatGptWebTurnRetryPolicy.recordSuccess(executionNamespace, retryKey);
                 return;
               }
               if (!turnToken || session.runtime.mode !== "tools") {
