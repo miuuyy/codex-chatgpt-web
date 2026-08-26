@@ -218,6 +218,32 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(() => chatGptTurnExecutionKey(request)).toThrow("conflicts with native Codex turn_id");
   });
 
+  test("accepts a retained historical user revision after native compaction assigns a fresh turn id", () => {
+    const request = rawWireRequest(environmentXml);
+    const originalExecutionKey = chatGptTurnExecutionKey(request);
+    const raw = request._rawBody as {
+      client_metadata: { "x-codex-turn-metadata": string };
+      input: Array<Record<string, unknown>>;
+    };
+    const resumedTurnId = "turn_after_compaction_456";
+    raw.client_metadata["x-codex-turn-metadata"] = JSON.stringify({
+      thread_id: "thread_test_123",
+      turn_id: resumedTurnId,
+      sandbox: "none",
+      workspaces: { [tempRoot]: { has_changes: true } },
+    });
+    raw.input[0]!.internal_chat_message_metadata_passthrough = { turn_id: resumedTurnId };
+    raw.input.push({
+      type: "compaction",
+      id: "cmp_test_after_compaction",
+      encrypted_content: "ocx1:test-summary",
+    });
+
+    expect(() => chatGptTurnExecutionKey(request)).not.toThrow();
+    expect(chatGptTurnExecutionKey(request)).not.toBe(originalExecutionKey);
+    expect(extractChatGptTurnEnvironment(request).cwd).toBe(tempRoot);
+  });
+
   test("starts a tool-capable browser turn across a same-turn developer gap", async () => {
     const socketPath = brokerTestEndpoint(`cgw-h3-canonical-${process.pid}-${Date.now()}`);
     const provider: CodexProviderConfig = {

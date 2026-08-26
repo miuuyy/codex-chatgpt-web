@@ -93,6 +93,37 @@ function contextualUserMessage(value: Record<string, unknown>): boolean {
     || text === OPAQUE_COMPACTION_NOTE;
 }
 
+function compactionBoundaryItem(value: Record<string, unknown>): boolean {
+  return value.type === "compaction"
+    || value.type === "compaction_summary"
+    || value.type === "context_compaction";
+}
+
+function latestRealUserIndex(input: unknown[]): number {
+  for (let index = input.length - 1; index >= 0; index -= 1) {
+    const item = record(input[index]);
+    if (item?.type !== "message" || item.role !== "user" || contextualUserMessage(item)) continue;
+    const messageTurnId = itemTurnId(item);
+    const serverOwnedId = typeof item.id === "string" && item.id.length > 0;
+    if (messageTurnId === undefined && !serverOwnedId) continue;
+    return index;
+  }
+  return -1;
+}
+
+function hasCompactionBoundaryAfterUser(input: unknown[], userIndex: number): boolean {
+  if (userIndex < 0) return false;
+  for (let index = userIndex + 1; index < input.length; index += 1) {
+    const item = record(input[index]);
+    if (!item) continue;
+    if (compactionBoundaryItem(item)) return true;
+    if (item.type !== "message" || item.role !== "user" || !contextualUserMessage(item)) continue;
+    const text = rawMessageText(item).trim();
+    if (isReadableCompactionSummaryText(text) || text === OPAQUE_COMPACTION_NOTE) return true;
+  }
+  return false;
+}
+
 /**
  * Return the latest real user instruction owned by the current native Codex turn.
  *
@@ -106,10 +137,25 @@ export function extractChatGptTurnUserRevision(parsed: CodexParsedRequest): unkn
   if (!turnId) throw new Error("ChatGPT web requires native Codex turn_id metadata for browser-session replay");
   const revision = latestChatGptTurnUserRevision(parsed);
   if (!revision) throw new Error("ChatGPT web requires a current-turn user message for browser-session replay");
-  if (revision.turnId !== undefined && revision.turnId !== turnId) {
+  if (revision.turnId !== undefined
+    && revision.turnId !== turnId
+    && !hasCompactionBoundaryAfterLatestUserRevision(parsed)) {
     throw new Error("ChatGPT web current user message conflicts with native Codex turn_id metadata");
   }
   return revision.content;
+}
+
+/**
+ * Native Codex can assign a fresh turn_id when it resumes immediately after remote compaction,
+ * while the replacement history intentionally retains the original user item's older turn_id.
+ * A native compaction item (or its v1 replay summary) after that retained message is the trusted
+ * structural boundary that distinguishes this case from an unrelated cross-turn user message.
+ */
+function hasCompactionBoundaryAfterLatestUserRevision(parsed: CodexParsedRequest): boolean {
+  const body = record(parsed._rawBody);
+  const input = Array.isArray(body?.input) ? body.input : [];
+  const userIndex = latestRealUserIndex(input);
+  return hasCompactionBoundaryAfterUser(input, userIndex);
 }
 
 function latestChatGptTurnUserRevision(parsed: CodexParsedRequest): ChatGptTurnUserRevision | undefined {
@@ -306,6 +352,54 @@ function canonicalMetadataEnvironmentBeforeUser(
   return undefined;
 }
 
+/**
+ * After native compaction Codex may stamp the freshly injected environment envelope with the new
+ * turn_id while retaining the summarized human instruction with its original turn_id. Trust that
+ * envelope only when the stale instruction is immediately followed by a native compaction
+ * boundary and the envelope itself is explicitly owned by the fresh turn. Canonical workspace and
+ * sandbox metadata must still authenticate every filesystem root, so arbitrary user XML cannot
+ * widen authority through this exception.
+ */
+function compactionResumeEnvironmentBeforeUser(
+  input: unknown[],
+  userIndex: number,
+  metadata: Record<string, unknown> | undefined,
+): string | undefined {
+  if (userIndex <= 0 || !metadata || !hasCompactionBoundaryAfterUser(input, userIndex)) return undefined;
+  const metadataTurnId = typeof metadata.turn_id === "string" ? metadata.turn_id.trim() : "";
+  const metadataThreadId = typeof metadata.thread_id === "string" ? metadata.thread_id.trim() : "";
+  if (!metadataTurnId || !metadataThreadId || !sandboxTypeFromMetadata(canonicalSandboxMetadata(metadata))) return undefined;
+
+  const user = record(input[userIndex]);
+  const historicalTurnId = itemTurnId(user);
+  if (user?.type !== "message" || user.role !== "user" || !historicalTurnId || historicalTurnId === metadataTurnId) {
+    return undefined;
+  }
+
+  let candidateIndex = userIndex - 1;
+  let candidate = record(input[candidateIndex]);
+  while (candidate?.type === "message" && candidate.role === "developer") {
+    const developerTurnId = itemTurnId(candidate);
+    const serverOwnedId = typeof candidate.id === "string" && candidate.id.length > 0;
+    if (developerTurnId === undefined ? !serverOwnedId : developerTurnId !== metadataTurnId) return undefined;
+    candidateIndex -= 1;
+    candidate = record(input[candidateIndex]);
+  }
+  if (candidate?.type !== "message" || candidate.role !== "user") return undefined;
+  if (itemTurnId(candidate) !== metadataTurnId) return undefined;
+
+  const content = Array.isArray(candidate.content) ? candidate.content : [];
+  for (const part of content) {
+    const text = record(part)?.text;
+    if (typeof text !== "string") continue;
+    const trimmed = text.trim();
+    if (!/^<environment_context>[\s\S]*<\/environment_context>$/.test(trimmed)) continue;
+    if (!environmentMatchesCanonicalMetadata(trimmed, metadata, true)) continue;
+    return trimmed;
+  }
+  return undefined;
+}
+
 function hasAssistantOutputBetween(input: unknown[], startIndex: number, endIndex: number): boolean {
   for (let index = startIndex; index < endIndex; index += 1) {
     const item = record(input[index]);
@@ -336,6 +430,10 @@ function rawEnvironmentText(parsed: CodexParsedRequest): string | undefined {
 
   const current = canonicalMetadataEnvironmentBeforeUser(input, activeUserIndex, clientTurnMetadata(parsed));
   if (current) return current;
+
+  const realUserIndex = latestRealUserIndex(input);
+  const compactedCurrent = compactionResumeEnvironmentBeforeUser(input, realUserIndex, clientTurnMetadata(parsed));
+  if (compactedCurrent) return compactedCurrent;
 
   // A skill invocation appends another server-owned user item after the real instruction. Recover
   // the earlier current-turn environment/prompt pair only through canonical metadata, and bind all
