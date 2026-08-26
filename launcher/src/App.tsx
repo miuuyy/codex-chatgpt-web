@@ -450,6 +450,7 @@ function LauncherShell({
       <TitleBar
         copy={copy}
         devProfile={devProfile}
+        draggable={surface !== "browser"}
         sidebarOpen={sidebarOpen}
         toggleSidebar={toggleSidebar}
       />
@@ -625,16 +626,18 @@ function LauncherShell({
 function TitleBar({
   copy,
   devProfile,
+  draggable,
   sidebarOpen,
   toggleSidebar,
 }: {
   copy: Copy;
   devProfile: boolean;
+  draggable: boolean;
   sidebarOpen: boolean;
   toggleSidebar: () => void;
 }) {
   return (
-    <header className="app-titlebar draggable">
+    <header className={`app-titlebar${draggable ? " draggable" : ""}`}>
       <div className="titlebar-left no-drag">
         <IconButton
           icon="sidebar"
@@ -1235,9 +1238,9 @@ function ActivitySurface({
         <span>{copy.recentActivity}</span>
         <SecondaryButton
           icon="external"
-          onClick={() => void api!.openLogs().catch((cause) => setError(messageOf(cause)))}
+          onClick={() => void api!.exportLogs().catch((cause) => setError(messageOf(cause)))}
         >
-          {copy.openLogFolder}
+          {copy.exportSafeLog}
         </SecondaryButton>
       </div>
       <div className="activity-table">
@@ -1322,6 +1325,17 @@ function SettingsSurface({
       setBusy(false);
     }
   };
+  const setBiggerContext = async (enabled: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      updateState(await api!.setBiggerContext(enabled));
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
   const uninstallIntegration = async () => {
     setBusy(true);
     setError(null);
@@ -1373,10 +1387,23 @@ function SettingsSurface({
               .catch((cause) => setError(messageOf(cause)))}
           />
         </SettingRow>
+        <SettingRow body={copy.biggerContextBody} label={copy.biggerContext}>
+          <Switch
+            checked={snapshot.state.experimentalBiggerContext}
+            disabled={busy || snapshot.state.coreSetupComplete !== true}
+            onChange={(checked) => void setBiggerContext(checked)}
+          />
+        </SettingRow>
         <SettingRow body={copy.chooseLanguageHint} label={copy.language}>
           <LanguageMenu language={language} onChange={(next) => void updateLanguage(next)} />
         </SettingRow>
       </div>
+
+      {!devProfile && snapshot.state.codexRestartRequired ? (
+        <NoticeRow icon="alert" tone="warning">
+          {copy.restartCodex}
+        </NoticeRow>
+      ) : null}
 
       <SectionHeading label={copy.diagnostics} spaced />
       <button className="diagnostic-row" disabled={busy} onClick={() => void runDoctor()} type="button">

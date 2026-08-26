@@ -32,6 +32,41 @@ test("explicit browser-turn cancellation aborts and removes every registered ses
   expect(sessions.activeCount()).toBe(0);
 });
 
+test("targeted tab cancellation settles one trace and keeps a terminal replay tombstone", async () => {
+  const sessions = new ChatGptTurnSessions();
+  let rejectTarget!: (error: Error) => void;
+  let targetCancelled = 0;
+  let otherCancelled = 0;
+  const target = sessions.getOrCreate("target", () => ({
+    mode: "read-only",
+    browser: new Promise<string>((_resolve, reject) => { rejectTarget = reject; }),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    cancel: () => {
+      targetCancelled += 1;
+      rejectTarget(new Error("browser tab closed by user"));
+    },
+  }), "trace_target");
+  sessions.getOrCreate("other", () => ({
+    mode: "read-only",
+    browser: new Promise<string>(() => {}),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    cancel: () => { otherCancelled += 1; },
+  }), "trace_other");
+
+  expect(await sessions.cancelTrace("trace_target")).toBe(1);
+  expect(targetCancelled).toBe(1);
+  expect(otherCancelled).toBe(0);
+  expect(target.settledOutcome()).toMatchObject({ type: "error" });
+  expect(sessions.activeCount()).toBe(1);
+  expect(sessions.getOrCreate("target", () => {
+    throw new Error("a cancelled continuation must not open a new browser tab");
+  }, "trace_target")).toBe(target);
+  expect(await sessions.cancelTrace("trace_target")).toBe(0);
+  sessions.clear();
+});
+
 test("session cache expiry never cancels a still-active long browser turn", async () => {
   const sessions = new ChatGptTurnSessions(1);
   let cancelled = 0;
@@ -139,6 +174,31 @@ test("turn broker tokens do not expire while their browser turn is still alive",
     });
     await Bun.sleep(5);
     await expect(callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token }))
+      .resolves.toMatchObject({ bindingId: expect.any(String) });
+  } finally {
+    await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("turn broker revokes only channels owned by the closed browser trace", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cgw-broker-targeted-"));
+  const socketPath = defaultBrokerEndpoint(root);
+  const broker = TurnBroker.forSocket(socketPath);
+  try {
+    const environment = {
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" as const },
+      tools: [],
+    };
+    const target = await broker.register(environment, 60_000, "trace_target");
+    const other = await broker.register(environment, 60_000, "trace_other");
+    expect(broker.revokeTrace("trace_target")).toBe(1);
+    await expect(callTurnBroker(socketPath, { method: "claim", token: target }))
+      .rejects.toThrow("already finished");
+    await expect(callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token: other }))
       .resolves.toMatchObject({ bindingId: expect.any(String) });
   } finally {
     await broker.close();

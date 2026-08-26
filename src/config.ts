@@ -8,6 +8,7 @@ import { VERSION } from "./version";
 
 export type RuntimeMode = "browser-only" | "full";
 export type BrowserHostMode = "managed-chrome" | "launcher";
+export type SubagentProtocol = "compatibility-v1" | "native";
 
 /**
  * ChatGPT caches a connector's public MCP contract by connector identity. The direct turn-token
@@ -65,6 +66,7 @@ export interface AppConfig {
   purpose?: "dev-harness";
   releaseVersion: string;
   mode: RuntimeMode;
+  subagentProtocol: SubagentProtocol;
   host: "127.0.0.1";
   port: number;
   contextWindow: number;
@@ -77,6 +79,7 @@ export interface AppConfig {
   headed: boolean;
   solAvailable: boolean;
   proAvailable: boolean;
+  experimentalBiggerContext: boolean;
   autoApproveToolCalls: boolean;
   controlToken: string;
   runtimeCommand: string[];
@@ -165,6 +168,7 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     version: 3,
     releaseVersion: VERSION,
     mode,
+    subagentProtocol: "compatibility-v1",
     host: "127.0.0.1",
     port: 17841,
     contextWindow: 256_000,
@@ -176,6 +180,7 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     headed: true,
     solAvailable: true,
     proAvailable: false,
+    experimentalBiggerContext: false,
     autoApproveToolCalls: false,
     controlToken: randomBytes(32).toString("base64url"),
     runtimeCommand: currentRuntimeCommand(),
@@ -328,6 +333,10 @@ function parseConfig(value: unknown, path: string): AppConfig {
   }
   if (typeof parsed.releaseVersion !== "string" || !parsed.releaseVersion.trim()) throw new Error(`Missing releaseVersion in ${path}`);
   if (parsed.mode !== "browser-only" && parsed.mode !== "full") throw new Error(`Invalid runtime mode in ${path}`);
+  const subagentProtocol = parsed.subagentProtocol ?? "compatibility-v1";
+  if (subagentProtocol !== "compatibility-v1" && subagentProtocol !== "native") {
+    throw new Error(`Invalid subagentProtocol in ${path}`);
+  }
   if (parsed.host !== "127.0.0.1") throw new Error("The Responses proxy must bind to 127.0.0.1");
   if (parsed.browserHost !== "managed-chrome" && parsed.browserHost !== "launcher") {
     throw new Error(`Invalid browserHost in ${path}`);
@@ -396,12 +405,23 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (parsed.solAvailable !== undefined && typeof parsed.solAvailable !== "boolean") {
     throw new Error(`Invalid solAvailable in ${path}`);
   }
+  if (parsed.experimentalBiggerContext !== undefined
+    && typeof parsed.experimentalBiggerContext !== "boolean") {
+    throw new Error(`Invalid experimentalBiggerContext in ${path}`);
+  }
   const solAvailable = parsed.solAvailable !== false;
   const proAvailable = parsed.proAvailable === true;
+  const experimentalBiggerContext = parsed.experimentalBiggerContext === true;
   if (proAvailable && !solAvailable) {
     throw new Error(`Invalid ChatGPT account capabilities in ${path}: Pro requires Sol`);
   }
-  return { ...parsed, solAvailable, proAvailable } as AppConfig;
+  return {
+    ...parsed,
+    subagentProtocol,
+    solAvailable,
+    proAvailable,
+    experimentalBiggerContext,
+  } as AppConfig;
 }
 
 export function saveConfig(config: AppConfig): void {
@@ -440,6 +460,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       localToolsEnabled: config.mode === "full",
       solAvailable: config.solAvailable,
       proAvailable: config.proAvailable,
+      experimentalBiggerContext: config.experimentalBiggerContext,
       autoApproveToolCalls: config.autoApproveToolCalls,
     },
   };

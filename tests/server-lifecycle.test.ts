@@ -2,10 +2,12 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { chatGptWebTraceId } from "../src/adapters/chatgpt-web";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, closeTurnBrokers, RemoteTurnBroker, TurnBroker } from "../src/adapters/chatgpt-web/turn-broker";
-import { defaultBrokerEndpoint, defaultConfig } from "../src/config";
-import { HttpTurnCounter, startServer } from "../src/server";
+import { defaultBrokerEndpoint, defaultConfig, providerConfig } from "../src/config";
+import { parseRequest } from "../src/responses/parser";
+import { HttpTurnCounter, responseRequest, routeChatGptWebRequest, startServer } from "../src/server";
 
 test("DEV harness configuration cannot bind a Responses listener", () => {
   const config = { ...defaultConfig("browser-only"), purpose: "dev-harness" as const, port: 0 };
@@ -173,6 +175,126 @@ test("authenticated lifecycle control cancels orphaned browser turns", async () 
   } finally {
     chatGptTurnSessions.clear();
     await server.stop(true);
+  }
+});
+
+test("authenticated targeted cancellation terminates one browser trace without reopening it", async () => {
+  const config = { ...defaultConfig("browser-only"), port: 0 };
+  const server = startServer(config);
+  chatGptTurnSessions.clear();
+  let rejectTarget!: (error: Error) => void;
+  let targetCancelled = 0;
+  let otherCancelled = 0;
+  const target = chatGptTurnSessions.getOrCreate("target-key", () => ({
+    mode: "read-only",
+    browser: new Promise<string>((_resolve, reject) => { rejectTarget = reject; }),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    cancel: () => {
+      targetCancelled += 1;
+      rejectTarget(new Error("tab closed"));
+    },
+  }), "trace_target");
+  chatGptTurnSessions.getOrCreate("other-key", () => ({
+    mode: "read-only",
+    browser: new Promise<string>(() => {}),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    cancel: () => { otherCancelled += 1; },
+  }), "trace_other");
+
+  try {
+    const unauthorized = await fetch(`http://127.0.0.1:${server.port}/admin/cancel-turn`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer invalid" },
+      body: JSON.stringify({ traceId: "trace_target" }),
+    });
+    expect(unauthorized.status).toBe(401);
+
+    const response = await fetch(`http://127.0.0.1:${server.port}/admin/cancel-turn`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${config.controlToken}`,
+      },
+      body: JSON.stringify({ traceId: "trace_target" }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      status: "ok",
+      trace_id: "trace_target",
+      cancelled_browser_turns: 1,
+      cancelled_broker_turns: 0,
+      active_browser_turns: 1,
+    });
+    expect(targetCancelled).toBe(1);
+    expect(otherCancelled).toBe(0);
+    expect(target.settledOutcome()).toMatchObject({ type: "error" });
+    expect(chatGptTurnSessions.getOrCreate("target-key", () => {
+      throw new Error("cancelled trace must remain terminal");
+    }, "trace_target")).toBe(target);
+  } finally {
+    chatGptTurnSessions.clear();
+    await server.stop(true);
+  }
+});
+
+test("a Codex retry after tab cancellation receives terminal HTTP 400 without a new browser", async () => {
+  const config = defaultConfig("browser-only");
+  const turnId = "turn_cancelled_replay";
+  const body = {
+    model: "chatgpt-web/high",
+    stream: true,
+    client_metadata: {
+      "x-codex-turn-metadata": JSON.stringify({
+        thread_id: "thread_cancelled_replay",
+        turn_id: turnId,
+      }),
+    },
+    input: [{
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "Run until the browser tab is closed" }],
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    }],
+  };
+  const parsed = parseRequest(body);
+  routeChatGptWebRequest(parsed, config);
+  const traceId = chatGptWebTraceId(providerConfig(config), parsed);
+  let rejectBrowser!: (error: Error) => void;
+  chatGptTurnSessions.clear();
+  chatGptTurnSessions.getOrCreate("cancelled-replay", () => ({
+    mode: "read-only",
+    browser: new Promise<string>((_resolve, reject) => { rejectBrowser = reject; }),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    cancel: reason => rejectBrowser(reason ?? new Error("cancelled")),
+  }), traceId);
+
+  try {
+    expect(await chatGptTurnSessions.cancelTrace(traceId)).toBe(1);
+    expect(chatGptTurnSessions.cancelledError(traceId)?.message).toContain("Codex turn was cancelled");
+    let adapterConstructions = 0;
+    const response = await responseRequest(new Request("http://127.0.0.1:17841/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }), config, () => {
+      adapterConstructions += 1;
+      throw new Error("cancelled turn must not construct a new browser adapter");
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: {
+        type: "client_closed_request",
+        code: "client_cancelled",
+        message: "The ChatGPT browser tab was closed, so the Codex turn was cancelled.",
+      },
+    });
+    expect(adapterConstructions).toBe(0);
+  } finally {
+    chatGptTurnSessions.clear();
   }
 });
 

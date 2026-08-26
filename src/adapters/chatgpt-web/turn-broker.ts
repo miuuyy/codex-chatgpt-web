@@ -147,7 +147,7 @@ export interface TurnBrokerOwner {
   updateEnvironment(token: string, environment: ChatGptTurnEnvironment): void | Promise<void>;
   nextToolBatch(token: string, signal?: AbortSignal): Promise<BrokerToolRequest[]>;
   completeTool(token: string, callId: string, result: BrokerToolResult): void | Promise<void>;
-  revoke(token: string): void | Promise<void>;
+  revoke(token: string, reason?: Error): void | Promise<void>;
 }
 
 export class TurnBroker implements TurnBrokerOwner {
@@ -263,7 +263,7 @@ export class TurnBroker implements TurnBrokerOwner {
     invocation.resolve(result);
   }
 
-  revoke(token: string): void {
+  revoke(token: string, reason = new Error("Codex turn binding was revoked")): void {
     const channel = this.channels.get(token);
     if (!channel) return;
     this.channels.delete(token);
@@ -273,7 +273,7 @@ export class TurnBroker implements TurnBrokerOwner {
       this.retire(this.retiredBindings, channel.bindingId, channel.traceId);
     }
     this.retire(this.retiredTokens, token, channel.traceId);
-    this.rejectChannel(channel, new Error("Codex turn binding was revoked"));
+    this.rejectChannel(channel, reason);
   }
 
   externalOwnerActiveCount(): number {
@@ -286,6 +286,14 @@ export class TurnBroker implements TurnBrokerOwner {
       .filter(([, channel]) => channel.externalOwner)
       .map(([token]) => token);
     for (const token of tokens) this.revoke(token);
+    return tokens.length;
+  }
+
+  revokeTrace(traceId: string, reason = new Error("Codex turn binding was revoked")): number {
+    const tokens = [...this.channels]
+      .filter(([, channel]) => channel.traceId === traceId)
+      .map(([token]) => token);
+    for (const token of tokens) this.revoke(token, reason);
     return tokens.length;
   }
 
@@ -748,7 +756,7 @@ export class RemoteTurnBroker implements TurnBrokerOwner {
     }, null);
   }
 
-  async revoke(token: string): Promise<void> {
+  async revoke(token: string, _reason?: Error): Promise<void> {
     await callTurnBroker(this.socketPath, { method: "owner_revoke", token });
   }
 }

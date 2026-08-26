@@ -189,6 +189,11 @@ function validateConfig(config, descriptorPath, platform = process.platform, lau
   if (config.mode !== "browser-only" && config.mode !== "full") {
     throw new Error("Runtime configuration has an invalid mode");
   }
+  if (config.subagentProtocol !== undefined
+    && config.subagentProtocol !== "compatibility-v1"
+    && config.subagentProtocol !== "native") {
+    throw new Error("Runtime configuration has an invalid subagent protocol");
+  }
   if (typeof config.releaseVersion !== "string" || !config.releaseVersion.trim()) {
     throw new Error("Runtime configuration has no release version");
   }
@@ -228,6 +233,10 @@ function validateConfig(config, descriptorPath, platform = process.platform, lau
     if (typeof config[key] !== "boolean") {
       throw new Error(`Runtime configuration has an invalid ${key}`);
     }
+  }
+  if (config.experimentalBiggerContext !== undefined
+    && typeof config.experimentalBiggerContext !== "boolean") {
+    throw new Error("Runtime configuration has an invalid experimentalBiggerContext");
   }
   if (config.proAvailable && !config.solAvailable) {
     throw new Error("Runtime configuration cannot enable Pro without Sol");
@@ -1237,13 +1246,17 @@ class RuntimeSupervisor {
     return Boolean(this.tunnel && await this.tunnelHealth(config));
   }
 
-  async control(config, action) {
+  async control(config, action, options = {}) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5_000);
+    const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 5_000);
     try {
       const response = await fetch(`http://${config.host}:${config.port}/admin/${action}`, {
         method: "POST",
-        headers: { authorization: `Bearer ${config.controlToken}` },
+        headers: {
+          authorization: `Bearer ${config.controlToken}`,
+          ...(options.body === undefined ? {} : { "content-type": "application/json" }),
+        },
+        ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
         signal: controller.signal,
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -1654,6 +1667,31 @@ class RuntimeSupervisor {
       cancelledHttpTurns: result.cancelled_http_turns,
       cancelledBrowserTurns: result.cancelled_browser_turns,
     };
+  }
+
+  async cancelBrowserTurn(traceId) {
+    if (!/^[A-Za-z0-9_-]{6,128}$/.test(traceId || "")) throw new Error("Browser turn trace id is invalid");
+    const config = this.readConfig();
+    const daemon = this.daemon;
+    if (!config || !daemon || daemon.exitCode !== null || daemon.signalCode !== null) {
+      throw new Error("Launcher-owned runtime is unavailable for browser-turn cancellation");
+    }
+    const result = await this.control(config, "cancel-turn", {
+      body: { traceId },
+      timeoutMs: 15_000,
+    });
+    if (result.status !== "ok"
+      || result.trace_id !== traceId
+      || !Number.isInteger(result.cancelled_browser_turns)
+      || !Number.isInteger(result.cancelled_broker_turns)) {
+      throw new Error("Launcher-owned runtime did not acknowledge targeted browser-turn cancellation");
+    }
+    this.logger.info("runtime.browser_turn_cancelled", {
+      traceId,
+      browserTurns: result.cancelled_browser_turns,
+      brokerTurns: result.cancelled_broker_turns,
+    });
+    return result;
   }
 
   async stopChild(name, timeoutMs = 10_000) {

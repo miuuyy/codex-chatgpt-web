@@ -114,6 +114,64 @@ test("Bun daemon streams a prepared browser turn through the persistent Node hel
   }
 });
 
+test("launcher helper protocol preserves multipart context and the compaction flag", async () => {
+  let sent: Record<string, unknown> | undefined;
+  const client = new LauncherBrowserHelperClient({
+    appName: "Codex Native2 DEV",
+    browserHost: "launcher",
+    browserHostDescriptorPath: "/durable/launcher.json",
+    storageStatePath: "/durable/unused-state.json",
+    chromeExecutablePath: "/durable/unused-chrome",
+    turnTimeoutMs: 60_000,
+    headed: true,
+    autoApproveToolCalls: false,
+  });
+  const internal = client as unknown as {
+    pending: Map<string, { resolve(value: string): void }>;
+    ensureChild(): Promise<void>;
+    send(message: Record<string, unknown>): Promise<void>;
+    finish(id: string): void;
+  };
+  internal.ensureChild = async () => {};
+  internal.send = async message => {
+    sent = message;
+    if (message.type !== "run" || typeof message.id !== "string") return;
+    queueMicrotask(() => {
+      const pending = internal.pending.get(message.id as string);
+      internal.finish(message.id as string);
+      pending?.resolve("done");
+    });
+  };
+
+  await expect(client.run({
+    traceId: "multipart-123",
+    modelId: "gpt-5.6-sol",
+    reasoning: "high",
+    capabilities: { localToolsEnabled: false, solAvailable: true, proAvailable: true },
+    compaction: true,
+    prepare: async () => ({
+      text: "commit",
+      images: [],
+      multipart: { parts: ["{\"part\":1}", "{\"part\":2}", "{\"part\":3}"], commit: "commit" },
+      trimmedCompactionMessages: 4,
+      release() {},
+    }),
+    onTextDelta() {},
+  })).resolves.toBe("done");
+
+  expect(sent).toMatchObject({
+    type: "run",
+    turn: {
+      compaction: true,
+      prepared: {
+        text: "commit",
+        multipart: { parts: ["{\"part\":1}", "{\"part\":2}", "{\"part\":3}"], commit: "commit" },
+        trimmedCompactionMessages: 4,
+      },
+    },
+  });
+});
+
 test("an abort dispatched during run submission cannot overtake the run frame", async () => {
   const controller = new AbortController();
   const messages: string[] = [];

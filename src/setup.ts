@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { join } from "node:path";
-import type { AppConfig, RuntimeMode } from "./config";
+import type { AppConfig, RuntimeMode, SubagentProtocol } from "./config";
 import {
   currentRuntimeCommand,
   defaultBrokerEndpoint,
@@ -19,7 +19,11 @@ import {
   loginToChatGpt,
   storedBrowserLoginCapabilities,
 } from "./browser-login";
-import { installCodexIntegration, preflightCodexIntegration } from "./codex-integration";
+import {
+  installCodexIntegration,
+  preflightCodexIntegration,
+  readCodexSubagentProtocol,
+} from "./codex-integration";
 import { inspectLauncherBrowserHost } from "./launcher-browser-host";
 import {
   DEV_CONFIG_PURPOSE,
@@ -40,6 +44,7 @@ import { VERSION } from "./version";
 
 export interface SetupOptions {
   mode: RuntimeMode;
+  subagentProtocol?: SubagentProtocol;
   port?: number;
   chromeExecutablePath?: string;
   browserHostDescriptorPath?: string;
@@ -47,6 +52,7 @@ export interface SetupOptions {
   appName?: string;
   forceLogin?: boolean;
   autoApproveToolCalls?: boolean;
+  experimentalBiggerContext?: boolean;
   replaceCodexRoute?: boolean;
   restartService?: boolean;
   acknowledgedUnofficial?: boolean;
@@ -103,6 +109,7 @@ function loadExistingConfig(): AppConfig | undefined {
 function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
   return JSON.stringify({
     mode: before.mode,
+    subagentProtocol: before.subagentProtocol,
     releaseVersion: before.releaseVersion,
     host: before.host,
     port: before.port,
@@ -116,12 +123,14 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     headed: before.headed,
     solAvailable: before.solAvailable,
     proAvailable: before.proAvailable,
+    experimentalBiggerContext: before.experimentalBiggerContext,
     autoApproveToolCalls: before.autoApproveToolCalls,
     controlToken: before.controlToken,
     runtimeCommand: before.runtimeCommand,
     tunnel: before.tunnel,
   }) !== JSON.stringify({
     mode: after.mode,
+    subagentProtocol: after.subagentProtocol,
     releaseVersion: after.releaseVersion,
     host: after.host,
     port: after.port,
@@ -135,6 +144,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     headed: after.headed,
     solAvailable: after.solAvailable,
     proAvailable: after.proAvailable,
+    experimentalBiggerContext: after.experimentalBiggerContext,
     autoApproveToolCalls: after.autoApproveToolCalls,
     controlToken: after.controlToken,
     runtimeCommand: after.runtimeCommand,
@@ -199,6 +209,7 @@ async function waitForProxy(config: AppConfig, timeoutMs = 10_000): Promise<void
 function baseConfig(existing: AppConfig | undefined, options: SetupOptions): AppConfig {
   const config = existing ? structuredClone(existing) : defaultConfig(options.mode);
   config.mode = options.mode;
+  if (options.subagentProtocol) config.subagentProtocol = options.subagentProtocol;
   config.releaseVersion = VERSION;
   config.runtimeCommand = currentRuntimeCommand();
   if (options.port !== undefined) {
@@ -216,6 +227,9 @@ function baseConfig(existing: AppConfig | undefined, options: SetupOptions): App
   }
   config.appName = resolveSetupConnectorName(existing?.appName, options.appName);
   if (options.autoApproveToolCalls !== undefined) config.autoApproveToolCalls = options.autoApproveToolCalls;
+  if (options.experimentalBiggerContext !== undefined) {
+    config.experimentalBiggerContext = options.experimentalBiggerContext;
+  }
   if (options.acknowledgedUnofficial) config.acknowledgedUnofficialAt = new Date().toISOString();
   if (!config.acknowledgedUnofficialAt) {
     throw new Error("Setup requires explicit acknowledgement that this is unofficial browser automation. Pass --acknowledge-unofficial.");
@@ -297,7 +311,11 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   if (existing?.purpose === DEV_CONFIG_PURPOSE) {
     throw new Error("A DEV harness configuration cannot be installed into Codex");
   }
-  const config = baseConfig(existing, options);
+  const config = baseConfig(existing, {
+    ...options,
+    subagentProtocol: options.subagentProtocol
+      ?? readCodexSubagentProtocol(existing?.subagentProtocol ?? "compatibility-v1"),
+  });
   delete config.purpose;
   const launcherOwned = config.browserHost === "launcher";
   if (!launcherOwned && process.platform !== "darwin") {

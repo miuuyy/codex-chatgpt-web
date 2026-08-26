@@ -1,8 +1,5 @@
 import { expect, test } from "bun:test";
 import { defaultConfig } from "../src/config";
-import {
-  CHATGPT_WEB_MODEL_PRIORITY,
-} from "../src/model-catalog";
 import { CHATGPT_WEB_MODEL_ROUTES, resolveChatGptWebContextLimits } from "../src/chatgpt-web-models";
 import { modelsRequest } from "../src/server";
 
@@ -12,6 +9,7 @@ test("proxies official /models auth and query, then appends the fixed ChatGPT We
   });
   let upstream: Request | undefined;
   const config = defaultConfig("full");
+  config.subagentProtocol = "native";
   config.proAvailable = true;
   const response = await modelsRequest(request, config, async input => {
     upstream = input;
@@ -19,8 +17,10 @@ test("proxies official /models auth and query, then appends the fixed ChatGPT We
       models: [{
         slug: "gpt-5.6-sol",
         display_name: "5.6 Sol",
+        priority: 1,
         visibility: "list",
         supported_in_api: true,
+        multi_agent_version: "v2",
         supported_reasoning_levels: [],
         tool_mode: "code_mode_only",
         context_window: 300_000,
@@ -58,7 +58,7 @@ test("proxies official /models auth and query, then appends the fixed ChatGPT We
   expect(body.models[0]!.context_window).toBe(300_000);
   expect(body.models[0]!.max_context_window).toBe(371_851);
   expect(body.models[0]!.auto_compact_token_limit).toBe(270_000);
-  expect(body.models[0]!.multi_agent_version).toBe("v1");
+  expect(body.models[0]!.multi_agent_version).toBe("v2");
   for (const [index, model] of body.models.slice(1).entries()) {
     const route = CHATGPT_WEB_MODEL_ROUTES[index]!;
     const limits = resolveChatGptWebContextLimits(route.backendModel, route.adapterEffort, config);
@@ -67,7 +67,8 @@ test("proxies official /models auth and query, then appends the fixed ChatGPT We
     expect(model.effective_context_window_percent).toBe(limits.effectiveContextWindowPercent);
     expect(model.auto_compact_token_limit).toBe(limits.autoCompactTokenLimit);
     expect(model.supported_in_api).toBe(true);
-    expect(model.priority).toBe(CHATGPT_WEB_MODEL_PRIORITY);
+    expect(model.priority).toBe(1);
+    expect(model.multi_agent_version).toBe("v2");
   }
 });
 

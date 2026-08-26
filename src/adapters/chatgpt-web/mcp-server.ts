@@ -13,6 +13,7 @@ interface ClaimedTurn {
 
 const turnTokenSchema = z.string().min(20).max(256);
 const jsonArgumentsSchema = z.record(z.string(), z.unknown()).default({});
+export const CHATGPT_WEB_AGENT_WAIT_POLL_MS = 10_000;
 
 function scopeHash(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);
@@ -64,6 +65,55 @@ function namedTool(environment: ChatGptTurnEnvironment, requestedWireName: strin
   const tool = environment.tools.find(candidate => wireName(candidate) === requestedWireName);
   if (!tool) throw new Error(`Codex tool is not available in this turn: ${requestedWireName}`);
   return tool;
+}
+
+function isAgentWaitTool(tool: CodexTool): boolean {
+  return tool.name === "wait_agent"
+    && (tool.namespace === "multi_agent_v1" || tool.namespace === "multi_agent_v2");
+}
+
+function browserToolDescription(tool: CodexTool): string {
+  if (!isAgentWaitTool(tool)) return tool.description;
+  return `${tool.description}\n\nChatGPT Web transport rule: wait for exactly 10 seconds per call, then release the MCP channel so spawned Web agents can use their own tools. Repeat with the same target ids until a terminal status is returned.`;
+}
+
+function browserToolParameters(tool: CodexTool): Record<string, unknown> {
+  if (!isAgentWaitTool(tool)) return tool.parameters;
+  const parameters = structuredClone(tool.parameters);
+  const properties = parameters.properties && typeof parameters.properties === "object" && !Array.isArray(parameters.properties)
+    ? parameters.properties as Record<string, unknown>
+    : {};
+  const timeout = properties.timeout_ms && typeof properties.timeout_ms === "object" && !Array.isArray(properties.timeout_ms)
+    ? properties.timeout_ms as Record<string, unknown>
+    : {};
+  const required = Array.isArray(parameters.required)
+    ? parameters.required.filter((value): value is string => typeof value === "string")
+    : [];
+  return {
+    ...parameters,
+    properties: {
+      ...properties,
+      timeout_ms: {
+        ...timeout,
+        type: "number",
+        const: CHATGPT_WEB_AGENT_WAIT_POLL_MS,
+        minimum: CHATGPT_WEB_AGENT_WAIT_POLL_MS,
+        maximum: CHATGPT_WEB_AGENT_WAIT_POLL_MS,
+        description: "Required transport-safe polling interval. Use exactly 10000 and repeat the same targets until completion.",
+      },
+    },
+    required: [...new Set([...required, "timeout_ms"])],
+  };
+}
+
+function assertBrowserToolArguments(tool: CodexTool, args: Record<string, unknown>): void {
+  if (!isAgentWaitTool(tool)) return;
+  if (args.timeout_ms !== CHATGPT_WEB_AGENT_WAIT_POLL_MS) {
+    throw new Error(
+      `ChatGPT Web wait_agent requires timeout_ms=${CHATGPT_WEB_AGENT_WAIT_POLL_MS}`
+      + " so the shared MCP channel remains available to spawned Web agents",
+    );
+  }
 }
 
 function invocationTimeout(environment: ChatGptTurnEnvironment & { expiresAt?: number }): number | null {
@@ -331,9 +381,9 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
         wire_name: wireName(tool),
         name: tool.name,
         namespace: tool.namespace ?? null,
-        description: tool.description,
+        description: browserToolDescription(tool),
         kind: tool.freeform ? "freeform" : tool.toolSearch ? "tool_search" : "function",
-        ...(include_schema ? { parameters: tool.parameters } : {}),
+        ...(include_schema ? { parameters: browserToolParameters(tool) } : {}),
       }));
       return result({
         tools: page,
@@ -366,7 +416,9 @@ export async function runChatGptMcpServer(options: { brokerSocketPath: string })
         return invoke(claimed.bindingId, bound, tool, { input });
       }
       if (input !== undefined) throw new Error(`Function Codex tool ${wire_name} does not accept freeform input`);
-      return invoke(claimed.bindingId, bound, tool, { arguments: args ?? {} });
+      const invocationArguments = args ?? {};
+      assertBrowserToolArguments(tool, invocationArguments);
+      return invoke(claimed.bindingId, bound, tool, { arguments: invocationArguments });
     },
   );
 

@@ -1,8 +1,9 @@
-import { createChatGptWebAdapter } from "./adapters/chatgpt-web";
+import { chatGptWebTraceId, createChatGptWebAdapter } from "./adapters/chatgpt-web";
 import { closeChatGptBrowserWorkers } from "./adapters/chatgpt-web/browser-worker";
 import { closeTurnBrokers, TurnBroker } from "./adapters/chatgpt-web/turn-broker";
 import { timingSafeEqual } from "node:crypto";
 import { chatGptTurnSessions } from "./adapters/chatgpt-web/turn-execution";
+import { chatGptBrowserTabClosedError } from "./adapters/chatgpt-web/adapter-error";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse } from "./bridge";
 import type { AppConfig } from "./config";
 import { providerConfig } from "./config";
@@ -11,7 +12,11 @@ import { readJsonRequestBody } from "./http-body";
 import { httpStatusFromTerminalError } from "./lib/errors";
 import { createHash } from "node:crypto";
 import { augmentNativeModelCatalog } from "./model-catalog";
-import { readCodexModelContextOverride, type CodexModelContextOverride } from "./codex-integration";
+import {
+  readCodexModelContextOverride,
+  readCodexSubagentProtocol,
+  type CodexModelContextOverride,
+} from "./codex-integration";
 import {
   CHATGPT_WEB_LUNA_BACKEND_MODEL,
   isChatGptWebModelSlug,
@@ -283,6 +288,14 @@ export async function responseRequest(
   } catch (error) {
     return formatErrorResponse(400, "invalid_request_error", error instanceof Error ? error.message : String(error));
   }
+  if (parsed._opaqueMultiAgentV2Payload) {
+    return formatErrorResponse(
+      400,
+      "invalid_request_error",
+      "ChatGPT Web cannot read this encrypted cross-backend subagent payload. "
+        + "Start a new Compatibility V1 task, or delegate from a Web model whose collaboration call uses the plaintext-delivery marker.",
+    );
+  }
   if (typeof requestedPreviousResponseId === "string" && expanded === raw) {
     return formatErrorResponse(
       409,
@@ -309,7 +322,35 @@ export async function responseRequest(
     parsed.context.messages.push({ role: "user", content: COMPACT_PROMPT, timestamp: Date.now() });
   }
 
-  const adapter = adapterFactory(providerConfig(config));
+  const provider = providerConfig(config);
+  let cancelledError: Error | undefined;
+  try {
+    cancelledError = chatGptTurnSessions.cancelledError(chatGptWebTraceId(provider, parsed));
+  } catch (error) {
+    // A cancelled browser session can only exist after the adapter accepted canonical native
+    // turn identity and user-revision metadata. Requests without that identity have no matching
+    // trace tombstone; preserve the adapter's existing strict validation/error path below.
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes("requires native Codex turn_id metadata")
+      && !message.includes("requires a current-turn user message")) throw error;
+  }
+  if (cancelledError) {
+    // Codex retries unknown streamed response.failed codes. A replay after the user explicitly
+    // closed the only browser document is instead a terminal client state: repeating that exact
+    // request is invalid and must not recreate the DOM. Codex maps HTTP 400 to its non-retryable
+    // InvalidRequest category while the body preserves the real client_cancelled classification.
+    return new Response(JSON.stringify({
+      error: {
+        type: "client_closed_request",
+        code: "client_cancelled",
+        message: cancelledError.message,
+      },
+    }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  const adapter = adapterFactory(provider);
   const queue = new AsyncEventQueue<AdapterEvent>();
   const abort = new AbortController();
   if (req.signal.aborted) abort.abort();
@@ -541,6 +582,30 @@ export function startServer(
         turnBroker?.setExternalOwnersAccepted(!draining);
         return Response.json({ status: "ok", accepting_turns: !draining, ...activity() });
       }
+      if (req.method === "POST" && url.pathname === "/admin/cancel-turn") {
+        if (!controlAuthorized(req)) return new Response("Unauthorized", { status: 401 });
+        let traceId: string;
+        try {
+          const body = await req.json() as { traceId?: unknown };
+          traceId = typeof body?.traceId === "string" ? body.traceId : "";
+          if (!/^[A-Za-z0-9_-]{6,128}$/.test(traceId)) throw new Error("traceId is invalid");
+        } catch (error) {
+          return Response.json(
+            { status: "error", error: error instanceof Error ? error.message : String(error) },
+            { status: 400 },
+          );
+        }
+        const reason = chatGptBrowserTabClosedError();
+        const cancelledBrowserTurns = await chatGptTurnSessions.cancelTrace(traceId, reason);
+        const cancelledBrokerTurns = turnBroker?.revokeTrace(traceId, reason) ?? 0;
+        return Response.json({
+          status: "ok",
+          trace_id: traceId,
+          cancelled_browser_turns: cancelledBrowserTurns,
+          cancelled_broker_turns: cancelledBrokerTurns,
+          ...activity(),
+        });
+      }
       if (req.method === "POST" && url.pathname === "/admin/cancel-turns") {
         if (!controlAuthorized(req)) return new Response("Unauthorized", { status: 401 });
         const cancelledBrowserTurns = chatGptTurnSessions.clear() + (turnBroker?.revokeExternalOwners() ?? 0);
@@ -577,9 +642,22 @@ export function startServer(
           );
         }
         return httpTurns.track(async signal => {
+          let catalogConfig: AppConfig;
+          try {
+            catalogConfig = {
+              ...config,
+              subagentProtocol: readCodexSubagentProtocol(config.subagentProtocol),
+            };
+          } catch (error) {
+            return formatErrorResponse(
+              500,
+              "server_error",
+              `Could not resolve the installed subagent protocol: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
           const response = await modelsRequest(
             new Request(req, { signal }),
-            config,
+            catalogConfig,
             dependencies.fetchUpstream,
             readCodexModelContextOverride,
           );

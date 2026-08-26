@@ -58,7 +58,7 @@ port. Run on a trusted single-user account and treat local code execution as ins
 boundary.
 
 The lifecycle endpoints are separate from the Responses surface. `/admin/drain`, `/admin/resume`,
-`/admin/cancel-turns`, and `/admin/shutdown` require a random bearer token stored in the
+`/admin/cancel-turn`, `/admin/cancel-turns`, and `/admin/shutdown` require a random bearer token stored in the
 user-only application config. The launcher uses them to reject new work, prove that both the HTTP
 request and long-lived browser/tool loop are idle, flush response state, and stop a process. The
 token does not turn loopback into a hostile-local-process security boundary; it prevents accidental

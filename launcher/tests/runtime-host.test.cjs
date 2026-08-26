@@ -110,6 +110,45 @@ test("DEV core setup configures only the isolated harness contract", async () =>
   assert.equal(fixture.invocation().args.includes("--restart-service"), false);
 });
 
+test("Bigger Context uses the setup transaction and refreshes the production Codex catalog", async () => {
+  const fixture = hostFor({ mode: "full", appName: "Codex Native2" });
+  const result = await fixture.host.setBiggerContext(true);
+  assert.equal(result.enabled, true);
+  assert.deepEqual(fixture.invocation(), {
+    name: "bigger-context",
+    args: [
+      "setup",
+      "--full",
+      "--browser-host-descriptor",
+      "/runtime/launcher-browser.json",
+      "--replace-codex-route",
+      "--acknowledge-unofficial",
+      "--restart-service",
+      "--bigger-context",
+      "--app-name",
+      "Codex Native2",
+    ],
+  });
+});
+
+test("Bigger Context updates the isolated DEV config without installing a Codex route", async () => {
+  const fixture = devHostFor({ mode: "browser-only" });
+  const result = await fixture.host.setBiggerContext(false);
+  assert.equal(result.enabled, false);
+  assert.deepEqual(fixture.invocation(), {
+    name: "bigger-context",
+    args: [
+      "dev",
+      "setup",
+      "--browser-only",
+      "--browser-host-descriptor",
+      "/dev/runtime/launcher-browser.json",
+      "--acknowledge-unofficial",
+      "--standard-context",
+    ],
+  });
+});
+
 test("DEV setup child environment removes launcher-rebound production aliases", async () => {
   const fixture = devHostFor(null);
   assert.deepEqual(fixture.host.devSetupEnvironment({

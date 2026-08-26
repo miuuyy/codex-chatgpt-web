@@ -20,6 +20,7 @@ const { BrowserControlServer } = require("./control-server.cjs");
 const { getAutostart, setAutostart } = require("./autostart.cjs");
 const {
   createLogger,
+  exportSanitizedLogs,
   installProcessDiagnosticGuards,
   registerLoggedIpc,
 } = require("./logging.cjs");
@@ -49,7 +50,7 @@ const BROWSER_DESCRIPTOR_PATH = path.join(CORE_HOME, "runtime", "launcher-browse
 const BROWSER_HELPER_PATH = app.isPackaged
   ? path.join(process.resourcesPath, "runtime", "app", "browser-helper.cjs")
   : path.join(SOURCE_ROOT, ".launcher-runtime", "browser-helper.cjs");
-const GITHUB_URL = "https://github.com/naakto14/codex-chatgpt-web";
+const GITHUB_URL = "https://github.com/naakto14/codex-chatgpt-web-standalone-backup";
 const X_URL = "https://x.com/miu21590";
 const CONNECTORS_URL = "https://chatgpt.com/#settings/Plugins";
 const TUNNELS_URL = "https://platform.openai.com/settings/organization/tunnels";
@@ -636,18 +637,38 @@ function registerIpc({ logger, stateStore }) {
       ...autostart,
     };
   });
+  handle("launcher:bigger-context", async (_event, enabled) => {
+    const result = await runtimeHost.setBiggerContext(enabled === true);
+    const state = stateStore.update({
+      experimentalBiggerContext: result.enabled,
+      codexCatalogVerified: IS_DEV_PROFILE ? true : false,
+      codexRestartRequired: IS_DEV_PROFILE ? false : true,
+    });
+    send("launcher:state-changed", state);
+    if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
+    return state;
+  });
   handle("launcher:set-preference", (_event, key, value) => {
-    if (key !== "keepRunningOnClose" && key !== "showBrowserDuringTurns") {
-      throw new Error("Unknown preference");
-    }
+    const ordinary = key === "keepRunningOnClose" || key === "showBrowserDuringTurns";
+    if (!ordinary) throw new Error("Unknown preference");
     return stateStore.update({ [key]: value === true });
   });
   handle("launcher:sidebar-state", (_event, value) => stateStore.update(validateSidebarState(value)));
   handle("launcher:logs", (_event, limit) => logger.recent(limit));
-  handle("launcher:open-logs", async () => {
-    const error = await shell.openPath(path.dirname(logger.filePath));
-    if (error) throw new Error(`Could not open the launcher log directory: ${error}`);
-    return logger.filePath;
+  handle("launcher:export-logs", async () => {
+    const date = new Date().toISOString().slice(0, 10);
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: "Export privacy-safe diagnostics",
+      defaultPath: path.join(app.getPath("documents"), `codex-web-gpt-diagnostics-${date}.jsonl`),
+      filters: [{ name: "JSON Lines", extensions: ["jsonl"] }],
+    });
+    if (result.canceled || !result.filePath) return null;
+    const recordCount = exportSanitizedLogs({
+      filePath: logger.filePath,
+      destinationPath: result.filePath,
+    });
+    logger.info("launcher.logs_exported", { recordCount });
+    return result.filePath;
   });
   handle("launcher:update-install", async () => {
     if (!updateController) throw new Error("Launcher updates are unavailable");
@@ -805,6 +826,7 @@ async function start() {
     descriptorPath: BROWSER_DESCRIPTOR_PATH,
     cdpPort,
     control: browserControl.descriptor(),
+    cancelTurn: IS_DEV_PROFILE ? undefined : traceId => runtimeSupervisor.cancelBrowserTurn(traceId),
     getConnectorName: () => runtimeHost.browserConnectorName(),
     helper: { executable: process.execPath, script: BROWSER_HELPER_PATH },
     logger,
@@ -895,6 +917,7 @@ async function start() {
       ...(config?.mode !== "full" ? { mcpSetupComplete: false, mcpGuideStep: 0 } : {}),
       codexRestartRequired: false,
       autoStart: false,
+      experimentalBiggerContext: config?.experimentalBiggerContext === true,
     });
     send("launcher:state-changed", state);
     logger.info("dev_profile.ready", {
@@ -919,6 +942,7 @@ async function start() {
         coreSetupComplete: true,
         codexCatalogVerified: false,
         codexRestartRequired: true,
+        experimentalBiggerContext: runtimeHost.runtimeConfigSnapshot().config?.experimentalBiggerContext === true,
         ...(upgrade.mode === "full" ? {
           mcpRuntimeInstalled: true,
           mcpSetupComplete: false,
@@ -937,6 +961,14 @@ async function start() {
         bridgeEnabled: upgrade.bridgeEnabled,
         connectorMigrated: upgrade.connectorMigrated,
       });
+    }
+    const configuredRuntime = runtimeHost.runtimeConfigSnapshot();
+    if (configuredRuntime.configured) {
+      const enabled = configuredRuntime.config?.experimentalBiggerContext === true;
+      if (stateStore.read().experimentalBiggerContext !== enabled) {
+        const state = stateStore.update({ experimentalBiggerContext: enabled });
+        send("launcher:state-changed", state);
+      }
     }
     try {
       const route = await runtimeHost.bridgeStatus();
@@ -964,6 +996,7 @@ async function start() {
       const current = stateStore.read();
       const patch = {
         mcpRuntimeInstalled: config.mode === "full",
+        experimentalBiggerContext: config.experimentalBiggerContext === true,
         ...(config.mode === "browser-only" ? {
           mcpSetupComplete: false,
           mcpGuideStep: 0,

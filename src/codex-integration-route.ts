@@ -6,6 +6,7 @@ import {
   MANAGED_MULTI_AGENT_V2_LINE,
   MANAGED_MULTI_AGENT_V2_TABLE_LINE,
   MANAGED_REMOTE_COMPACTION_LINE,
+  managedAgentMaxDepthLine,
 } from "./codex-integration-shared";
 import type {
   CodexIntegrationJournal,
@@ -13,14 +14,17 @@ import type {
   LegacyCodexIntegrationJournalV4,
   LegacyCodexIntegrationJournalV5,
   LegacyCodexIntegrationJournalV6,
+  LegacyCodexIntegrationJournalV7,
   ManagedAssignmentKey,
   ManagedRouteJournal,
   PreviousAssignment,
   PreviousFeatureAssignment,
+  PreviousAgentAssignment,
 } from "./codex-integration-shared";
 import {
   assignments,
   findFeatureAssignment,
+  findAgentMaxDepthAssignment,
   findMultiAgentV2Assignment,
   findTopLevelAssignment,
   firstTableIndex,
@@ -30,14 +34,67 @@ import {
   removeManagedComment,
   renderDocument,
   restoreBooleanFeature,
+  restoreCompatibilityV1Features,
+  restoreCompatibilityV1AgentDepth,
   restoreManagedFeatures,
   restoreMultiAgentV2Feature,
   splitLines,
   verifyInstalledFeatures,
+  verifyCompatibilityV1Features,
 } from "./codex-integration-document";
+
+function compatibilityV1Evidence(journal: CodexIntegrationJournal): {
+  previousMultiAgent: PreviousFeatureAssignment;
+  previousMultiAgentV2: PreviousFeatureAssignment;
+  previousAgentMaxDepth: PreviousAgentAssignment;
+  installedAgentMaxDepth: number;
+} | undefined {
+  if (journal.installed.subagent_protocol !== "compatibility-v1") return undefined;
+  if (!journal.previousMultiAgent || !journal.previousMultiAgentV2
+    || !journal.previousAgentMaxDepth || journal.installed.agent_max_depth === undefined) {
+    throw new Error("Codex integration journal is missing the Compatibility V1 feature baseline");
+  }
+  return {
+    previousMultiAgent: journal.previousMultiAgent,
+    previousMultiAgentV2: journal.previousMultiAgentV2,
+    previousAgentMaxDepth: journal.previousAgentMaxDepth,
+    installedAgentMaxDepth: journal.installed.agent_max_depth,
+  };
+}
 
 function restoreOwnedManagedFeatures(text: string, journal: ManagedRouteJournal): string {
   let restored = text;
+  if (journal.version === 8) {
+    const evidence = compatibilityV1Evidence(journal);
+    if (evidence) {
+      const depth = findAgentMaxDepthAssignment(splitLines(restored));
+      if (depth.rawLine === managedAgentMaxDepthLine(evidence.installedAgentMaxDepth)
+        && depth.value === String(evidence.installedAgentMaxDepth)) {
+        restored = restoreCompatibilityV1AgentDepth(
+          restored,
+          evidence.previousAgentMaxDepth,
+          evidence.installedAgentMaxDepth,
+        );
+      }
+      const multiAgentV2 = findMultiAgentV2Assignment(splitLines(restored));
+      const managedV2Line = evidence.previousMultiAgentV2.tableName === "features.multi_agent_v2"
+        ? MANAGED_MULTI_AGENT_V2_TABLE_LINE
+        : MANAGED_MULTI_AGENT_V2_LINE;
+      if (multiAgentV2.rawLine === managedV2Line && multiAgentV2.value === "false") {
+        restored = restoreMultiAgentV2Feature(restored, evidence.previousMultiAgentV2);
+      }
+      const multiAgent = findFeatureAssignment(splitLines(restored), "multi_agent");
+      if (multiAgent.rawLine === MANAGED_MULTI_AGENT_LINE && multiAgent.value === "true") {
+        restored = restoreBooleanFeature(
+          restored,
+          "multi_agent",
+          "true",
+          MANAGED_MULTI_AGENT_LINE,
+          evidence.previousMultiAgent,
+        );
+      }
+    }
+  }
   if (journal.version === 6) {
     const current = findMultiAgentV2Assignment(splitLines(restored));
     const managedLine = journal.previousMultiAgentV2.tableName === "features.multi_agent_v2"
@@ -115,8 +172,9 @@ export function replacementBaseline(
   if (!configExists) return "";
   if (!managedJournalIsActive(journal)) return currentText;
 
-  if (journal.version === 7) {
-    const document = parseDocument(currentText);
+  if (journal.version === 7 || journal.version === 8) {
+    const baseline = restoreOwnedManagedFeatures(currentText, journal);
+    const document = parseDocument(baseline);
     removeManagedComment(document);
     const current = findTopLevelAssignment(document.lines, "openai_base_url");
     if (current.value === journal.installed.openai_base_url && current.index !== undefined) {
@@ -171,7 +229,17 @@ export function verifyInstalledRoute(text: string, journal: ManagedRouteJournal)
   if (!lines.includes(MANAGED_COMMENT)) {
     throw new Error("Managed Codex route marker changed after setup; refusing to overwrite it");
   }
-  if (journal.version !== 7) {
+  if (journal.version === 8) {
+    const evidence = compatibilityV1Evidence(journal);
+    if (evidence) {
+      verifyCompatibilityV1Features(
+        text,
+        evidence.previousMultiAgentV2,
+        evidence.installedAgentMaxDepth,
+      );
+    }
+  }
+  if (journal.version !== 7 && journal.version !== 8) {
     if (current.model_provider.present || current.model_catalog_json.present) {
       throw new Error("Codex model_provider or model_catalog_json changed after setup; refusing to overwrite the user's newer value");
     }
@@ -186,11 +254,11 @@ function previousAssignmentMatches(current: PreviousAssignment, previous: Previo
 
 export function verifyRestoredRoute(
   text: string,
-  journal: CodexIntegrationJournal | LegacyCodexIntegrationJournalV6 | LegacyCodexIntegrationJournalV5 | LegacyCodexIntegrationJournalV4,
+  journal: CodexIntegrationJournal | LegacyCodexIntegrationJournalV7 | LegacyCodexIntegrationJournalV6 | LegacyCodexIntegrationJournalV5 | LegacyCodexIntegrationJournalV4,
 ): void {
   const lines = splitLines(text);
   const current = assignments(lines);
-  const keys = journal.version === 7
+  const keys = journal.version === 7 || journal.version === 8
     ? (["openai_base_url"] as const)
     : (["openai_base_url", "model_provider", "model_catalog_json"] as const);
   for (const key of keys) {
@@ -223,6 +291,38 @@ export function verifyRestoredRoute(
       }
     }
   }
+  if (journal.version === 8) {
+    const evidence = compatibilityV1Evidence(journal);
+    if (evidence) {
+      for (const [key, previous] of [
+        ["multi_agent", evidence.previousMultiAgent],
+        ["multi_agent_v2", evidence.previousMultiAgentV2],
+      ] as const) {
+        const current = key === "multi_agent_v2"
+          ? findMultiAgentV2Assignment(lines)
+          : findFeatureAssignment(lines, key);
+        const matches = current.present === previous.present
+          && current.tablePresent === previous.tablePresent
+          && (current.tableName ?? "features") === (previous.tableName ?? "features")
+          && (!current.present || current.rawLine === previous.rawLine);
+        if (!matches) {
+          throw new Error(
+            `Codex [features].${key} changed while Compatibility V1 was disconnected; refusing to overwrite the user's newer value`,
+          );
+        }
+      }
+      const depth = findAgentMaxDepthAssignment(lines);
+      const previousDepth = evidence.previousAgentMaxDepth;
+      const depthMatches = depth.present === previousDepth.present
+        && depth.tablePresent === previousDepth.tablePresent
+        && (!depth.present || depth.rawLine === previousDepth.rawLine);
+      if (!depthMatches) {
+        throw new Error(
+          "Codex [agents].max_depth changed while Compatibility V1 was disconnected; refusing to overwrite the user's newer value",
+        );
+      }
+    }
+  }
 }
 
 export function assertPreservedPreviousAssignments(
@@ -247,7 +347,7 @@ export function restoreManagedRoute(text: string, journal: ManagedRouteJournal):
   } else {
     removeDocumentLine(document, currentBaseUrl.index);
   }
-  if (journal.version !== 7) {
+  if (journal.version !== 7 && journal.version !== 8) {
     const removedAssignments = (["model_provider", "model_catalog_json"] as const)
       .map(key => ({ key, previous: journal.previous[key] }))
       .filter(item => item.previous.present)
@@ -259,6 +359,18 @@ export function restoreManagedRoute(text: string, journal: ManagedRouteJournal):
     }
   }
   const restoredRoute = renderDocument(document);
+  if (journal.version === 8) {
+    const evidence = compatibilityV1Evidence(journal);
+    return evidence
+      ? restoreCompatibilityV1Features(
+          restoredRoute,
+          evidence.previousMultiAgent,
+          evidence.previousMultiAgentV2,
+          evidence.previousAgentMaxDepth,
+          evidence.installedAgentMaxDepth,
+        )
+      : restoredRoute;
+  }
   return journal.version === 5 || journal.version === 6
     ? restoreManagedFeatures(restoredRoute, journal)
     : restoredRoute;

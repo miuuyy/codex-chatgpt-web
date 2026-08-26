@@ -23,6 +23,7 @@ interface RunMessage {
     reasoning?: string;
     capabilities: ChatGptWebCapabilities;
     prepared: CompiledChatGptWebPrompt;
+    compaction?: boolean;
     captureLunaCheckpoint?: boolean;
   };
 }
@@ -109,6 +110,17 @@ async function run(message: RunMessage): Promise<void> {
   if (!message.turn.prepared || typeof message.turn.prepared.text !== "string" || !Array.isArray(message.turn.prepared.images)) {
     throw new Error("Browser helper prompt is invalid");
   }
+  if (message.turn.prepared.multipart !== undefined) {
+    const multipart = message.turn.prepared.multipart;
+    if (!multipart || !Array.isArray(multipart.parts)
+      || (multipart.parts.length !== 2 && multipart.parts.length !== 3)
+      || multipart.parts.some(part => typeof part !== "string") || typeof multipart.commit !== "string") {
+      throw new Error("Browser helper multipart prompt is invalid");
+    }
+  }
+  if (message.turn.compaction !== undefined && typeof message.turn.compaction !== "boolean") {
+    throw new Error("Browser helper compaction flag is invalid");
+  }
   if (message.turn.captureLunaCheckpoint !== undefined && typeof message.turn.captureLunaCheckpoint !== "boolean") {
     throw new Error("Browser helper Luna checkpoint flag is invalid");
   }
@@ -133,6 +145,7 @@ async function run(message: RunMessage): Promise<void> {
     capabilities: message.turn.capabilities,
     prepare: async () => ({ ...message.turn.prepared, release: () => {} }),
     abortSignal: abortController.signal,
+    ...(message.turn.compaction ? { compaction: true } : {}),
     onHeartbeat: () => writeProtocol({ type: "event", id: message.id, event: "heartbeat" }),
     onReasoningSummary: (text, continuation) => writeProtocol({
       type: "event",

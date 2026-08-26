@@ -1,15 +1,15 @@
 {
   "name": "codex-chatgpt-web",
-  "version": "3.0.0-naakto.5",
+  "version": "3.0.3",
   "private": true,
   "description": "A focused local Responses bridge that runs Codex tasks through a user-authenticated ChatGPT web session.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/naakto14/codex-chatgpt-web.git"
+    "url": "git+https://github.com/naakto14/codex-chatgpt-web-standalone-backup.git"
   },
-  "homepage": "https://github.com/naakto14/codex-chatgpt-web#readme",
+  "homepage": "https://github.com/naakto14/codex-chatgpt-web-standalone-backup#readme",
   "bugs": {
-    "url": "https://github.com/naakto14/codex-chatgpt-web/issues"
+    "url": "https://github.com/naakto14/codex-chatgpt-web-standalone-backup/issues"
   },
   "packageManager": "bun@1.4.0",
   "type": "module",
@@ -37,6 +37,9 @@
     "build": "bun run scripts/build-runtime-bundle.ts",
     "smoke": "bun run scripts/smoke-release.ts dist/runtime",
     "smoke:codex": "bun run scripts/smoke-codex-catalog.ts",
+    "smoke:cancel": "bun run scripts/smoke-codex-cancel.ts",
+    "smoke:subagents": "bun run scripts/smoke-codex-subagents.ts --v1 && bun run scripts/smoke-codex-subagents.ts --v2",
+    "smoke:subagents:live": "bun run scripts/smoke-codex-web-subagents.ts",
     "launcher": "bun run scripts/start-launcher.ts",
     "app": "bun run scripts/start-launcher.ts",
     "app:package": "bun run --cwd launcher package",

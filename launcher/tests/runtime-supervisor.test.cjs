@@ -145,6 +145,10 @@ test("launcher runtime ownership cannot cross production and DEV profiles", () =
     () => validateConfig(production, descriptorPath, process.platform, "development"),
     /DEV launcher refuses a configuration/,
   );
+  assert.throws(
+    () => validateConfig({ ...production, subagentProtocol: "v0" }, descriptorPath),
+    /invalid subagent protocol/,
+  );
 });
 
 test("DEV runtime supervision starts only the isolated MCP tunnel", async () => {
@@ -1055,6 +1059,32 @@ test("explicit launcher shutdown cancels active turns before the graceful stop",
     { status: "stopped" },
   );
   assert.deepEqual(actions, ["cancel-turns", "graceful-stop"]);
+});
+
+test("launcher supervisor requests exact browser trace cancellation", async () => {
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: os.tmpdir(),
+    coreHome: os.tmpdir(),
+    browserDescriptorPath: path.join(os.tmpdir(), "launcher.json"),
+  });
+  supervisor.readConfig = () => ({ controlToken: "control", host: "127.0.0.1", port: 17841 });
+  supervisor.daemon = { exitCode: null, signalCode: null };
+  supervisor.control = async (_config, action, options) => {
+    assert.equal(action, "cancel-turn");
+    assert.deepEqual(options.body, { traceId: "trace_exact" });
+    assert.equal(options.timeoutMs, 15_000);
+    return {
+      status: "ok",
+      trace_id: "trace_exact",
+      cancelled_browser_turns: 1,
+      cancelled_broker_turns: 1,
+    };
+  };
+
+  const result = await supervisor.cancelBrowserTurn("trace_exact");
+  assert.equal(result.trace_id, "trace_exact");
 });
 
 test("explicit launcher shutdown force-stops only its owned runtime when graceful shutdown fails", async () => {

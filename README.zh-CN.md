@@ -10,13 +10,18 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml"><img src="https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/naakto14/codex-chatgpt-web-standalone-backup/actions/workflows/ci.yml"><img src="https://github.com/naakto14/codex-chatgpt-web-standalone-backup/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/macOS-arm64%20%7C%20x64-black?logo=apple" alt="macOS arm64 and x64">
   <img src="https://img.shields.io/badge/Windows-x64-0078d4?logo=windows11" alt="Windows x64">
   <img src="https://img.shields.io/badge/Linux-x64-fcc624?logo=linux&logoColor=black" alt="Linux x64">
   <img src="https://img.shields.io/badge/Free_AI-no_API_fees-10a37f" alt="Free AI with no API fees">
 </p>
+
+> [!NOTE]
+> 本仓库是 **[miuuyy/codex-chatgpt-web](https://github.com/miuuyy/codex-chatgpt-web)** 的独立维护
+> standalone 下游版本。当前以 upstream **v3.0.3** 为基线，并保留经过审查、在这里仍有价值的修复和
+> 部分 upstream PR。它有意作为独立仓库发布，而不是 GitHub fork。
 
 Free 和 Go 账户会在 Codex 原生模型选择器中看到 **ChatGPT Web — Luna**。具有推理选择器的
 账户仍会按订阅权限看到 **Instant**、**Medium**、**High**、**Extra High** 和 **Pro**。
@@ -77,13 +82,13 @@ Codex 任务的工具。
 **macOS 或 Linux**
 
 ```bash
-curl -fsSL https://github.com/naakto14/codex-chatgpt-web/releases/latest/download/install-launcher.sh | sh
+curl -fsSL https://github.com/naakto14/codex-chatgpt-web-standalone-backup/releases/latest/download/install-launcher.sh | sh
 ```
 
 **Windows PowerShell**
 
 ```powershell
-irm https://github.com/naakto14/codex-chatgpt-web/releases/latest/download/install-launcher.ps1 | iex
+irm https://github.com/naakto14/codex-chatgpt-web-standalone-backup/releases/latest/download/install-launcher.ps1 | iex
 ```
 
 然后在应用中完成三项检查：
@@ -103,8 +108,8 @@ Chrome/Chromium、系统级 Node/Bun，也不会由本项目另行下载浏览�
 **从源码运行**
 
 ```bash
-git clone https://github.com/naakto14/codex-chatgpt-web.git && \
-cd codex-chatgpt-web && \
+git clone https://github.com/naakto14/codex-chatgpt-web-standalone-backup.git && \
+cd codex-chatgpt-web-standalone-backup && \
 bun run app
 ```
 

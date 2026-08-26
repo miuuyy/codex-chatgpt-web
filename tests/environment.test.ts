@@ -539,4 +539,83 @@ describe("trusted Codex task environment continuity", () => {
     invalidUpdate.context.systemPrompt = [`<environment_context><cwd>${root}</cwd></environment_context>`];
     expect(() => store.resolve(invalidUpdate)).toThrow("requires one explicit trusted Codex sandbox mode");
   });
+
+  test("inherits authority only through canonical Codex thread-spawn lineage", () => {
+    const store = new ChatGptThreadEnvironmentStore();
+    const parent = currentWire();
+    store.resolve(parent);
+
+    const child = currentWire();
+    const childTools: CodexTool[] = [{ name: "child_tool", description: "child", parameters: { type: "object" } }];
+    child.context.tools = childTools;
+    child._rawBody = {
+      client_metadata: {
+        "x-codex-turn-metadata": JSON.stringify({
+          request_kind: "turn",
+          thread_id: "thread_child",
+          turn_id: "turn_child",
+          parent_thread_id: "thread_current",
+          agent_name: "/root/read_package_version",
+          subagent_kind: "thread_spawn",
+          sandbox_mode: "danger-full-access",
+          workspaces: { [root]: { has_changes: true } },
+        }),
+      },
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "Read package.json" }] }],
+    };
+
+    expect(store.resolve(child)).toEqual({
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: childTools,
+    });
+
+    const childFollowUp = structuredClone(child);
+    (childFollowUp._rawBody as { client_metadata: Record<string, string> }).client_metadata["x-codex-turn-metadata"] = JSON.stringify({
+      thread_id: "thread_child",
+      turn_id: "turn_child_next",
+    });
+    childFollowUp.context.tools = [];
+    expect(store.resolve(childFollowUp).cwd).toBe(root);
+
+    const nongitChild = structuredClone(child);
+    (nongitChild._rawBody as { client_metadata: Record<string, string> }).client_metadata["x-codex-turn-metadata"] = JSON.stringify({
+      request_kind: "turn",
+      thread_id: "thread_nongit_child",
+      turn_id: "turn_nongit_child",
+      parent_thread_id: "thread_current",
+      agent_name: "/root/nongit_child",
+      subagent_kind: "thread_spawn",
+      sandbox_mode: "danger-full-access",
+    });
+    expect(store.resolve(nongitChild).cwd).toBe(root);
+  });
+
+  test("rejects forged or conflicting child lineage instead of borrowing parent authority", () => {
+    const store = new ChatGptThreadEnvironmentStore();
+    store.resolve(currentWire());
+    const child = currentWire();
+    const metadata = {
+      request_kind: "turn",
+      thread_id: "thread_child",
+      turn_id: "turn_child",
+      parent_thread_id: "thread_current",
+      agent_name: "/root/child",
+      subagent_kind: "thread_spawn",
+      sandbox_mode: "read-only",
+      workspaces: { [root]: { has_changes: false } },
+    };
+    child._rawBody = {
+      client_metadata: { "x-codex-turn-metadata": JSON.stringify(metadata) },
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "Continue" }] }],
+    };
+    expect(() => store.resolve(child)).toThrow("sandbox metadata conflicts");
+
+    metadata.sandbox_mode = "danger-full-access";
+    metadata.subagent_kind = "other";
+    (child._rawBody as { client_metadata: Record<string, string> }).client_metadata["x-codex-turn-metadata"] = JSON.stringify(metadata);
+    expect(() => store.resolve(child)).toThrow("missing cwd");
+  });
 });

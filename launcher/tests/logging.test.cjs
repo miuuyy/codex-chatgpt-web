@@ -6,6 +6,7 @@ const path = require("node:path");
 const { PassThrough } = require("node:stream");
 const {
   createLogger,
+  exportSanitizedLogs,
   installProcessDiagnosticGuards,
   registerLoggedIpc,
   sanitize,
@@ -58,6 +59,46 @@ test("launcher activity restores valid records from the previous process", () =>
     ].join("\n"));
     const logger = createLogger({ filePath });
     assert.deepEqual(logger.recent().map((record) => record.event), ["previous"]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("exported launcher logs remove local usernames and private ChatGPT titles", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-export-"));
+  const filePath = path.join(root, "launcher.jsonl");
+  const destinationPath = path.join(root, "shared", "diagnostics.jsonl");
+  try {
+    fs.writeFileSync(`${filePath}.1`, `${JSON.stringify({
+      at: "2026-08-23T00:00:00.000Z",
+      level: "error",
+      event: "runtime.daemon_stdout",
+      detail: {
+        line: "prompt_attachment failed at C:\\Users\\private.user\\.codex and encoded C:\\\\Users\\\\private.user\\\\.codex; connector missing; visible rows: Private roadmap, Health notes",
+      },
+    })}\n`);
+    fs.writeFileSync(filePath, `${JSON.stringify({
+      at: "2026-08-23T00:01:00.000Z",
+      level: "info",
+      event: "runtime.stdout",
+      detail: {
+        line: "config loaded from /Users/local-person/.codex/config.toml",
+        prompt: "private prompt",
+        connector: "Codex Native2",
+      },
+    })}\n`);
+
+    assert.equal(exportSanitizedLogs({ filePath, destinationPath }), 2);
+    const exported = fs.readFileSync(destinationPath, "utf8");
+    assert.doesNotMatch(exported, /private\.user|local-person|Private roadmap|Health notes|private prompt/);
+    assert.match(exported, /\[user-home\]/);
+    assert.match(exported, /visible rows: \[redacted\]/);
+    assert.match(exported, /Codex Native2/);
+    assert.match(exported, /"prompt":"\[redacted\]"/);
+    assert.throws(
+      () => exportSanitizedLogs({ filePath, destinationPath: filePath }),
+      /Refusing to overwrite a launcher source log/,
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

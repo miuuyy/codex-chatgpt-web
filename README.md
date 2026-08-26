@@ -10,13 +10,19 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml"><img src="https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/naakto14/codex-chatgpt-web-standalone-backup/actions/workflows/ci.yml"><img src="https://github.com/naakto14/codex-chatgpt-web-standalone-backup/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/macOS-arm64%20%7C%20x64-black?logo=apple" alt="macOS arm64 and x64">
   <img src="https://img.shields.io/badge/Windows-x64-0078d4?logo=windows11" alt="Windows x64">
   <img src="https://img.shields.io/badge/Linux-x64-fcc624?logo=linux&logoColor=black" alt="Linux x64">
   <img src="https://img.shields.io/badge/Free_AI-no_API_fees-10a37f" alt="Free AI with no API fees">
 </p>
+
+> [!NOTE]
+> This repository is an independently maintained standalone downstream of
+> **[miuuyy/codex-chatgpt-web](https://github.com/miuuyy/codex-chatgpt-web)**. It tracks upstream
+> **v3.0.3** and keeps reviewed fixes and selected upstream PRs that are still useful here. It is
+> intentionally published as a standalone repository rather than a GitHub fork.
 
 Free and Go accounts get **ChatGPT Web — Luna** in Codex's native model picker. Accounts that
 expose the reasoning selector keep **Instant**, **Medium**, **High**, **Extra High**, and **Pro** as
@@ -86,13 +92,13 @@ preserving the ChatGPT profile and launcher configuration.
 **macOS or Linux**
 
 ```bash
-curl -fsSL https://github.com/naakto14/codex-chatgpt-web/releases/latest/download/install-launcher.sh | sh
+curl -fsSL https://github.com/naakto14/codex-chatgpt-web-standalone-backup/releases/latest/download/install-launcher.sh | sh
 ```
 
 **Windows PowerShell**
 
 ```powershell
-irm https://github.com/naakto14/codex-chatgpt-web/releases/latest/download/install-launcher.ps1 | iex
+irm https://github.com/naakto14/codex-chatgpt-web-standalone-backup/releases/latest/download/install-launcher.ps1 | iex
 ```
 
 Then complete the three checks in the app:
@@ -113,8 +119,8 @@ model API key, installed Chrome/Chromium, system Node/Bun, or project-managed br
 **Run from source**
 
 ```bash
-git clone https://github.com/naakto14/codex-chatgpt-web.git && \
-cd codex-chatgpt-web && \
+git clone https://github.com/naakto14/codex-chatgpt-web-standalone-backup.git && \
+cd codex-chatgpt-web-standalone-backup && \
 bun run app
 ```
 
@@ -177,6 +183,24 @@ stalled and failed turns, where the visible UI is needed to diagnose DOM drift w
 successful step. Set `CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1` before starting the runtime to also
 capture a screenshot at every checkpoint during an investigation.
 
+Subagent protocol is an explicit installation setting. New installs use **Compatibility V1**: it
+enables `multi_agent`, disables the global `multi_agent_v2` override, and
+restores the user's previous feature lines on disconnect or uninstall. It also raises
+`[agents].max_depth` to at least 2 while active so Web children can spawn Web grandchildren, then
+restores the prior value. This is the universal cross-backend surface: native and Web parents can
+delegate to Web children without opaque V2 payloads, and targeted waits can observe a child that
+completed before the parent began waiting. Web parents expose `wait_agent` as explicit 10-second
+polls so one long wait cannot occupy the connector's MCP channel and block the child's own tools.
+**Native** remains an advanced opt-in that preserves
+Codex's own feature settings and supports plaintext Web-to-Web V2 delegation. Switch deliberately,
+then restart Codex and start a new task because an existing task cannot change protocol in place:
+
+```bash
+codex-chatgpt-web subagents status
+codex-chatgpt-web subagents compatibility-v1
+codex-chatgpt-web subagents native
+```
+
 ## Limitations and security
 
 - This is unofficial browser automation, not an OpenAI API. ChatGPT UI changes can break selectors;
@@ -206,6 +230,7 @@ bun run dev:launcher
 bun run src/cli.ts dev status
 bun run dev:chat compaction-lab "Reply with exactly: DEV READY"
 bun run verify
+bun run smoke:subagents
 bun run app:package
 ```
 

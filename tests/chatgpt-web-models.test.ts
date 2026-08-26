@@ -137,6 +137,26 @@ describe("fixed ChatGPT Web model routes", () => {
     });
   });
 
+  test("triples Sol context and compaction limits only when Bigger Context is enabled", () => {
+    expect(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, "max", {
+      ...pro,
+      experimentalBiggerContext: true,
+    })).toEqual({
+      contextWindow: 336_579,
+      effectiveContextWindowPercent: 85,
+      autoCompactTokenLimit: 285_000,
+    });
+    expect(resolveChatGptWebContextLimits(CHATGPT_WEB_LUNA_BACKEND_MODEL, "low", {
+      solAvailable: false,
+      proAvailable: false,
+      experimentalBiggerContext: true,
+    })).toEqual({
+      contextWindow: 1_050_000,
+      effectiveContextWindowPercent: 100,
+      autoCompactTokenLimit: 1_050_000,
+    });
+  });
+
   test("binds the selected model authoritatively and ignores a conflicting request effort", () => {
     const request = parsed("chatgpt-web/high", "low");
     const rawSnapshot = structuredClone(request._rawBody);

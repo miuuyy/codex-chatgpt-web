@@ -134,13 +134,30 @@ launcher runtime from a stale or external process. Legacy macOS launchd services
 removed during an explicit launcher migration; launchd remains only for the advanced terminal-only
 mode.
 
-Setup keeps Codex's built-in `openai` provider and switches only `openai_base_url`. The daemon
+Setup keeps Codex's built-in `openai` provider; its only managed provider-routing assignment is
+`openai_base_url`. The daemon
 forwards the authenticated official model catalog and appends only the routed models owned by the
-`chatgpt-web/` namespace; no static catalog is installed. While the integration is active, native
-models that support delegation and routed Web models share Codex's readable V1 collaboration
-surface so an explicitly selected Web subagent receives plaintext task content. An explicit native
-`disabled` delegation capability is preserved. Model choice, effort, context, and service tiers are
-otherwise unchanged.
+`chatgpt-web/` namespace; no static catalog is installed. Subagent protocol selection is explicit,
+and new installations default to Compatibility V1 because it is the only surface portable across
+native and routed Web backends:
+
+- **Compatibility V1** pins every delegation-capable native and routed row to V1 and atomically
+  manages `multi_agent = true`, `multi_agent_v2 = false`, and `[agents].max_depth` of at least 2 so
+  a routed child can spawn a routed grandchild. The integration journal preserves the user's prior
+  scalar, structured-feature, and agent-depth lines and restores them byte-for-byte on disconnect,
+  native-mode selection, or uninstall. The ChatGPT connector projects `wait_agent` as an explicit
+  10-second polling contract: terminal semantics stay native, while every non-terminal poll releases
+  the serialized MCP channel so Web children can run their own harness tools.
+- **Native** preserves every official native row and gives routed rows the selected template's
+  protocol surface. Under MultiAgent V2, Web-origin `spawn_agent`, `send_message`, and
+  `followup_task` calls include Codex's explicit `encrypted_function_args: []` plaintext marker.
+  A genuinely encrypted native-to-Web payload is rejected with one HTTP 400 before a browser is
+  opened; it is never turned into an SSE disconnect/retry loop.
+
+Catalog metadata alone never claims to change an existing task's protocol. Codex pins the protocol
+when a task starts, and its global `multi_agent_v2` override wins over per-model metadata. Switching
+protocol therefore requires restarting Codex and starting a new task. Model choice, effort,
+context, and service tiers are otherwise unchanged.
 
 The built-in provider attempts a Responses WebSocket prewarm. The local route explicitly returns
 HTTP `426`, which is Codex's native capability-negotiation signal for an immediate, session-sticky

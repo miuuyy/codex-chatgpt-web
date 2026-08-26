@@ -6,7 +6,9 @@ import {
   MANAGED_MULTI_AGENT_V2_LINE,
   MANAGED_MULTI_AGENT_V2_TABLE_LINE,
   MANAGED_REMOTE_COMPACTION_LINE,
+  MIN_COMPATIBILITY_V1_AGENT_DEPTH,
   getCodexConfigPath,
+  managedAgentMaxDepthLine,
 } from "./codex-integration-shared";
 import type {
   CodexIntegrationJournal,
@@ -15,6 +17,7 @@ import type {
   LegacyCodexIntegrationJournalV6,
   ManagedAssignmentKey,
   PreviousAssignment,
+  PreviousAgentAssignment,
   PreviousFeatureAssignment,
 } from "./codex-integration-shared";
 
@@ -217,6 +220,28 @@ function findTomlTable(lines: string[], tableName: string): TomlTableRange | und
   };
 }
 
+function insertFeatureTable(document: CodexConfigDocument): TomlTableRange {
+  if (document.lines.length > 0 && document.lines.at(-1)?.trim()) {
+    insertDocumentLine(document, document.lines.length, "");
+  }
+  insertDocumentLine(document, document.lines.length, "[features]");
+  return findTomlTable(document.lines, "features")!;
+}
+
+function setScalarFeature(
+  document: CodexConfigDocument,
+  key: string,
+  managedLine: string,
+): void {
+  const current = findFeatureAssignment(document.lines, key);
+  if (current.index !== undefined) {
+    document.lines[current.index] = managedLine;
+    return;
+  }
+  const table = findTomlTable(document.lines, "features") ?? insertFeatureTable(document);
+  insertDocumentLine(document, table.endIndex, managedLine);
+}
+
 function findBooleanAssignmentInTable(
   lines: string[],
   tableName: "features" | "features.multi_agent_v2",
@@ -243,6 +268,44 @@ function findBooleanAssignmentInTable(
   return { ...(matches[0] ?? { present: false }), tablePresent: true, tableName };
 }
 
+export function findAgentMaxDepthAssignment(lines: string[]): PreviousAgentAssignment {
+  const table = findTomlTable(lines, "agents");
+  if (!table) return { present: false, tablePresent: false };
+  const regex = assignmentRegex("max_depth");
+  const matches: PreviousAssignment[] = [];
+  for (let index = table.headerIndex + 1; index < table.endIndex; index += 1) {
+    const line = lines[index]!;
+    if (/^\s*#/.test(line)) continue;
+    const match = regex.exec(line);
+    if (!match) continue;
+    const value = stripTomlComment(match[1]!).trim().replaceAll("_", "");
+    if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < 1) {
+      throw new Error("max_depth in Codex [agents] must be a positive integer");
+    }
+    matches.push({ present: true, rawLine: line, value, index });
+  }
+  if (matches.length > 1) throw new Error("Codex config contains duplicate [agents].max_depth assignments");
+  return { ...(matches[0] ?? { present: false }), tablePresent: true };
+}
+
+function setAgentMaxDepth(document: CodexConfigDocument, value: number): void {
+  const current = findAgentMaxDepthAssignment(document.lines);
+  const managedLine = managedAgentMaxDepthLine(value);
+  if (current.index !== undefined) {
+    document.lines[current.index] = managedLine;
+    return;
+  }
+  let table = findTomlTable(document.lines, "agents");
+  if (!table) {
+    if (document.lines.length > 0 && document.lines.at(-1)?.trim()) {
+      insertDocumentLine(document, document.lines.length, "");
+    }
+    insertDocumentLine(document, document.lines.length, "[agents]");
+    table = findTomlTable(document.lines, "agents")!;
+  }
+  insertDocumentLine(document, table.endIndex, managedLine);
+}
+
 export function findFeatureAssignment(lines: string[], key: string): PreviousFeatureAssignment {
   return findBooleanAssignmentInTable(lines, "features", key);
 }
@@ -258,6 +321,53 @@ export function findMultiAgentV2Assignment(lines: string[]): PreviousFeatureAssi
   return table
     ? findBooleanAssignmentInTable(lines, "features.multi_agent_v2", "enabled")
     : scalar;
+}
+
+export function installCompatibilityV1Features(text: string): {
+  text: string;
+  previousMultiAgent: PreviousFeatureAssignment;
+  previousMultiAgentV2: PreviousFeatureAssignment;
+  previousAgentMaxDepth: PreviousAgentAssignment;
+  installedAgentMaxDepth: number;
+} {
+  const document = parseDocument(text);
+  const previousMultiAgent = findFeatureAssignment(document.lines, "multi_agent");
+  const previousMultiAgentV2 = findMultiAgentV2Assignment(document.lines);
+  const foundAgentMaxDepth = findAgentMaxDepthAssignment(document.lines);
+  const previousAgentMaxDepth: PreviousAgentAssignment = !foundAgentMaxDepth.tablePresent
+    && document.lines.length > 0
+    && Boolean(document.lines.at(-1)?.trim())
+    ? { ...foundAgentMaxDepth, separatorInserted: true }
+    : foundAgentMaxDepth;
+  const installedAgentMaxDepth = Math.max(
+    previousAgentMaxDepth.present ? Number(previousAgentMaxDepth.value) : 0,
+    MIN_COMPATIBILITY_V1_AGENT_DEPTH,
+  );
+  setScalarFeature(document, "multi_agent", MANAGED_MULTI_AGENT_LINE);
+  if (previousMultiAgentV2.tableName === "features.multi_agent_v2") {
+    const current = findBooleanAssignmentInTable(
+      document.lines,
+      "features.multi_agent_v2",
+      "enabled",
+    );
+    if (current.index !== undefined) {
+      document.lines[current.index] = MANAGED_MULTI_AGENT_V2_TABLE_LINE;
+    } else {
+      const table = findTomlTable(document.lines, "features.multi_agent_v2");
+      if (!table) throw new Error("Codex [features.multi_agent_v2] table disappeared during setup");
+      insertDocumentLine(document, table.endIndex, MANAGED_MULTI_AGENT_V2_TABLE_LINE);
+    }
+  } else {
+    setScalarFeature(document, "multi_agent_v2", MANAGED_MULTI_AGENT_V2_LINE);
+  }
+  setAgentMaxDepth(document, installedAgentMaxDepth);
+  return {
+    text: renderDocument(document),
+    previousMultiAgent,
+    previousMultiAgentV2,
+    previousAgentMaxDepth,
+    installedAgentMaxDepth,
+  };
 }
 
 function verifyInstalledBooleanFeature(
@@ -378,6 +488,88 @@ export function verifyInstalledFeatures(
   verifyInstalledBooleanFeature(text, "multi_agent", "true", MANAGED_MULTI_AGENT_LINE);
   if (journal.version === 6) {
     verifyInstalledMultiAgentV2Feature(text, journal.previousMultiAgentV2);
+  }
+}
+
+export function verifyCompatibilityV1Features(
+  text: string,
+  previousMultiAgentV2: PreviousFeatureAssignment,
+  installedAgentMaxDepth: number,
+): void {
+  verifyInstalledBooleanFeature(text, "multi_agent", "true", MANAGED_MULTI_AGENT_LINE);
+  verifyInstalledMultiAgentV2Feature(text, previousMultiAgentV2);
+  const depth = findAgentMaxDepthAssignment(splitLines(text));
+  if (depth.value !== String(installedAgentMaxDepth)
+    || depth.rawLine !== managedAgentMaxDepthLine(installedAgentMaxDepth)) {
+    throw new Error(
+      "Codex [agents].max_depth changed after Compatibility V1 setup; refusing to overwrite the user's newer value",
+    );
+  }
+}
+
+export function restoreCompatibilityV1Features(
+  text: string,
+  previousMultiAgent: PreviousFeatureAssignment,
+  previousMultiAgentV2: PreviousFeatureAssignment,
+  previousAgentMaxDepth: PreviousAgentAssignment,
+  installedAgentMaxDepth: number,
+): string {
+  let restored = restoreBooleanFeature(
+    restoreMultiAgentV2Feature(text, previousMultiAgentV2),
+    "multi_agent",
+    "true",
+    MANAGED_MULTI_AGENT_LINE,
+    previousMultiAgent,
+  );
+  restored = restoreCompatibilityV1AgentDepth(
+    restored,
+    previousAgentMaxDepth,
+    installedAgentMaxDepth,
+  );
+  return restored;
+}
+
+export function restoreCompatibilityV1AgentDepth(
+  text: string,
+  previousAgentMaxDepth: PreviousAgentAssignment,
+  installedAgentMaxDepth: number,
+): string {
+  verifyCompatibilityV1AgentDepth(text, installedAgentMaxDepth);
+  const document = parseDocument(text);
+  const current = findAgentMaxDepthAssignment(document.lines);
+  if (current.index === undefined) throw new Error("Managed Codex [agents].max_depth is missing");
+  if (previousAgentMaxDepth.present) {
+    if (!previousAgentMaxDepth.rawLine) {
+      throw new Error("Codex integration journal is missing the prior [agents].max_depth line");
+    }
+    document.lines[current.index] = previousAgentMaxDepth.rawLine;
+  } else {
+    removeDocumentLine(document, current.index);
+    if (!previousAgentMaxDepth.tablePresent) {
+      const table = findTomlTable(document.lines, "agents");
+      if (!table) throw new Error("Managed Codex [agents] table is missing");
+      const remaining = document.lines
+        .slice(table.headerIndex + 1, table.endIndex)
+        .filter(line => line.trim().length > 0);
+      if (remaining.length === 0) {
+        const headerIndex = table.headerIndex;
+        removeDocumentLine(document, headerIndex);
+        if (previousAgentMaxDepth.separatorInserted && document.lines[headerIndex - 1] === "") {
+          removeDocumentLine(document, headerIndex - 1);
+        }
+      }
+    }
+  }
+  return renderDocument(document);
+}
+
+function verifyCompatibilityV1AgentDepth(text: string, installedAgentMaxDepth: number): void {
+  const depth = findAgentMaxDepthAssignment(splitLines(text));
+  if (depth.value !== String(installedAgentMaxDepth)
+    || depth.rawLine !== managedAgentMaxDepthLine(installedAgentMaxDepth)) {
+    throw new Error(
+      "Codex [agents].max_depth changed after Compatibility V1 setup; refusing to overwrite the user's newer value",
+    );
   }
 }
 

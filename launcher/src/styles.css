@@ -558,6 +558,7 @@ code {
   color: var(--color-text-secondary);
   font-size: var(--text-sm);
   user-select: none;
+  -webkit-app-region: no-drag;
 }
 
 .browser-tab::before {

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import type { AppConfig } from "./config";
+import type { AppConfig, SubagentProtocol } from "./config";
 import { atomicWriteFile, expandUserPath, getConfigDir } from "./config";
 
 export const MANAGED_COMMENT = "# Managed by codex-chatgpt-web; `codex-chatgpt-web uninstall` restores prior values.";
@@ -14,6 +14,10 @@ export const MANAGED_MULTI_AGENT_V2_LINE =
   "multi_agent_v2 = false # Managed by codex-chatgpt-web: keeps routed Web subagent payloads readable.";
 export const MANAGED_MULTI_AGENT_V2_TABLE_LINE =
   "enabled = false # Managed by codex-chatgpt-web: keeps routed Web subagent payloads readable.";
+export const MIN_COMPATIBILITY_V1_AGENT_DEPTH = 2;
+export function managedAgentMaxDepthLine(value: number): string {
+  return `max_depth = ${value} # Managed by codex-chatgpt-web: allows nested routed Web subagents in Compatibility V1.`;
+}
 
 export interface PreviousAssignment {
   present: boolean;
@@ -28,7 +32,31 @@ export interface PreviousFeatureAssignment extends PreviousAssignment {
   tableName?: "features" | "features.multi_agent_v2";
 }
 
+export interface PreviousAgentAssignment extends PreviousAssignment {
+  tablePresent: boolean;
+  separatorInserted?: boolean;
+}
+
 export interface CodexIntegrationJournal {
+  version: 8;
+  active: boolean;
+  configPath: string;
+  installed: {
+    openai_base_url: string;
+    subagent_protocol: SubagentProtocol;
+    agent_max_depth?: number;
+  };
+  previous: Record<ManagedAssignmentKey, PreviousAssignment>;
+  previousMultiAgent?: PreviousFeatureAssignment;
+  previousMultiAgentV2?: PreviousFeatureAssignment;
+  previousAgentMaxDepth?: PreviousAgentAssignment;
+  format?: {
+    lineEnding: "\n" | "\r\n";
+    trailingNewline: boolean;
+  };
+}
+
+export interface LegacyCodexIntegrationJournalV7 {
   version: 7;
   active: boolean;
   configPath: string;
@@ -125,6 +153,7 @@ export interface LegacyCodexIntegrationJournal {
 
 export type ManagedRouteJournal =
   | CodexIntegrationJournal
+  | LegacyCodexIntegrationJournalV7
   | LegacyCodexIntegrationJournalV6
   | LegacyCodexIntegrationJournalV5
   | LegacyCodexIntegrationJournalV4

@@ -11,6 +11,8 @@ import {
   activateCodexIntegration,
   deactivateCodexIntegration,
   inspectCodexIntegration,
+  readCodexSubagentProtocol,
+  setCodexSubagentProtocol,
   uninstallCodexIntegration,
 } from "./codex-integration";
 import { formatDoctorReport, runDoctor } from "./doctor";
@@ -34,6 +36,7 @@ Usage:
   codex-chatgpt-web login
   codex-chatgpt-web doctor [--json]
   codex-chatgpt-web route <status|connect|disconnect>
+  codex-chatgpt-web subagents <status|compatibility-v1|native>
   codex-chatgpt-web browser check
   codex-chatgpt-web dev launcher
   codex-chatgpt-web dev status [--json]
@@ -60,9 +63,12 @@ Setup options:
   --tunnel-id ID               Existing OpenAI tunnel id (full mode)
   --runtime-key-file PATH      File containing a Tunnels Read+Use runtime key
   --replace-codex-route        Reversibly replace an existing openai_base_url
+  --subagent-protocol MODE     compatibility-v1 (default) or native (advanced)
   --restart-service            Explicitly restart this project's daemon after an update
   --login                      Refresh the stored ChatGPT login even if one exists
   --auto-approve-tool-calls    Opt in to per-call browser clicks on "Allow once" prompts
+  --bigger-context             Enable experimental adaptive 1/2/3-message context
+  --standard-context           Disable experimental multi-message context
   --acknowledge-unofficial     Accept the one-time unofficial-browser-automation notice
 
 Global:
@@ -156,6 +162,13 @@ async function setupCommand(args: string[]): Promise<void> {
     mode: full ? "full" : "browser-only",
     ...(portRaw ? { port: Number(portRaw) } : {}),
   };
+  const subagentProtocol = takeOption(args, "--subagent-protocol");
+  if (subagentProtocol !== undefined) {
+    if (subagentProtocol !== "compatibility-v1" && subagentProtocol !== "native") {
+      throw new Error("--subagent-protocol must be compatibility-v1 or native");
+    }
+    options.subagentProtocol = subagentProtocol;
+  }
   const appName = takeOption(args, "--app-name");
   const tunnelId = takeOption(args, "--tunnel-id");
   const runtimeKeyFile = takeOption(args, "--runtime-key-file");
@@ -169,6 +182,12 @@ async function setupCommand(args: string[]): Promise<void> {
   if (runtimeKeyFile) options.runtimeKeyFile = runtimeKeyFile;
   options.forceLogin = takeFlag(args, "--login");
   options.autoApproveToolCalls = takeFlag(args, "--auto-approve-tool-calls");
+  const biggerContext = takeFlag(args, "--bigger-context");
+  const standardContext = takeFlag(args, "--standard-context");
+  if (biggerContext && standardContext) {
+    throw new Error("Choose at most one context mode: --bigger-context or --standard-context");
+  }
+  if (biggerContext || standardContext) options.experimentalBiggerContext = biggerContext;
   options.replaceCodexRoute = takeFlag(args, "--replace-codex-route");
   options.restartService = takeFlag(args, "--restart-service");
   assertNoArgs(args);
@@ -238,6 +257,33 @@ async function routeCommand(args: string[]): Promise<void> {
         : undefined;
   if (!result) throw new Error(`Unknown route action: ${action}`);
   stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+}
+
+async function subagentsCommand(args: string[]): Promise<void> {
+  const action = args.shift() ?? "status";
+  assertNoArgs(args);
+  const config = loadConfig();
+  if (config.purpose === "dev-harness") {
+    throw new Error("The isolated DEV harness has no Codex subagent protocol to configure");
+  }
+  if (action === "status") {
+    const integration = inspectCodexIntegration();
+    stdout.write(`${JSON.stringify({
+      protocol: readCodexSubagentProtocol(config.subagentProtocol),
+      installed: integration.installed,
+      active: integration.active,
+    }, null, 2)}\n`);
+    return;
+  }
+  if (action !== "compatibility-v1" && action !== "native") {
+    throw new Error("Subagent protocol must be one of: status, compatibility-v1, native");
+  }
+  const journal = setCodexSubagentProtocol(config, action);
+  stdout.write(`${JSON.stringify({
+    protocol: journal.installed.subagent_protocol,
+    codexRestartRequired: true,
+    launcherRestartRequired: true,
+  }, null, 2)}\n`);
 }
 
 async function serviceCommand(args: string[]): Promise<void> {
@@ -357,6 +403,7 @@ async function main(): Promise<void> {
   else if (command === "login") await loginCommand(args);
   else if (command === "doctor" || command === "status") await doctorCommand(args);
   else if (command === "route") await routeCommand(args);
+  else if (command === "subagents") await subagentsCommand(args);
   else if (command === "browser") {
     const action = args.shift();
     assertNoArgs(args);

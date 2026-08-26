@@ -5,6 +5,7 @@ const path = require("node:path");
 
 const launcherRoot = path.resolve(__dirname, "..");
 const appSource = fs.readFileSync(path.join(launcherRoot, "src", "App.tsx"), "utf8");
+const stylesSource = fs.readFileSync(path.join(launcherRoot, "src", "styles.css"), "utf8");
 const electronMain = fs.readFileSync(path.join(launcherRoot, "electron", "main.cjs"), "utf8");
 const browserHostSource = fs.readFileSync(path.join(launcherRoot, "electron", "browser-host.cjs"), "utf8");
 const preloadSource = fs.readFileSync(path.join(launcherRoot, "electron", "preload.cjs"), "utf8");
@@ -14,6 +15,13 @@ test("embedded ChatGPT is measured only after its animated surface mounts", () =
   assert.match(appSource, /setBrowserSurfaceActive\(browserSurfaceActive\)\.then\(\(\) => \{/);
   assert.match(appSource, /observer\.observe\(browserSlot\)/);
   assert.match(appSource, /ref=\{browserSlotRef\}/);
+});
+
+test("native clicks reach browser tabs instead of the window drag region", () => {
+  assert.match(appSource, /draggable=\{surface !== "browser"\}/);
+  assert.match(appSource, /className=\{`app-titlebar\$\{draggable \? " draggable" : ""\}`\}/);
+  assert.match(stylesSource, /\.browser-tab\s*\{[^}]*-webkit-app-region:\s*no-drag;/s);
+  assert.match(appSource, /className="browser-tab-drag draggable"/);
 });
 
 test("renderer zoom scales the shell without moving or zooming the native ChatGPT surface", () => {
@@ -54,6 +62,10 @@ test("DEV launcher exposes its profile and supervises only its Full-mode MCP run
   assert.match(electronMain, /onboardingComplete:\s*true,[\s\S]*?autoStart:\s*false/);
   assert.match(appSource, /snapshot\.profile === "development"/);
   assert.match(appSource, /data-profile=\{snapshot\.profile\}/);
+  assert.match(appSource, /<SettingRow body=\{copy\.biggerContextBody\} label=\{copy\.biggerContext\}>/);
+  assert.match(appSource, /api!\.setBiggerContext\(enabled\)/);
+  assert.match(electronMain, /runtimeHost\.setBiggerContext\(enabled === true\)/);
+  assert.doesNotMatch(electronMain, /IS_DEV_PROFILE && key === "experimentalBiggerContext"/);
 });
 
 test("the renderer bridge switch reaches the fail-closed runtime route", () => {
@@ -83,6 +95,14 @@ test("failed doctor reports retain every failed check", () => {
     /report\.ok\s*\?\s*report\.checks\.slice\(-6\)\s*:\s*report\.checks\.filter\(\(check\) => check\.status !== "ok"\)/,
   );
   assert.match(appSource, /visibleChecks\.map\(\(check\) =>/);
+});
+
+test("launcher shares only privacy-safe exported diagnostics", () => {
+  assert.match(appSource, /api!\.exportLogs\(\)/);
+  assert.match(preloadSource, /exportLogs:[\s\S]*?launcher:export-logs/);
+  assert.match(electronMain, /launcher:export-logs[\s\S]*?showSaveDialog[\s\S]*?exportSanitizedLogs/);
+  assert.doesNotMatch(preloadSource, /launcher:open-logs/);
+  assert.doesNotMatch(electronMain, /launcher:open-logs/);
 });
 
 test("MCP verification failures stay inside the structured setup report", () => {

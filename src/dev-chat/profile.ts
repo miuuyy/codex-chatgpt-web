@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, posix, resolve, win32 } from "node:path";
 import { expandUserPath, getConfigPath } from "../config";
@@ -14,6 +14,7 @@ export interface DevProfilePaths {
   home: string;
   codexHome: string;
   launcherUserData: string;
+  launcherStatePath: string;
   descriptorPath: string;
   chatsPath: string;
   runtimePath: string;
@@ -52,15 +53,44 @@ export function resolveDevProfilePaths({
   if (home === productionHome) {
     throw new Error("DEV profile home must differ from the production codex-chatgpt-web home");
   }
+  const launcherUserData = join(home, "launcher");
   return {
     home,
     codexHome: join(home, "codex-home"),
-    launcherUserData: join(home, "launcher"),
+    launcherUserData,
+    launcherStatePath: join(launcherUserData, "launcher-state.json"),
     descriptorPath: join(home, "runtime", "launcher-browser.json"),
     chatsPath: join(home, "chats"),
     runtimePath: join(home, "runtime", "dev-chat"),
     configPath: join(home, "config.json"),
   };
+}
+
+export interface DevChatExperimentalFeatures {
+  biggerContext: boolean;
+}
+
+/** Read the canonical DEV runtime setting consumed by repository chat commands. */
+export function readDevChatExperimentalFeatures(
+  paths = resolveDevProfilePaths(),
+): DevChatExperimentalFeatures {
+  let value: unknown;
+  try {
+    value = JSON.parse(readFileSync(paths.configPath, "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { biggerContext: false };
+    throw new Error(
+      `Could not read DEV runtime settings from ${paths.configPath}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value) || (value as { version?: unknown }).version !== 3) {
+    throw new Error(`Invalid DEV runtime settings in ${paths.configPath}`);
+  }
+  const enabled = (value as { experimentalBiggerContext?: unknown }).experimentalBiggerContext;
+  if (enabled !== undefined && typeof enabled !== "boolean") {
+    throw new Error(`Invalid Bigger Context preference in ${paths.configPath}`);
+  }
+  return { biggerContext: enabled === true };
 }
 
 export function activateDevProfileEnvironment(paths = resolveDevProfilePaths()): DevProfilePaths {

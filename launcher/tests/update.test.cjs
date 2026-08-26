@@ -31,11 +31,11 @@ test("checksums and release URLs bind the exact expected asset", () => {
   assert.throws(() => expectedChecksum(`${hash}  other.zip\n`, "launcher.zip"), /no entry/);
   assert.equal(
     validateReleaseAssetUrl(
-      "https://github.com/naakto14/codex-chatgpt-web/releases/download/v1.2.0/launcher.zip",
+      "https://github.com/naakto14/codex-chatgpt-web-standalone-backup/releases/download/v1.2.0/launcher.zip",
       "1.2.0",
       "launcher.zip",
     ),
-    "https://github.com/naakto14/codex-chatgpt-web/releases/download/v1.2.0/launcher.zip",
+    "https://github.com/naakto14/codex-chatgpt-web-standalone-backup/releases/download/v1.2.0/launcher.zip",
   );
   assert.throws(
     () => validateReleaseAssetUrl("https://example.com/launcher.zip", "1.2.0", "launcher.zip"),
@@ -71,11 +71,11 @@ test("startup check runs once and exposes only a newer complete release", async 
           assets: [
             {
               name: "codex-web-gpt-1.2.0-linux-x64.AppImage",
-              browser_download_url: "https://github.com/naakto14/codex-chatgpt-web/releases/download/v1.2.0/codex-web-gpt-1.2.0-linux-x64.AppImage",
+              browser_download_url: "https://github.com/naakto14/codex-chatgpt-web-standalone-backup/releases/download/v1.2.0/codex-web-gpt-1.2.0-linux-x64.AppImage",
             },
             {
               name: "checksums.txt",
-              browser_download_url: "https://github.com/naakto14/codex-chatgpt-web/releases/download/v1.2.0/checksums.txt",
+              browser_download_url: "https://github.com/naakto14/codex-chatgpt-web-standalone-backup/releases/download/v1.2.0/checksums.txt",
             },
           ],
         };
@@ -118,11 +118,11 @@ test("verified update is handed to one detached worker", async () => {
           assets: [
             {
               name: "codex-web-gpt-1.2.0-linux-x64.AppImage",
-              browser_download_url: "https://github.com/naakto14/codex-chatgpt-web/releases/download/v1.2.0/codex-web-gpt-1.2.0-linux-x64.AppImage",
+              browser_download_url: "https://github.com/naakto14/codex-chatgpt-web-standalone-backup/releases/download/v1.2.0/codex-web-gpt-1.2.0-linux-x64.AppImage",
             },
             {
               name: "checksums.txt",
-              browser_download_url: "https://github.com/naakto14/codex-chatgpt-web/releases/download/v1.2.0/checksums.txt",
+              browser_download_url: "https://github.com/naakto14/codex-chatgpt-web-standalone-backup/releases/download/v1.2.0/checksums.txt",
             },
           ],
         }),

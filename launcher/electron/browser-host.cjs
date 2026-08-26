@@ -23,6 +23,7 @@ const CHATGPT_ORIGIN = "https://chatgpt.com";
 const IDLE_BROWSER_URL = "about:blank#codex-web-gpt-browser-host";
 const MAX_BROWSER_VIEW_DIMENSION = 16_384;
 const MAX_BROWSER_TABS = 5;
+const MAX_CANCELLED_TURN_TRACES = 256;
 const HIDDEN_TURN_VIEWPORT = Object.freeze({ width: 800, height: 600 });
 // These are lease/initialization guards only. They do not limit a live ChatGPT turn: active turns
 // stay alive as long as the helper keeps heartbeating. They only reclaim a blank surface or a turn
@@ -166,6 +167,7 @@ class BrowserHost {
     descriptorPath,
     cdpPort,
     control,
+    cancelTurn,
     getConnectorName,
     helper,
     logger,
@@ -180,6 +182,7 @@ class BrowserHost {
     this.descriptorPath = descriptorPath;
     this.cdpPort = cdpPort;
     this.control = control;
+    this.cancelTurn = cancelTurn;
     this.getConnectorName = getConnectorName;
     this.helper = helper;
     this.logger = logger;
@@ -868,13 +871,30 @@ class BrowserHost {
     this.writeDescriptor();
   }
 
-  closeTab(tabId) {
+  rememberUserCancelledTurn(traceId, helperPid) {
+    this.userCancelledTurnOwners.delete(traceId);
+    this.userCancelledTurnOwners.set(traceId, helperPid);
+    while (this.userCancelledTurnOwners.size > MAX_CANCELLED_TURN_TRACES) {
+      const oldest = this.userCancelledTurnOwners.keys().next();
+      if (oldest.done) break;
+      this.userCancelledTurnOwners.delete(oldest.value);
+    }
+  }
+
+  async closeTab(tabId) {
     const tab = this.turnTabs.get(tabId);
     if (!tab) throw new Error("Browser tab does not exist");
-    if (tab.status === "running") {
-      this.userCancelledTurnOwners.set(tab.traceId, tab.helperPid);
+    const running = tab.status === "running";
+    if (running) {
+      this.rememberUserCancelledTurn(tab.traceId, tab.helperPid);
+      // A running tab is the browser document for one exact Codex turn. Keep that document alive
+      // until the runtime acknowledges cancellation; otherwise a failed control request would
+      // destroy the only DOM source while leaving an orphaned Codex turn running.
+      if (this.cancelTurn) await this.cancelTurn(tab.traceId);
     }
-    this.removeTurnTab(tab, true);
+    // The helper can deliver /v1/turn/end while targeted cancellation is in flight. In that case
+    // endTurn already released this exact tab and there is nothing left to destroy here.
+    if (this.turnTabs.get(tabId) === tab) this.removeTurnTab(tab, true);
     this.logger.info("browser.tab_closed", { tabId, traceId: tab.traceId, status: tab.status });
     return this.snapshot();
   }
@@ -1153,7 +1173,6 @@ class BrowserHost {
       if (closedOwner === helperPid) {
         const cancelledByUser = this.userCancelledTurnOwners.get(traceId) === helperPid;
         this.closedTurnOwners.delete(traceId);
-        this.userCancelledTurnOwners.delete(traceId);
         return { cancelledByUser };
       }
       throw new Error(`Browser turn ownership mismatch: no browser tab owns ${traceId}`);
@@ -1163,6 +1182,7 @@ class BrowserHost {
         `Browser helper ownership mismatch: expected ${tab.helperPid}, received ${helperPid}`,
       );
     }
+    const cancelledByUser = this.userCancelledTurnOwners.get(traceId) === helperPid;
     tab.status = status === "completed" ? "ready" : status === "aborted" ? "aborted" : "error";
     tab.message = status === "completed" ? "Task completed" : message || `ChatGPT turn ${status}`;
     tab.loading = false;
@@ -1177,7 +1197,7 @@ class BrowserHost {
     this.removeTurnTab(tab, false);
     if (hideAfterTurn && !this.activeTraceId) this.hide();
     this.logger.info("browser.tab_released", { tabId: tab.id, traceId, status: tab.status });
-    return { cancelledByUser: false };
+    return { cancelledByUser };
   }
 
   async returnToIdle() {
@@ -1212,7 +1232,9 @@ class BrowserHost {
         await this.view.webContents.loadURL(TEMPORARY_CHAT_URL);
       }
       await this.probeAuthentication();
-      return await this.waitForAuthenticated();
+      const authenticated = await this.waitForAuthenticated();
+      await this.runSessionInspection(false);
+      return authenticated;
     });
     const tracked = operation.finally(() => {
       if (this.loginOperation === tracked) this.loginOperation = null;
@@ -1342,6 +1364,14 @@ class BrowserHost {
         url = this.view.webContents.getURL();
         result = await probe(this.view.webContents);
       }
+    }
+    if (this.manualOperation === "ChatGPT login"
+      && result.sessionAuthenticated
+      && !result.temporary
+      && !this.view.webContents.isDestroyed()) {
+      await this.view.webContents.loadURL(TEMPORARY_CHAT_URL);
+      url = this.view.webContents.getURL();
+      result = await probe(this.view.webContents);
     }
     if (result.composer && result.temporary && result.sessionAuthenticated) {
       if (this.authView && !this.authView.webContents.isDestroyed()) {

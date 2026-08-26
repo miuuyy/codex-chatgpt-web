@@ -1,10 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { defaultConfig } from "../src/config";
 import { CHATGPT_WEB_LUNA_MODEL_ROUTE, CHATGPT_WEB_MODEL_ROUTES, resolveChatGptWebContextLimits } from "../src/chatgpt-web-models";
-import {
-  augmentNativeModelCatalog,
-  CHATGPT_WEB_MODEL_PRIORITY,
-} from "../src/model-catalog";
+import { augmentNativeModelCatalog } from "../src/model-catalog";
 
 function source(): Record<string, unknown> {
   return {
@@ -45,17 +42,14 @@ describe("native /models augmentation", () => {
     const native = source();
     const nativeSnapshot = structuredClone(native);
     const config = defaultConfig("full");
+    config.subagentProtocol = "native";
     config.proAvailable = true;
     const result = augmentNativeModelCatalog(native, config);
     const models = result.models as Array<Record<string, unknown>>;
     const originalModels = nativeSnapshot.models as Array<Record<string, unknown>>;
 
     expect(native).toEqual(nativeSnapshot);
-    expect(models.slice(0, 3)).toEqual([
-      originalModels[0],
-      { ...originalModels[1], multi_agent_version: "v1" },
-      { ...originalModels[2], multi_agent_version: "v1" },
-    ]);
+    expect(models.slice(0, 3)).toEqual(originalModels);
     const web = models.slice(3);
     expect(web.map(model => model.slug)).toEqual(CHATGPT_WEB_MODEL_ROUTES.map(route => route.slug));
     expect(web.map(model => model.display_name)).toEqual(CHATGPT_WEB_MODEL_ROUTES.map(route => route.displayName));
@@ -68,9 +62,9 @@ describe("native /models augmentation", () => {
         tool_mode: null,
         default_reasoning_level: route.codexEffort,
         supported_reasoning_levels: [{ effort: route.codexEffort, description: route.displayName }],
-        multi_agent_version: "v1",
+        multi_agent_version: "v2",
         supported_in_api: true,
-        priority: CHATGPT_WEB_MODEL_PRIORITY,
+        priority: 2,
         context_window: limits.contextWindow,
         max_context_window: limits.contextWindow,
         effective_context_window_percent: limits.effectiveContextWindowPercent,
@@ -83,8 +77,19 @@ describe("native /models augmentation", () => {
     }
   });
 
-  test("keeps every routed Web model in a native-rooted V1 spawn-agent model registry", () => {
+  test("publishes Bigger Context limits in the Codex model catalog", () => {
     const config = defaultConfig("full");
+    config.proAvailable = true;
+    config.experimentalBiggerContext = true;
+    const models = augmentNativeModelCatalog(source(), config).models as Array<Record<string, unknown>>;
+    const pro = models.find(model => model.slug === "chatgpt-web/pro")!;
+    expect(pro.context_window).toBe(336_579);
+    expect(pro.auto_compact_token_limit).toBe(285_000);
+  });
+
+  test("keeps native Sol selectable in the bounded Compatibility V1 registry", () => {
+    const config = defaultConfig("full");
+    config.subagentProtocol = "compatibility-v1";
     config.proAvailable = true;
     const models = augmentNativeModelCatalog(source(), config).models as Array<Record<string, unknown>>;
     const parent = models.find(model => model.slug === "gpt-5.6-sol")!;
@@ -100,11 +105,16 @@ describe("native /models augmentation", () => {
       .slice(0, 5)
       .map(model => model.slug);
 
-    expect(spawnOverrides).toEqual(CHATGPT_WEB_MODEL_ROUTES.map(route => route.slug));
+    expect(spawnOverrides).toEqual([
+      "gpt-5.6-sol",
+      ...CHATGPT_WEB_MODEL_ROUTES.slice(1).map(route => route.slug),
+    ]);
+    expect(models.find(model => model.slug === "chatgpt-web/light")?.priority).toBe(3);
   });
 
-  test("preserves an explicit native delegation disable while normalizing other native pins to V1", () => {
+  test("Compatibility V1 preserves an explicit native delegation disable while pinning supported rows", () => {
     const config = defaultConfig("full");
+    config.subagentProtocol = "compatibility-v1";
     const models = augmentNativeModelCatalog(source(), config).models as Array<Record<string, unknown>>;
 
     expect(models.find(model => model.slug === "gpt-5.5")?.multi_agent_version).toBe("disabled");
@@ -112,8 +122,29 @@ describe("native /models augmentation", () => {
     expect(models.find(model => model.slug === "gpt-5.6-terra")?.multi_agent_version).toBe("v1");
   });
 
+  test("native protocol mode preserves official native rows and gives Web rows the template surface", () => {
+    const native = source();
+    const snapshot = structuredClone(native);
+    const nativeModels = snapshot.models as Array<Record<string, unknown>>;
+    const config = defaultConfig("full");
+    config.subagentProtocol = "native";
+    config.proAvailable = true;
+
+    const models = augmentNativeModelCatalog(native, config).models as Array<Record<string, unknown>>;
+    expect(models.slice(0, nativeModels.length)).toEqual(nativeModels);
+    expect(models.slice(nativeModels.length).every(model => model.multi_agent_version === "v2")).toBe(true);
+    const spawnOverrides = models
+      .filter(model => model.supported_in_api === true && model.visibility === "list")
+      .filter(model => model.multi_agent_version === "v2")
+      .toSorted((left, right) => Number(left.priority) - Number(right.priority))
+      .slice(0, 5)
+      .map(model => model.slug);
+    expect(spawnOverrides).toContain("gpt-5.6-sol");
+  });
+
   test("owns only its namespace, is idempotent, and omits Pro-only modes when unavailable", () => {
     const config = defaultConfig("browser-only");
+    config.subagentProtocol = "native";
     config.proAvailable = false;
     const polluted = source();
     (polluted.models as unknown[]).push(
@@ -128,7 +159,7 @@ describe("native /models augmentation", () => {
       CHATGPT_WEB_MODEL_ROUTES.filter(route => !route.requiresPro).map(route => route.slug),
     );
     expect(web.every(model => model.tool_mode === null)).toBe(true);
-    expect(web.every(model => model.multi_agent_version === "v1")).toBe(true);
+    expect(web.every(model => model.multi_agent_version === "v2")).toBe(true);
     expect(web.every(model => (model.supported_reasoning_levels as unknown[]).length === 1)).toBe(true);
     expect(web.map(model => ({
       contextWindow: model.context_window,
@@ -162,6 +193,7 @@ describe("native /models augmentation", () => {
     const native = source();
     const nativeSnapshot = structuredClone(native);
     const config = defaultConfig("full");
+    config.subagentProtocol = "native";
     const result = augmentNativeModelCatalog(native, config, {
       contextWindow: 371_851,
     });
@@ -171,8 +203,8 @@ describe("native /models augmentation", () => {
     expect(native).toEqual(nativeSnapshot);
     expect(models.slice(0, 3)).toEqual([
       { ...originalModels[0], max_context_window: 371_851 },
-      { ...originalModels[1], max_context_window: 371_851, multi_agent_version: "v1" },
-      { ...originalModels[2], max_context_window: 371_851, multi_agent_version: "v1" },
+      { ...originalModels[1], max_context_window: 371_851 },
+      { ...originalModels[2], max_context_window: 371_851 },
     ]);
     expect(models[1]!.context_window).toBe(300_000);
     expect(models[1]!.auto_compact_token_limit).toBe(270_000);
@@ -229,16 +261,16 @@ describe("native /models augmentation", () => {
     const models = native.models as Array<Record<string, unknown>>;
     for (const model of models) model.supported_in_api = false;
 
-    const result = augmentNativeModelCatalog(native, defaultConfig("browser-only"));
+    const config = defaultConfig("browser-only");
+    config.subagentProtocol = "native";
+    const result = augmentNativeModelCatalog(native, config);
     const web = (result.models as Array<Record<string, unknown>>)
       .filter(model => String(model.slug).startsWith("chatgpt-web/"));
 
     expect(web).toHaveLength(3);
     expect(web.every(model => model.supported_in_api === true)).toBe(true);
     expect((result.models as Array<Record<string, unknown>>).slice(0, models.length))
-      .toEqual(models.map(model => model.multi_agent_version === "disabled"
-        ? model
-        : { ...model, multi_agent_version: "v1" }));
+      .toEqual(models);
   });
 
   test("follows official catalog order instead of preferring a named paid-tier model", () => {

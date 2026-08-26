@@ -54,7 +54,8 @@ const agentMessageItemSchema = z.object({
   author: z.string().optional(),
   recipient: z.string().optional(),
   // MultiAgent V1 sends normal input content. V2 may send only encrypted_content; accept that
-  // shape so the adapter can reject it explicitly instead of silently manufacturing an empty task.
+  // shape so the HTTP boundary can reject it before constructing a browser adapter instead of
+  // silently manufacturing an empty task or starting a retryable SSE stream.
   content: z.union([
     z.string(),
     z.array(z.union([inputContentBlockSchema, encryptedContentBlockSchema])),

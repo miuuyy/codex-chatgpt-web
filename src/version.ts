@@ -1,1 +1,1 @@
-export const VERSION = "3.0.0-naakto.5";
+export const VERSION = "3.0.3";
