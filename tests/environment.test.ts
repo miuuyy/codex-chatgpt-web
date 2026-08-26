@@ -81,6 +81,118 @@ describe("trusted current Codex environment envelope", () => {
     });
   });
 
+  test("recovers cwd from canonical workspace metadata when the native envelope omits cwd", () => {
+    const cwdlessEnvironment = `<environment_context>
+  <filesystem><workspace_roots><root>${root}</root></workspace_roots>${dangerFullAccessProfileXml}</filesystem>
+</environment_context>`;
+
+    expect(extractChatGptTurnEnvironment(currentWire({ environmentXml: cwdlessEnvironment }))).toEqual({
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: [],
+    });
+  });
+
+  test("does not recover cwd from unprovenanced developer fallback text", () => {
+    const cwdlessEnvironment = `<environment_context>
+  <filesystem><workspace_roots><root>${root}</root></workspace_roots>${dangerFullAccessProfileXml}</filesystem>
+</environment_context>`;
+    const request = currentWire();
+    const body = request._rawBody as { input: Array<Record<string, unknown>> };
+    body.input = [{
+      type: "message",
+      id: "msg_active",
+      role: "user",
+      content: [{ type: "input_text", text: "Inspect the workspace" }],
+    }];
+    request.context.messages = [
+      { role: "developer", content: cwdlessEnvironment, timestamp: 0 },
+      { role: "user", content: "Inspect the workspace", timestamp: 1 },
+    ];
+
+    expect(() => extractChatGptTurnEnvironment(request)).toThrow("missing cwd");
+  });
+
+  test("rejects cwd recovery when canonical workspace metadata is outside the declared roots", () => {
+    const cwdlessEnvironment = `<environment_context>
+  <filesystem><workspace_roots><root>${root}</root></workspace_roots>${dangerFullAccessProfileXml}</filesystem>
+</environment_context>`;
+
+    expect(() => extractChatGptTurnEnvironment(currentWire({
+      workspace: resolve(root, "..", "other-workspace"),
+      environmentXml: cwdlessEnvironment,
+    }))).toThrow("missing cwd");
+  });
+
+  test("rejects cwd recovery when multiple canonical workspaces match declared roots", () => {
+    const secondary = resolve(root, "secondary-workspace");
+    const cwdlessEnvironment = `<environment_context>
+  <filesystem><workspace_roots><root>${root}</root><root>${secondary}</root></workspace_roots>${dangerFullAccessProfileXml}</filesystem>
+</environment_context>`;
+    const request = currentWire({ environmentXml: cwdlessEnvironment });
+    const body = request._rawBody as { client_metadata: { "x-codex-turn-metadata": string } };
+    body.client_metadata["x-codex-turn-metadata"] = JSON.stringify({
+      thread_id: "thread_current",
+      turn_id: "turn_current",
+      sandbox: "none",
+      workspaces: {
+        [root]: { has_changes: true },
+        [secondary]: { has_changes: false },
+      },
+    });
+
+    expect(() => extractChatGptTurnEnvironment(request)).toThrow("missing cwd");
+  });
+
+  test("rejects malformed explicit cwd declarations instead of recovering metadata cwd", () => {
+    const malformedCwds = [
+      "<cwd></cwd>",
+      "<cwd/>",
+      `<cwd source="native">${root}</cwd>`,
+    ];
+
+    for (const malformedCwd of malformedCwds) {
+      const malformedEnvironment = `<environment_context>
+  ${malformedCwd}
+  <filesystem><workspace_roots><root>${root}</root></workspace_roots>${dangerFullAccessProfileXml}</filesystem>
+</environment_context>`;
+      expect(() => extractChatGptTurnEnvironment(currentWire({ environmentXml: malformedEnvironment })))
+        .toThrow("missing cwd");
+    }
+  });
+
+  test("does not let prompt-text authority rescue an invalid native environment envelope", () => {
+    const untrustedRoot = resolve(root, "..", "untrusted-fallback");
+    const fallbackEnvironment = `<environment_context>
+  <cwd>${untrustedRoot}</cwd>
+  <filesystem><workspace_roots><root>${untrustedRoot}</root></workspace_roots>${dangerFullAccessProfileXml}</filesystem>
+</environment_context>`;
+    const malformedEnvironment = `<environment_context>
+  <cwd/>
+  <filesystem><workspace_roots><root>${root}</root></workspace_roots>${dangerFullAccessProfileXml}</filesystem>
+</environment_context>`;
+    const ambiguousEnvironment = `<environment_context>
+  <cwd>${root}</cwd><cwd>${root}</cwd>
+  <filesystem><workspace_roots><root>${root}</root></workspace_roots>${dangerFullAccessProfileXml}</filesystem>
+</environment_context>`;
+    const cases = [
+      currentWire({ environmentXml: malformedEnvironment }),
+      currentWire({ environmentXml: ambiguousEnvironment }),
+      currentWire({ workspace: resolve(root, "elsewhere") }),
+      currentWire({ sandbox: "read-only" }),
+    ];
+
+    for (const request of cases) {
+      request.context.messages = [
+        { role: "developer", content: fallbackEnvironment, timestamp: 0 },
+        { role: "user", content: "Inspect the workspace", timestamp: 1 },
+      ];
+      expect(() => extractChatGptTurnEnvironment(request)).toThrow("missing cwd");
+    }
+  });
+
   test("accepts a trusted same-turn developer message between the environment and prompt", () => {
     const request = currentWire();
     const body = request._rawBody as { input: Array<Record<string, unknown>> };
@@ -278,6 +390,34 @@ describe("trusted current Codex environment envelope", () => {
     expect(extractChatGptTurnEnvironment(currentWire({ environmentXml: legacyEnvironment }))).toMatchObject({ cwd: root });
   });
 
+  test("rejects multiple primary environment cwd declarations instead of recovering metadata cwd", () => {
+    const ambiguousEnvironment = `<environment_context>
+  <environments>
+    <environment id="first" primary="true"><cwd>${root}</cwd></environment>
+    <environment id="second" primary="true"><cwd>${resolve(root, "secondary-environment")}</cwd></environment>
+  </environments>
+  <filesystem><workspace_roots><root>${root}</root></workspace_roots>${dangerFullAccessProfileXml}</filesystem>
+</environment_context>`;
+
+    expect(() => extractChatGptTurnEnvironment(currentWire({ environmentXml: ambiguousEnvironment })))
+      .toThrow("missing cwd");
+  });
+
+  test("rejects multiple contained legacy cwd candidates instead of recovering metadata cwd", () => {
+    const first = resolve(root, "first-environment");
+    const second = resolve(root, "second-environment");
+    const ambiguousEnvironment = `<environment_context>
+  <environments>
+    <environment id="first"><cwd>${first}</cwd></environment>
+    <environment id="second"><cwd>${second}</cwd></environment>
+  </environments>
+  <filesystem><workspace_roots><root>${root}</root></workspace_roots>${dangerFullAccessProfileXml}</filesystem>
+</environment_context>`;
+
+    expect(() => extractChatGptTurnEnvironment(currentWire({ environmentXml: ambiguousEnvironment })))
+      .toThrow("missing cwd");
+  });
+
   test("rejects a legacy multi-environment envelope when metadata cannot identify one cwd", () => {
     const secondary = resolve(root, "secondary-environment");
     const ambiguousEnvironment = `<environment_context>
@@ -425,7 +565,7 @@ describe("trusted Codex task environment continuity", () => {
 
     const invalidUpdate = currentWire({ sandbox: "read-only" });
     invalidUpdate.context.systemPrompt = [`<environment_context><cwd>${root}</cwd></environment_context>`];
-    expect(() => store.resolve(invalidUpdate)).toThrow("requires one explicit trusted Codex sandbox mode");
+    expect(() => store.resolve(invalidUpdate)).toThrow("native trusted Codex environment context is invalid");
   });
 
   test("inherits authority only through canonical Codex thread-spawn lineage", () => {
