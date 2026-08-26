@@ -102,6 +102,7 @@ export const CHATGPT_RESPONSE_DOM_GRACE_MS = 60_000;
 export const CHATGPT_EMPTY_RESPONSE_GRACE_MS = 10_000;
 export const CHATGPT_COMPLETION_ACTION_GRACE_MS = 60_000;
 export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
+export const CHATGPT_MARKERLESS_COMPLETION_SETTLE_MS = 5_000;
 export const CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS = 60_000;
 export const MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS = 3;
 const CHATGPT_SMOKE_TEXT = "Reply with exactly: CODEX WEB GPT READY";
@@ -505,8 +506,7 @@ export function chatGptTurnIsComplete(state: {
 }): boolean {
   return state.responsePresent
     && !state.running
-    && state.currentText.length > 0
-    && state.completionActionVisible;
+    && state.currentText.length > 0;
 }
 
 export type ChatGptSubmissionEvidence = "user_turn" | "assistant_turn" | "generation_running";
@@ -539,7 +539,10 @@ export function chatGptNewTurnIdentity(
 export class ChatGptCompletionTracker {
   private candidate?: { signature: string; since: number };
 
-  constructor(private readonly stableMs = CHATGPT_COMPLETION_SETTLE_MS) {}
+  constructor(
+    private readonly stableMs = CHATGPT_COMPLETION_SETTLE_MS,
+    private readonly markerlessStableMs = CHATGPT_MARKERLESS_COMPLETION_SETTLE_MS,
+  ) {}
 
   update(state: Parameters<typeof chatGptTurnIsComplete>[0], now = Date.now()): boolean {
     if (!chatGptTurnIsComplete(state)) {
@@ -551,7 +554,10 @@ export class ChatGptCompletionTracker {
       this.candidate = { signature, since: now };
       return false;
     }
-    return now - this.candidate.since >= this.stableMs;
+    const requiredStableMs = state.completionActionVisible
+      ? this.stableMs
+      : this.markerlessStableMs;
+    return now - this.candidate.since >= requiredStableMs;
   }
 }
 

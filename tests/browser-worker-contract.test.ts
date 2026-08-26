@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { Page } from "playwright-core";
-import { CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_STOPPED_THINKING_GRACE_MS, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptStoppedThinkingTracker, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, chatGptNewTurnIdentity, chatGptSubmissionEvidence, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_STOPPED_THINKING_GRACE_MS, ChatGptBrowserWorker, ChatGptCompletionTracker, ChatGptPromptAttachmentIntegrityError, ChatGptStoppedThinkingTracker, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, chatGptNewTurnIdentity, chatGptSubmissionEvidence, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
@@ -1853,6 +1853,51 @@ test("browser DOM health fails closed on a vanished or empty ChatGPT response", 
   expect(missingCompletionAction.update(completedWithoutMarker, 1_750)).toContain("DOM may have changed");
 });
 
+test("browser completion accepts a stable final answer when ChatGPT omits the copy action", () => {
+  const completion = new ChatGptCompletionTracker(200, 500);
+  const markerless = {
+    responsePresent: true,
+    running: false,
+    currentText: "complete answer",
+    currentHtml: "<p>complete answer</p>",
+    completionActionVisible: false,
+  };
+  expect(completion.update(markerless, 1_000)).toBeFalse();
+  expect(completion.update(markerless, 1_499)).toBeFalse();
+  expect(completion.update(markerless, 1_500)).toBeTrue();
+});
+
+test("browser completion does not accept markerless output while generation is active or changing", () => {
+  const completion = new ChatGptCompletionTracker(200, 500);
+  const markerless = {
+    responsePresent: true,
+    running: false,
+    currentText: "partial",
+    currentHtml: "<p>partial</p>",
+    completionActionVisible: false,
+  };
+  expect(completion.update(markerless, 1_000)).toBeFalse();
+  expect(completion.update({ ...markerless, running: true }, 1_400)).toBeFalse();
+  expect(completion.update(markerless, 1_500)).toBeFalse();
+  expect(completion.update({ ...markerless, currentText: "partial answer", currentHtml: "<p>partial answer</p>" }, 1_900)).toBeFalse();
+  expect(completion.update({ ...markerless, currentText: "partial answer", currentHtml: "<p>partial answer</p>" }, 2_399)).toBeFalse();
+  expect(completion.update({ ...markerless, currentText: "partial answer", currentHtml: "<p>partial answer</p>" }, 2_400)).toBeTrue();
+});
+
+test("browser completion still uses the faster settle window when the copy action is present", () => {
+  const completion = new ChatGptCompletionTracker(200, 500);
+  const completed = {
+    responsePresent: true,
+    running: false,
+    currentText: "complete answer",
+    currentHtml: "<p>complete answer</p>",
+    completionActionVisible: true,
+  };
+  expect(completion.update(completed, 1_000)).toBeFalse();
+  expect(completion.update(completed, 1_199)).toBeFalse();
+  expect(completion.update(completed, 1_200)).toBeTrue();
+});
+
 test("stalled-turn diagnostics record DOM metrics without response or overlay content", () => {
   const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
   const start = workerSource.indexOf("private async stalledTurnDiagnostic");
@@ -1864,11 +1909,12 @@ test("stalled-turn diagnostics record DOM metrics without response or overlay co
   expect(diagnosticSource).not.toMatch(/\bariaLabel:\s*candidate\.getAttribute/);
 });
 
-test("browser completion requires ChatGPT's response-scoped copy action", () => {
+test("browser completion uses ChatGPT's response-scoped copy action as supporting evidence", () => {
   const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
   const sessionSource = readFileSync(new URL("../src/chatgpt-session.ts", import.meta.url), "utf8");
   expect(sessionSource).toContain('button[data-testid="copy-turn-action-button"]');
   expect(workerSource).toContain("CHATGPT_COMPLETION_ACTION_SELECTOR");
+  expect(workerSource).toContain("CHATGPT_MARKERLESS_COMPLETION_SETTLE_MS");
   expect(workerSource).not.toContain('root.querySelectorAll<HTMLElement>("button")');
 });
 
