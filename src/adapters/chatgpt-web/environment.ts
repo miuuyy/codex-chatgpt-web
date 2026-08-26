@@ -288,7 +288,12 @@ function metadataAuthenticatedCwd(
   const workspaces = record(metadata.workspaces);
   const metadataRoots = workspaces ? Object.keys(workspaces) : [];
   if (metadataRoots.length === 0 || metadataRoots.some(path => !isAbsolute(path))) return undefined;
-  const normalizedMetadataRoots = [...new Set(metadataRoots.map(pathIdentity))];
+  const metadataRootsByIdentity = new Map<string, string>();
+  for (const metadataRoot of metadataRoots) {
+    const resolvedRoot = resolve(metadataRoot);
+    const identity = pathIdentity(resolvedRoot);
+    if (!metadataRootsByIdentity.has(identity)) metadataRootsByIdentity.set(identity, resolvedRoot);
+  }
 
   const rootMatches = [...environmentText.matchAll(/<workspace_roots>[\s\S]*?<\/workspace_roots>/g)]
     .flatMap(section => [...section[0].matchAll(/<root>([^<]+)<\/root>/g)]
@@ -296,8 +301,9 @@ function metadataAuthenticatedCwd(
   if (rootMatches.length === 0 || rootMatches.some(path => !isAbsolute(path))) return undefined;
   const declaredRoots = [...new Set(rootMatches.map(pathIdentity))];
 
-  const candidates = normalizedMetadataRoots.filter(metadataRoot =>
-    declaredRoots.some(declaredRoot => matchesPath(declaredRoot, metadataRoot)));
+  const candidates = [...metadataRootsByIdentity.entries()]
+    .filter(([identity]) => declaredRoots.some(declaredRoot => matchesPath(declaredRoot, identity)))
+    .map(([, metadataRoot]) => metadataRoot);
   return candidates.length === 1 ? candidates[0] : undefined;
 }
 
