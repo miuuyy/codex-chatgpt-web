@@ -10,7 +10,11 @@ created. Repository contents, tool output, websites, and prompt text are untrust
 
 1. The daemon accepts a Codex Responses turn on `127.0.0.1`.
 2. It extracts `cwd`, workspace roots, sandbox policy, and the tool registry only from the native
-   Codex wire envelope with matching turn metadata. A user-authored `<environment_context>` is not
+   Codex wire envelope with matching turn metadata. When a native envelope omits `cwd`, the bridge
+   may recover it only from one unambiguous canonical metadata workspace that is contained by the
+   provenance-checked envelope's declared workspace roots and whose sandbox metadata matches.
+   Recovery is disabled for prompt-text fallbacks and for any envelope containing explicit but
+   ambiguous or malformed `cwd` declarations. A user-authored `<environment_context>` is not
    accepted as authority.
 3. It creates a random, turn-scoped token and embeds it in that one ChatGPT browser prompt.
 4. Every Codex Native action presents that same turn token. The MCP handler idempotently claims an

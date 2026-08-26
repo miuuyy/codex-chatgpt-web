@@ -474,6 +474,10 @@ export interface BrowserTurn {
   prepare: () => Promise<CompiledChatGptWebPrompt & { release: () => void }>;
   abortSignal?: AbortSignal;
   onHeartbeat?: () => void;
+  /** Send activation is an irreversible ambiguity boundary: never replay on a fresh surface. */
+  onSendActivated?: () => void | Promise<void>;
+  /** The current prompt is visible to ChatGPT and must never be replayed on another surface. */
+  onSubmitted?: () => void;
   /** Visible ChatGPT reasoning-summary step titles only; never hidden chain-of-thought. */
   onReasoningSummary?: (text: string, continuation?: boolean) => void;
   /** Stable visible ChatGPT prose between status/tool rows. */
@@ -1756,6 +1760,8 @@ export class ChatGptBrowserWorker {
     baseline: ChatGptSubmissionBaseline,
     captureDiagnostic?: (checkpoint: string) => Promise<void>,
     abortSignal?: AbortSignal,
+    onSendActivated?: () => void | Promise<void>,
+    onSubmitted?: () => void,
   ): Promise<ChatGptSubmissionEvidence> {
     const composer = await this.activeComposer(page);
     const sendButton = composer
@@ -1768,8 +1774,11 @@ export class ChatGptBrowserWorker {
     await settleChatGptUi();
     await captureDiagnostic?.("send-ready");
     await throwIfChatGptSessionFailureAlert(page);
+    await onSendActivated?.();
     await sendButton.press("Enter");
-    return await this.waitForSubmissionAccepted(page, baseline, abortSignal);
+    const evidence = await this.waitForSubmissionAccepted(page, baseline, abortSignal);
+    onSubmitted?.();
+    return evidence;
   }
 
   private async waitForMultipartAcknowledgement(
@@ -2517,6 +2526,8 @@ export class ChatGptBrowserWorker {
               stageBaseline,
               checkpoint => diagnostics.capture(page, `multipart-${index + 1}-${checkpoint}`),
               turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal,
+              turn.onSendActivated,
+              turn.onSubmitted,
             ),
           );
           const responseTurn = await this.waitForNewAssistantTurn(
@@ -2618,6 +2629,8 @@ export class ChatGptBrowserWorker {
           submissionBaseline,
           checkpoint => diagnostics.capture(page, checkpoint),
           turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal,
+          turn.onSendActivated,
+          turn.onSubmitted,
         ),
       );
       const responseTurn = await this.waitForNewAssistantTurn(

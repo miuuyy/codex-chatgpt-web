@@ -17,6 +17,11 @@ test("browser turn orchestration retains owned prompt insertion and semantic sub
   expect(workerSource).toContain('.getByTestId("send-button")');
   expect(workerSource).toContain('await sendButton.press("Enter")');
   expect(workerSource).toContain("await this.waitForSubmissionAccepted(");
+  const sendAttachedPrompt = workerSource.slice(workerSource.indexOf("  private async sendAttachedPrompt("));
+  expect(sendAttachedPrompt.indexOf("await onSendActivated?.()"))
+    .toBeGreaterThanOrEqual(0);
+  expect(sendAttachedPrompt.indexOf("await onSendActivated?.()"))
+    .toBeLessThan(sendAttachedPrompt.indexOf('await sendButton.press("Enter")'));
   expect(runBrowserTurn).toContain("this.sendAttachedPrompt(");
   expect(runBrowserTurn).toContain("formatChatGptWebMultipartStage(");
   expect(runBrowserTurn).toContain("waitForMultipartAcknowledgement(");

@@ -114,6 +114,87 @@ test("Bun daemon streams a prepared browser turn through the persistent Node hel
   }
 });
 
+test("launcher helper Send activation waits for the parent callback before acknowledgement", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-launcher-helper-activation-"));
+  roots.push(root);
+  const helper = join(root, "helper.cjs");
+  writeFileSync(helper, `
+    const readline = require("node:readline").createInterface({ input: process.stdin });
+    const send = value => process.stdout.write(JSON.stringify(value) + "\\n");
+    let activeId;
+    let acknowledgementTimer;
+    send({ type: "ready" });
+    readline.on("line", line => {
+      const message = JSON.parse(line);
+      if (message.type === "shutdown") process.exit(0);
+      if (message.type === "run") {
+        activeId = message.id;
+        send({ type: "event", id: message.id, event: "send_activated" });
+        acknowledgementTimer = setTimeout(() => {
+          send({ type: "error", id: message.id, message: "activation acknowledgement missing" });
+        }, 500);
+        return;
+      }
+      if (message.type !== "send_activated_ack" || message.id !== activeId) return;
+      clearTimeout(acknowledgementTimer);
+      send({ type: "event", id: message.id, event: "submitted" });
+      send({ type: "event", id: message.id, event: "text", text: "done" });
+      send({ type: "result", id: message.id, text: "done" });
+    });
+  `, { mode: 0o700 });
+  const descriptorHelper = join(root, "descriptor-helper.cjs");
+  writeFileSync(descriptorHelper, "process.exit(99);\n", { mode: 0o700 });
+  const descriptorPath = join(root, "launcher.json");
+  writeFileSync(descriptorPath, `${JSON.stringify({
+    version: 2,
+    kind: LAUNCHER_BROWSER_HOST_KIND,
+    profile: "production",
+    pid: process.pid,
+    endpoint: "http://127.0.0.1:39011",
+    control: {
+      endpoint: "http://127.0.0.1:39012",
+      token: "launcher-control-token-0123456789abcdefghijklmnop",
+    },
+    helper: { executable: process.execPath, script: descriptorHelper },
+    partition: "persist:codex-web-gpt-chatgpt",
+    idleUrl: "about:blank#codex-web-gpt-browser-host",
+    surfaceId: "launcher_surface_id_0123456789AB",
+    createdAt: new Date().toISOString(),
+  })}\n`, { mode: 0o600 });
+  const client = new LauncherBrowserHelperClient({
+    appName: "Codex Native",
+    browserHost: "launcher",
+    browserHostDescriptorPath: descriptorPath,
+    browserHelperScriptPath: helper,
+    storageStatePath: join(root, "unused-state.json"),
+    chromeExecutablePath: join(root, "unused-chrome"),
+    turnTimeoutMs: 60_000,
+    headed: true,
+    autoApproveToolCalls: false,
+  });
+  let activationRecorded = false;
+  let submittedAfterActivation = false;
+  try {
+    await expect(client.run({
+      traceId: "activation1234",
+      modelId: "gpt-5.6-sol",
+      reasoning: "high",
+      capabilities: { localToolsEnabled: false, solAvailable: true, proAvailable: false },
+      prepare: async () => ({ text: "inspect", images: [], release: () => {} }),
+      onSendActivated: async () => {
+        await new Promise(resolve => setTimeout(resolve, 25));
+        activationRecorded = true;
+      },
+      onSubmitted: () => { submittedAfterActivation = activationRecorded; },
+      onTextDelta: () => {},
+    })).resolves.toBe("done");
+    expect(activationRecorded).toBeTrue();
+    expect(submittedAfterActivation).toBeTrue();
+  } finally {
+    await client.close();
+  }
+});
+
 test("launcher helper protocol preserves multipart context and the compaction flag", async () => {
   let sent: Record<string, unknown> | undefined;
   const client = new LauncherBrowserHelperClient({

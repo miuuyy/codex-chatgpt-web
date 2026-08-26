@@ -10,6 +10,7 @@ import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "./env
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt";
 import { chatGptWebTurnRetryPolicy } from "./retry-policy";
+import { submittedBrowserFailure } from "./submitted-turn";
 import { TurnBroker, type BrokerToolRequest, type BrokerToolResult, type TurnBrokerOwner } from "./turn-broker";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptCompactionSourceExecutionKey, chatGptTurnExecutionKey, chatGptTurnRetryKey, chatGptTurnSessions, type ChatGptBrowserOutcome, type ChatGptTraceEvent, type ChatGptTurnRuntime, type ChatGptTurnSession } from "./turn-execution";
 import { estimateChatGptWebUsage, resolveBiggerContextMultipartParts } from "./usage";
@@ -279,6 +280,7 @@ export function createChatGptWebAdapter(
     const browserAbort = new AbortController();
     const trace = new ChatGptTraceFeed();
     const text = new ChatGptTextFeed();
+    const submission: ChatGptTurnRuntime["submission"] = { phase: "prepared" };
     if (!mode.localTools) {
       const browserTurn = cancellableBrowserTurn(finalizeCheckpoint(worker.run({
         traceId,
@@ -296,6 +298,8 @@ export function createChatGptWebAdapter(
         }),
         abortSignal: browserAbort.signal,
         ...(parsed._compactionRequest ? { compaction: true } : {}),
+        onSendActivated: () => { if (submission.phase === "prepared") submission.phase = "send_activated"; },
+        onSubmitted: () => { submission.phase = "accepted"; },
         onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),
         onCommentary: (text, continuation) => trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) }),
         onTextDelta: delta => text.push(delta),
@@ -309,6 +313,7 @@ export function createChatGptWebAdapter(
         browser: browserTurn.browser,
         trace,
         text,
+        submission,
         cancel: browserTurn.cancel,
       };
     }
@@ -345,6 +350,8 @@ export function createChatGptWebAdapter(
       },
       abortSignal: browserAbort.signal,
       ...(parsed._compactionRequest ? { compaction: true } : {}),
+      onSendActivated: () => { if (submission.phase === "prepared") submission.phase = "send_activated"; },
+      onSubmitted: () => { submission.phase = "accepted"; },
       onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),
       onCommentary: (text, continuation) => trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) }),
       onTextDelta: delta => text.push(delta),
@@ -365,6 +372,7 @@ export function createChatGptWebAdapter(
       browser: browserTurn.browser,
       trace,
       text,
+      submission,
       cancel: (reason?: Error) => {
         browserTurn.cancel(reason);
         if (activeToken) {
@@ -558,10 +566,12 @@ export function createChatGptWebAdapter(
           }
         });
       } catch (error) {
-        const handledError = error instanceof ChatGptWebAdapterError && error.retryable
-          ? chatGptWebTurnRetryPolicy.recordRetryableFailure(retryKey, error)
-          : error;
-        if (!(error instanceof ChatGptWebAdapterError && error.retryable)) {
+        const submittedError = submittedBrowserFailure(session, error);
+        const effectiveError = submittedError ?? error;
+        const handledError = effectiveError instanceof ChatGptWebAdapterError && effectiveError.retryable
+          ? chatGptWebTurnRetryPolicy.recordRetryableFailure(retryKey, effectiveError)
+          : effectiveError;
+        if (!(effectiveError instanceof ChatGptWebAdapterError && effectiveError.retryable)) {
           chatGptWebTurnRetryPolicy.clear(retryKey);
         }
         if (handledError instanceof ChatGptWebAdapterError && !handledError.retryable) {

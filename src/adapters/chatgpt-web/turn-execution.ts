@@ -119,6 +119,7 @@ interface ChatGptTurnRuntimeBase {
   browser: Promise<string>;
   trace: ChatGptTraceFeed;
   text: ChatGptTextFeed;
+  submission?: { phase: "prepared" | "send_activated" | "accepted" };
   cancel: (reason?: Error) => void;
 }
 
@@ -201,8 +202,8 @@ export class ChatGptTurnSession {
       .then(answer => ({ type: "final", answer }) as ChatGptBrowserOutcome)
       .catch(error => ({ type: "error", error: error instanceof Error ? error : new Error(String(error)) }) as ChatGptBrowserOutcome)
       .then(outcome => {
-      this.settledBrowserOutcome = outcome;
-      return outcome;
+      this.settledBrowserOutcome ??= outcome;
+      return this.settledBrowserOutcome;
     });
   }
 
@@ -227,6 +228,10 @@ export class ChatGptTurnSession {
 
   settledOutcome(): ChatGptBrowserOutcome | undefined {
     return this.settledBrowserOutcome;
+  }
+
+  setTerminalError(error: Error): void {
+    this.settledBrowserOutcome = { type: "error", error };
   }
 
   isActive(): boolean {

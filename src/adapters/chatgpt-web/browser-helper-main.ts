@@ -51,7 +51,10 @@ interface SmokeMessage {
 }
 
 type MaintenanceMessage = VerifyMessage | InspectMessage | SmokeMessage;
-type InputMessage = RunMessage | MaintenanceMessage | { type: "abort"; id: string } | { type: "shutdown" };
+type InputMessage = RunMessage | MaintenanceMessage
+  | { type: "send_activated_ack"; id: string }
+  | { type: "abort"; id: string }
+  | { type: "shutdown" };
 
 let outputFailure: Error | undefined;
 const handleOutputFailure = (error: Error): void => {
@@ -62,9 +65,7 @@ const handleOutputFailure = (error: Error): void => {
 const protocolOutput = createProcessLineWriter(stdout, handleOutputFailure);
 const diagnosticOutput = createProcessLineWriter(stderr, handleOutputFailure);
 
-const writeProtocol = (message: unknown): void => {
-  protocolOutput.write(JSON.stringify(message));
-};
+const writeProtocol = (message: unknown): boolean => protocolOutput.write(JSON.stringify(message));
 
 const diagnostic = (...values: unknown[]): void => {
   diagnosticOutput.write(values.map(value => typeof value === "string" ? value : JSON.stringify(value)).join(" "));
@@ -74,6 +75,7 @@ console.warn = diagnostic;
 console.error = diagnostic;
 
 const abortControllers = new Map<string, AbortController>();
+const sendActivationWaiters = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
 let shuttingDown = false;
 let shutdownPromise: Promise<void> | undefined;
 
@@ -87,6 +89,10 @@ function requestShutdown(): Promise<void> {
   protocolOutput.close();
   diagnosticOutput.close();
   for (const controller of abortControllers.values()) controller.abort();
+  for (const waiter of sendActivationWaiters.values()) {
+    waiter.reject(new DOMException("Browser helper activation acknowledgement aborted", "AbortError"));
+  }
+  sendActivationWaiters.clear();
   input.close();
   void closeChatGptBrowserWorkers().then(
     () => {
@@ -146,6 +152,17 @@ async function run(message: RunMessage): Promise<void> {
     prepare: async () => ({ ...message.turn.prepared, release: () => {} }),
     abortSignal: abortController.signal,
     ...(message.turn.compaction ? { compaction: true } : {}),
+    onSendActivated: () => new Promise<void>((resolve, reject) => {
+      if (sendActivationWaiters.has(message.id)) {
+        reject(new Error("Browser helper Send activation is already awaiting acknowledgement"));
+        return;
+      }
+      sendActivationWaiters.set(message.id, { resolve, reject });
+      if (writeProtocol({ type: "event", id: message.id, event: "send_activated" })) return;
+      sendActivationWaiters.delete(message.id);
+      reject(new Error("Browser helper could not publish Send activation"));
+    }),
+    onSubmitted: () => writeProtocol({ type: "event", id: message.id, event: "submitted" }),
     onHeartbeat: () => writeProtocol({ type: "event", id: message.id, event: "heartbeat" }),
     onReasoningSummary: (text, continuation) => writeProtocol({
       type: "event",
@@ -183,6 +200,7 @@ async function run(message: RunMessage): Promise<void> {
       } : {}),
     });
   } finally {
+    sendActivationWaiters.delete(message.id);
     abortControllers.delete(message.id);
   }
 }
@@ -249,7 +267,17 @@ input.on("line", line => {
     writeProtocol({ type: "error", id: "protocol", message: "Browser helper received invalid JSON" });
     return;
   }
-  if (message.type === "abort") abortControllers.get(message.id)?.abort();
+  if (message.type === "abort") {
+    sendActivationWaiters.get(message.id)?.reject(
+      new DOMException("Browser helper Send activation aborted", "AbortError"),
+    );
+    sendActivationWaiters.delete(message.id);
+    abortControllers.get(message.id)?.abort();
+  }
+  else if (message.type === "send_activated_ack") {
+    sendActivationWaiters.get(message.id)?.resolve();
+    sendActivationWaiters.delete(message.id);
+  }
   else if (message.type === "shutdown") {
     void requestShutdown();
   } else if (message.type === "verify") {
