@@ -434,7 +434,17 @@ function rawEnvironmentText(parsed: CodexParsedRequest): string | undefined {
 function hasRawEnvironmentEnvelope(parsed: CodexParsedRequest): boolean {
   const body = record(parsed._rawBody);
   const input = Array.isArray(body?.input) ? body.input : [];
-  for (const value of input) {
+  let activeUserIndex = -1;
+  for (let index = input.length - 1; index >= 0; index -= 1) {
+    const item = record(input[index]);
+    if (item?.role === "user" && !contextualUserMessage(item)) {
+      activeUserIndex = index;
+      break;
+    }
+  }
+  if (activeUserIndex < 0) return false;
+
+  for (const value of input.slice(0, activeUserIndex)) {
     const item = record(value);
     if (item?.type !== "message" || item.role !== "user") continue;
     const content = Array.isArray(item.content) ? item.content : [];
