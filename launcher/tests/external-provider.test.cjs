@@ -6,6 +6,7 @@ const path = require("node:path");
 const {
   findTopLevelStringAssignment,
   inspectExternalProvider,
+  resolveIntegrationMode,
 } = require("../electron/external-provider.cjs");
 
 function fixtureConfig() {
@@ -53,6 +54,26 @@ test("external provider is accepted only when one provider exposes every account
   }
 });
 
+test("external provider evidence strips URL credentials, query strings, and fragments", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-provider-redaction-"));
+  try {
+    fs.writeFileSync(path.join(root, "config.toml"), 'openai_base_url = "http://user:secret@127.0.0.1:10100/v1?api_key=private#fragment"\n');
+    const ids = ["light", "medium", "high", "extra-high", "pro"]
+      .map((effort) => `cgw/chatgpt-web/${effort}`);
+    const result = await inspectExternalProvider({
+      codexHome: root,
+      runtimeConfig: fixtureConfig(),
+      fetchImpl: catalog(ids),
+    });
+    assert.equal(result.active, true);
+    assert.equal(result.baseUrl, "http://127.0.0.1:10100/v1");
+    assert.equal(JSON.stringify(result).includes("secret"), false);
+    assert.equal(JSON.stringify(result).includes("private"), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("external provider verification fails closed for missing models, direct routes, and non-loopback routes", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-provider-negative-"));
   try {
@@ -84,4 +105,19 @@ test("external provider verification fails closed for missing models, direct rou
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("an active external provider supersedes a stale inactive direct integration journal", () => {
+  assert.equal(resolveIntegrationMode({
+    route: { installed: true, active: false },
+    provider: { active: true },
+  }), "external-provider");
+  assert.equal(resolveIntegrationMode({
+    route: { installed: true, active: true },
+    provider: { active: true },
+  }), "direct");
+  assert.equal(resolveIntegrationMode({
+    route: { installed: true, active: false },
+    provider: { active: false },
+  }), "direct-disabled");
 });
