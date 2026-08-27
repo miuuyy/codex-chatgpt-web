@@ -45,6 +45,13 @@ function inactive(reason, evidence = {}) {
   return { active: false, reason, ...evidence };
 }
 
+function resolveIntegrationMode({ route, provider }) {
+  if (route?.active === true) return "direct";
+  if (provider?.active === true) return "external-provider";
+  if (route?.installed === true) return "direct-disabled";
+  return "unconfigured";
+}
+
 async function inspectExternalProvider({
   codexHome,
   runtimeConfig,
@@ -113,7 +120,7 @@ async function inspectExternalProvider({
   return {
     active: true,
     reason: "verified-external-provider",
-    baseUrl: configuredBaseUrl,
+    baseUrl: `${baseUrl.origin}${baseUrl.pathname}`,
     provider,
     verifiedModels: suffixes.map((suffix) => `${provider}/${suffix}`),
   };
@@ -123,4 +130,5 @@ module.exports = {
   findTopLevelStringAssignment,
   inspectExternalProvider,
   requiredWebModelSuffixes,
+  resolveIntegrationMode,
 };

@@ -990,34 +990,42 @@ async function start() {
     }
     try {
       const route = await runtimeHost.bridgeStatus();
-      if (route.installed) {
+      const provider = route.active ? { active: false, reason: "direct-route-active" } : await runtimeHost.externalProviderStatus();
+      const integrationMode = require("./external-provider.cjs").resolveIntegrationMode({ route, provider });
+      if (integrationMode === "direct") {
         const current = stateStore.read();
         if (current.bridgeEnabled !== route.active || current.integrationMode !== "direct") {
           const state = stateStore.update({ bridgeEnabled: route.active, integrationMode: "direct" });
           send("launcher:state-changed", state);
         }
-        if (!route.active) return { status: "bridge-disabled" };
-      } else {
-        const provider = await runtimeHost.externalProviderStatus();
+      } else if (integrationMode === "external-provider") {
         const current = stateStore.read();
-        if (provider.active) {
-          const patch = {
-            integrationMode: "external-provider",
-            bridgeEnabled: false,
-            coreSetupComplete: true,
-            codexCatalogVerified: true,
-            codexRestartRequired: false,
-          };
-          if (Object.entries(patch).some(([key, value]) => current[key] !== value)) {
-            const state = stateStore.update(patch);
-            send("launcher:state-changed", state);
-          }
-          logger.info("external_provider.verified", {
-            baseUrl: provider.baseUrl,
-            provider: provider.provider,
-            models: provider.verifiedModels,
-          });
-        } else if (current.integrationMode === "external-provider" && current.codexCatalogVerified !== false) {
+        const patch = {
+          integrationMode: "external-provider",
+          bridgeEnabled: false,
+          coreSetupComplete: true,
+          codexCatalogVerified: true,
+          codexRestartRequired: false,
+        };
+        if (Object.entries(patch).some(([key, value]) => current[key] !== value)) {
+          const state = stateStore.update(patch);
+          send("launcher:state-changed", state);
+        }
+        logger.info("external_provider.verified", {
+          baseUrl: provider.baseUrl,
+          provider: provider.provider,
+          models: provider.verifiedModels,
+        });
+      } else if (integrationMode === "direct-disabled") {
+        const current = stateStore.read();
+        if (current.bridgeEnabled !== false || current.integrationMode !== "direct") {
+          const state = stateStore.update({ bridgeEnabled: false, integrationMode: "direct" });
+          send("launcher:state-changed", state);
+        }
+        return { status: "bridge-disabled" };
+      } else {
+        const current = stateStore.read();
+        if (current.integrationMode === "external-provider" && current.codexCatalogVerified !== false) {
           const state = stateStore.update({ codexCatalogVerified: false });
           send("launcher:state-changed", state);
           logger.warn("external_provider.unavailable", { reason: provider.reason });
