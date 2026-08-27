@@ -9,6 +9,7 @@ import { tunnelStatus } from "./tunnel";
 import { getTunnelServiceStatus } from "./tunnel-service";
 import { inspectLauncherBrowserHost, readLauncherBrowserHostDescriptor } from "./launcher-browser-host";
 import { processRunning } from "./process";
+import { inspectExternalProvider, type ExternalProviderInspection } from "./external-provider";
 
 export type CheckStatus = "ok" | "warning" | "error";
 
@@ -28,12 +29,22 @@ export interface DoctorReport {
 export function codexRouteCheck(
   config: Pick<AppConfig, "codexIntegrationMode">,
   codex: { installed: boolean; errors: string[] },
+  externalProvider?: ExternalProviderInspection,
 ): DoctorCheck {
   if (config.codexIntegrationMode === "external-provider") {
+    if (externalProvider?.active !== true) {
+      return {
+        id: "codex",
+        status: "error",
+        message: "External Codex provider model catalog is unavailable",
+        detail: externalProvider?.reason || "external-provider-not-verified",
+      };
+    }
     return {
       id: "codex",
       status: "ok",
-      message: "Codex model routing is delegated to the launcher-verified external provider",
+      message: "Codex model routing is delegated to a live verified external provider",
+      detail: externalProvider.verifiedModels?.join(", "),
     };
   }
   if (!codex.installed) {
@@ -163,7 +174,10 @@ export async function runDoctor(): Promise<DoctorReport> {
     }
   }
 
-  checks.push(codexRouteCheck(config, inspectCodexIntegration()));
+  const externalProvider = config.codexIntegrationMode === "external-provider"
+    ? await inspectExternalProvider(config)
+    : undefined;
+  checks.push(codexRouteCheck(config, inspectCodexIntegration(), externalProvider));
 
   const service = getServiceStatus();
   if (config.browserHost === "launcher") {
