@@ -125,7 +125,33 @@ function startCatalogVerificationMonitor({ logger, stateStore }) {
   const check = async () => {
     const current = stateStore.read();
     if (current.integrationMode === "external-provider") {
-      stopCatalogVerificationMonitor();
+      if (current.codexCatalogVerified === true) {
+        stopCatalogVerificationMonitor();
+        return;
+      }
+      if (catalogVerificationInFlight || !runtimeHost) return;
+      catalogVerificationInFlight = true;
+      try {
+        const provider = await runtimeHost.externalProviderStatus();
+        if (!provider.active) return;
+        const state = stateStore.update({
+          codexCatalogVerified: true,
+          codexRestartRequired: false,
+        });
+        logger.info("external_provider.reverified", {
+          baseUrl: provider.baseUrl,
+          provider: provider.provider,
+          models: provider.verifiedModels,
+        });
+        send("launcher:state-changed", state);
+        stopCatalogVerificationMonitor();
+      } catch (error) {
+        logger.debug("external_provider.verification_pending", {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        catalogVerificationInFlight = false;
+      }
       return;
     }
     if (current.coreSetupComplete !== true || current.codexCatalogVerified === true) {
