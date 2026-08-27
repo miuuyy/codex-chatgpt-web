@@ -1618,7 +1618,7 @@ export class ChatGptBrowserWorker {
       await composer.fill("");
       await composer.focus();
       await settleChatGptUi();
-      await composer.pressSequentially("@codex", { delay: 25 });
+      await composer.pressSequentially("@c", { delay: 25 });
       if (!firstMenuCaptured) {
         firstMenuCaptured = true;
         await captureDiagnostic?.("connector-mention-triggered");
