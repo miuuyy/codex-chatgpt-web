@@ -25,6 +25,31 @@ export interface DoctorReport {
   checks: DoctorCheck[];
 }
 
+export function codexRouteCheck(
+  config: Pick<AppConfig, "codexIntegrationMode">,
+  codex: { installed: boolean; errors: string[] },
+): DoctorCheck {
+  if (config.codexIntegrationMode === "external-provider") {
+    return {
+      id: "codex",
+      status: "ok",
+      message: "Codex model routing is delegated to the launcher-verified external provider",
+    };
+  }
+  if (!codex.installed) {
+    return { id: "codex", status: "error", message: "Codex model route is not installed" };
+  }
+  if (codex.errors.length > 0) {
+    return {
+      id: "codex",
+      status: "error",
+      message: "Codex integration is inconsistent",
+      detail: codex.errors.join("; "),
+    };
+  }
+  return { id: "codex", status: "ok", message: "Codex native model route is installed" };
+}
+
 function secureFile(path: string): boolean {
   if (process.platform === "win32") return true;
   return (statSync(path).mode & 0o077) === 0;
@@ -138,14 +163,7 @@ export async function runDoctor(): Promise<DoctorReport> {
     }
   }
 
-  const codex = inspectCodexIntegration();
-  if (!codex.installed) {
-    checks.push({ id: "codex", status: "error", message: "Codex model route is not installed" });
-  } else if (codex.errors.length > 0) {
-    checks.push({ id: "codex", status: "error", message: "Codex integration is inconsistent", detail: codex.errors.join("; ") });
-  } else {
-    checks.push({ id: "codex", status: "ok", message: "Codex native model route is installed" });
-  }
+  checks.push(codexRouteCheck(config, inspectCodexIntegration()));
 
   const service = getServiceStatus();
   if (config.browserHost === "launcher") {
