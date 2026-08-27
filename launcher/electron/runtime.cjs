@@ -15,6 +15,7 @@ const {
 const { embeddedRuntimeInvocation, runtimeInvocation } = require("./runtime-command.cjs");
 const { redactText } = require("./logging.cjs");
 const { DETACH_OWNED_CHILD, terminateOwnedProcessTree } = require("./process-tree.cjs");
+const { inspectExternalProvider } = require("./external-provider.cjs");
 
 const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
 const MAX_RUNTIME_LOG_LINE_CHARS = 64 * 1024;
@@ -271,6 +272,14 @@ class RuntimeHost {
       && path.isAbsolute(tunnel.runtimeKeyFile)
       && fs.existsSync(tunnel.runtimeKeyFile),
     );
+  }
+
+  externalProviderStatus() {
+    const config = this.runtimeConfigSnapshot().config;
+    return inspectExternalProvider({
+      codexHome: this.codexHome,
+      runtimeConfig: config,
+    });
   }
 
   captureSetupCheckpoint(snapshot) {
@@ -820,7 +829,7 @@ class RuntimeHost {
     }
   }
 
-  async setupCore() {
+  async setupCore({ externalProvider = false } = {}) {
     this.assertProductionProfile("Codex integration setup");
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
     const existing = this.runtimeConfigSnapshot();
@@ -831,10 +840,13 @@ class RuntimeHost {
       "--browser-host-descriptor",
       this.browserDescriptorPath,
       "--refresh-account-capabilities",
-      "--replace-codex-route",
-      "--acknowledge-unofficial",
-      "--restart-service",
     ];
+    if (externalProvider || existing.config?.codexIntegrationMode === "external-provider") {
+      args.push("--external-codex-provider");
+    } else {
+      args.push("--replace-codex-route");
+    }
+    args.push("--acknowledge-unofficial", "--restart-service");
     if (mode === "full") args.push("--app-name", this.browserConnectorName());
     const result = await this.runSetup("core-setup", args, {
       message: "Installing ChatGPT Web models into Codex",
@@ -900,11 +912,13 @@ class RuntimeHost {
       mode === "full" ? "--full" : "--browser-only",
       "--browser-host-descriptor",
       this.browserDescriptorPath,
-      "--replace-codex-route",
-      "--acknowledge-unofficial",
-      "--restart-service",
-      contextFlag,
     ];
+    if (current.config?.codexIntegrationMode === "external-provider") {
+      args.push("--external-codex-provider");
+    } else {
+      args.push("--replace-codex-route");
+    }
+    args.push("--acknowledge-unofficial", "--restart-service", contextFlag);
     if (current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
     if (mode === "full") args.push("--app-name", this.browserConnectorName());
     const result = await this.runSetup("bigger-context", args, {
@@ -935,6 +949,9 @@ class RuntimeHost {
       "--acknowledge-unofficial",
       "--restart-service",
     ];
+    if (existing.config?.codexIntegrationMode === "external-provider") {
+      args.push("--external-codex-provider");
+    }
     if (existing.mode === "full") {
       args.push("--app-name", connectorNameForSetup(existing.config?.appName));
     }
@@ -943,11 +960,11 @@ class RuntimeHost {
       successMessage: `Launcher runtime upgraded to ${currentVersion}`,
       timeoutMs: existing.mode === "full" ? MCP_SETUP_TIMEOUT_MS : CORE_SETUP_TIMEOUT_MS,
     });
-    if (!route.active) await this.setBridgeEnabled(false);
+    if (route.installed && !route.active) await this.setBridgeEnabled(false);
     return {
       updated: true,
       mode: existing.mode,
-      bridgeEnabled: route.active,
+      bridgeEnabled: existing.config?.codexIntegrationMode === "external-provider" ? false : route.active,
       fromVersion: existing.config.releaseVersion,
       toVersion: currentVersion,
       connectorMigrated: connectorMigrationRequired,
@@ -955,7 +972,7 @@ class RuntimeHost {
     };
   }
 
-  setupMcp({ tunnelId = "", runtimeKey = "", replace = false } = {}) {
+  setupMcp({ tunnelId = "", runtimeKey = "", replace = false, externalProvider = false } = {}) {
     this.assertProductionProfile("Native Codex MCP setup");
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
     const reuseSavedCredentials = replace !== true && this.mcpCredentialsConfigured();
@@ -972,8 +989,12 @@ class RuntimeHost {
       this.browserDescriptorPath,
       "--app-name",
       this.browserConnectorName(),
-      "--replace-codex-route",
     ];
+    if (externalProvider || this.runtimeConfigSnapshot().config?.codexIntegrationMode === "external-provider") {
+      args.push("--external-codex-provider");
+    } else {
+      args.push("--replace-codex-route");
+    }
     if (reuseSavedCredentials) {
       args.push("--acknowledge-unofficial", "--restart-service");
       return this.runSetup("mcp-setup", args, {

@@ -12,6 +12,7 @@ const DEFAULT_STATE = Object.freeze({
   xOpened: false,
   autoStart: true,
   bridgeEnabled: true,
+  integrationMode: "direct",
   keepRunningOnClose: true,
   showBrowserDuringTurns: true,
   experimentalBiggerContext: false,
@@ -35,6 +36,9 @@ function readState(filePath) {
     const state = { ...DEFAULT_STATE, ...parsed };
     if (state.language !== null && state.language !== "en" && state.language !== "zh-CN") {
       state.language = DEFAULT_STATE.language;
+    }
+    if (state.integrationMode !== "direct" && state.integrationMode !== "external-provider") {
+      state.integrationMode = DEFAULT_STATE.integrationMode;
     }
     for (const key of [
       "onboardingComplete",

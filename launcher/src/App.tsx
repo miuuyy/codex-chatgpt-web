@@ -302,6 +302,7 @@ function LauncherShell({
     snapshot.state.coreSetupComplete && snapshot.state.codexCatalogVerified ? "browser" : "setup",
   );
   const devProfile = snapshot.profile === "development";
+  const externalProvider = snapshot.state.integrationMode === "external-provider";
   const compactAtMount = useRef(window.matchMedia(COMPACT_SIDEBAR_QUERY).matches).current;
   const [sidebarOpen, setSidebarOpen] = useState(!compactAtMount);
   const [compactSidebar, setCompactSidebar] = useState(compactAtMount);
@@ -541,7 +542,7 @@ function LauncherShell({
               <SidebarItem
                 active={surface === "settings"}
                 badge={!devProfile && snapshot.state.coreSetupComplete
-                  ? <ActionDot tone={snapshot.state.bridgeEnabled ? "success" : "error"} />
+                    ? <ActionDot tone={snapshot.state.bridgeEnabled || externalProvider ? "success" : "error"} />
                   : null}
                 icon="settings"
                 label={copy.settings}
@@ -1284,6 +1285,7 @@ function SettingsSurface({
   const [busy, setBusy] = useState(false);
   const [turnsCancelled, setTurnsCancelled] = useState(false);
   const [integrationRemoved, setIntegrationRemoved] = useState(false);
+  const externalProvider = snapshot.state.integrationMode === "external-provider";
 
   const updateLanguage = async (next: Language) => {
     try {
@@ -1364,10 +1366,13 @@ function SettingsSurface({
               .catch((cause) => setError(messageOf(cause)))}
           />
         </SettingRow> : null}
-        {!devProfile ? <SettingRow body={copy.bridgeRouteBody} label={copy.bridgeRoute}>
+        {!devProfile ? <SettingRow
+          body={externalProvider ? copy.externalProviderRouteBody : copy.bridgeRouteBody}
+          label={externalProvider ? copy.externalProviderRoute : copy.bridgeRoute}
+        >
           <Switch
-            checked={snapshot.state.bridgeEnabled}
-            disabled={busy || snapshot.state.coreSetupComplete !== true}
+            checked={externalProvider || snapshot.state.bridgeEnabled}
+            disabled={externalProvider || busy || snapshot.state.coreSetupComplete !== true}
             onChange={(checked) => void setBridgeEnabled(checked)}
           />
         </SettingRow> : null}
@@ -1422,7 +1427,7 @@ function SettingsSurface({
         </span>
         <Icon name="chevron" />
       </button> : null}
-      {!devProfile ? <button className="diagnostic-row" disabled={busy} onClick={() => void uninstallIntegration()} type="button">
+      {!devProfile ? <button className="diagnostic-row" disabled={externalProvider || busy} onClick={() => void uninstallIntegration()} type="button">
         <Icon name="close" />
         <span>
           <strong>{copy.uninstallIntegration}</strong>
