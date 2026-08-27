@@ -79,8 +79,11 @@ async function inspectExternalProvider({
   if (baseUrl.protocol !== "http:" || !LOOPBACK_HOSTS.has(baseUrl.hostname)) {
     return inactive("external-provider-not-loopback", { baseUrl: configuredBaseUrl });
   }
-  const directBaseUrl = `http://${runtimeConfig.host}:${runtimeConfig.port}/v1`;
-  if (baseUrl.href.replace(/\/$/, "") === directBaseUrl) {
+  const normalizedPath = baseUrl.pathname.replace(/\/+$/, "") || "/";
+  const directPort = String(runtimeConfig.port);
+  if (LOOPBACK_HOSTS.has(baseUrl.hostname)
+    && baseUrl.port === directPort
+    && normalizedPath === "/v1") {
     return inactive("direct-codex-route", { baseUrl: configuredBaseUrl });
   }
   const modelsUrl = new URL(`${baseUrl.pathname.replace(/\/$/, "")}/models`, baseUrl.origin);
