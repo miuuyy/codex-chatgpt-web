@@ -87,13 +87,19 @@ test("external provider verification fails closed for missing models, direct rou
     assert.equal(missing.active, false);
     assert.equal(missing.reason, "external-provider-models-missing");
 
-    fs.writeFileSync(configPath, 'openai_base_url = "http://127.0.0.1:17841/v1"\n');
-    const direct = await inspectExternalProvider({
-      codexHome: root,
-      runtimeConfig: fixtureConfig(),
-      fetchImpl: () => { throw new Error("must not fetch"); },
-    });
-    assert.equal(direct.reason, "direct-codex-route");
+    for (const directUrl of [
+      "http://127.0.0.1:17841/v1",
+      "http://localhost:17841/v1/",
+      "http://user:secret@[::1]:17841/v1?key=private#fragment",
+    ]) {
+      fs.writeFileSync(configPath, `openai_base_url = ${JSON.stringify(directUrl)}\n`);
+      const direct = await inspectExternalProvider({
+        codexHome: root,
+        runtimeConfig: fixtureConfig(),
+        fetchImpl: () => { throw new Error("must not fetch"); },
+      });
+      assert.equal(direct.reason, "direct-codex-route");
+    }
 
     fs.writeFileSync(configPath, 'openai_base_url = "https://provider.example/v1"\n');
     const remote = await inspectExternalProvider({
