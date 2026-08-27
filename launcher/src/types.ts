@@ -10,6 +10,7 @@ export interface LauncherState {
   xOpened: boolean;
   autoStart: boolean;
   bridgeEnabled: boolean;
+  integrationMode: "direct" | "external-provider";
   keepRunningOnClose: boolean;
   showBrowserDuringTurns: boolean;
   experimentalBiggerContext: boolean;

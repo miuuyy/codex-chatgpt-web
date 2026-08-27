@@ -66,6 +66,7 @@ export interface AppConfig {
   purpose?: "dev-harness";
   releaseVersion: string;
   mode: RuntimeMode;
+  codexIntegrationMode: "direct" | "external-provider";
   subagentProtocol: SubagentProtocol;
   host: "127.0.0.1";
   port: number;
@@ -168,6 +169,7 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     version: 3,
     releaseVersion: VERSION,
     mode,
+    codexIntegrationMode: "direct",
     subagentProtocol: "compatibility-v1",
     host: "127.0.0.1",
     port: 17841,
@@ -333,6 +335,10 @@ function parseConfig(value: unknown, path: string): AppConfig {
   }
   if (typeof parsed.releaseVersion !== "string" || !parsed.releaseVersion.trim()) throw new Error(`Missing releaseVersion in ${path}`);
   if (parsed.mode !== "browser-only" && parsed.mode !== "full") throw new Error(`Invalid runtime mode in ${path}`);
+  const codexIntegrationMode = parsed.codexIntegrationMode ?? "direct";
+  if (codexIntegrationMode !== "direct" && codexIntegrationMode !== "external-provider") {
+    throw new Error(`Invalid codexIntegrationMode in ${path}`);
+  }
   const subagentProtocol = parsed.subagentProtocol ?? "compatibility-v1";
   if (subagentProtocol !== "compatibility-v1" && subagentProtocol !== "native") {
     throw new Error(`Invalid subagentProtocol in ${path}`);
@@ -417,6 +423,7 @@ function parseConfig(value: unknown, path: string): AppConfig {
   }
   return {
     ...parsed,
+    codexIntegrationMode,
     subagentProtocol,
     solAvailable,
     proAvailable,

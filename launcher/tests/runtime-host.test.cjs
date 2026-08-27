@@ -412,6 +412,18 @@ test("new MCP setup uses the explicit default connector name", async () => {
   ]);
 });
 
+test("external-provider MCP setup preserves the existing Codex route", async () => {
+  const fixture = hostFor(null);
+  await fixture.host.setupMcp({
+    externalProvider: true,
+    replace: true,
+    tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
+    runtimeKey: "new-private-runtime-key",
+  });
+  assert.equal(fixture.invocation().args.includes("--external-codex-provider"), true);
+  assert.equal(fixture.invocation().args.includes("--replace-codex-route"), false);
+});
+
 test("MCP credential replacement remains explicit and requires a complete new pair", async () => {
   const fixture = hostFor(null);
   await assert.rejects(

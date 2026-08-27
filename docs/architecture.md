@@ -141,6 +141,14 @@ forwards the authenticated official model catalog and appends only the routed mo
 and new installations default to Compatibility V1 because it is the only surface portable across
 native and routed Web backends:
 
+An external loopback provider can own Codex routing instead. The production launcher accepts this
+mode only after the active Codex `openai_base_url` returns one provider-prefixed catalog containing
+every account-eligible `chatgpt-web/*` model. Full/MCP setup then records
+`codexIntegrationMode: "external-provider"`, preserves the existing Codex route, and skips the
+direct model-catalog restart gate. Remote URLs, incomplete catalogs, mixed provider prefixes, and
+the launcher's own direct Responses URL fail closed. Route and uninstall controls stay disabled in
+the launcher because the external provider manager owns those lifecycle operations.
+
 - **Compatibility V1** pins every delegation-capable native and routed row to V1 and atomically
   manages `multi_agent = true`, `multi_agent_v2 = false`, and `[agents].max_depth` of at least 2 so
   a routed child can spawn a routed grandchild. The integration journal preserves the user's prior
