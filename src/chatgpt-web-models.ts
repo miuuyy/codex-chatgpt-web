@@ -14,8 +14,8 @@ export type ChatGptWebAdapterEffort = "low" | "medium" | "high" | "xhigh" | "max
  * Codex compacts the visible task at the lower explicit threshold before the next browser turn is
  * compiled. The remaining headroom is owned by ChatGPT's product prompt and Codex Native schemas.
  */
-export const CHATGPT_WEB_INSTANT_CONTEXT_WINDOW = 41_000;
-export const CHATGPT_WEB_INSTANT_AUTO_COMPACT_TOKEN_LIMIT = 32_000;
+export const CHATGPT_WEB_INSTANT_CONTEXT_WINDOW = 240_000;
+export const CHATGPT_WEB_INSTANT_AUTO_COMPACT_TOKEN_LIMIT = 235_000;
 export const CHATGPT_WEB_MEDIUM_HIGH_CONTEXT_WINDOW = 90_000;
 export const CHATGPT_WEB_MEDIUM_HIGH_AUTO_COMPACT_TOKEN_LIMIT = 80_000;
 export const CHATGPT_WEB_INSTANT_COMPOSER_CHAR_LIMIT = 211_256;
@@ -41,7 +41,7 @@ export const CHATGPT_WEB_PRO_MODEL_COMPOSER_CHAR_LIMIT = 1_635_000;
  * history out of later browser requests without asking Codex to compact its canonical history.
  */
 export const CHATGPT_WEB_LUNA_CONTEXT_WINDOW = 1_050_000;
-export const CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER = 3;
+export const CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER = 1;
 
 export interface ChatGptWebContextLimits {
   contextWindow: number;
