@@ -1,4 +1,4 @@
-export type Language = "en" | "zh-CN";
+export type Language = "en" | "zh-CN" | "ja";
 export type LauncherProfile = "production" | "development";
 export type Surface = "browser" | "setup" | "mcp" | "activity" | "settings";
 

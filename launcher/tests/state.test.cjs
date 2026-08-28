@@ -6,6 +6,7 @@ const path = require("node:path");
 const {
   SESSION_REFRESH_REMINDER_INTERVAL_MS,
   createStateStore,
+  isValidLanguage,
   nextSessionRefreshReminderAt,
   validateSidebarState,
 } = require("../electron/state.cjs");
@@ -60,6 +61,27 @@ test("launcher state persists onboarding, language, and autostart atomically", (
     });
     if (process.platform !== "win32") assert.equal(fs.statSync(file).mode & 0o077, 0);
     assert.equal(fs.readdirSync(root).some(name => name.includes(".tmp-")), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Japanese is a valid persisted language and unsupported values are repaired", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-language-state-"));
+  const file = path.join(root, "state.json");
+  try {
+    const store = createStateStore(file);
+    store.update({ language: "ja" });
+    assert.equal(createStateStore(file).read().language, "ja");
+
+    fs.writeFileSync(file, JSON.stringify({ version: 1, language: "fr" }));
+    assert.equal(createStateStore(file).read().language, null);
+
+    assert.equal(isValidLanguage("en"), true);
+    assert.equal(isValidLanguage("zh-CN"), true);
+    assert.equal(isValidLanguage("ja"), true);
+    assert.equal(isValidLanguage("fr"), false);
+    assert.equal(isValidLanguage(null), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

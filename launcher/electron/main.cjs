@@ -32,6 +32,7 @@ const { runtimeBundlePaths } = require("./runtime-command.cjs");
 const { createUpdateController } = require("./update.cjs");
 const {
   createStateStore,
+  isValidLanguage,
   nextSessionRefreshReminderAt,
   validateSidebarState,
 } = require("./state.cjs");
@@ -189,15 +190,34 @@ function trayImage() {
   return image;
 }
 
-function createTray(logger) {
+function refreshTrayMenu(language) {
+  if (!tray) return;
+  const japanese = language === "ja";
+  tray.setContextMenu(Menu.buildFromTemplate([
+    {
+      label: japanese ? `${LAUNCHER_PROFILE.displayName}を開く` : `Open ${LAUNCHER_PROFILE.displayName}`,
+      click: () => showMainWindow(),
+    },
+    { type: "separator" },
+    { label: japanese ? "終了" : "Quit", click: () => { void requestQuit(); } },
+  ]));
+}
+
+function refreshTrayMenuSafely(language, logger) {
+  try {
+    refreshTrayMenu(language);
+  } catch (error) {
+    logger.warn("launcher.tray_menu_refresh_failed", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function createTray(logger, language) {
   try {
     tray = new Tray(trayImage());
     tray.setToolTip(LAUNCHER_PROFILE.displayName);
-    tray.setContextMenu(Menu.buildFromTemplate([
-      { label: `Open ${LAUNCHER_PROFILE.displayName}`, click: () => showMainWindow() },
-      { type: "separator" },
-      { label: "Quit", click: () => { void requestQuit(); } },
-    ]));
+    refreshTrayMenu(language);
     tray.on("click", () => showMainWindow());
     return true;
   } catch (error) {
@@ -340,7 +360,7 @@ async function loadRenderer(window) {
 }
 
 function validateLanguage(value) {
-  if (value !== "en" && value !== "zh-CN") throw new Error("Language must be en or zh-CN");
+  if (!isValidLanguage(value)) throw new Error("Language must be en, zh-CN, or ja");
   return value;
 }
 
@@ -379,7 +399,11 @@ function registerIpc({ logger, stateStore }) {
     update: updateController?.getState() ?? { status: "disabled" },
   }));
 
-  handle("launcher:set-language", (_event, language) => stateStore.update({ language: validateLanguage(language) }));
+  handle("launcher:set-language", (_event, language) => {
+    const state = stateStore.update({ language: validateLanguage(language) });
+    refreshTrayMenuSafely(state.language, logger);
+    return state;
+  });
   handle("launcher:open-social", async (_event, target) => {
     const url = target === "github" ? GITHUB_URL : target === "x" ? X_URL : null;
     if (!url) throw new Error("Unknown social target");
@@ -392,6 +416,7 @@ function registerIpc({ logger, stateStore }) {
     if (!current.githubOpened || !current.xOpened) throw new Error("Open the GitHub and X pages before continuing");
     if (current.autoStart) setAutostart(app, true);
     const next = stateStore.update({ language: validateLanguage(language), onboardingComplete: true });
+    refreshTrayMenuSafely(next.language, logger);
     logger.info("launcher.onboarding_completed", { language: next.language });
     return next;
   });
@@ -529,19 +554,34 @@ function registerIpc({ logger, stateStore }) {
   handle("launcher:uninstall-integration", async () => {
     if (IS_DEV_PROFILE) throw new Error("DEV profile has no Codex integration to remove");
     const language = stateStore.read().language;
-    const chinese = language === "zh-CN";
+    const copy = language === "ja"
+      ? {
+          buttons: ["キャンセル", "削除"],
+          title: "Codex Web GPTを削除",
+          message: "CodexからChatGPT Webモデルを削除し、以前のモデルルートを復元しますか？",
+          detail: "ランチャーのChatGPTログインプロファイルは保持されます。Codexを一度再起動する必要があります。",
+        }
+      : language === "zh-CN"
+        ? {
+            buttons: ["取消", "移除"],
+            title: "移除 Codex Web GPT",
+            message: "从 Codex 中移除 ChatGPT Web 模型并恢复此前的模型路由？",
+            detail: "启动器中的 ChatGPT 登录 profile 会保留。Codex 需要重启一次。",
+          }
+        : {
+            buttons: ["Cancel", "Remove"],
+            title: "Remove Codex Web GPT",
+            message: "Remove the ChatGPT Web models from Codex and restore the previous model route?",
+            detail: "The launcher's ChatGPT login profile will be preserved. Codex must be restarted once.",
+          };
     const confirmation = await dialog.showMessageBox(mainWindow, {
       type: "warning",
-      buttons: chinese ? ["取消", "移除"] : ["Cancel", "Remove"],
+      buttons: copy.buttons,
       defaultId: 0,
       cancelId: 0,
-      title: chinese ? "移除 Codex Web GPT" : "Remove Codex Web GPT",
-      message: chinese
-        ? "从 Codex 中移除 ChatGPT Web 模型并恢复此前的模型路由？"
-        : "Remove the ChatGPT Web models from Codex and restore the previous model route?",
-      detail: chinese
-        ? "启动器中的 ChatGPT 登录 profile 会保留。Codex 需要重启一次。"
-        : "The launcher's ChatGPT login profile will be preserved. Codex must be restarted once.",
+      title: copy.title,
+      message: copy.message,
+      detail: copy.detail,
       noLink: true,
     });
     if (confirmation.response !== 1) return { cancelled: true };
@@ -657,8 +697,9 @@ function registerIpc({ logger, stateStore }) {
   handle("launcher:logs", (_event, limit) => logger.recent(limit));
   handle("launcher:export-logs", async () => {
     const date = new Date().toISOString().slice(0, 10);
+    const japanese = stateStore.read().language === "ja";
     const result = await dialog.showSaveDialog(mainWindow, {
-      title: "Export privacy-safe diagnostics",
+      title: japanese ? "プライバシー保護済みの診断情報をエクスポート" : "Export privacy-safe diagnostics",
       defaultPath: path.join(app.getPath("documents"), `codex-web-gpt-diagnostics-${date}.jsonl`),
       filters: [{ name: "JSON Lines", extensions: ["jsonl"] }],
     });
@@ -850,7 +891,7 @@ async function start() {
     logger,
   });
   registerIpc({ logger, stateStore });
-  const trayAvailable = createTray(logger);
+  const trayAvailable = createTray(logger, stateStore.read().language);
   if (startHidden && !trayAvailable) mainWindow.once("ready-to-show", () => showMainWindow());
   const launcherSmokeTest = process.argv.includes("--launcher-smoke-test");
   if (!launcherSmokeTest) {

@@ -3,6 +3,7 @@ const { writePrivateFileAtomic } = require("./atomic-file.cjs");
 const SIDEBAR_MIN_WIDTH = 240;
 const SIDEBAR_MAX_WIDTH = 420;
 const SESSION_REFRESH_REMINDER_INTERVAL_MS = 48 * 60 * 60 * 1000;
+const VALID_LANGUAGES = new Set(["en", "zh-CN", "ja"]);
 
 const DEFAULT_STATE = Object.freeze({
   version: 1,
@@ -28,12 +29,16 @@ function nextSessionRefreshReminderAt(now = Date.now()) {
   return new Date(now + SESSION_REFRESH_REMINDER_INTERVAL_MS).toISOString();
 }
 
+function isValidLanguage(value) {
+  return VALID_LANGUAGES.has(value);
+}
+
 function readState(filePath) {
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
     if (!parsed || parsed.version !== 1) return { ...DEFAULT_STATE };
     const state = { ...DEFAULT_STATE, ...parsed };
-    if (state.language !== null && state.language !== "en" && state.language !== "zh-CN") {
+    if (state.language !== null && !isValidLanguage(state.language)) {
       state.language = DEFAULT_STATE.language;
     }
     for (const key of [
@@ -116,6 +121,7 @@ module.exports = {
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
   createStateStore,
+  isValidLanguage,
   nextSessionRefreshReminderAt,
   validateSidebarState,
 };

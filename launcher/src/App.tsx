@@ -222,17 +222,24 @@ function Onboarding({
             <div className="welcome-options" role="radiogroup" aria-label={localized.chooseLanguage}>
               <WelcomeOption
                 active={selectedLanguage === "en"}
-                detail="English"
-                label="English"
+                detail={localized.english}
+                label={localized.english}
                 marker="EN"
                 onClick={() => setSelectedLanguage("en")}
               />
               <WelcomeOption
                 active={selectedLanguage === "zh-CN"}
-                detail="简体中文"
-                label="简体中文"
+                detail={localized.chinese}
+                label={localized.chinese}
                 marker="简"
                 onClick={() => setSelectedLanguage("zh-CN")}
+              />
+              <WelcomeOption
+                active={selectedLanguage === "ja"}
+                detail={localized.japanese}
+                label={localized.japanese}
+                marker="日"
+                onClick={() => setSelectedLanguage("ja")}
               />
             </div>
           ) : (
@@ -1213,7 +1220,7 @@ function McpSurface({
           >
             {busy
               ? operation?.name === "mcp-verification" && operation.status === "running"
-                ? operation.message
+                ? localizedOperationMessage(operation, copy)
                 : copy.running
               : doctor?.ok ? copy.done : copy.verifyRuntime}
           </PrimaryButton>
@@ -1395,7 +1402,7 @@ function SettingsSurface({
           />
         </SettingRow>
         <SettingRow body={copy.chooseLanguageHint} label={copy.language}>
-          <LanguageMenu language={language} onChange={(next) => void updateLanguage(next)} />
+          <LanguageMenu copy={copy} language={language} onChange={(next) => void updateLanguage(next)} />
         </SettingRow>
       </div>
 
@@ -1716,11 +1723,20 @@ function Switch({
   );
 }
 
-function LanguageMenu({ language, onChange }: { language: Language; onChange: (language: Language) => void }) {
+function LanguageMenu({
+  copy,
+  language,
+  onChange,
+}: {
+  copy: Copy;
+  language: Language;
+  onChange: (language: Language) => void;
+}) {
   const [open, setOpen] = useState(false);
   const options: Array<{ label: string; value: Language }> = [
-    { label: "English", value: "en" },
-    { label: "简体中文", value: "zh-CN" },
+    { label: copy.english, value: "en" },
+    { label: copy.chinese, value: "zh-CN" },
+    { label: copy.japanese, value: "ja" },
   ];
   const selected = options.find((option) => option.value === language) ?? options[0];
 
@@ -1744,12 +1760,12 @@ function LanguageMenu({ language, onChange }: { language: Language; onChange: (l
       {open ? (
         <>
           <button
-            aria-label="Close language menu"
+            aria-label={copy.closeLanguageMenu}
             className="language-menu-scrim"
             onClick={() => setOpen(false)}
             type="button"
           />
-          <div aria-label="Language" className="language-menu-panel" role="listbox">
+          <div aria-label={copy.language} className="language-menu-panel" role="listbox">
             {options.map((option) => (
               <button
                 aria-selected={option.value === language}
@@ -1897,6 +1913,13 @@ function formatBrowserAddress(url: string | undefined, copy: Copy): string {
 
 function messageOf(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
+}
+
+function localizedOperationMessage(operation: OperationState, copy: Copy): string {
+  if (operation.name !== "mcp-verification") return operation.message;
+  if (operation.message === "Checking local runtime") return copy.checkingLocalRuntime;
+  if (operation.message === "Checking ChatGPT connector") return copy.checkingChatgptConnector;
+  return operation.message;
 }
 
 function platformLabel(value: string): string {
