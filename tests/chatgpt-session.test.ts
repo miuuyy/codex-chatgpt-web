@@ -1,9 +1,25 @@
 import { expect, test } from "bun:test";
 import {
+  assertRegularChatPage,
+  assertTemporaryChatPage,
   CHATGPT_COMPOSER_SELECTOR,
   CHATGPT_EFFORT_CONTROL_SELECTOR,
   detectChatGptAccountCapabilities,
 } from "../src/chatgpt-session";
+
+test("regular and temporary chat assertions keep connector-capable turns off Temporary Chat", async () => {
+  const regularPage = { url: () => "https://chatgpt.com/" };
+  const temporaryPage = { url: () => "https://chatgpt.com/?temporary-chat=true" };
+
+  await expect(assertRegularChatPage(regularPage as never)).resolves.toBeUndefined();
+  await expect(assertRegularChatPage(temporaryPage as never)).rejects.toThrow(
+    "regular new-chat surface",
+  );
+  await expect(assertTemporaryChatPage(temporaryPage as never)).resolves.toBeUndefined();
+  await expect(assertTemporaryChatPage(regularPage as never)).rejects.toThrow(
+    "isolated Temporary Chat surface",
+  );
+});
 
 test("login keeps the established turn composer contract", () => {
   const turnSelectors = CHATGPT_COMPOSER_SELECTOR.split(",").map(selector => selector.trim());
@@ -16,6 +32,9 @@ test("login keeps the established turn composer contract", () => {
 
 test("the effort selector identifies the model slider instead of any composer menu button", () => {
   expect(CHATGPT_EFFORT_CONTROL_SELECTOR).toContain('[data-animated-slider-trigger="true"]');
+  expect(CHATGPT_EFFORT_CONTROL_SELECTOR).toContain(
+    'button[aria-haspopup="menu"][data-tone="neutral"]',
+  );
   expect(CHATGPT_EFFORT_CONTROL_SELECTOR).toContain('[data-testid="model-switcher-dropdown-button"]');
   expect(CHATGPT_EFFORT_CONTROL_SELECTOR).not.toBe('button[aria-haspopup="menu"]');
 });

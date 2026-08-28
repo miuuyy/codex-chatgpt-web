@@ -12,6 +12,8 @@ test("browser turn orchestration retains owned prompt insertion and semantic sub
   const runBrowserTurn = workerSource.slice(workerSource.indexOf("  private async runBrowserTurn("));
 
   expect(runBrowserTurn).toContain("return this.attachPromptWithCompactionRetry(");
+  expect(runBrowserTurn).toContain('"chat_surface_preparation"');
+  expect(runBrowserTurn).not.toContain('"temporary_chat_preparation"');
   expect(runBrowserTurn).toContain("connectorAttemptBudget");
   expect(workerSource).toContain('.locator("xpath=ancestor::form[1]")');
   expect(workerSource).toContain('.getByTestId("send-button")');
@@ -35,6 +37,27 @@ test("browser turn orchestration retains owned prompt insertion and semantic sub
   );
   expect(runBrowserTurn).not.toContain("userTurns.nth(initialUserTurnCount).waitFor");
   expect(workerSource).not.toMatch(/\bclipboard\b|pbcopy|pbpaste/i);
+});
+
+test("connector-backed turns use regular chat while browser-only turns retain Temporary Chat", async () => {
+  const prepareTurnChatSurface = (ChatGptBrowserWorker.prototype as unknown as {
+    prepareTurnChatSurface(page: unknown, localTools: boolean): Promise<unknown>;
+  }).prepareTurnChatSurface;
+  const calls: string[] = [];
+  const fixture = {
+    prepareRegularChatSurface: async () => {
+      calls.push("regular");
+      return "regular-composer";
+    },
+    prepareTemporaryChatSurface: async () => {
+      calls.push("temporary");
+      return "temporary-composer";
+    },
+  };
+
+  await expect(prepareTurnChatSurface.call(fixture, {}, true)).resolves.toBe("regular-composer");
+  await expect(prepareTurnChatSurface.call(fixture, {}, false)).resolves.toBe("temporary-composer");
+  expect(calls).toEqual(["regular", "temporary"]);
 });
 
 test("conversation turn identity survives ChatGPT DOM virtualization", () => {
@@ -645,7 +668,7 @@ test("connector verification preserves the host-refreshed catalog evidence", asy
   const fixture = {
     config: { appName: "Codex Native2" },
     ensurePage: async () => page,
-    prepareTemporaryChatSurface: async () => {
+    prepareRegularChatSurface: async () => {
       prepared += 1;
       calls.push(`prepare:${prepared}`);
     },

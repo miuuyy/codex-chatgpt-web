@@ -2,6 +2,7 @@ import type { Locator, Page } from "playwright-core";
 import type { ChatGptWebAccountCapabilities } from "./chatgpt-web-models";
 
 export const CHATGPT_TEMPORARY_CHAT_URL = "https://chatgpt.com/?temporary-chat=true";
+export const CHATGPT_REGULAR_CHAT_URL = "https://chatgpt.com/";
 export const CHATGPT_COMPOSER_SELECTOR = [
   '[data-testid="prompt-textarea"]',
   "#prompt-textarea",
@@ -9,6 +10,7 @@ export const CHATGPT_COMPOSER_SELECTOR = [
 ].join(", ");
 export const CHATGPT_EFFORT_CONTROL_SELECTOR = [
   'button[aria-haspopup="menu"][data-tone="neutral"]:has([data-animated-slider-trigger="true"])',
+  'button[aria-haspopup="menu"][data-tone="neutral"]',
   'button[data-testid="model-switcher-dropdown-button"][aria-haspopup="menu"]',
 ].join(", ");
 export const CHATGPT_EFFORT_MENU_SELECTOR = [
@@ -81,6 +83,18 @@ export async function assertTemporaryChatPage(page: Page): Promise<void> {
   const expected = new URL(CHATGPT_TEMPORARY_CHAT_URL);
   if (url.origin !== expected.origin || url.pathname !== expected.pathname || url.searchParams.get("temporary-chat") !== "true") {
     throw new Error(`ChatGPT left the isolated Temporary Chat surface (${page.url()})`);
+  }
+}
+
+export async function assertRegularChatPage(page: Page): Promise<void> {
+  const url = new URL(page.url());
+  const expected = new URL(CHATGPT_REGULAR_CHAT_URL);
+  if (
+    url.origin !== expected.origin
+    || url.pathname !== expected.pathname
+    || url.searchParams.get("temporary-chat") === "true"
+  ) {
+    throw new Error(`ChatGPT did not remain on a regular new-chat surface (${page.url()})`);
   }
 }
 

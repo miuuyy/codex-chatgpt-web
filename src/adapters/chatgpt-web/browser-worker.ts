@@ -44,6 +44,7 @@ import {
 import { estimateCompiledChatGptWebInputTokens } from "./input-tokens";
 import {
   assertAuthenticatedChatGptPage,
+  assertRegularChatPage,
   assertTemporaryChatPage,
   CHATGPT_ASSISTANT_TURN_SELECTOR,
   CHATGPT_COMPLETION_ACTION_SELECTOR,
@@ -53,6 +54,7 @@ import {
   CHATGPT_EFFORT_MENU_SELECTOR,
   CHATGPT_EFFORT_SLIDER_SELECTOR,
   CHATGPT_STOP_BUTTON_SELECTOR,
+  CHATGPT_REGULAR_CHAT_URL,
   CHATGPT_TEMPORARY_CHAT_URL,
   CHATGPT_USER_TURN_SELECTOR,
   detectChatGptAccountCapabilities,
@@ -1418,6 +1420,42 @@ export class ChatGptBrowserWorker {
     return composer;
   }
 
+  /** Connector-backed turns need a regular chat because ChatGPT disables apps in Temporary Chat. */
+  private async prepareRegularChatSurface(
+    page: Page,
+    captureDiagnostic?: (checkpoint: string) => Promise<void>,
+  ): Promise<Locator> {
+    if (page.url() !== CHATGPT_REGULAR_CHAT_URL) {
+      await page.goto(CHATGPT_REGULAR_CHAT_URL, {
+        waitUntil: "domcontentloaded",
+        timeout: 60_000,
+      });
+      await captureDiagnostic?.("regular-chat-navigation-complete");
+    }
+    let composer: Locator;
+    try {
+      composer = await this.activeComposer(page);
+    } catch {
+      throw new Error("ChatGPT web login is expired or the regular new-chat surface is unavailable");
+    }
+    await captureDiagnostic?.("composer-ready");
+    await throwIfChatGptSessionFailureAlert(page);
+    await assertAuthenticatedChatGptPage(page);
+    await assertRegularChatPage(page);
+    await captureDiagnostic?.("session-verified");
+    return composer;
+  }
+
+  private async prepareTurnChatSurface(
+    page: Page,
+    localTools: boolean,
+    captureDiagnostic?: (checkpoint: string) => Promise<void>,
+  ): Promise<Locator> {
+    return localTools
+      ? this.prepareRegularChatSurface(page, captureDiagnostic)
+      : this.prepareTemporaryChatSurface(page, captureDiagnostic);
+  }
+
   private async waitForSubmissionAccepted(
     page: Page,
     baseline: ChatGptSubmissionBaseline,
@@ -1916,7 +1954,7 @@ export class ChatGptBrowserWorker {
 
   private async verifyConnectorExclusive(): Promise<string> {
     const page = await this.ensurePage();
-    await this.prepareTemporaryChatSurface(page);
+    await this.prepareRegularChatSurface(page);
     // The launcher refreshes its owned ChatGPT document before starting this helper. A second
     // reload here can discard the first catalog's exact mismatch evidence and report a generic
     // menu failure instead of identifying the connector the account actually exposes.
@@ -2453,10 +2491,11 @@ export class ChatGptBrowserWorker {
       );
       await this.runStage(
         turn.traceId,
-        "temporary_chat_preparation",
+        "chat_surface_preparation",
         browserStageTimeouts.temporaryChatPreparation,
-        () => this.prepareTemporaryChatSurface(
+        () => this.prepareTurnChatSurface(
           page,
+          requestedMode.localTools,
           checkpoint => diagnostics.capture(page, checkpoint),
         ),
       );
@@ -2568,8 +2607,9 @@ export class ChatGptBrowserWorker {
             browserStageTimeouts.temporaryChatPreparation,
             async () => {
               await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
-              await this.prepareTemporaryChatSurface(
+              await this.prepareTurnChatSurface(
                 page,
+                requestedMode.localTools,
                 checkpoint => diagnostics.capture(page, checkpoint),
               );
               mode = await this.selectModelAndEffort(
