@@ -10,7 +10,7 @@ import { ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-erro
 import { ChatGptCompletionTracker, chatGptImageFilePayloads, chatGptPromptFilePayloads, chatGptTurnIsComplete } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptConversationKey } from "../src/adapters/chatgpt-web/conversation-key";
-import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "../src/adapters/chatgpt-web/environment";
+import { CHATGPT_TURN_REVISION_CONFLICT_MESSAGE, extractChatGptTurnEnvironment, extractChatGptTurnIdentity, extractChatGptTurnUserRevision } from "../src/adapters/chatgpt-web/environment";
 import { chatGptWebExecutionNamespace, chatGptWebTraceId, createChatGptWebAdapter } from "../src/adapters/chatgpt-web/index";
 import { chatGptHtmlToMarkdown, ChatGptMarkdownBuffer } from "../src/adapters/chatgpt-web/markdown";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
@@ -2877,4 +2877,36 @@ test("mirrored progress rejects frames that regress against the observed state",
   expect(mirror.snapshot()).toEqual({
     revision: 3, lastToolBatchRevision: 3, activeToolCalls: 1, lastProgressAt: 5_000,
   });
+});
+
+test("an interrupted turn's abort notice is not mistaken for the next turn's instruction", () => {
+  // Reproduces a real failure: the user stopped a turn, Codex appended <turn_aborted> carrying the
+  // interrupted turn's id, and the next turn read that notice as its own user revision. The ids
+  // disagreed and every following turn failed with a turn_id conflict.
+  const request = rawWireRequest(environmentXml);
+  const abortedNotice = "<turn_aborted>\nThe user interrupted the previous turn on purpose."
+    + " Any running unified exec processes may still be running in the background."
+    + "\n</turn_aborted>";
+  ((request._rawBody as { input: unknown[] }).input).push({
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text: abortedNotice }],
+    internal_chat_message_metadata_passthrough: { turn_id: "turn_test_interrupted" },
+  });
+
+  // The instruction actually owned by this turn is still the human one that precedes the notice.
+  expect(extractChatGptTurnUserRevision(request)).toEqual([
+    { type: "input_text", text: "Inspect the project" },
+  ]);
+
+  // A genuine steering message from a foreign turn must still be rejected.
+  const steered = structuredClone(request);
+  ((steered._rawBody as { input: unknown[] }).input).push({
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text: "Actually, stop and summarise instead" }],
+    internal_chat_message_metadata_passthrough: { turn_id: "turn_test_other" },
+  });
+  expect(() => extractChatGptTurnUserRevision(steered))
+    .toThrow(CHATGPT_TURN_REVISION_CONFLICT_MESSAGE);
 });

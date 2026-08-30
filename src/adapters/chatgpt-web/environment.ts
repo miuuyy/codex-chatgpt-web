@@ -93,6 +93,10 @@ function contextualUserMessage(value: Record<string, unknown>): boolean {
   const text = rawMessageText(value).trim();
   return /^<environment_context>[\s\S]*<\/environment_context>$/.test(text)
     || /^<subagent_notification>[\s\S]*<\/subagent_notification>$/.test(text)
+    // Codex injects this notice when a user interrupts a turn. It is a synthetic report about the
+    // previous turn, not a human instruction, and it keeps that turn's id. Treating it as the
+    // current revision made the next turn read a foreign turn id and fail as a conflict.
+    || /^<turn_aborted>[\s\S]*<\/turn_aborted>$/.test(text)
     || isReadableCompactionSummaryText(text)
     || text === OPAQUE_COMPACTION_NOTE;
 }
