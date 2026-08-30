@@ -3,9 +3,14 @@ import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
 import { timingSafeEqual } from "node:crypto";
 import { existsSync, rmSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { stdin, stdout } from "node:process";
-import { checkBrowserEngine, loginToChatGpt } from "./browser-login";
-import { CHATGPT_CONNECTOR_NAME, getConfigDir, getConfigPath, loadConfig, loadConfigForSetup } from "./config";
+import {
+  checkBrowserEngine,
+  loginToChatGpt,
+  loginToChatGptWithSystemBrowserCapture,
+} from "./browser-login";
+import { CHATGPT_CONNECTOR_NAME, defaultConfig, getConfigDir, getConfigPath, loadConfig, loadConfigForSetup } from "./config";
 import { inspectLauncherBrowserHost, readLauncherBrowserHostDescriptor } from "./launcher-browser-host";
 import {
   activateCodexIntegration,
@@ -142,14 +147,114 @@ function authorizeLauncherControl(operation: string): void {
   }
 }
 
+function createLauncherBrowserLoginContinuation(): {
+  promise: Promise<void>;
+  close: () => void;
+} {
+  const maxBytes = 1_024;
+  let buffered = "";
+  let bytes = 0;
+  let settled = false;
+  let resolveControl!: () => void;
+  let rejectControl!: (error: Error) => void;
+  const promise = new Promise<void>((resolve, reject) => {
+    resolveControl = resolve;
+    rejectControl = reject;
+  });
+  const cleanup = () => {
+    stdin.off("data", onData);
+    stdin.off("end", onEnd);
+    stdin.pause();
+  };
+  const fail = (message: string) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    rejectControl(new Error(message));
+  };
+  const onData = (chunk: Buffer | string) => {
+    if (settled) return;
+    bytes += Buffer.byteLength(chunk);
+    if (bytes > maxBytes) {
+      fail("Launcher browser-login control input exceeded its bounded size");
+      return;
+    }
+    buffered += chunk.toString();
+    const newline = buffered.indexOf("\n");
+    if (newline < 0) return;
+    if (buffered.slice(newline + 1).trim()) {
+      fail("Launcher browser-login control input contained more than one command");
+      return;
+    }
+    let command: unknown;
+    try {
+      command = JSON.parse(buffered.slice(0, newline).trim());
+    } catch {
+      fail("Launcher browser-login control input was not valid JSON");
+      return;
+    }
+    if (
+      !command
+      || typeof command !== "object"
+      || Array.isArray(command)
+      || (command as { version?: unknown }).version !== 1
+      || (command as { type?: unknown }).type !== "browser-login-continue"
+    ) {
+      fail("Launcher browser-login control input was not an allowed command");
+      return;
+    }
+    settled = true;
+    cleanup();
+    resolveControl();
+  };
+  const onEnd = () => fail("Launcher browser-login control channel closed before confirmation");
+  stdin.on("data", onData);
+  stdin.on("end", onEnd);
+  stdin.resume();
+  return {
+    promise,
+    close: () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+    },
+  };
+}
+
 async function loginCommand(args: string[]): Promise<void> {
-  assertNoArgs(args);
-  const config = loadConfig();
-  if (config.browserHost === "launcher") {
-    throw new Error("ChatGPT login is owned by the launcher; open Codex Web GPT and use its Sign in step");
+  const launcherControl = takeFlag(args, "--launcher-control");
+  if (!launcherControl) {
+    assertNoArgs(args);
+    const config = loadConfig();
+    if (config.browserHost === "launcher") {
+      throw new Error("ChatGPT login is owned by the launcher; open Codex Web GPT and use its Sign in step");
+    }
+    const result = await loginToChatGpt(config);
+    stdout.write(`ChatGPT login stored at ${result.storageStatePath}\n`);
+    return;
   }
-  const result = await loginToChatGpt(config);
-  stdout.write(`ChatGPT login stored at ${result.storageStatePath}\n`);
+
+  const chromeExecutablePath = takeOption(args, "--chrome");
+  const storageStatePath = takeOption(args, "--storage-state");
+  assertNoArgs(args);
+  authorizeLauncherControl("login");
+  if (!chromeExecutablePath || !isAbsolute(chromeExecutablePath)) {
+    throw new Error("Launcher-controlled login requires --chrome with an absolute executable path");
+  }
+  if (!storageStatePath || !isAbsolute(storageStatePath)) {
+    throw new Error("Launcher-controlled login requires --storage-state with an absolute path");
+  }
+  const continuation = createLauncherBrowserLoginContinuation();
+  try {
+    await loginToChatGptWithSystemBrowserCapture({
+      ...defaultConfig(),
+      chromeExecutablePath,
+      storageStatePath,
+    }, { continuation: continuation.promise });
+  } finally {
+    continuation.close();
+  }
+  stdout.write("Launcher-controlled ChatGPT login captured for private-profile verification.\n");
 }
 
 async function setupCommand(args: string[]): Promise<void> {

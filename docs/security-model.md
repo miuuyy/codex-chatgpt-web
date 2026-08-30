@@ -4,7 +4,9 @@
 
 The user trusts the local Codex app, this loopback daemon, the launcher's private Electron browser
 profile, the selected ChatGPT workspace, OpenAI's tunnel service, and the exact MCP connector they
-created. Repository contents, tool output, websites, and prompt text are untrusted data.
+created. During explicit passkey sign-in, the boundary temporarily also includes the selected
+Chrome/Chromium executable, its launcher-owned profile, and the private transfer state. Repository
+contents, tool output, websites, prompt text, and unrelated browser profiles are untrusted data.
 
 ## Full-mode capability flow
 
@@ -38,10 +40,12 @@ default.
 
 ### Browser session theft
 
-The launcher's persistent Electron partition can authorize ChatGPT access. It remains in the
-current OS user's private application-data directory and is never copied into a daemon prompt or
-runtime descriptor. Never sync, upload, attach, or commit it. On suspected exposure, sign out or
-revoke the ChatGPT session from the launcher.
+The launcher's persistent Electron partition can authorize ChatGPT access. During passkey sign-in,
+the temporary Chrome/Chromium profile and serialized transfer also contain login state until their
+required cleanup completes. These artifacts remain under the current OS user's private
+application-data directory and are never copied into a daemon prompt or runtime descriptor. Never
+sync, upload, attach, or commit them. On suspected exposure, sign out or revoke the ChatGPT session
+from the launcher.
 
 ### Tunnel credential theft
 
@@ -64,20 +68,55 @@ request and long-lived browser/tool loop are idle, flush response state, and sto
 token does not turn loopback into a hostile-local-process security boundary; it prevents accidental
 or unauthenticated lifecycle control through ordinary requests.
 
+The explicit passkey flow performs credential entry in a normal Chrome/Chromium process with no
+debugging transport. The user then selects the launcher's continuation action, which travels only
+over the authorized CLI child's inherited stdin and asks that helper to close its exact normal
+browser child. Manual browser closure remains supported. After the process exits, the helper
+reopens only its isolated profile over Playwright's inherited remote-debugging pipe. It never
+exposes a browser-level TCP debugging listener. The temporary profile and transfer state are still
+sensitive files inside the current OS user's trust boundary and must be removed before the handoff
+can report success.
+
+The post-login capture process may report `navigator.webdriver=true`, so every request in that
+managed surface is fulfilled locally. No ChatGPT or identity-provider endpoint sees it. The
+launcher does not hide the automation signal, downgrade authentication, or copy a normal browser
+profile. The capture marker proves only that isolated profile extraction completed; Electron's
+subsequent server-session check is the authoritative authentication proof.
+
 ### Browser/UI drift
 
 ChatGPT DOM and labels are not a stable API. Selectors are narrow and completion requires stable
 completed-turn evidence. UI drift fails the turn; it never chooses another model, starts another
 transport, or returns a fabricated success.
 
-### Login-state isolation
+### Login-state isolation and passkey transfer
 
-The launcher keeps ChatGPT login, identity-provider navigation, and model turns in one private
-Electron partition. Allowed login popups are adopted into an in-launcher `WebContentsView` that
-shares that partition; unrelated external links remain outside it. A visible composer alone is not
-authentication evidence: the launcher also requires a valid server session and an exact Temporary
-Chat URL before setup can continue. No cookies, local storage, or browser profile are copied from an
-external browser.
+Embedded login is the default: identity-provider navigation and model turns remain in one private
+Electron partition. The passkey fallback runs only after the user explicitly selects it. A
+configured absolute supported Chrome/Chromium executable is used exactly and is never silently
+substituted; without one, the launcher uses the same platform Google Chrome default that setup will
+persist instead of opening the system default browser.
+
+The launcher creates a user-private transfer directory and a new owned browser profile; it never
+inspects or reuses a normal browser profile. It first starts that profile as a normal browser with
+no debugging transport. The user completes the passkey challenge, confirms Temporary Chat is
+ready, returns to the launcher, and explicitly continues; manually quitting the dedicated browser
+also advances the flow. The authorized CLI helper closes only its exact browser child and waits for
+process exit before Playwright reopens the same profile through a private remote-debugging pipe.
+The managed capture browser is headless and all networking is intercepted locally. A locally
+fulfilled `https://chatgpt.com` document exposes only the profile-backed local storage needed for
+serialization; no online authentication claim is made. The helper sanitizes the state, closes the
+capture process, and removes the profile before capture completes.
+
+The launcher bounds and validates the serialized state before import. It retains only
+ChatGPT/OpenAI-domain cookies with representable attributes, rejects an empty allowed cookie set,
+drops partitioned cookies rather than flattening them, and imports local storage only from
+`https://chatgpt.com`. Third-party identity-provider state is not imported. Electron's existing
+partition is cleared first, then the launcher independently requires the exact Temporary Chat,
+visible composer, and valid server session in Electron. The transfer directory is removed before
+success is reported. Invalid or oversized state, a partial import, failed embedded proof, or failed
+cleanup fails the operation, attempts to clear or tear down partial Electron state, and never marks
+the launcher session authenticated.
 
 ### Cross-turn data leakage
 
@@ -97,8 +136,11 @@ assistant prose as a structured handoff.
 - Responses and health listeners bind to `127.0.0.1` only.
 - Full mode uses OpenAI's outbound HTTPS Secure MCP Tunnel; it opens no public listener or inbound
   firewall rule.
-- The embedded browser connects to ChatGPT, the selected identity provider during explicit sign-in,
-  and user-authorized attachment URLs through normal browser networking.
+- The dedicated system-browser profile is created only for explicit passkey sign-in and uses
+  ordinary browser networking. The interactive provider flow is not protected by a host allowlist;
+  only the state later admitted to Electron is domain/origin allowlisted.
+- The embedded browser connects to ChatGPT, identity providers used by normal embedded sign-in, and
+  user-authorized attachment URLs through normal browser networking.
 
 ## Non-goals
 

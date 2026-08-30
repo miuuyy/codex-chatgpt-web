@@ -79,8 +79,12 @@ irm https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install
 
 然后在应用中完成三项检查：
 
-1. 直接在启动器内置的 ChatGPT 浏览器中登录。登录页和身份提供商窗口都保留在同一个由启动器
-   管理的私有浏览器配置中；会话不会在不同浏览器之间复制。
+1. 直接在启动器的私有内置 ChatGPT 浏览器中登录。如果账户要求通行密钥或高级浏览器安全，请显式
+   选择 **通行密钥登录**。启动器会使用确定性选出的受支持 Chrome/Chromium 可执行文件创建一个由
+   启动器管理的全新临时 profile，并以普通浏览器方式启动。完成登录并确认临时聊天已就绪后，请
+   返回启动器并选择 **我已登录 — 继续**。启动器只关闭该专用浏览器，通过私有调试管道在禁用联网的
+   情况下重新打开其隔离 profile，并只提取允许的 ChatGPT/OpenAI 状态。Electron 随后会独立证明
+   准确的临时聊天和服务端会话，最后删除临时 profile 与传输文件。
 2. 运行浏览器冒烟测试。
 3. 点击 **安装模型**，重启一次 Codex，然后选择一个 **ChatGPT Web — …** 模型。
 
@@ -88,8 +92,10 @@ irm https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install
 支持 Pro 时，Pro 才会显示。独立的 **MCP** 页面是可选项，它会在不需要终端命令的情况下引导你
 完成完整 harness 设置。
 
-打包后的启动器在其内置浏览器中完成登录并运行 ChatGPT 模型轮次，不需要模型 API 密钥、已安装的
-Chrome/Chromium、系统级 Node/Bun，也不会由本项目另行下载浏览器。
+打包后的启动器通常在内置浏览器中完成登录并运行模型轮次，因此不需要已安装的浏览器、模型 API
+密钥、系统级 Node/Bun，也不会由本项目另行下载浏览器。可选的通行密钥交接会准确使用已配置的
+受支持 Chrome/Chromium 可执行文件；若未配置，则使用设置流程随后会持久化的同一平台 Google
+Chrome 默认路径。它不会打开系统默认浏览器，也不会复用普通浏览器 profile。
 
 **从源码运行**
 
@@ -105,12 +111,13 @@ bun run app
 
 | 模式 | 模型 | 本地 Codex 工具 | 额外设置 |
 | --- | --- | --- | --- |
-| **仅浏览器** | Free/Go：Luna；Plus：Instant–High；Pro：增加 Extra High 和 Pro | 不可用；Codex 会显示警告 | 无 |
+| **仅浏览器** | Free/Go：Luna；Plus：Instant–High；Pro：增加 Extra High 和 Pro | 不可用；Codex 会显示警告 | 默认无需额外设置 |
 | **完整 harness** | Free/Go：Luna；Plus：Instant–High；Pro：增加 Extra High 和 Pro | 每个列出的 effort 均支持，包括 Pro | OpenAI 隧道 + ChatGPT 连接器 |
 
 模型选择器中的每一项都对应一个固定的 ChatGPT 模式。Codex 仍会显示内置的 Effort 和 Speed
 选项，但更改它们不会在后台静默切换所选的浏览器模型。在完整模式下，每一个可用 effort 都会
-获得同一个与当前回合绑定的 MCP 能力；Pro 没有单独限制，也没有缩减后的工具契约。
+获得同一个与当前回合绑定的 MCP 能力；Pro 没有单独限制，也没有缩减后的工具契约。可选的通行密钥
+交接与模式无关，并需要上文所述的已安装且受支持的 Chrome/Chromium 可执行文件。
 
 ## 完整 harness
 
@@ -161,8 +168,11 @@ codex-chatgpt-web subagents native
 
 - 这是非官方浏览器自动化，并非 OpenAI API。ChatGPT UI 变更可能破坏选择器；发生变化时会明确
   失败，而不是静默切换模型或传输方式。
-- 浏览器状态是敏感的登录凭据，loopback 监听器也可被同一本地用户运行的进程访问。切勿共享
-  启动器 profile，并仅在可信工作站上使用。
+- 浏览器状态和通行密钥流程中的短期传输文件都是敏感登录凭据。浏览器控制使用启动器所拥有的
+  子进程调试管道，而不是 TCP 监听器；profile 和传输文件仍位于当前 OS 用户的信任边界内。
+  切勿共享启动器 profile，并且只在可信工作站上使用通行密钥登录。
+- 通行密钥和身份提供商交互只发生在普通浏览器阶段。之后的受管理捕获阶段会阻止外部联网，也不会
+  伪装自动化；导入的会话首先由 Electron 独立接受或拒绝。
 - 发布包目前支持 macOS 13+（arm64/x64）、Windows x64 和 Linux x64。运行时、测试和打包会在
   CI 中对三种系统进行检查；依赖账户的浏览器与 MCP 流程使用单独的
   [发布验证](docs/release-validation.md)。

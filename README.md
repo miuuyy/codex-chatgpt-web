@@ -85,9 +85,15 @@ irm https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install
 
 Then complete the three checks in the app:
 
-1. Sign in directly in the launcher's embedded ChatGPT browser. Login pages and identity-provider
-   windows stay inside the same launcher-owned private browser profile; no session is copied between
-   browsers.
+1. Sign in directly in the launcher's private embedded ChatGPT browser. If the account requires a
+   passkey or advanced browser security, explicitly choose **Passkey sign in** instead. The launcher
+   starts a deterministically selected supported Chrome/Chromium executable with a new launcher-owned
+   temporary profile as a normal browser. Complete sign-in, confirm that Temporary Chat is ready,
+   return to the launcher, and choose **I'm signed in — Continue**. The launcher closes only that
+   dedicated browser, reopens its isolated profile through a private debugging pipe with networking
+   blocked, and extracts only allowlisted ChatGPT/OpenAI state. Electron then independently proves
+   the exact Temporary Chat and server session before the temporary profile and transfer files are
+   removed.
 2. Run the browser smoke test.
 3. Press **Install models**, restart Codex once, and select a **ChatGPT Web — …** model.
 
@@ -95,8 +101,11 @@ The launcher detects the current account's ChatGPT controls during setup: Free/G
 only Luna, while Pro appears only when the signed-in account exposes it. The separate **MCP** page
 is optional and guides the full-harness setup without terminal commands.
 
-The packaged launcher keeps sign-in and ChatGPT model turns in its embedded browser. It needs no
-model API key, installed Chrome/Chromium, system Node/Bun, or project-managed browser download.
+The packaged launcher normally keeps sign-in and model turns in its embedded browser, so it needs no
+installed browser, model API key, system Node/Bun, or project-managed browser download. The optional
+passkey handoff uses the configured supported Chrome/Chromium executable exactly, or the same
+platform Google Chrome default that setup will persist when none is configured. It never opens the
+system default browser or reuses a normal browser profile.
 
 **Run from source**
 
@@ -112,13 +121,14 @@ This source path requires Bun 1.4.0. The command installs locked dependencies an
 
 | Mode | Models | Local Codex tools | Extra setup |
 | --- | --- | --- | --- |
-| **Browser-only** | Free/Go: Luna; Plus: Instant–High; Pro: adds Extra High and Pro | No; Codex shows a warning | None |
+| **Browser-only** | Free/Go: Luna; Plus: Instant–High; Pro: adds Extra High and Pro | No; Codex shows a warning | None by default |
 | **Full harness** | Free/Go: Luna; Plus: Instant–High; Pro: adds Extra High and Pro | Yes for every listed effort, including Pro | OpenAI tunnel + ChatGPT connector |
 
 Every picker entry has one fixed ChatGPT mode. Codex still displays its built-in Effort and Speed
 rows, but changing them cannot silently change the selected browser model. In Full mode every
 available effort receives the same turn-bound MCP capability. Pro has no separate restriction or
-reduced tool contract.
+reduced tool contract. The optional passkey fallback is independent of mode and requires the
+installed supported Chrome/Chromium executable described above.
 
 ## Full harness
 
@@ -173,8 +183,13 @@ codex-chatgpt-web subagents native
 
 - This is unofficial browser automation, not an OpenAI API. ChatGPT UI changes can break selectors;
   drift fails explicitly instead of silently switching model or transport.
-- Browser state is a sensitive login artifact, and the loopback listener is reachable by processes
-  running as the same local user. Never share the launcher profile; use a trusted workstation.
+- Browser state and the passkey flow's short-lived transfer files are sensitive login artifacts.
+  Browser control stays on a launcher-owned child-process debugging pipe rather than a TCP listener,
+  but the profile and transfer files remain inside the current OS user's trust boundary. Never share
+  the launcher profile, and use passkey sign-in only on a trusted workstation.
+- Passkey and identity-provider interaction occurs only in the normal browser phase. The later
+  managed capture phase blocks external networking and does not attempt to disguise automation;
+  Electron is the first component to accept or reject the imported session.
 - Release packages currently target macOS 13+ (arm64/x64), Windows x64, and Linux x64. Runtime,
   tests, and packaging are gated on all three in CI; account-bound browser and MCP flows use the
   separate [release validation](docs/release-validation.md).

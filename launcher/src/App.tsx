@@ -882,11 +882,18 @@ function SetupSurface({
   updateState: (state: LauncherState) => void;
 }) {
   const [localBusy, setLocalBusy] = useState(false);
+  const [systemLoginContinuationRequested, setSystemLoginContinuationRequested] = useState(false);
+  const systemLoginWaiting = operation?.name === "browser-login"
+    && operation.status === "running"
+    && browser?.authenticated !== true;
   const busy = localBusy
     || operation?.status === "running"
     || browser?.status === "loading"
     || browser?.status === "testing"
     || browser?.status === "running";
+  useEffect(() => {
+    if (!systemLoginWaiting) setSystemLoginContinuationRequested(false);
+  }, [systemLoginWaiting]);
   const run = async (action: () => Promise<void>) => {
     if (busy) return;
     setLocalBusy(true);
@@ -904,6 +911,21 @@ function SetupSurface({
     await activateBrowser();
     await api!.openLogin();
   });
+  const openSystemLogin = () => run(async () => {
+    await api!.openSystemLogin();
+    await activateBrowser();
+  });
+  const continueSystemLogin = async () => {
+    if (!systemLoginWaiting || systemLoginContinuationRequested) return;
+    setSystemLoginContinuationRequested(true);
+    setError(null);
+    try {
+      await api!.continueSystemLogin();
+    } catch (cause) {
+      setSystemLoginContinuationRequested(false);
+      setError(messageOf(cause));
+    }
+  };
   const smoke = () => run(async () => {
     await activateBrowser();
     await api!.smokeTest();
@@ -927,10 +949,15 @@ function SetupSurface({
             ? copy.signedIn
             : browser?.status === "loading" ? copy.checkingSignIn : copy.signIn}
           complete={browser?.authenticated === true}
-          description={copy.stepAccountBody}
+          description={systemLoginWaiting ? copy.continueSystemSignInBody : copy.stepAccountBody}
           disabled={busy}
           index={1}
           onAction={openLogin}
+          onSecondaryAction={systemLoginWaiting ? continueSystemLogin : openSystemLogin}
+          secondaryAction={systemLoginWaiting
+            ? systemLoginContinuationRequested ? copy.continuingSystemSignIn : copy.continueSystemSignIn
+            : copy.systemSignIn}
+          secondaryActionDisabled={systemLoginWaiting ? systemLoginContinuationRequested : busy}
           title={copy.stepAccount}
         />
         <SetupRow
@@ -1492,7 +1519,10 @@ function SetupRow({
   disabled,
   index,
   onAction,
+  onSecondaryAction,
   repeatable = false,
+  secondaryAction,
+  secondaryActionDisabled,
   title,
 }: {
   action: string;
@@ -1501,7 +1531,10 @@ function SetupRow({
   disabled: boolean;
   index: number;
   onAction: () => void;
+  onSecondaryAction?: () => void;
   repeatable?: boolean;
+  secondaryAction?: string;
+  secondaryActionDisabled?: boolean;
   title: string;
 }) {
   return (
@@ -1511,9 +1544,21 @@ function SetupRow({
         <strong>{title}</strong>
         <p>{description}</p>
       </div>
-      <SecondaryButton disabled={disabled || (complete && !repeatable)} onClick={onAction}>
-        {action}
-      </SecondaryButton>
+      <span className="setup-actions">
+        <SecondaryButton disabled={disabled || (complete && !repeatable)} onClick={onAction}>
+          {action}
+        </SecondaryButton>
+        {secondaryAction && onSecondaryAction && !complete ? (
+          <button
+            className="text-button"
+            disabled={secondaryActionDisabled ?? disabled}
+            onClick={onSecondaryAction}
+            type="button"
+          >
+            {secondaryAction}
+          </button>
+        ) : null}
+      </span>
     </div>
   );
 }

@@ -5,16 +5,30 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { defaultBrokerEndpoint } from "../src/config";
 
-async function runCli(args: string[], env: Record<string, string | undefined>) {
+async function runCli(
+  args: string[],
+  env: Record<string, string | undefined>,
+  input?: string,
+  inputDelayMs = 0,
+) {
   const child = Bun.spawn([
     process.execPath,
     resolve(import.meta.dir, "../src/cli.ts"),
     ...args,
   ], {
     env,
+    stdin: input === undefined ? "ignore" : "pipe",
     stdout: "pipe",
     stderr: "pipe",
   });
+  if (input !== undefined) {
+    const inputSink = child.stdin;
+    if (!inputSink) throw new Error("CLI test subprocess has no piped stdin");
+    if (inputDelayMs > 0) await Bun.sleep(inputDelayMs);
+    inputSink.write(input);
+    await inputSink.flush();
+    inputSink.end();
+  }
   const [exitCode, stdout, stderr] = await Promise.all([
     child.exited,
     new Response(child.stdout).text(),
@@ -46,6 +60,91 @@ test("setup validates the port before performing runtime work", async () => {
     expect(stderr).toContain("--port must be an integer from 1 to 65535");
     expect(stderr).not.toContain("Choose either --chrome or --browser-host-descriptor");
     expect(stderr).not.toContain("Unknown arguments");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("launcher-controlled login fails before opening Chrome without live authorization", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-login-"));
+  const statePath = join(root, "storage-state.json");
+  try {
+    const result = await runCli([
+      "login",
+      "--launcher-control",
+      "--chrome",
+      process.execPath,
+      "--storage-state",
+      statePath,
+    ], {
+      ...process.env,
+      CODEX_CHATGPT_WEB_HOME: join(root, "app"),
+      CODEX_CHATGPT_WEB_BROWSER_HOST_DESCRIPTOR: undefined,
+      CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: undefined,
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Launcher-controlled login requires a live launcher authorization");
+    expect(existsSync(statePath)).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("authorized launcher login accepts one bounded private continuation command", async () => {
+  if (process.platform === "win32") return;
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-login-control-"));
+  const descriptorPath = join(root, "runtime", "launcher-browser.json");
+  const helperScript = join(root, "helper.cjs");
+  const executable = join(root, "fake-chrome");
+  const argsLog = join(root, "args.log");
+  const token = "launcher-login-control-token-0123456789abcdefghijklmnop";
+  try {
+    mkdirSync(join(root, "runtime"), { recursive: true });
+    writeFileSync(helperScript, "module.exports = {};\n", { mode: 0o700 });
+    writeFileSync(executable, [
+      "#!/bin/sh",
+      "printf '%s\\n' \"$*\" >> \"$CODEX_LOGIN_ARG_LOG\"",
+      "case \" $* \" in",
+      "  *\" --remote-debugging-pipe \"*) exit 0 ;;",
+      "esac",
+      "trap 'exit 0' TERM INT HUP",
+      "while :; do sleep 1; done",
+      "",
+    ].join("\n"), { mode: 0o700 });
+    writeFileSync(descriptorPath, `${JSON.stringify({
+      version: 2,
+      kind: "codex-web-gpt-launcher",
+      profile: "production",
+      pid: process.pid,
+      endpoint: "http://127.0.0.1:48111",
+      control: { endpoint: "http://127.0.0.1:48112", token },
+      helper: { executable: process.execPath, script: helperScript },
+      partition: "persist:codex-web-gpt-chatgpt",
+      idleUrl: "about:blank#codex-web-gpt-browser-host",
+      surfaceId: "c".repeat(32),
+      createdAt: new Date().toISOString(),
+    })}\n`, { mode: 0o600 });
+    const statePath = join(root, "browser-login", "storage-state.json");
+    const result = await runCli([
+      "login",
+      "--launcher-control",
+      "--chrome",
+      executable,
+      "--storage-state",
+      statePath,
+    ], {
+      ...process.env,
+      CODEX_CHATGPT_WEB_HOME: join(root, "app"),
+      CODEX_CHATGPT_WEB_BROWSER_HOST_DESCRIPTOR: descriptorPath,
+      CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: token,
+      CODEX_LOGIN_ARG_LOG: argsLog,
+    }, `${JSON.stringify({ version: 1, type: "browser-login-continue" })}\n`, 1_000);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).not.toContain("control input");
+    const launches = readFileSync(argsLog, "utf8").trim().split("\n");
+    expect(launches).toHaveLength(2);
+    expect(launches[0]).not.toContain("--remote-debugging-pipe");
+    expect(launches[1]).toContain("--remote-debugging-pipe");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -170,6 +170,21 @@ test("saved ChatGPT authentication is refreshed before setup is presented", () =
   assert.match(appSource, /browser\?\.status === "loading" \? copy\.checkingSignIn/);
 });
 
+test("passkey sign-in is an explicit system-browser fallback, not a new default dependency", () => {
+  assert.match(preloadSource, /openLogin:[\s\S]*?launcher:browser-login/);
+  assert.match(preloadSource, /openSystemLogin:[\s\S]*?launcher:browser-system-login/);
+  assert.match(preloadSource, /continueSystemLogin:[\s\S]*?launcher:browser-system-login-continue/);
+  assert.match(electronMain, /launcher:browser-login[\s\S]*?browserHost\.openLogin\(\)/);
+  assert.match(electronMain, /launcher:browser-system-login[\s\S]*?browserHost\.openSystemLogin\(\)/);
+  assert.match(electronMain, /launcher:browser-system-login-continue[\s\S]*?runtimeHost\.continueSystemBrowserLogin\(\)/);
+  assert.match(appSource, /api!\.openLogin\(\)/);
+  assert.match(appSource, /api!\.openSystemLogin\(\)/);
+  assert.match(appSource, /api!\.continueSystemLogin\(\)/);
+  assert.match(appSource, /systemLoginWaiting[\s\S]*?copy\.continueSystemSignIn/);
+  assert.match(appSource, /secondaryActionDisabled=\{systemLoginWaiting/);
+  assert.match(browserHostSource, /openSystemLogin\(\{ force = false \} = \{\}\)/);
+});
+
 test("completed model setup remains a repeatable capability probe", () => {
   assert.match(appSource, /<SetupRow[\s\S]*?onAction=\{install\}[\s\S]*?repeatable/);
   assert.match(appSource, /complete && !repeatable/);

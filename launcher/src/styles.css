@@ -999,6 +999,13 @@ code {
   padding: 14px 0;
 }
 
+.setup-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .setup-row strong,
 .setting-row strong,
 .next-surface-row strong,
@@ -2249,7 +2256,7 @@ code {
     padding: 10px 0;
   }
 
-  .setup-row > .button-secondary {
+  .setup-row > .setup-actions {
     grid-column: 2;
     justify-self: start;
     margin-bottom: 7px;

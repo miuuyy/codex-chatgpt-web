@@ -87,12 +87,35 @@ partition and keep independent documents and lifecycles. Closing a running tab d
 and terminates that browser turn. A sixth concurrent turn fails explicitly; the cap avoids excessive
 parallel traffic that could trigger account abuse controls.
 
-Sign-in uses that same persistent Electron partition. ChatGPT login pages and allowed identity-
-provider popups are adopted into a temporary `WebContentsView` inside the launcher instead of being
-redirected to another browser. After the provider returns to ChatGPT, the launcher requires both a
-server-authenticated session and the Temporary Chat composer in the primary owned view, then closes
-the temporary auth view. There is no browser-profile handoff, cookie import, CDP login port, or
-temporary session-transfer directory.
+Embedded sign-in is the default and uses that same persistent Electron partition. ChatGPT login
+pages and allowed identity-provider popups are adopted into a temporary `WebContentsView` inside
+the launcher instead of being redirected to another browser. After the provider returns to
+ChatGPT, the launcher requires both a server-authenticated session and the exact Temporary Chat
+composer in the primary owned view, then closes the temporary auth view.
+
+**Passkey sign in** is an explicit fallback. The launcher uses the configured absolute supported
+Chrome/Chromium executable exactly; if none is configured, it uses the same platform Google Chrome
+default that setup will persist rather than opening the system default browser. It creates a
+launcher-owned transfer directory and a new browser profile, and never reads the user's normal
+browser profile. Credential and passkey entry happens first in that profile under a normal browser
+process with no debugging transport. After Temporary Chat is ready, the user returns to the
+launcher and selects **I'm signed in — Continue**; manually closing the dedicated browser remains
+supported. The launcher sends one bounded command over the authorized helper's inherited stdin,
+and that helper requests closure of only the exact normal-browser child it spawned. Only after that
+process exits does the helper reopen the same isolated profile headlessly over Playwright's owned
+remote-debugging pipe. Every request in this managed capture phase is fulfilled locally, so neither
+ChatGPT nor an identity provider sees the automated browser. The helper exposes the canonical
+ChatGPT origin only to collect its profile-backed local storage, sanitizes the full storage state,
+then closes the capture process and removes the temporary profile.
+
+Before import, the launcher validates size and shape, retains only cookies for ChatGPT/OpenAI
+domains, drops partitioned cookies that Electron cannot preserve safely, and retains local storage
+only for `https://chatgpt.com`. It clears the Electron partition before applying that sanitized
+state, loads the exact Temporary Chat URL, and independently requires the composer and a valid
+server session in Electron. This Electron check—not the offline capture marker—is the authoritative
+authentication proof. The serialized transfer directory is removed after verification. A capture,
+import, embedded proof, or cleanup failure fails the operation, attempts to clear or tear down
+partial Electron state, and is never accepted as an authenticated launcher session.
 
 The current compiled Codex task context is inserted as one inline JSON envelope. Image bytes stay
 out of the JSON and are attached natively with stable references. The runtime does not create a
@@ -122,10 +145,12 @@ Codex commentary.
 
 Each native desktop package contains Electron, a platform-matched pinned Bun executable, the
 Responses bridge, Playwright client code, MCP server, setup, doctor, and the browser helper.
-Browser-only mode downloads no browser and requires no installed Chrome/Chromium or system Node/Bun;
-sign-in and model turns both remain in Electron. Full mode separately downloads the official pinned
-`openai/tunnel-client` build for the current OS/architecture and verifies it against the release
-SHA-256 manifest.
+Browser-only mode downloads no browser and requires no installed browser or system Node/Bun for its
+default embedded sign-in and model turns. The explicit passkey fallback requires a deterministically
+selected installed supported Chrome/Chromium executable and uses only a launcher-owned temporary
+profile; only sanitized, independently verified ChatGPT state is transferred to Electron. Full
+mode separately downloads the official pinned `openai/tunnel-client` build for the current
+OS/architecture and verifies it against the release SHA-256 manifest.
 
 On first launch, the embedded runtime is identity-checked and copied atomically into a private
 versioned directory under the application home. Daemon and MCP commands use that durable copy,
@@ -189,6 +214,9 @@ launcher error.
 - Store browser state and tunnel credentials under the application home with mode `0600`.
 - Protect lifecycle control endpoints with a random application-owned bearer token.
 - Never place secret values in command-line arguments, logs, generated profiles, or Git.
+- Keep passkey entry in a normal launcher-owned temporary browser profile, close only that exact
+  child after explicit continuation, block networking when reopening it through a private
+  debugging pipe, and require browser/profile/transfer cleanup before reporting success.
 - Limit browser turns to five independent task-bound tabs and reject unsupported models explicitly.
   The selected routed model fixes the adapter effort; a conflicting request effort cannot change it.
 - Do not retry or switch modes to evade product usage limits.

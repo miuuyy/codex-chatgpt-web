@@ -4,7 +4,243 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { CURRENT_CONNECTOR_NAME, DEV_CONNECTOR_NAME } = require("../electron/connector-identity.cjs");
-const { RuntimeHost } = require("../electron/runtime.cjs");
+const { resolveBrowserLoginExecutable, RuntimeHost } = require("../electron/runtime.cjs");
+
+test("browser login uses the configured supported Chromium browser exactly and never falls back", () => {
+  const checked = [];
+  assert.equal(resolveBrowserLoginExecutable({
+    configuredPath: "/opt/custom/chromium",
+    candidates: ["/usr/bin/google-chrome", "/usr/bin/chromium"],
+    isUsable: (candidate) => {
+      checked.push(candidate);
+      return candidate === "/opt/custom/chromium";
+    },
+  }), "/opt/custom/chromium");
+  assert.deepEqual(checked, ["/opt/custom/chromium"]);
+
+  assert.throws(() => resolveBrowserLoginExecutable({
+    configuredPath: "/opt/missing/chrome",
+    candidates: ["/usr/bin/google-chrome", "/usr/bin/chromium"],
+    isUsable: (candidate) => candidate === "/usr/bin/chromium",
+  }), /Configured supported Chromium browser executable is unavailable: \/opt\/missing\/chrome/);
+  assert.throws(() => resolveBrowserLoginExecutable({
+    configuredPath: "relative/chromium",
+    isUsable: () => true,
+  }), /supported Chromium browser executable path is invalid/);
+});
+
+test("unconfigured login uses the same deterministic platform Chrome default as setup", () => {
+  assert.equal(resolveBrowserLoginExecutable({
+    platform: "linux",
+    environment: {},
+    isUsable: (candidate) => candidate === "/usr/bin/google-chrome",
+  }), "/usr/bin/google-chrome");
+
+  const collectCandidates = (options) => {
+    const checked = [];
+    assert.throws(() => resolveBrowserLoginExecutable({
+      ...options,
+      isUsable: (candidate) => {
+        checked.push(candidate);
+        return false;
+      },
+    }), /No supported Chromium browser executable was found/);
+    return checked;
+  };
+
+  assert.deepEqual(collectCandidates({
+    platform: "darwin",
+    environment: {},
+  }), [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  ]);
+
+  const windowsEnvironment = {
+    PROGRAMFILES: "C:\\Program Files",
+    "PROGRAMFILES(X86)": "C:\\Program Files (x86)",
+    LOCALAPPDATA: "C:\\Users\\Example\\AppData\\Local",
+  };
+  assert.deepEqual(collectCandidates({
+    platform: "win32",
+    environment: windowsEnvironment,
+  }), [
+    path.win32.join(windowsEnvironment.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe"),
+  ]);
+
+  assert.deepEqual(collectCandidates({
+    platform: "linux",
+    environment: {},
+  }), [
+    "/usr/bin/google-chrome",
+  ]);
+});
+
+test("launcher login accepts completed isolated-profile capture evidence and returns explicit cleanup", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-browser-login-"));
+  const descriptorPath = path.join(root, "launcher-browser.json");
+  const staleTransfer = path.join(root, "browser-login", "transfer-stale123");
+  fs.mkdirSync(staleTransfer, { recursive: true });
+  fs.writeFileSync(path.join(staleTransfer, "storage-state.json"), "stale secret\n");
+  const host = new RuntimeHost({
+    app: { getPath: () => root },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: "/source",
+    browserDescriptorPath: descriptorPath,
+    platform: "linux",
+    supervisor: { readConfig: () => null, readSetupConfig: () => null },
+  });
+  host.resolveBrowserLoginExecutable = () => "/usr/bin/chromium";
+  host.launcherControlEnvironment = () => ({ CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: "private-token" });
+  let invocation;
+  let marker = {
+    version: 3,
+    captureComplete: true,
+    source: "isolated-normal-browser-profile",
+    capturedAt: new Date().toISOString(),
+  };
+  host.run = async (name, args, options) => {
+    invocation = { name, args, options };
+    const statePath = args[args.indexOf("--storage-state") + 1];
+    fs.writeFileSync(statePath, `${JSON.stringify({ cookies: [], origins: [] })}\n`, { mode: 0o600 });
+    fs.writeFileSync(`${statePath}.verified.json`, `${JSON.stringify(marker)}\n`, { mode: 0o600 });
+    return { code: 0, stdout: "", stderr: "" };
+  };
+
+  try {
+    assert.equal(fs.existsSync(staleTransfer), false);
+    const transfer = await host.captureSystemBrowserLogin();
+    assert.equal(invocation.name, "browser-login");
+    assert.deepEqual(invocation.args.slice(0, 5), [
+      "login",
+      "--launcher-control",
+      "--chrome",
+      "/usr/bin/chromium",
+      "--storage-state",
+    ]);
+    assert.deepEqual(invocation.options.env, { CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: "private-token" });
+    assert.equal(invocation.options.controlStdin, true);
+    assert.deepEqual(transfer.storageState, { cookies: [], origins: [] });
+    const transferRoot = path.dirname(invocation.args.at(-1));
+    assert.equal(fs.existsSync(transferRoot), true);
+    await transfer.cleanup();
+    assert.equal(fs.existsSync(transferRoot), false);
+
+    marker = { version: 1, authenticated: true, verifiedAt: new Date().toISOString() };
+    await assert.rejects(
+      host.captureSystemBrowserLogin(),
+      /did not return completed isolated-profile capture evidence/,
+    );
+    assert.equal(fs.existsSync(path.dirname(invocation.args.at(-1))), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("launcher login refuses to proceed when stale private transfer state cannot be removed", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-browser-login-cleanup-"));
+  const host = new RuntimeHost({
+    app: { getPath: () => root },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: "/source",
+    browserDescriptorPath: path.join(root, "launcher-browser.json"),
+    platform: "linux",
+    supervisor: { readConfig: () => null, readSetupConfig: () => null },
+  });
+  let resolvedExecutable = false;
+  host.cleanupBrowserLoginTransfers = () => { throw new Error("synthetic cleanup denial"); };
+  host.resolveBrowserLoginExecutable = () => {
+    resolvedExecutable = true;
+    return "/usr/bin/chromium";
+  };
+  try {
+    await assert.rejects(
+      host.captureSystemBrowserLogin(),
+      /Refusing to start system-browser login.*synthetic cleanup denial/,
+    );
+    assert.equal(resolvedExecutable, false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("launcher continues only the active browser-login child over its private stdin", async () => {
+  const writes = [];
+  const host = new RuntimeHost({
+    app: { getPath: () => os.tmpdir() },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: "/source",
+    browserDescriptorPath: path.join(os.tmpdir(), "launcher-browser.json"),
+    platform: "linux",
+    supervisor: { readConfig: () => null, readSetupConfig: () => null },
+  });
+  host.active = "browser-login";
+  host.activeChild = {
+    exitCode: null,
+    signalCode: null,
+    stdin: {
+      writable: true,
+      write(value, callback) {
+        writes.push(value);
+        callback();
+      },
+    },
+  };
+
+  assert.equal(await host.continueSystemBrowserLogin(), true);
+  assert.deepEqual(writes, [`${JSON.stringify({ version: 1, type: "browser-login-continue" })}\n`]);
+  await assert.rejects(host.continueSystemBrowserLogin(), /No system-browser login is waiting for confirmation/);
+
+  host.active = "doctor";
+  host.browserLoginContinuationRequested = false;
+  await assert.rejects(host.continueSystemBrowserLogin(), /No system-browser login is waiting for confirmation/);
+});
+
+test("DEV launcher browser-login transfers stay inside DEV user data", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-dev-browser-login-"));
+  const coreHome = path.join(root, "dev-home");
+  const userData = path.join(coreHome, "launcher");
+  const productionTransfer = path.join(root, "production-user-data", "browser-login", "transfer-production1");
+  const staleDevTransfer = path.join(userData, "browser-login", "transfer-development1");
+  fs.mkdirSync(productionTransfer, { recursive: true });
+  fs.mkdirSync(staleDevTransfer, { recursive: true });
+  const host = new RuntimeHost({
+    app: { getPath: () => userData },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: "/source",
+    browserDescriptorPath: path.join(coreHome, "runtime", "launcher-browser.json"),
+    coreHome,
+    launcherProfile: "development",
+    platform: "linux",
+    supervisor: { readConfig: () => null, readSetupConfig: () => null },
+  });
+  host.resolveBrowserLoginExecutable = () => "/usr/bin/chromium";
+  host.launcherControlEnvironment = () => ({ CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: "dev-private-token" });
+  let statePath;
+  host.run = async (_name, args) => {
+    statePath = args[args.indexOf("--storage-state") + 1];
+    fs.writeFileSync(statePath, `${JSON.stringify({ cookies: [], origins: [] })}\n`, { mode: 0o600 });
+    fs.writeFileSync(`${statePath}.verified.json`, `${JSON.stringify({
+      version: 3,
+      captureComplete: true,
+      source: "isolated-normal-browser-profile",
+      capturedAt: new Date().toISOString(),
+    })}\n`, { mode: 0o600 });
+    return { code: 0, stdout: "", stderr: "" };
+  };
+
+  try {
+    assert.equal(fs.existsSync(staleDevTransfer), false);
+    assert.equal(fs.existsSync(productionTransfer), true);
+    const transfer = await host.captureSystemBrowserLogin();
+    assert.equal(path.relative(userData, statePath).startsWith(`browser-login${path.sep}transfer-`), true);
+    assert.equal(path.relative(coreHome, statePath).startsWith(`launcher${path.sep}`), true);
+    await transfer.cleanup();
+    assert.equal(fs.existsSync(path.dirname(statePath)), false);
+    assert.equal(fs.existsSync(productionTransfer), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 function hostFor(existingConfig) {
   const host = new RuntimeHost({
