@@ -2468,3 +2468,19 @@ test("a Bigger Context stage that ChatGPT stops on is restaged instead of failin
   // Only the stop condition is retried; every other stage failure still fails immediately.
   expect(worker).toContain("if (!stageStopped || attempt >= MAX_CHATGPT_MULTIPART_STAGE_ATTEMPTS) throw error;");
 });
+
+test("Bigger Context stage sends get a budget sized for their payload", () => {
+  const worker = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
+
+  // The send stage covers ChatGPT accepting the submission, not just the click. A stage posts a
+  // payload orders of magnitude larger than an ordinary prompt onto a conversation that already
+  // holds the earlier parts, and the ordinary budget expired mid-acceptance and killed the turn.
+  expect(worker).toContain("multipartStageSend: 180_000");
+  expect(worker).toContain("browserStageTimeouts.multipartStageSend,");
+
+  // The multipart commit lands on a conversation already carrying every staged part.
+  expect(worker).toContain("prepared.multipart ? browserStageTimeouts.multipartStageSend : browserStageTimeouts.send,");
+
+  // The ordinary send budget is unchanged for ordinary prompts.
+  expect(worker).toContain("send: 20_000,");
+});
