@@ -951,6 +951,15 @@ export const CHATGPT_STOPPED_THINKING_GRACE_MS = 5_000;
 export const MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS = 8;
 
 /**
+ * Attempts allowed per Bigger Context stage before the turn is abandoned.
+ *
+ * ChatGPT can answer an inert staging prompt with "Stopped thinking" and no acknowledgement.
+ * Failing the turn there discards an accepted Codex turn that is never resent, whereas a stage is
+ * idempotent transport and can simply be sent again.
+ */
+export const MAX_CHATGPT_MULTIPART_STAGE_ATTEMPTS = 3;
+
+/**
  * How stale recorded MCP progress may be and still suppress DOM health checks.
  *
  * An outstanding tool call reports liveness regardless of age, so a call that never returns would
@@ -3387,6 +3396,12 @@ export class ChatGptBrowserWorker {
       if (prepared.multipart && multipartStages && multipartTransactionId && multipartFinalPrompt) {
         for (let index = 0; index < multipartStages.length; index += 1) {
           const stage = multipartStages[index]!;
+          // A stage carries inert transport keyed by transaction id, part index, and payload hash,
+          // so re-sending one is idempotent in a way a real prompt never is. ChatGPT can answer a
+          // stage with "Stopped thinking" and no acknowledgement, which previously destroyed an
+          // accepted turn outright; re-staging that part is both safe and far cheaper.
+          for (let attempt = 1; ; attempt += 1) {
+          try {
           const stageBaseline = await this.captureSubmissionBaseline(page);
           await this.runStage(
             turn.traceId,
@@ -3432,6 +3447,19 @@ export class ChatGptBrowserWorker {
             turn.externalProgress,
           );
           await diagnostics.capture(page, `multipart-stage-${index + 1}-acknowledged`);
+          break;
+          } catch (error) {
+            const stageStopped = error instanceof ChatGptWebAdapterError
+              && error.code === "client_cancelled";
+            if (!stageStopped || attempt >= MAX_CHATGPT_MULTIPART_STAGE_ATTEMPTS) throw error;
+            console.warn(
+              `[chatgpt-web] browser turn ${turn.traceId} restaging multipart part`
+              + ` ${index + 1}/${prepared.multipart.parts.length}`
+              + ` (attempt ${attempt}/${MAX_CHATGPT_MULTIPART_STAGE_ATTEMPTS}): ${error.message}`,
+            );
+            await diagnostics.capture(page, `multipart-stage-${index + 1}-restaged`);
+          }
+          }
         }
         if (mode.effort !== requestedMode.effort) {
           mode = await this.runStage(
