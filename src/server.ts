@@ -485,6 +485,9 @@ export async function responseRequest(
       2_000,
       {
         hideThinkingSummary: parsed.options.hideThinkingSummary,
+        ...(provider.chatgptWeb?.stallTimeoutSec !== undefined
+          ? { stallTimeoutSec: provider.chatgptWeb.stallTimeoutSec }
+          : {}),
         ...(compaction ? { compaction: true } : {
           ...(options.rememberState === false ? {} : {
             onCompletedResponse: (response: Record<string, unknown>) => rememberResponseState(parsed._rawBody, response, { force: true }),

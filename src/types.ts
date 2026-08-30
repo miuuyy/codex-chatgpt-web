@@ -259,6 +259,13 @@ export interface CodexProviderConfig {
     lunaCheckpointStatePath?: string;
     /** Optional explicit safety ceiling. Browser turns have no absolute deadline by default. */
     turnTimeoutMs?: number;
+    /**
+     * Seconds of adapter silence before the Responses bridge cancels a turn as a hung upstream.
+     * The adapter heartbeats every CHATGPT_WEB_ADAPTER_HEARTBEAT_MS for the whole of a turn, so a
+     * healthy turn never approaches this no matter how long it thinks; raise it only to tolerate a
+     * genuinely unresponsive upstream for longer. Defaults to DEFAULT_STALL_TIMEOUT_SEC.
+     */
+    stallTimeoutSec?: number;
     /** Keep the single controlled browser visible. */
     headed?: boolean;
     /** Attach the turn-bound Codex MCP capability for every connector-capable Web model. */
