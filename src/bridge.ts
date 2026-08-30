@@ -201,6 +201,11 @@ export function bridgeToResponsesSSE(
 
       const heartbeatFrame = encoder.encode('event: response.heartbeat\ndata: {"type":"response.heartbeat"}\n\n');
       let stallTicks = 0;
+      let stallWarned = false;
+      let lastAdapterEventAt = Date.now();
+      let lastAdapterEventType = "<none>";
+      let adapterEventCount = 0;
+      const streamStartedAt = Date.now();
       const stallSec = resolveStallTimeoutSec(options?.stallTimeoutSec);
       const maxStallTicks = Math.ceil((stallSec * 1000) / heartbeatMs);
 
@@ -417,6 +422,10 @@ export function bridgeToResponsesSSE(
           let terminalEvent = false;
           activity = true;
           stallTicks = 0;
+          lastAdapterEventAt = Date.now();
+          lastAdapterEventType = event.type;
+          adapterEventCount += 1;
+          stallWarned = false;
           reportFirstOutput(event);
           // Compaction turns emit ONLY the synthetic compaction item + response.completed. The
           // summary text is accumulated silently: emitting it as a normal assistant message would
@@ -732,7 +741,25 @@ export function bridgeToResponsesSSE(
         beat = setInterval(() => {
           if (closed || gated) return;
           if (activity) { activity = false; stallTicks = 0; return; }
+          if (stallTicks === Math.ceil(maxStallTicks / 2) && !stallWarned) {
+            // Halfway to cancelling the turn. A healthy adapter heartbeats far more often than
+            // this, so reaching here at all means a keep-alive gap that should be found before it
+            // costs a user their turn.
+            stallWarned = true;
+            console.warn(
+              `[bridge] upstream silence halfway to the stall budget model=${modelId}`
+              + ` response=${responseId} stallSec=${stallSec} adapterEvents=${adapterEventCount}`
+              + ` lastEvent=${lastAdapterEventType} sinceLastEventMs=${Date.now() - lastAdapterEventAt}`,
+            );
+          }
           if (++stallTicks >= maxStallTicks) {
+            console.error(
+              `[bridge] upstream_stall_timeout model=${modelId} response=${responseId}`
+              + ` stallSec=${stallSec} adapterEvents=${adapterEventCount}`
+              + ` lastEvent=${lastAdapterEventType} sinceLastEventMs=${Date.now() - lastAdapterEventAt}`
+              + ` sinceStreamStartMs=${Date.now() - streamStartedAt}`
+              + ` iteratorStarted=${iteratorStarted} upstreamDone=${upstreamDone} emittedFrames=${emittedFrames}`,
+            );
             if (currentMsg) closeCurrentMessage();
             if (currentReasoning) closeCurrentReasoning();
             if (currentRawReasoning) closeCurrentRawReasoning();
