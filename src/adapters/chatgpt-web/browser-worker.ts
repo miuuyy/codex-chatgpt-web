@@ -1390,6 +1390,43 @@ export function chatGptPromptFilePayloads(
   return chatGptImageFilePayloads(prompt.images);
 }
 
+/**
+ * Insert `value` at the caret of an already-resolved ChatGPT composer, returning whether the edit
+ * was applied. Runs inside the page, so it may reference only globals and its two arguments.
+ *
+ * Effort selection closes a menu immediately before a staged part is attached, and focus is still
+ * settling when this runs: the composer can be the active element while the caret has not yet been
+ * placed inside it, or focus can still be on the menu that just closed. Reading that as a rejected
+ * edit failed whole turns roughly a tenth of a second after the effort menu closed, so the caret is
+ * placed explicitly instead of assumed. An existing collapsed caret inside the composer is left
+ * exactly where the user put it; only a missing or foreign one is replaced, and always with a
+ * position inside this composer, so an insert can never land in another element.
+ */
+export function insertPlainTextIntoComposer(element: HTMLElement, value: string): boolean {
+  if (document.activeElement !== element) element.focus();
+  if (document.activeElement !== element) return false;
+  const selection = window.getSelection();
+  if (!selection) return false;
+  const alreadyPlaced = selection.isCollapsed
+    && selection.anchorNode !== null
+    && element.contains(selection.anchorNode);
+  if (!alreadyPlaced) {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+  if (
+    !selection.isCollapsed
+    || !selection.anchorNode
+    || !element.contains(selection.anchorNode)
+  ) {
+    return false;
+  }
+  return document.execCommand("insertText", false, value);
+}
+
 export class ChatGptBrowserWorker {
   static forProvider(provider: CodexProviderConfig): ChatGptBrowserWorker {
     const config = resolveBrowserConfig(provider);
@@ -2585,19 +2622,7 @@ export class ChatGptBrowserWorker {
     // delimiters from textContent, and leave the next insertion outside the intended block. The
     // browser's plain-text editing command updates the same focused contenteditable atomically
     // without running those Markdown shortcuts. Exact readback below remains the authority.
-    const inserted = await composer.evaluate((element, value) => {
-      const selection = window.getSelection();
-      if (
-        document.activeElement !== element
-        || !selection
-        || !selection.isCollapsed
-        || !selection.anchorNode
-        || !element.contains(selection.anchorNode)
-      ) {
-        return false;
-      }
-      return document.execCommand("insertText", false, value);
-    }, text, { timeout: 20_000 });
+    const inserted = await composer.evaluate(insertPlainTextIntoComposer, text, { timeout: 20_000 });
     throwIfPromptAttachmentAborted(abortSignal);
     if (!inserted) {
       throw new ChatGptPromptAttachmentIntegrityError(
