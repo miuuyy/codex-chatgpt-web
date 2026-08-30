@@ -136,6 +136,11 @@ test("CI packages and smoke-launches on macOS, Windows, and Linux", () => {
 test("Linux AppImage fallback uses one owned extraction and removes it on exit", {
   skip: process.platform !== "linux" ? "AppImage process identity is Linux-specific" : false,
 }, () => {
+  // node:test honours the `skip` option above and reports this as skipped. Bun's shim ignores that
+  // option and runs the body anyway, and implements neither t.skip(), so the test read /proc on
+  // macOS and failed for everyone running `bun test` locally. Returning early is the one form both
+  // runners agree on.
+  if (process.platform !== "linux") return;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-appimage-runner-"));
   const runtime = path.join(root, "runtime");
   const appImage = path.join(root, "Codex Web GPT.AppImage");

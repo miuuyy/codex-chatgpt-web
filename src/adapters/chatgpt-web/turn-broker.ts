@@ -161,6 +161,13 @@ export interface TurnBrokerOwner {
   revoke(token: string, reason?: Error): void | Promise<void>;
 }
 
+/**
+ * Bytes available for a Unix socket path. Linux allows 108, macOS and the BSDs 104; the smaller
+ * bound is used everywhere so a path that works on one developer's machine is not silently
+ * unbindable on another's.
+ */
+const MAX_UNIX_SOCKET_PATH_BYTES = 104;
+
 export class TurnBroker implements TurnBrokerOwner {
   static forSocket(path: string): TurnBroker {
     let broker = brokers.get(path);
@@ -415,7 +422,20 @@ export class TurnBroker implements TurnBrokerOwner {
     if (this.startPromise) return this.startPromise;
     this.startPromise = new Promise<void>((resolveStart, rejectStart) => {
       const windowsPipe = isWindowsPipeEndpoint(this.socketPath);
-      if (!windowsPipe) mkdirSync(dirname(this.socketPath), { recursive: true, mode: 0o700 });
+      if (!windowsPipe) {
+        // sun_path is a fixed-size field in the kernel, so an over-long path fails inside listen()
+        // with nothing but "Failed to listen" and no hint that the length is the problem. Say so.
+        const encodedLength = Buffer.byteLength(this.socketPath);
+        if (encodedLength > MAX_UNIX_SOCKET_PATH_BYTES) {
+          rejectStart(new Error(
+            `ChatGPT web broker socket path is ${encodedLength} bytes, over the`
+            + ` ${MAX_UNIX_SOCKET_PATH_BYTES}-byte limit this platform allows for a Unix socket:`
+            + ` ${this.socketPath}. Choose a shorter runtime directory.`,
+          ));
+          return;
+        }
+        mkdirSync(dirname(this.socketPath), { recursive: true, mode: 0o700 });
+      }
       const listen = () => {
         const server = createServer(socket => this.handleSocket(socket));
         this.server = server;

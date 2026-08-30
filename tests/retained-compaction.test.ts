@@ -41,6 +41,16 @@ import {
 } from "../src/adapters/chatgpt-web/native-compaction-control";
 import type { AdapterEvent, CodexParsedRequest, CodexProviderConfig } from "../src/types";
 
+/**
+ * These fixtures hand the turn broker a Unix socket under their temp root. macOS puts TMPDIR at
+ * /var/folders/<32 chars>/T, which pushes `<root>/runtime/turn-broker.sock` past the 104-byte
+ * sun_path limit, and listen() then fails with nothing but "Failed to listen". Root them somewhere
+ * short so the socket is bindable.
+ */
+function shortSocketTempRoot(): string {
+  return process.platform === "win32" ? tmpdir() : "/tmp";
+}
+
 function request(compaction = false): CodexParsedRequest {
   return {
     modelId: "gpt-5.6-sol",
@@ -153,7 +163,7 @@ test("retained compaction provides one exact same-agent control binding", () => 
 });
 
 test("a compaction control token cannot claim the ordinary Codex tool environment", async () => {
-  const root = mkdtempSync(join(tmpdir(), "cgw-compaction-capability-"));
+  const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-compaction-capability-"));
   const broker = TurnBroker.forSocket(defaultBrokerEndpoint(root));
   try {
     const transaction = await broker.beginCompactionTransaction("trace_capability", 1_000);
@@ -175,7 +185,7 @@ test("a compaction control token cannot claim the ordinary Codex tool environmen
 });
 
 test("active compaction delivers the current result and converts every later MCP call into the checkpoint request", async () => {
-  const root = mkdtempSync(join(tmpdir(), "cgw-active-compaction-gate-"));
+  const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-active-compaction-gate-"));
   const broker = TurnBroker.forSocket(defaultBrokerEndpoint(root));
   try {
     const token = await broker.register({
@@ -228,7 +238,7 @@ test("active compaction delivers the current result and converts every later MCP
 });
 
 test("active compaction drains an MCP call already queued without an outer Codex waiter", async () => {
-  const root = mkdtempSync(join(tmpdir(), "cgw-queued-before-compaction-"));
+  const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-queued-before-compaction-"));
   const broker = TurnBroker.forSocket(defaultBrokerEndpoint(root));
   try {
     const token = await broker.register({
@@ -407,7 +417,7 @@ test("active compaction turns the final canonical tool result into the same-resp
 });
 
 test("active compaction interrupts a queued MCP call that Codex never started waiting for", async () => {
-  const root = mkdtempSync(join(tmpdir(), "cgw-compaction-queued-call-"));
+  const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-compaction-queued-call-"));
   const broker = TurnBroker.forSocket(defaultBrokerEndpoint(root));
   try {
     const token = await broker.register({
@@ -562,7 +572,7 @@ test("retained conversation release waits for physical settlement", async () => 
 });
 
 test("adapter compact returns only the same-agent MCP handoff and retires the old epoch", async () => {
-  const root = mkdtempSync(join(tmpdir(), "cgw-adapter-retained-compact-"));
+  const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-adapter-retained-compact-"));
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: `browser://retained-compact-${Date.now()}`,
@@ -653,7 +663,7 @@ test("adapter compact returns only the same-agent MCP handoff and retires the ol
 });
 
 test("a compact HTTP observer can reconnect without sending a second retained-chat message", async () => {
-  const root = mkdtempSync(join(tmpdir(), "cgw-compact-reconnect-"));
+  const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-compact-reconnect-"));
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: `browser://compact-reconnect-${Date.now()}`,
@@ -750,7 +760,7 @@ test("a compact HTTP observer can reconnect without sending a second retained-ch
 });
 
 test("structured compact rebuilds canonical context when its retained source is absent", async () => {
-  const root = mkdtempSync(join(tmpdir(), "cgw-missing-retained-compact-"));
+  const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-missing-retained-compact-"));
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: `browser://missing-retained-${Date.now()}`,
@@ -799,7 +809,7 @@ test("structured compact rebuilds canonical context when its retained source is 
 });
 
 test("structured compact rebuilds canonical context when its retained browser disappeared", async () => {
-  const root = mkdtempSync(join(tmpdir(), "cgw-stale-retained-compact-"));
+  const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-stale-retained-compact-"));
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: `browser://stale-retained-${Date.now()}`,
