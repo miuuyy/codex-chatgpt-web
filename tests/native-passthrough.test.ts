@@ -223,3 +223,75 @@ test("forwards native model discovery as GET and preserves the client version qu
   expect(upstreamRequest!.method).toBe("GET");
   expect(upstreamRequest!.headers.get("if-none-match")).toBeNull();
 });
+
+/**
+ * ChatGPT's backend resets the native Codex connection instead of closing it, which Codex reports as
+ * "Transport error: network error: error decoding response body". Whether that is recoverable turns
+ * entirely on whether the turn had already finished when the socket died.
+ */
+function nativeRequest(): Request {
+  return new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: { authorization: "Bearer codex-oauth-token", "content-type": "application/json" },
+    body: '{"model":"gpt-5.6-sol","stream":true}',
+  });
+}
+
+function resettingEventStream(prefix: string[]): Response {
+  // A real socket delivers its frames and only then dies, so the chunks must be pulled out before
+  // the error lands; erroring in start() would discard them and test nothing.
+  const encoder = new TextEncoder();
+  let sent = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (sent < prefix.length) {
+        controller.enqueue(encoder.encode(prefix[sent]!));
+        sent += 1;
+        return;
+      }
+      const reset = new Error("The socket connection was closed unexpectedly");
+      (reset as Error & { code?: string }).code = "ECONNRESET";
+      controller.error(reset);
+    },
+  });
+  return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+}
+
+test("an upstream reset after the turn completed closes the client stream normally", async () => {
+  const response = await forwardNativeCodexRequest(
+    nativeRequest(),
+    "responses",
+    async () => resettingEventStream([
+      'event: response.completed\ndata: {"type":"response.completed"}\n\n',
+      "data: [DONE]\n\n",
+    ]),
+  );
+
+  // Every byte the Responses protocol defines was forwarded, so the reset is an unclean TCP close on
+  // a finished turn. Failing here is what produced the decode error Codex reported.
+  const body = await response.text();
+  expect(body).toContain("response.completed");
+  expect(body).toEndWith("data: [DONE]\n\n");
+});
+
+test("an upstream reset that truncated the turn is still surfaced as a failure", async () => {
+  const response = await forwardNativeCodexRequest(
+    nativeRequest(),
+    "responses",
+    async () => resettingEventStream(['event: response.output_text.delta\ndata: {"delta":"half"}\n\n']),
+  );
+
+  // Nothing may invent a terminal event here: the turn really was cut short, and telling Codex it
+  // ended would silently truncate the answer instead of letting Codex retry.
+  await expect(response.text()).rejects.toThrow();
+});
+
+test("a non-event-stream body is passed through untouched", async () => {
+  const response = await forwardNativeCodexRequest(
+    nativeRequest(),
+    "responses",
+    async () => new Response('{"ok":true}', { status: 200, headers: { "content-type": "application/json" } }),
+  );
+
+  expect(await response.text()).toBe('{"ok":true}');
+});
