@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { notifyLauncherTurn, readLauncherBrowserHostDescriptor } from "../../launcher-browser-host";
 import { ChatGptWebAdapterError } from "./adapter-error";
@@ -163,7 +163,11 @@ export class LauncherBrowserHelperClient {
    */
   private bundledHelperScript(): string | undefined {
     const entrypoint = process.argv[1];
-    if (typeof entrypoint !== "string" || !entrypoint) return undefined;
+    // Only the packaged runtime layout is claimed: the bundle builder emits cli.js and
+    // browser-helper.cjs into one directory. Matching on that entrypoint name keeps a source
+    // checkout, or any other launch shape, on the launcher-advertised helper rather than adopting
+    // an unrelated sibling that merely shares a filename.
+    if (typeof entrypoint !== "string" || basename(entrypoint) !== "cli.js") return undefined;
     const sibling = join(dirname(entrypoint), "browser-helper.cjs");
     return existsSync(sibling) ? sibling : undefined;
   }

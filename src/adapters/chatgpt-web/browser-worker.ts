@@ -835,7 +835,17 @@ export class ChatGptCompletionTracker {
 
   constructor(private readonly stableMs = CHATGPT_COMPLETION_SETTLE_MS) {}
 
-  update(state: Parameters<typeof chatGptTurnIsComplete>[0], now = Date.now()): boolean {
+  update(
+    state: Parameters<typeof chatGptTurnIsComplete>[0] & { externalProgressLive?: boolean },
+    now = Date.now(),
+  ): boolean {
+    // An outstanding tool call proves the model has more to say, whatever the rendered message
+    // currently looks like. Completing here would return a truncated answer and retire the turn
+    // while its own tool calls were still in flight.
+    if (state.externalProgressLive) {
+      this.candidate = undefined;
+      return false;
+    }
     if (!chatGptTurnIsComplete(state)) {
       this.candidate = undefined;
       return false;
@@ -950,6 +960,9 @@ export const MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS = 8;
  */
 export const CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS = 10 * 60_000;
 
+/** Tolerated clock difference between the recording daemon and the observing helper process. */
+export const CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS = 5_000;
+
 /** Proven MCP activity, additionally required to be recent enough to still be evidence. */
 export function chatGptExternalProgressSuppressesDomHealth(
   snapshot: ChatGptExternalTurnProgressSnapshot | undefined,
@@ -957,8 +970,12 @@ export function chatGptExternalProgressSuppressesDomHealth(
 ): boolean {
   if (!chatGptExternalProgressIsLive(snapshot, now, CHATGPT_RESPONSE_DOM_GRACE_MS)) return false;
   const lastProgressAt = snapshot?.lastProgressAt;
-  return lastProgressAt !== undefined
-    && now - lastProgressAt < CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS;
+  if (lastProgressAt === undefined) return false;
+  const age = now - lastProgressAt;
+  // A timestamp from the future would keep `age` below the ceiling forever. Recorded activity can
+  // only precede the observation, so anything meaningfully ahead of now is not evidence at all.
+  return age >= -CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS
+    && age < CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS;
 }
 
 export class ChatGptStoppedThinkingTracker {
@@ -2451,6 +2468,7 @@ export class ChatGptBrowserWorker {
         currentText: snapshot.visibleText,
         currentHtml: snapshot.fullHtml,
         completionActionVisible: snapshot.completionActionVisible,
+        externalProgressLive,
       })) {
         const actual = snapshot.visibleText.trim();
         if (actual !== stage.acknowledgement) {
@@ -3543,6 +3561,12 @@ export class ChatGptBrowserWorker {
       let internalObservationFaults = 0;
       let observedThisIteration = false;
       for (;;) {
+        // The heartbeat is a consumer callback, so it stays outside the observation-fault region:
+        // a defect in the caller must not be retried as though the page could not be read.
+        if (Date.now() - lastHeartbeat >= 10_000) {
+          turn.onHeartbeat?.();
+          lastHeartbeat = Date.now();
+        }
        try {
         observedThisIteration = false;
         if (page.isClosed()) {
@@ -3556,11 +3580,6 @@ export class ChatGptBrowserWorker {
         if (deadline !== undefined && Date.now() >= deadline) {
           throw new Error("ChatGPT web turn timed out");
         }
-        if (Date.now() - lastHeartbeat >= 10_000) {
-          turn.onHeartbeat?.();
-          lastHeartbeat = Date.now();
-        }
-
         await throwIfChatGptSessionFailureAlert(page);
         await throwIfChatGptTerminalErrorAlert(responseTurn.locator);
 
@@ -3674,6 +3693,7 @@ export class ChatGptBrowserWorker {
             currentText: snapshot.visibleText,
             currentHtml: snapshot.fullHtml,
             completionActionVisible: snapshot.completionActionVisible,
+            externalProgressLive,
           })) {
             if (snapshot.visibleText === "api_tool unavailable") {
               throw new Error("ChatGPT selected mode rejected the Codex Native MCP tool (api_tool unavailable)");

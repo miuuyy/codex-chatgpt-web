@@ -167,8 +167,10 @@ async function run(message: RunMessage): Promise<void> {
   const abortController = new AbortController();
   abortControllers.set(message.id, abortController);
   // The Codex MCP broker runs in the daemon process, so this mirror is the only way the worker can
-  // observe that a turn is still executing while its ChatGPT DOM is unavailable.
-  const progress = turnProgress.get(message.id) ?? new ChatGptMirroredTurnProgress();
+  // observe that a turn is still executing while its ChatGPT DOM is unavailable. Trace ids are
+  // derived deterministically and can repeat, so each run starts a fresh mirror rather than
+  // inheriting revisions recorded for an earlier turn that happened to share the id.
+  const progress = new ChatGptMirroredTurnProgress();
   turnProgress.set(message.id, progress);
   const promptSelection = createBrowserHelperPromptSelection();
   preparedSelections.set(message.id, promptSelection);

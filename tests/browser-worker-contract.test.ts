@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { Page } from "playwright-core";
-import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_STOPPED_THINKING_GRACE_MS, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptStoppedThinkingTracker, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, chatGptConnectorAttachmentMode, chatGptEffortSelectionRequired, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_STOPPED_THINKING_GRACE_MS, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptStoppedThinkingTracker, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, chatGptConnectorAttachmentMode, chatGptEffortSelectionRequired, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
@@ -2393,4 +2393,62 @@ test("the shipped commentary classifier separates answer Markdown from reasoning
 
   // A turn with no status container at all is entirely answer.
   expect(answerFor('<div class="markdown">ONLY ANSWER</div>')).toBe("ONLY ANSWER");
+});
+
+test("proven MCP progress vetoes completion, not only the health verdicts", () => {
+  const tracker = new ChatGptCompletionTracker(500);
+  const finishedLooking = {
+    responsePresent: true,
+    running: false,
+    currentText: "partial answer so far",
+    currentHtml: "<p>partial answer so far</p>",
+    completionActionVisible: true,
+  };
+
+  // Between two tool calls the rendered message can look finished. Completing there returns a
+  // truncated answer and retires the turn while its own tool calls are still in flight.
+  expect(tracker.update({ ...finishedLooking, externalProgressLive: true }, 1_000)).toBeFalse();
+  expect(tracker.update({ ...finishedLooking, externalProgressLive: true }, 5_000)).toBeFalse();
+
+  // Once the model is genuinely idle the settle window starts fresh rather than completing at once.
+  expect(tracker.update(finishedLooking, 5_100)).toBeFalse();
+  expect(tracker.update(finishedLooking, 5_599)).toBeFalse();
+  expect(tracker.update(finishedLooking, 5_600)).toBeTrue();
+});
+
+test("a future progress timestamp is not treated as liveness", () => {
+  const base = { revision: 2, lastToolBatchRevision: 2, activeToolCalls: 1 };
+
+  // "now - lastProgressAt < ceiling" is satisfied by any future timestamp, which would have kept a
+  // stuck tool call suppressing DOM health forever.
+  expect(chatGptExternalProgressSuppressesDomHealth(
+    { ...base, lastProgressAt: 10_000 + CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS * 10 },
+    10_000,
+  )).toBeFalse();
+
+  // Modest skew between the recording daemon and the observing helper is still accepted.
+  expect(chatGptExternalProgressSuppressesDomHealth(
+    { ...base, lastProgressAt: 10_000 + CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS - 1 },
+    10_000,
+  )).toBeTrue();
+});
+
+test("the bundled helper is adopted only for the packaged runtime layout", () => {
+  const client = readFileSync("src/adapters/chatgpt-web/launcher-helper-client.ts", "utf8");
+
+  // Any daemon launched some other way keeps the launcher-advertised helper rather than adopting
+  // an unrelated sibling that merely shares a filename.
+  expect(client).toContain('basename(entrypoint) !== "cli.js"');
+
+  // Trace ids are derived deterministically and can repeat, so a run must not inherit revisions
+  // recorded for an earlier turn that happened to share the id.
+  const helper = readFileSync("src/adapters/chatgpt-web/browser-helper-main.ts", "utf8");
+  expect(helper).toContain("const progress = new ChatGptMirroredTurnProgress();");
+
+  // A consumer callback must not be retried as though the page could not be read.
+  const worker = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
+  const heartbeat = worker.indexOf("turn.onHeartbeat?.();");
+  const tryStart = worker.indexOf("       try {\n        observedThisIteration = false;");
+  expect(heartbeat).toBeGreaterThan(0);
+  expect(heartbeat).toBeLessThan(tryStart);
 });
