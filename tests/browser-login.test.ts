@@ -225,6 +225,60 @@ test("launcher continuation closes only the normal login process before pipe cap
   }
 });
 
+test("rejected launcher continuation stops the normal login process before cleanup", async () => {
+  if (process.platform === "win32") return;
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-rejected-login-control-"));
+  const executable = join(root, "fake-chrome");
+  const argsLog = join(root, "args.log");
+  const pidLog = join(root, "pid.log");
+  writeFileSync(executable, [
+    "#!/bin/sh",
+    "printf '%s\\n' \"$*\" >> \"$CODEX_LOGIN_ARG_LOG\"",
+    "printf '%s\\n' \"$$\" > \"$CODEX_LOGIN_PID_LOG\"",
+    "trap 'exit 0' TERM INT HUP",
+    "while :; do sleep 1; done",
+    "",
+  ].join("\n"), { mode: 0o700 });
+  chmodSync(executable, 0o700);
+  const previous = {
+    args: process.env.CODEX_LOGIN_ARG_LOG,
+    pid: process.env.CODEX_LOGIN_PID_LOG,
+  };
+  process.env.CODEX_LOGIN_ARG_LOG = argsLog;
+  process.env.CODEX_LOGIN_PID_LOG = pidLog;
+  let rejectContinuation!: (error: Error) => void;
+  let pid: number | undefined;
+  try {
+    const config = defaultConfig("browser-only");
+    config.chromeExecutablePath = executable;
+    config.storageStatePath = join(root, "browser", "storage-state.json");
+    const continuation = new Promise<void>((_resolve, reject) => { rejectContinuation = reject; });
+    const capture = captureSystemBrowserLogin(config, { timeoutMs: 5_000, continuation });
+    for (let attempt = 0; attempt < 100 && !existsSync(pidLog); attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    pid = Number(readFileSync(pidLog, "utf8").trim());
+    expect(processIsRunning(pid)).toBe(true);
+
+    rejectContinuation(new Error("synthetic continuation rejection"));
+    const captureError = await capture.then(() => undefined, error => error);
+    expect(captureError).toBeInstanceOf(Error);
+    expect((captureError as Error).message).toContain("synthetic continuation rejection");
+    expect(processIsRunning(pid)).toBe(false);
+    expect(readFileSync(argsLog, "utf8").trim().split("\n")).toHaveLength(1);
+    expect(automaticLoginProfiles(join(root, "browser"))).toEqual([]);
+    expect(existsSync(config.storageStatePath)).toBe(false);
+    expect(existsSync(loginVerificationMarkerPath(config.storageStatePath))).toBe(false);
+  } finally {
+    if (previous.args === undefined) delete process.env.CODEX_LOGIN_ARG_LOG;
+    else process.env.CODEX_LOGIN_ARG_LOG = previous.args;
+    if (previous.pid === undefined) delete process.env.CODEX_LOGIN_PID_LOG;
+    else process.env.CODEX_LOGIN_PID_LOG = previous.pid;
+    if (pid && processIsRunning(pid)) process.kill(pid, "SIGKILL");
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("storage-state sanitization retains bounded cookies and only the canonical ChatGPT origin", () => {
   const cookie = (name: string, domain: string, value = name) => ({
     name,

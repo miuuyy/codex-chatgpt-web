@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
@@ -69,12 +69,52 @@ type LoginVerificationMarker = LegacyLoginVerificationMarker
   | SystemBrowserLoginCaptureMarker;
 
 const LOGIN_BROWSER_START_TIMEOUT_MS = 30_000;
+const LOGIN_BROWSER_STOP_TIMEOUT_MS = 5_000;
 const LOGIN_COMPLETION_TIMEOUT_MS = 10 * 60_000;
 const LOGIN_POLL_INTERVAL_MS = 100;
 const LOGIN_STORAGE_ROOT_DOMAINS = ["chatgpt.com", "openai.com"] as const;
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolveDelay => setTimeout(resolveDelay, ms));
+}
+
+function browserProcessExited(browser: ChildProcess): boolean {
+  return browser.exitCode !== null || browser.signalCode !== null;
+}
+
+async function waitForBrowserProcessExit(browser: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (browserProcessExited(browser)) return true;
+  return await new Promise(resolveExit => {
+    let settled = false;
+    const finish = (exited: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      browser.off("exit", onExit);
+      resolveExit(exited);
+    };
+    const onExit = () => finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    browser.once("exit", onExit);
+    if (browserProcessExited(browser)) finish(true);
+  });
+}
+
+async function stopOwnedLoginBrowser(browser: ChildProcess): Promise<void> {
+  if (browserProcessExited(browser) || !Number.isInteger(browser.pid)) return;
+  const gracefulExit = waitForBrowserProcessExit(browser, LOGIN_BROWSER_STOP_TIMEOUT_MS);
+  if (!browser.kill() && !browserProcessExited(browser)) {
+    throw new Error("The dedicated normal Chrome/Chromium process refused termination");
+  }
+  if (await gracefulExit) return;
+
+  const forcedExit = waitForBrowserProcessExit(browser, LOGIN_BROWSER_STOP_TIMEOUT_MS);
+  if (!browser.kill("SIGKILL") && !browserProcessExited(browser)) {
+    throw new Error("The dedicated normal Chrome/Chromium process refused forced termination");
+  }
+  if (!await forcedExit) {
+    throw new Error("The dedicated normal Chrome/Chromium process did not exit after forced termination");
+  }
 }
 
 function isAllowedLoginStorageHost(hostname: string): boolean {
@@ -325,28 +365,41 @@ export async function captureSystemBrowserLogin(
     ], { env: process.env, stdio: "ignore" });
     let loginTimeout: ReturnType<typeof setTimeout> | undefined;
     let continuationRequested = false;
-    const loginExit = await new Promise<number>((resolveExit, rejectExit) => {
-      loginTimeout = setTimeout(() => {
-        loginBrowser.kill();
-        rejectExit(new Error(
-          "Timed out waiting for the dedicated normal Chrome/Chromium login window to close",
-        ));
-      }, remainingCompletionTime());
-      if (options.continuation) {
-        void options.continuation.then(() => {
-          continuationRequested = true;
-          loginBrowser.kill();
-        }, rejectExit);
-      }
-      loginBrowser.once("error", rejectExit);
-      loginBrowser.once("exit", (code, signal) => {
-        if (continuationRequested) resolveExit(0);
-        else if (signal) rejectExit(new Error(`Normal Chrome/Chromium login window exited from signal ${signal}`));
-        else resolveExit(code ?? 1);
+    let loginExit: number;
+    try {
+      loginExit = await new Promise<number>((resolveExit, rejectExit) => {
+        loginTimeout = setTimeout(() => {
+          rejectExit(new Error(
+            "Timed out waiting for the dedicated normal Chrome/Chromium login window to close",
+          ));
+        }, remainingCompletionTime());
+        if (options.continuation) {
+          void options.continuation.then(() => {
+            continuationRequested = true;
+            if (!loginBrowser.kill() && !browserProcessExited(loginBrowser)) {
+              rejectExit(new Error("The dedicated normal Chrome/Chromium process refused the Continue close request"));
+            }
+          }, rejectExit);
+        }
+        loginBrowser.once("error", rejectExit);
+        loginBrowser.once("exit", (code, signal) => {
+          if (continuationRequested) resolveExit(0);
+          else if (signal) rejectExit(new Error(`Normal Chrome/Chromium login window exited from signal ${signal}`));
+          else resolveExit(code ?? 1);
+        });
       });
-    }).finally(() => {
+    } catch (error) {
+      try {
+        await stopOwnedLoginBrowser(loginBrowser);
+      } catch (cleanupError) {
+        const primary = error instanceof Error ? error.message : String(error);
+        const cleanup = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+        throw new Error(`${primary}; dedicated normal browser cleanup also failed: ${cleanup}`);
+      }
+      throw error;
+    } finally {
       if (loginTimeout) clearTimeout(loginTimeout);
-    });
+    }
     if (loginExit !== 0) throw new Error(`Normal Chrome/Chromium login window exited with status ${loginExit}`);
 
     // Only after the normal browser has exited does Playwright reopen the same isolated profile.

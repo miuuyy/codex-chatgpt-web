@@ -111,8 +111,9 @@ function resolveBrowserLoginExecutable({
     if (isUsable(candidate)) return candidate;
   }
   throw new Error(
-    "No supported Chromium browser executable was found. Install Google Chrome, Chromium, Microsoft Edge, or Brave, or configure"
-    + ` chromeExecutablePath explicitly. Checked: ${candidates.join(", ")}`,
+    "No supported Chromium browser executable was found at the deterministic Google Chrome default. Install Google Chrome there"
+    + " or configure chromeExecutablePath with an absolute supported Chrome/Chromium executable; the launcher will not discover"
+    + ` or substitute another browser. Checked: ${candidates.join(", ")}`,
   );
 }
 

@@ -73,6 +73,17 @@ test("unconfigured login uses the same deterministic platform Chrome default as 
   }), [
     "/usr/bin/google-chrome",
   ]);
+
+  assert.throws(() => resolveBrowserLoginExecutable({
+    platform: "linux",
+    candidates: ["/usr/bin/google-chrome"],
+    isUsable: () => false,
+  }), (error) => {
+    assert.match(error.message, /deterministic Google Chrome default/);
+    assert.match(error.message, /configure chromeExecutablePath/);
+    assert.doesNotMatch(error.message, /Edge|Brave/);
+    return true;
+  });
 });
 
 test("launcher login accepts completed isolated-profile capture evidence and returns explicit cleanup", async () => {
