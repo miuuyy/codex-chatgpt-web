@@ -144,6 +144,8 @@ test("automatic capture authenticates normally before using an owned DevTools pi
       .toBeLessThan(captureSource.indexOf("chromium.launchPersistentContext(profileDir"));
     expect(captureSource).toContain("await initialPage.goto(CHATGPT_TEMPORARY_CHAT_URL");
     expect(captureSource).toContain('context.route("**/*"');
+    expect(captureSource).toContain('serviceWorkers: "block"');
+    expect(captureSource).toContain("await context.setOffline(true)");
     expect(captureSource).toContain("captureComplete: true");
     expect(captureSource).toContain('source: "isolated-normal-browser-profile"');
     expect(captureSource).toContain("sanitizeBrowserLoginStorageState(await context.storageState())");
@@ -299,6 +301,9 @@ test("storage-state sanitization retains bounded cookies and only the canonical 
       cookie("google-idp", ".accounts.google.com"),
       cookie("lookalike", ".chatgpt.com.attacker.example"),
       cookie("suffix-lookalike", "notopenai.com"),
+      cookie("path-delimiter", "evil.example/.chatgpt.com"),
+      cookie("userinfo-delimiter", "evil.example@chatgpt.com"),
+      cookie("port-delimiter", "chatgpt.com:443"),
     ],
     origins: [
       { origin: "https://chatgpt.com", localStorage: [{ name: "chat", value: "retained" }] },
@@ -322,7 +327,7 @@ test("storage-state sanitization retains bounded cookies and only the canonical 
   expect(first.cookies[0]).not.toBe(input.cookies[0]);
   expect(first.origins[0]).not.toBe(input.origins[0]);
   expect(first.origins[0].localStorage[0]).not.toBe(input.origins[0].localStorage[0]);
-  expect(input.cookies).toHaveLength(7);
+  expect(input.cookies).toHaveLength(10);
   expect(input.origins).toHaveLength(7);
 });
 

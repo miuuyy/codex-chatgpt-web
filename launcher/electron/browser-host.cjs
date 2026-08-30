@@ -398,7 +398,12 @@ class BrowserHost {
       canGoForward: false,
       zoomFactor: 1,
     };
-    this.view = new WebContentsView({
+    this.bindShellZoomShortcuts(this.window.webContents);
+    this.initializationReady = this.initializePrimaryView(false);
+  }
+
+  createPrimaryView() {
+    const view = new WebContentsView({
       webPreferences: {
         partition: this.partition,
         contextIsolation: true,
@@ -408,18 +413,29 @@ class BrowserHost {
         backgroundThrottling: true,
       },
     });
-    window.contentView.addChildView(this.view);
-    this.view.setBounds(this.bounds);
-    this.view.setVisible(false);
-    this.view.webContents.setZoomFactor(this.state.zoomFactor);
-    this.bindShellZoomShortcuts(this.window.webContents);
-    this.bindShellZoomShortcuts(this.view.webContents);
+    this.view = view;
+    this.viewportCssKey = null;
+    this.window.contentView.addChildView(view);
+    view.setBounds(this.bounds);
+    view.setVisible(false);
+    view.webContents.setZoomFactor(this.state.zoomFactor);
+    this.bindShellZoomShortcuts(view.webContents);
     this.bindChatGptBackendRecovery();
     this.bindWebContents();
-    this.initializationReady = this.view.webContents.loadURL(IDLE_BROWSER_URL).then(async () => {
+    return view;
+  }
+
+  initializePrimaryView(recreated) {
+    const view = this.createPrimaryView();
+    return view.webContents.loadURL(IDLE_BROWSER_URL).then(async () => {
+      if (this.view !== view || view.webContents.isDestroyed()) {
+        throw new Error("Embedded browser view was replaced during initialization");
+      }
       await this.markOwnedSurface();
       this.writeDescriptor();
-      this.logger.info("browser.initialized", { url: this.view.webContents.getURL() });
+      this.logger.info(recreated ? "browser.primary_view_recreated" : "browser.initialized", {
+        url: view.webContents.getURL(),
+      });
     }).catch((error) => {
       this.logger.error("browser.initialization_failed", {
         message: error instanceof Error ? error.message : String(error),
@@ -427,6 +443,13 @@ class BrowserHost {
       this.setState({ status: "error", message: "Embedded browser failed to initialize" });
       throw error;
     });
+  }
+
+  async recreatePrimaryView() {
+    this.initializationReady = this.initializePrimaryView(true);
+    await this.initializationReady;
+    this.syncViewVisibility();
+    this.publishState?.(this.snapshot());
   }
 
   async ready() {
@@ -1702,16 +1725,22 @@ class BrowserHost {
     } catch {}
     this.visible = false;
     let failure = null;
+    let storageCleared = false;
+    let viewRecreated = false;
     try {
       await browserSession.clearStorageData();
       browserSession.flushStorageData();
       await browserSession.cookies.flushStore();
+      storageCleared = true;
+      await this.recreatePrimaryView();
+      viewRecreated = true;
     } catch (error) {
       failure = error;
     }
     this.setState({ authenticated: false, loading: false, url: IDLE_BROWSER_URL, visible: false });
     this.logger.error("browser.system_login_session_torn_down", {
-      storageCleared: failure === null,
+      storageCleared,
+      viewRecreated,
     });
     if (failure) throw failure;
   }

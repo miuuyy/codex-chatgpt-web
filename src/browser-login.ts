@@ -119,6 +119,22 @@ async function stopOwnedLoginBrowser(browser: ChildProcess): Promise<void> {
 
 function isAllowedLoginStorageHost(hostname: string): boolean {
   const normalized = hostname.toLowerCase();
+  if (!/^[a-z0-9.-]+$/.test(normalized)
+    || normalized.startsWith(".")
+    || normalized.endsWith(".")
+    || normalized.includes("..")) return false;
+  try {
+    const parsed = new URL(`https://${normalized}/`);
+    if (parsed.hostname !== normalized
+      || parsed.username
+      || parsed.password
+      || parsed.port
+      || parsed.pathname !== "/"
+      || parsed.search
+      || parsed.hash) return false;
+  } catch {
+    return false;
+  }
   return LOGIN_STORAGE_ROOT_DOMAINS.some(root => normalized === root || normalized.endsWith(`.${root}`));
 }
 
@@ -410,6 +426,7 @@ export async function captureSystemBrowserLogin(
       executablePath: config.chromeExecutablePath,
       headless: true,
       chromiumSandbox: true,
+      serviceWorkers: "block",
       ignoreDefaultArgs: [
         "--no-sandbox",
         "--enable-automation",
@@ -419,6 +436,7 @@ export async function captureSystemBrowserLogin(
       args: ["--disable-background-mode", "--no-first-run", "--no-default-browser-check"],
       timeout: Math.min(LOGIN_BROWSER_START_TIMEOUT_MS, remainingCompletionTime()),
     });
+    await context.setOffline(true);
     await context.route("**/*", async route => {
       await route.fulfill({
         status: 200,

@@ -1092,6 +1092,56 @@ test("failed Electron session import clears partial state and cleans the transfe
   assert.equal(calls.at(-1), "cleanup");
 });
 
+test("forced import teardown recreates the primary view after clearing storage", async () => {
+  const calls = [];
+  const logs = [];
+  let oldDestroyed = false;
+  const oldView = {
+    webContents: {
+      isDestroyed: () => oldDestroyed,
+      close: () => { oldDestroyed = true; calls.push("close-old-view"); },
+      session: {
+        clearStorageData: async () => calls.push("clear-storage"),
+        flushStorageData: () => calls.push("flush-storage"),
+        cookies: { flushStore: async () => calls.push("flush-cookies") },
+      },
+    },
+  };
+  const replacementView = { webContents: { isDestroyed: () => false } };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    authView: null,
+    boundsReady: true,
+    state: { authenticated: true, loading: true, visible: true },
+    turnTabs: new Map(),
+    selectedTabId: "home",
+    view: oldView,
+    visible: true,
+    window: { contentView: { removeChildView: () => calls.push("remove-old-view") } },
+    logger: { error: (event, detail) => logs.push([event, detail]) },
+    recreatePrimaryView: async function () {
+      calls.push("recreate-primary-view");
+      this.view = replacementView;
+    },
+    setState(patch) { this.state = { ...this.state, ...patch }; },
+  });
+
+  await BrowserHost.prototype.forceDiscardImportedChatGptSession.call(fixture);
+
+  assert.equal(fixture.view, replacementView);
+  assert.equal(oldDestroyed, true);
+  assert.ok(calls.indexOf("recreate-primary-view") > calls.indexOf("flush-cookies"));
+  assert.deepEqual(logs, [["browser.system_login_session_torn_down", {
+    storageCleared: true,
+    viewRecreated: true,
+  }]]);
+  assert.deepEqual(fixture.state, {
+    authenticated: false,
+    loading: false,
+    url: "about:blank#codex-web-gpt-browser-host",
+    visible: false,
+  });
+});
+
 test("repeated discard failure tears down the partial Electron session", async () => {
   let clearAttempts = 0;
   let forcedDiscards = 0;
