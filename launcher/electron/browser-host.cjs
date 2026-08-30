@@ -1,7 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { randomBytes } = require("node:crypto");
-const { WebContentsView, shell } = require("electron");
+const { WebContentsView, powerMonitor, powerSaveBlocker, shell } = require("electron");
 const { writePrivateFileAtomic } = require("./atomic-file.cjs");
 const {
   runBrowserHelperOperation,
@@ -9,6 +9,11 @@ const {
 } = require("./browser-helper-verifier.cjs");
 const { validateConnectorName } = require("./connector-identity.cjs");
 const { processRunning } = require("./process-tree.cjs");
+const {
+  refreshTurnLeasesAfterSuspension,
+  shouldBlockSleepForTurns,
+  sweepGapIndicatesSuspension,
+} = require("./turn-suspension.cjs");
 const {
   browserViewVisible,
   constrainBrowserBounds,
@@ -240,8 +245,16 @@ class BrowserHost {
     this.authView = null;
     this.authNavigationError = null;
     this.homeNavigationTimeout = null;
+    this.lastTurnSweepAt = Date.now();
+    this.powerSaveBlockerId = null;
     this.turnLeaseSweep = setInterval(() => this.reapExpiredTurnTabs(), TURN_HEARTBEAT_SWEEP_MS);
     this.turnLeaseSweep.unref?.();
+    this.resumeListener = () => this.refreshTurnLeases("system_resume");
+    if (powerMonitor && typeof powerMonitor.on === "function") {
+      powerMonitor.on("resume", this.resumeListener);
+    } else {
+      this.resumeListener = null;
+    }
     this.boundsReady = false;
     this.bounds = { x: 0, y: 0, width: 1, height: 1 };
     this.state = {
@@ -362,6 +375,7 @@ class BrowserHost {
       lastHeartbeatAt: Date.now(),
     };
     this.turnTabs.set(id, tab);
+    this.syncPowerSaveBlocker();
     this.window.contentView.addChildView(view);
     this.presentTurnView(tab, false);
     view.webContents.setZoomFactor(this.state.zoomFactor);
@@ -479,6 +493,7 @@ class BrowserHost {
         (error) => {
           tab.status = "error";
           tab.message = `Browser ownership failed: ${error instanceof Error ? error.message : String(error)}`;
+          this.syncPowerSaveBlocker();
           this.publishState?.(this.snapshot());
         },
       );
@@ -837,7 +852,42 @@ class BrowserHost {
     return this.snapshot();
   }
 
+  refreshTurnLeases(reason, now = Date.now()) {
+    const refreshed = refreshTurnLeasesAfterSuspension(
+      [...this.turnTabs.values()],
+      now,
+      TURN_TAB_BOOTSTRAP_TIMEOUT_MS,
+    );
+    if (refreshed.length > 0) {
+      this.logger.warn("browser.turn_leases_refreshed_after_suspension", { reason, traceIds: refreshed });
+    }
+  }
+
+  syncPowerSaveBlocker() {
+    // Under plain Node (the launcher test harness) require("electron") exposes no APIs; the
+    // blocker is an Electron-only concern and its absence must not break lease bookkeeping.
+    if (!powerSaveBlocker || typeof powerSaveBlocker.start !== "function") return;
+    const wanted = shouldBlockSleepForTurns([...this.turnTabs.values()]);
+    const active = this.powerSaveBlockerId !== null && powerSaveBlocker.isStarted(this.powerSaveBlockerId);
+    if (wanted && !active) {
+      this.powerSaveBlockerId = powerSaveBlocker.start("prevent-app-suspension");
+      this.logger.info("browser.sleep_blocked_for_turns", { blockerId: this.powerSaveBlockerId });
+    } else if (!wanted && active) {
+      powerSaveBlocker.stop(this.powerSaveBlockerId);
+      this.logger.info("browser.sleep_block_released", { blockerId: this.powerSaveBlockerId });
+      this.powerSaveBlockerId = null;
+    }
+  }
+
   reapExpiredTurnTabs(now = Date.now()) {
+    const lastSweepAt = this.lastTurnSweepAt;
+    this.lastTurnSweepAt = now;
+    if (sweepGapIndicatesSuspension(lastSweepAt, now, TURN_HEARTBEAT_SWEEP_MS)) {
+      // The launcher itself was frozen, so missing heartbeats are evidence of the sleep, not of a
+      // dead helper. Reaping here is what turned every system sleep into a lost turn.
+      this.refreshTurnLeases("sweep_gap", now);
+      return;
+    }
     for (const tab of [...this.turnTabs.values()]) {
       if (tab.status === "ready") {
         if (now - (tab.lastHeartbeatAt ?? 0) < RETAINED_TURN_TAB_TTL_MS) continue;
@@ -968,6 +1018,7 @@ class BrowserHost {
   removeTurnTab(tab, abortRunning) {
     if (!this.turnTabs.has(tab.id)) return;
     this.turnTabs.delete(tab.id);
+    this.syncPowerSaveBlocker();
     if (abortRunning && tab.status === "running") {
       this.closedTurnOwners.set(tab.traceId, tab.helperPid);
       tab.status = "aborted";
@@ -1374,6 +1425,7 @@ class BrowserHost {
     }
     const cancelledByUser = this.userCancelledTurnOwners.get(traceId) === helperPid;
     tab.status = status === "completed" ? "ready" : status === "aborted" ? "aborted" : "error";
+    this.syncPowerSaveBlocker();
     tab.message = status === "completed" ? "Task completed" : message || `ChatGPT turn ${status}`;
     tab.loading = false;
     if (!tab.view.webContents.isDestroyed()) tab.view.webContents.setBackgroundThrottling(true);
@@ -1779,6 +1831,14 @@ class BrowserHost {
     this.closeAuthView(this.authView, true);
     this.clearHomeNavigationTimeout();
     if (this.turnLeaseSweep) clearInterval(this.turnLeaseSweep);
+    if (this.resumeListener && powerMonitor && typeof powerMonitor.removeListener === "function") {
+      powerMonitor.removeListener("resume", this.resumeListener);
+      this.resumeListener = null;
+    }
+    if (this.powerSaveBlockerId !== null && powerSaveBlocker && typeof powerSaveBlocker.stop === "function") {
+      powerSaveBlocker.stop(this.powerSaveBlockerId);
+      this.powerSaveBlockerId = null;
+    }
     for (const tab of this.turnTabs.values()) {
       try { this.window.contentView.removeChildView(tab.view); } catch {}
       if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();

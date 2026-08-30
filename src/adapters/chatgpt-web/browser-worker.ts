@@ -634,6 +634,59 @@ export const browserStageTimeouts = {
   multipartStageSend: 180_000,
 } as const;
 
+/**
+ * Detects that this process was suspended (system sleep) by watching for gaps in a steady tick.
+ * On Apple Silicon the monotonic clock keeps advancing through sleep, so elapsed time alone cannot
+ * distinguish "the stage really took 15 minutes" from "the machine slept for 14 of them" — and a
+ * stage budget charged for slept time cancels turns that never got their budget awake.
+ */
+export class ChatGptSuspensionClock {
+  private suspendedTotalMs = 0;
+  private lastTickAt: number;
+  private timer: ReturnType<typeof setInterval> | undefined;
+
+  constructor(
+    private readonly tickIntervalMs = 1_000,
+    private readonly gapThresholdMs = 5_000,
+  ) {
+    this.lastTickAt = Date.now();
+  }
+
+  start(): void {
+    if (this.timer) return;
+    this.lastTickAt = Date.now();
+    this.timer = setInterval(() => this.tick(Date.now()), this.tickIntervalMs);
+    this.timer.unref?.();
+  }
+
+  /** Exposed for tests; production ticks come from the interval above. */
+  tick(now: number): void {
+    const gap = now - this.lastTickAt;
+    this.lastTickAt = now;
+    if (gap >= this.gapThresholdMs) this.suspendedTotalMs += gap - this.tickIntervalMs;
+  }
+
+  suspendedMs(): number {
+    return this.suspendedTotalMs;
+  }
+}
+
+export const chatGptSuspensionClock = new ChatGptSuspensionClock();
+
+/**
+ * How much of a stage budget remains once slept time is refunded. Zero means the stage really
+ * consumed its budget while awake and the timeout stands.
+ */
+export function remainingStageBudgetMs(
+  timeoutMs: number,
+  elapsedMs: number,
+  suspendedMs: number,
+): number {
+  const awakeMs = elapsedMs - suspendedMs;
+  if (awakeMs >= timeoutMs) return 0;
+  return Math.max(250, timeoutMs - awakeMs);
+}
+
 export const CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS = 5_000;
 export const MAX_CHATGPT_BROWSER_PAGE_REBINDS = 2;
 
@@ -1584,17 +1637,31 @@ export class ChatGptBrowserWorker {
     stage: string,
     timeoutMs: number,
     action: (abortSignal: AbortSignal) => Promise<T>,
+    suspensionClock: Pick<ChatGptSuspensionClock, "suspendedMs"> = chatGptSuspensionClock,
   ): Promise<T> {
+    chatGptSuspensionClock.start();
     const startedAt = performance.now();
+    const suspendedAtStart = suspensionClock.suspendedMs();
     console.info(`[chatgpt-web] browser turn ${traceId} stage=${stage} started`);
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const timeout = new Promise<never>((_, rejectTimeout) => {
-        timer = setTimeout(() => {
+        const fireOrRearm = () => {
+          // A stage that spans a system sleep has not consumed its budget: the browser was as
+          // frozen as this process, so slept time is refunded and the timer re-armed for what the
+          // stage is still owed. Observed live as effort_selection "timing out" at 901s of a 120s
+          // budget, to the second of a DarkWake.
+          const suspendedMs = suspensionClock.suspendedMs() - suspendedAtStart;
+          const remaining = remainingStageBudgetMs(timeoutMs, performance.now() - startedAt, suspendedMs);
+          if (remaining > 0) {
+            timer = setTimeout(fireOrRearm, remaining);
+            return;
+          }
           rejectTimeout(new Error(`ChatGPT browser stage timed out: ${stage}`));
           controller.abort();
-        }, timeoutMs);
+        };
+        timer = setTimeout(fireOrRearm, timeoutMs);
       });
       const value = await Promise.race([action(controller.signal), timeout]);
       console.info(`[chatgpt-web] browser turn ${traceId} stage=${stage} completed durationMs=${Math.round(performance.now() - startedAt)}`);

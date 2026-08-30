@@ -1,12 +1,13 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { Page } from "playwright-core";
-import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, MAX_CHATGPT_MULTIPART_STAGE_ATTEMPTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_STOPPED_THINKING_GRACE_MS, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptStoppedThinkingTracker, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, chatGptConnectorAttachmentMode, chatGptEffortSelectionRequired, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, MAX_CHATGPT_MULTIPART_STAGE_ATTEMPTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_STOPPED_THINKING_GRACE_MS, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptStoppedThinkingTracker, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, chatGptConnectorAttachmentMode, chatGptEffortSelectionRequired, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
 import { parseChatGptEffortSliderState } from "../src/chatgpt-session";
 import { ChatGptExternalTurnProgress } from "../src/adapters/chatgpt-web/turn-progress";
+import type { CodexProviderConfig } from "../src/types";
 
 function personalizedTemporaryChatRole(
   _role: string,
@@ -2501,3 +2502,62 @@ test("a staged Bigger Context part gets an acknowledgement window sized to its p
   // It is the same budget the staged send already gets; the two bound the same oversized exchange.
   expect(CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS).toBe(browserStageTimeouts.multipartStageSend);
 });
+
+test("the suspension clock charges only tick gaps that mean the process was frozen", () => {
+  const clock = new ChatGptSuspensionClock(1_000, 5_000);
+  clock.tick(1_000);
+  clock.tick(2_000);
+  clock.tick(3_100);
+  expect(clock.suspendedMs()).toBe(0);
+
+  // Fifteen minutes without a tick is a sleep; the ordinary interval is refunded from the charge.
+  clock.tick(3_100 + 15 * 60_000);
+  expect(clock.suspendedMs()).toBe(15 * 60_000 - 1_000);
+});
+
+test("remaining stage budget refunds slept time and stands once the awake budget is spent", () => {
+  expect(remainingStageBudgetMs(120_000, 901_000, 890_000)).toBe(109_000);
+  expect(remainingStageBudgetMs(120_000, 120_000, 0)).toBe(0);
+  expect(remainingStageBudgetMs(120_000, 901_000, 0)).toBe(0);
+  expect(remainingStageBudgetMs(200, 210, 50)).toBe(250);
+});
+
+test("a stage that spans a system sleep is not charged for the slept time", async () => {
+  // The live failure: effort_selection ran 901s against a 120s budget because the Mac slept
+  // 14 minutes of it, and the stage died on DarkWake. Here the fake clock reports a sleep longer
+  // than the whole budget, so the first timer firing must re-arm instead of failing.
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://suspension-stage-${Date.now()}`,
+    chatgptWeb: { localToolsEnabled: false, solAvailable: true, proAvailable: true },
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider) as unknown as {
+    runStage<T>(
+      traceId: string,
+      stage: string,
+      timeoutMs: number,
+      action: (signal: AbortSignal) => Promise<T>,
+      clock?: { suspendedMs(): number },
+    ): Promise<T>;
+  };
+
+  let suspended = 0;
+  const clock = { suspendedMs: () => suspended };
+  const outcome: string[] = [];
+  const stage = worker.runStage(
+    "suspension-test",
+    "probe",
+    200,
+    () => new Promise<never>(() => {}),
+    clock,
+  ).catch(error => { outcome.push((error as Error).message); });
+
+  // The sleep is discovered when the first timer fires: 300ms slept against a 200ms budget.
+  suspended = 300;
+  await Bun.sleep(320);
+  expect(outcome).toEqual([]);
+
+  // No further sleep: the re-armed timer now expires on genuinely awake time.
+  await stage;
+  expect(outcome).toEqual(["ChatGPT browser stage timed out: probe"]);
+}, 10_000);
