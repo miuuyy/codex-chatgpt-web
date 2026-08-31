@@ -80,6 +80,12 @@ export interface OperationState {
   message: string;
 }
 
+export interface BridgeConnectionState {
+  active: boolean;
+  status: "checking" | "connecting" | "connected" | "disconnecting" | "disconnected" | "unavailable" | "error";
+  detail: string;
+}
+
 export type UpdateState =
   | { status: "disabled" | "idle" | "checking" | "up-to-date" }
   | { status: "available" | "downloading" | "installing"; version: string }
@@ -110,6 +116,7 @@ export interface LauncherSnapshot {
   version: string;
   smokePassed: boolean;
   operation: OperationState | null;
+  connection: BridgeConnectionState;
   update: UpdateState;
 }
 
@@ -176,6 +183,7 @@ export interface LauncherApi {
   logs(limit?: number): Promise<LogRecord[]>;
   exportLogs(destination: "clipboard" | "file"): Promise<string | null>;
   clearLogs(): Promise<{ cleared: boolean; logs: LogRecord[] }>;
+  setBridgeConnection(active: boolean): Promise<BridgeConnectionState>;
   installUpdate(): Promise<boolean>;
   windowState(): Promise<{ fullScreen: boolean; maximized: boolean }>;
   windowControl(action: "close" | "minimize" | "zoom"): void;
@@ -183,6 +191,7 @@ export interface LauncherApi {
   onStateChanged(listener: (state: LauncherState) => void): () => void;
   onBrowserState(listener: (state: BrowserState) => void): () => void;
   onOperation(listener: (state: OperationState) => void): () => void;
+  onBridgeConnection(listener: (state: BridgeConnectionState) => void): () => void;
   onLog(listener: (record: LogRecord) => void): () => void;
   onUpdateState(listener: (state: UpdateState) => void): () => void;
 }

@@ -11,6 +11,7 @@ import {
 import { copyFor, type Copy } from "./i18n";
 import { Icon, type IconName } from "./icons";
 import type {
+  BridgeConnectionState,
   BrowserState,
   DoctorReport,
   Language,
@@ -70,6 +71,9 @@ export function App() {
       setOperation(next);
       if (next.status === "failed" && next.name !== "mcp-verification") setError(next.message);
     });
+    const unsubscribeBridgeConnection = api.onBridgeConnection((connection) => {
+      setSnapshot((current) => current ? { ...current, connection } : current);
+    });
     const unsubscribeLog = api.onLog((record) => setLogs((current) => [...current.slice(-299), record]));
     const unsubscribeUpdate = api.onUpdateState((update) => {
       setSnapshot((current) => current ? { ...current, update } : current);
@@ -79,6 +83,7 @@ export function App() {
       unsubscribeState();
       unsubscribeBrowser();
       unsubscribeOperation();
+      unsubscribeBridgeConnection();
       unsubscribeLog();
       unsubscribeUpdate();
     };
@@ -419,6 +424,15 @@ function LauncherShell({
     setSidebarOpen(next);
   };
 
+  const toggleBridgeConnection = async () => {
+    setError(null);
+    try {
+      await api!.setBridgeConnection(!snapshot.connection.active);
+    } catch (cause) {
+      setError(messageOf(cause));
+    }
+  };
+
   const navigateSurface = (next: Surface) => {
     setSurface(next);
     if (compactSidebar) setSidebarOpen(false);
@@ -482,9 +496,12 @@ function LauncherShell({
       initial={{ opacity: 0 }}
     >
       <TitleBar
+        connection={snapshot.connection}
         copy={copy}
         devProfile={devProfile}
         draggable={surface !== "chat"}
+        operationBusy={operation?.status === "running"}
+        onToggleConnection={() => void toggleBridgeConnection()}
         sidebarOpen={sidebarOpen}
         toggleSidebar={toggleSidebar}
       />
@@ -669,18 +686,44 @@ function LauncherShell({
 }
 
 function TitleBar({
+  connection,
   copy,
   devProfile,
   draggable,
+  operationBusy,
+  onToggleConnection,
   sidebarOpen,
   toggleSidebar,
 }: {
+  connection: BridgeConnectionState;
   copy: Copy;
   devProfile: boolean;
   draggable: boolean;
+  operationBusy: boolean;
+  onToggleConnection: () => void;
   sidebarOpen: boolean;
   toggleSidebar: () => void;
 }) {
+  const working = connection.status === "checking"
+    || connection.status === "connecting"
+    || connection.status === "disconnecting";
+  const statusLabel = connection.status === "connected"
+    ? copy.bridgeConnected
+    : connection.status === "connecting"
+      ? copy.bridgeConnecting
+      : connection.status === "disconnecting"
+        ? copy.bridgeDisconnecting
+        : connection.status === "unavailable"
+          ? copy.bridgeUnavailable
+          : copy.bridgeDisconnected;
+  const statusTone = connection.status === "error"
+    ? "error"
+    : connection.status === "connected"
+      ? "ready"
+      : working
+        ? "busy"
+        : "idle";
+  const actionLabel = connection.active ? copy.bridgeDisconnect : copy.bridgeConnect;
   return (
     <header className={`app-titlebar${draggable ? " draggable" : ""}`}>
       <div className="titlebar-left no-drag">
@@ -691,6 +734,26 @@ function TitleBar({
         />
         {devProfile ? <span className="titlebar-dev-profile">{copy.devBadge}</span> : null}
       </div>
+      {!devProfile ? (
+        <div className="titlebar-connection no-drag">
+          <span className={`titlebar-connection-state is-${connection.status}`} title={connection.detail}>
+            <StateDot state={statusTone} />
+            <span>{statusLabel}</span>
+          </span>
+          <button
+            aria-label={actionLabel}
+            aria-pressed={connection.active}
+            className={`titlebar-power${connection.active ? " is-running" : ""}`}
+            disabled={working || operationBusy || connection.status === "unavailable"}
+            onClick={onToggleConnection}
+            title={connection.detail}
+            type="button"
+          >
+            <Icon name="power" />
+            <span>{actionLabel}</span>
+          </button>
+        </div>
+      ) : null}
     </header>
   );
 }

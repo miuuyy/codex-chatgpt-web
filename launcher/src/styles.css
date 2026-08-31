@@ -155,6 +155,74 @@ code {
   border-radius: 8px;
 }
 
+.titlebar-connection {
+  position: fixed;
+  z-index: 110;
+  top: 9px;
+  right: 12px;
+  display: flex;
+  height: 28px;
+  align-items: center;
+  gap: 10px;
+  pointer-events: auto;
+}
+
+.titlebar-connection-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  font-weight: 500;
+}
+
+.titlebar-connection-state.is-connected {
+  color: var(--color-text-secondary);
+}
+
+.titlebar-connection-state.is-error {
+  color: var(--color-text-error);
+}
+
+.titlebar-power {
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 11px;
+  border: 1px solid rgb(64 201 119 / 26%);
+  border-radius: var(--radius-round);
+  background: rgb(64 201 119 / 10%);
+  color: var(--green-300);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  transition:
+    border-color var(--duration-micro) ease,
+    background var(--duration-micro) ease,
+    color var(--duration-micro) ease;
+}
+
+.titlebar-power.is-running {
+  border-color: rgb(255 103 100 / 24%);
+  background: rgb(255 103 100 / 9%);
+  color: var(--red-300);
+}
+
+.titlebar-power:hover:not(:disabled) {
+  border-color: rgb(64 201 119 / 42%);
+  background: rgb(64 201 119 / 16%);
+}
+
+.titlebar-power.is-running:hover:not(:disabled) {
+  border-color: rgb(255 103 100 / 40%);
+  background: rgb(255 103 100 / 15%);
+}
+
+.titlebar-power svg {
+  width: 14px;
+  height: 14px;
+}
+
 .titlebar-dev-profile,
 .dev-profile-badge {
   display: inline-flex;
@@ -178,6 +246,10 @@ code {
 
 .app-root:not([data-platform="darwin"]) .titlebar-left {
   left: 8px;
+}
+
+.app-root:not([data-platform="darwin"]) .titlebar-connection {
+  right: 148px;
 }
 
 .app-root:not([data-platform="darwin"]) .titlebar-left .icon-button {
@@ -2494,6 +2566,10 @@ code {
 }
 
 @media (max-width: 760px) {
+  .titlebar-connection-state {
+    display: none;
+  }
+
   .bigger-context-recommendation-backdrop {
     padding: calc(var(--height-titlebar) + 12px) 12px 12px;
   }

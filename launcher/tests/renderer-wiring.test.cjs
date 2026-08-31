@@ -73,7 +73,7 @@ test("normal shutdown persists the ChatGPT session before closing browser views"
 
 test("DEV launcher exposes its profile and supervises only its Full-mode MCP runtime", () => {
   assert.match(electronMain, /profile:\s*LAUNCHER_PROFILE\.kind/);
-  assert.match(electronMain, /if \(IS_DEV_PROFILE\) \{[\s\S]*?config\?\.mode === "full"[\s\S]*?runtimeSupervisor\.startIfConfigured\(\)[\s\S]*?\} else void \(async \(\) => \{/);
+  assert.match(electronMain, /if \(IS_DEV_PROFILE\) \{[\s\S]*?config\?\.mode === "full"[\s\S]*?runtimeSupervisor\.startIfConfigured\(\)[\s\S]*?\} else \{[\s\S]*?void \(async \(\) => \{/);
   assert.match(electronMain, /await runtimeSupervisor\?\.shutdown\(\{ cancelActiveTurns: true, force: true \}\)/);
   assert.match(electronMain, /packaged:\s*app\.isPackaged && !IS_DEV_PROFILE/);
   assert.match(electronMain, /IS_DEV_PROFILE && !stateStore\.read\(\)\.onboardingComplete/);
@@ -127,6 +127,19 @@ test("the configured launcher exposes no persistent bridge opt-out", () => {
   assert.doesNotMatch(preloadSource, /launcher:bridge-enabled|setBridgeEnabled/);
   assert.doesNotMatch(electronMain, /launcher:bridge-enabled|bridge-disabled|bridgeEnabled/);
   assert.match(electronMain, /runtimeSupervisor\.startIfConfigured\(\)[\s\S]*?runtimeHost\.connectBridgeRoute\(\)/);
+});
+
+test("the title bar connection control mirrors the live Codex bridge route", () => {
+  assert.match(preloadSource, /setBridgeConnection:\s*\(active\)[\s\S]*?launcher:bridge-set-active/);
+  assert.match(preloadSource, /onBridgeConnection:[\s\S]*?launcher:bridge-connection/);
+  assert.match(electronMain, /connection:\s*bridgeConnection/);
+  assert.match(
+    electronMain,
+    /launcher:bridge-set-active[\s\S]*?runtimeSupervisor\.startIfConfigured\(\)[\s\S]*?runtimeHost\.connectBridgeRoute\(\)[\s\S]*?runtimeHost\.restoreBridgeRoute\("bridge-disconnect"\)/,
+  );
+  assert.match(appSource, /copy\.bridgeConnected[\s\S]*?copy\.bridgeDisconnect[\s\S]*?className="titlebar-connection no-drag"/);
+  assert.match(stylesSource, /\.titlebar-connection\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*110;[^}]*top:\s*9px;/s);
+  assert.match(stylesSource, /\.titlebar-power\.is-running\s*\{[^}]*color:\s*var\(--red-300\);/s);
 });
 
 test("MCP connection is available independently of model catalog verification", () => {

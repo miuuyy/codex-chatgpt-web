@@ -115,6 +115,11 @@ let exitCommitted = false;
 let smokePassedThisSession = false;
 let cdpPort = 0;
 let lastOperation = null;
+let bridgeConnection = {
+  active: false,
+  status: IS_DEV_PROFILE ? "unavailable" : "checking",
+  detail: IS_DEV_PROFILE ? "The DEV harness connection is controlled by the repository CLI" : "Checking Codex connection",
+};
 let catalogVerificationTimer = null;
 let catalogVerificationInFlight = false;
 let updateController = null;
@@ -141,6 +146,12 @@ function send(channel, value) {
 function publishOperation(operation) {
   lastOperation = operation;
   send("launcher:operation", operation);
+}
+
+function publishBridgeConnection(connection) {
+  bridgeConnection = connection;
+  send("launcher:bridge-connection", connection);
+  return connection;
 }
 
 function stopCatalogVerificationMonitor() {
@@ -478,6 +489,7 @@ function registerIpc({ logger, stateStore }) {
     version: app.getVersion(),
     smokePassed: smokePassedThisSession || smokePassedForCurrentVersion(stateStore.read()),
     operation: lastOperation,
+    connection: bridgeConnection,
     update: updateController?.getState() ?? { status: "disabled" },
   }));
 
@@ -618,6 +630,79 @@ function registerIpc({ logger, stateStore }) {
   });
 
   handle("launcher:doctor", () => IS_DEV_PROFILE ? runtimeHost.devDoctor() : runtimeHost.doctor());
+  handle("launcher:bridge-set-active", async (_event, active) => {
+    if (IS_DEV_PROFILE) throw new Error("The DEV harness connection is controlled by the repository CLI");
+    if (typeof active !== "boolean") throw new Error("Codex bridge connection state must be boolean");
+    const previousActive = bridgeConnection.active;
+    if (active === previousActive
+      && (bridgeConnection.status === "connected" || bridgeConnection.status === "disconnected")) {
+      return bridgeConnection;
+    }
+    publishBridgeConnection({
+      active: previousActive,
+      status: active ? "connecting" : "disconnecting",
+      detail: active ? "Connecting Codex to the launcher" : "Restoring the previous Codex route",
+    });
+    try {
+      if (browserHost.activeTraceId) {
+        throw new Error("Finish the active Codex task before changing the launcher connection");
+      }
+      if (active) {
+        const runtime = await runtimeSupervisor.startIfConfigured();
+        if (runtime.status !== "ready") {
+          const detail = runtime.detail || (
+            runtime.status === "not-configured"
+              ? "Complete launcher setup before connecting Codex"
+              : "The launcher runtime is not ready"
+          );
+          publishBridgeConnection({
+            active: false,
+            status: runtime.status === "not-configured" || runtime.status === "needs-setup" ? "unavailable" : "error",
+            detail,
+          });
+          throw new Error(detail);
+        }
+        const route = await runtimeHost.connectBridgeRoute();
+        if (route.changed) {
+          const state = stateStore.update({
+            codexCatalogVerified: false,
+            codexRestartRequired: true,
+          });
+          send("launcher:state-changed", state);
+          startCatalogVerificationMonitor({ logger, stateStore });
+        }
+        return publishBridgeConnection({
+          active: true,
+          status: "connected",
+          detail: "Codex is routed through the launcher",
+        });
+      }
+
+      const route = await runtimeHost.restoreBridgeRoute("bridge-disconnect");
+      if (route.changed) {
+        const state = stateStore.update({
+          codexCatalogVerified: false,
+          codexRestartRequired: true,
+        });
+        send("launcher:state-changed", state);
+        stopCatalogVerificationMonitor();
+      }
+      return publishBridgeConnection({
+        active: false,
+        status: "disconnected",
+        detail: "The previous Codex route is restored; restart Codex once",
+      });
+    } catch (error) {
+      if (bridgeConnection.status !== "unavailable") {
+        publishBridgeConnection({
+          active: previousActive,
+          status: "error",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
+      throw error;
+    }
+  });
   handle("launcher:cancel-turns", () => {
     if (IS_DEV_PROFILE) throw new Error("DEV chat turns are owned by the repository CLI process");
     return runtimeHost.cancelActiveTurns();
@@ -651,6 +736,11 @@ function registerIpc({ logger, stateStore }) {
     });
     send("launcher:state-changed", state);
     stopCatalogVerificationMonitor();
+    publishBridgeConnection({
+      active: false,
+      status: "unavailable",
+      detail: "Install the Codex integration before connecting",
+    });
     return { cancelled: false, state };
   });
   handle("launcher:setup-core", async () => {
@@ -692,6 +782,13 @@ function registerIpc({ logger, stateStore }) {
       });
     });
     if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
+    if (!IS_DEV_PROFILE) {
+      publishBridgeConnection({
+        active: true,
+        status: "connected",
+        detail: "Codex is routed through the launcher",
+      });
+    }
     return { ok: true, stdout: result.stdout, restartRequired: !IS_DEV_PROFILE };
   });
   handle("launcher:setup-mcp", async (_event, input) => {
@@ -730,6 +827,13 @@ function registerIpc({ logger, stateStore }) {
       mcpGuideStep: 2,
       codexRestartRequired: IS_DEV_PROFILE ? false : true,
     });
+    if (!IS_DEV_PROFILE) {
+      publishBridgeConnection({
+        active: true,
+        status: "connected",
+        detail: "Codex is routed through the launcher",
+      });
+    }
     return {
       ok: true,
       stdout: result.stdout,
@@ -986,6 +1090,14 @@ async function start() {
     publishOperation,
     supervisor: runtimeSupervisor,
   });
+  if (!IS_DEV_PROFILE) {
+    const configured = runtimeHost.runtimeConfigSnapshot().configured;
+    publishBridgeConnection({
+      active: false,
+      status: configured ? "checking" : "unavailable",
+      detail: configured ? "Checking Codex connection" : "Complete launcher setup before connecting Codex",
+    });
+  }
   browserHost = new BrowserHost({
     window: mainWindow,
     descriptorPath: BROWSER_DESCRIPTOR_PATH,
@@ -1103,7 +1215,15 @@ async function start() {
         send("launcher:state-changed", failed);
       });
     }
-  } else void (async () => {
+  } else {
+    if (runtimeHost.runtimeConfigSnapshot().configured) {
+      publishBridgeConnection({
+        active: false,
+        status: "connecting",
+        detail: "Connecting Codex to the launcher",
+      });
+    }
+    void (async () => {
     await startupAuthenticationRefresh;
     const upgrade = await runtimeHost.upgradeManagedRuntime();
     if (upgrade.updated) {
@@ -1164,6 +1284,11 @@ async function start() {
         send("launcher:state-changed", state);
       }
       startCatalogVerificationMonitor({ logger, stateStore });
+      publishBridgeConnection({
+        active: true,
+        status: "connected",
+        detail: "Codex is routed through the launcher",
+      });
       return;
     }
     if (runtime.status === "not-configured") {
@@ -1186,6 +1311,11 @@ async function start() {
           message: `Local runtime is not configured; restoring the previous Codex route also failed: ${routeRecovery.error}`,
         });
       }
+      publishBridgeConnection({
+        active: false,
+        status: "unavailable",
+        detail: "Complete launcher setup before connecting Codex",
+      });
       return;
     }
     const routeRecovery = await restoreCodexRouteAfterRuntimeFailure({ logger, stateStore });
@@ -1206,6 +1336,11 @@ async function start() {
             ? `${detail}; the previous Codex route was restored, restart Codex once`
             : detail,
       });
+      publishBridgeConnection({
+        active: false,
+        status: runtime.status === "needs-setup" ? "unavailable" : "error",
+        detail,
+      });
     }
   }).catch(async (error) => {
     const primary = error instanceof Error ? error.message : String(error);
@@ -1219,7 +1354,9 @@ async function start() {
     const state = stateStore.update({ coreSetupComplete: false, codexCatalogVerified: false });
     send("launcher:state-changed", state);
     publishOperation({ name: "runtime-start", status: "failed", message });
+    publishBridgeConnection({ active: false, status: "error", detail: message });
   });
+  }
 
   app.on("activate", () => showMainWindow());
   app.on("before-quit", (event) => {
