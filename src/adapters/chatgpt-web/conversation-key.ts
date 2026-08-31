@@ -38,11 +38,16 @@ export function chatGptConversationKey(
     threadId: identity.threadId,
     modelId: parsed.modelId,
     reasoning: parsed.options.reasoning,
+    systemPrompt: parsed.context.systemPrompt ?? [],
     compaction: compactionEpoch(raw?.input),
   })).digest("hex");
 }
 
-/** Full history remains canonical; a retained epoch receives only the suffix after its last assistant reply. */
+/**
+ * Full history remains canonical. A retained epoch already holds its static system instructions,
+ * so follow-up turns send only the canonical suffix after the last assistant reply. The system
+ * prompt is part of the conversation key above; if it changes, the caller rotates to a fresh chat.
+ */
 export function retainedConversationResumeRequest(
   parsed: CodexParsedRequest,
 ): CodexParsedRequest | undefined {
@@ -52,6 +57,7 @@ export function retainedConversationResumeRequest(
     ...parsed,
     context: {
       ...parsed.context,
+      systemPrompt: undefined,
       messages: parsed.context.messages.slice(lastAssistant + 1),
     },
   };

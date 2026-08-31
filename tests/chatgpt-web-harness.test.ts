@@ -334,7 +334,9 @@ describe("ChatGPT outer-native harness v4", () => {
     };
 
     const first = rawWireRequest(environmentXml);
+    first.context.systemPrompt = ["stable retained system contract"];
     const second = parsed();
+    second.context.systemPrompt = ["stable retained system contract"];
     second.context.messages = [
       { role: "user", content: "Inspect the project", timestamp: 2 },
       { role: "assistant", content: [{ type: "text", text: "First retained answer" }], timestamp: 3 },
@@ -375,9 +377,11 @@ describe("ChatGPT outer-native harness v4", () => {
       expect(conversationKeys[1]).toBe(conversationKeys[0]);
       expect(tokens[1]).not.toBe(tokens[0]);
       expect(preparedPrompts[0]).toContain("Inspect the project");
+      expect(preparedPrompts[0]).toContain("stable retained system contract");
       expect(preparedPrompts[1]).toContain("Continue in the same repository");
       expect(preparedPrompts[1]).not.toContain("First retained answer");
       expect(preparedPrompts[1]).not.toContain(environmentXml);
+      expect(preparedPrompts[1]).not.toContain("stable retained system contract");
     } finally {
       (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
       chatGptTurnSessions.clear();

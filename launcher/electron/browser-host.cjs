@@ -345,6 +345,8 @@ class BrowserHost {
       conversationKey,
       connectorIdentity,
       connectorBound: false,
+      retainedUrl: null,
+      retainedNavigationInvalidated: false,
       helperPid,
       view,
       status: "running",
@@ -388,6 +390,15 @@ class BrowserHost {
     return true;
   }
 
+  retainedConversationIsCurrent(tab) {
+    const contents = tab.view?.webContents;
+    if (!contents || contents.isDestroyed()) return false;
+    return tab.status === "ready"
+      && tab.retainedNavigationInvalidated !== true
+      && typeof tab.retainedUrl === "string"
+      && contents.getURL() === tab.retainedUrl;
+  }
+
   zoomShell(action) {
     const contents = this.window.webContents;
     if (!contents || contents.isDestroyed()) throw new Error("Launcher shell is unavailable for zoom");
@@ -423,6 +434,15 @@ class BrowserHost {
 
   bindTurnContents(tab) {
     const contents = tab.view.webContents;
+    const invalidateRetainedConversation = (evidence) => {
+      if (tab.status !== "ready" || tab.retainedNavigationInvalidated === true) return;
+      tab.retainedNavigationInvalidated = true;
+      this.logger.info("browser.retained_conversation_invalidated", {
+        tabId: tab.id,
+        traceId: tab.traceId,
+        evidence,
+      });
+    };
     contents.setWindowOpenHandler(({ url }) => {
       if (allowedAuthUrl(url)) {
         this.logger.warn("browser.turn_authentication_blocked", { tabId: tab.id, traceId: tab.traceId });
@@ -444,6 +464,7 @@ class BrowserHost {
     contents.on("will-redirect", blockAuthenticationNavigation);
     contents.on("did-start-navigation", (_event, url, inPlace, mainFrame) => {
       if (!mainFrame) return;
+      invalidateRetainedConversation("main-frame navigation");
       tab.url = url;
       tab.loading = true;
       if (!inPlace) {
@@ -488,7 +509,10 @@ class BrowserHost {
       this.publishState?.(this.snapshot());
     });
     contents.on("did-navigate-in-page", (_event, url, mainFrame) => {
-      if (mainFrame) tab.url = url;
+      if (mainFrame) {
+        invalidateRetainedConversation("in-page navigation");
+        tab.url = url;
+      }
       this.publishState?.(this.snapshot());
     });
     contents.on("did-fail-load", (_event, errorCode, errorDescription, url, mainFrame) => {
@@ -1281,7 +1305,7 @@ class BrowserHost {
       throw new Error(`ChatGPT browser turn ${traceId} conversation metadata does not match its owned tab`);
     }
     const retainedMatches = conversationKey ? [...this.turnTabs.values()].filter((tab) => (
-      tab.status === "ready"
+      this.retainedConversationIsCurrent(tab)
       && tab.conversationKey === conversationKey
       && tab.connectorIdentity === connectorIdentity
       && (!connectorIdentity || tab.connectorBound === true)
@@ -1383,8 +1407,11 @@ class BrowserHost {
     if (status === "completed"
       && retain
       && tab.conversationKey
-      && (!tab.connectorIdentity || connectorBound)) {
+      && (!tab.connectorIdentity || connectorBound)
+      && !tab.view.webContents.isDestroyed()) {
       tab.connectorBound = connectorBound === true;
+      tab.retainedUrl = tab.view.webContents.getURL();
+      tab.retainedNavigationInvalidated = false;
       tab.lastHeartbeatAt = Date.now();
       if (hideAfterTurn && !this.activeTraceId) this.hide();
       this.logger.info("browser.tab_retained", { tabId: tab.id, traceId });

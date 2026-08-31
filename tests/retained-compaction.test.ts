@@ -80,6 +80,7 @@ function controlBinding(instruction: string): { token: string; handoffId: string
 
 test("one browser conversation spans native turns and rotates only at compaction", () => {
   const before = request(false);
+  before.context.systemPrompt = ["stable system contract"];
   const sameTurn = structuredClone(before);
   (sameTurn._rawBody as { input: unknown[] }).input.push({
     type: "message",
@@ -116,7 +117,12 @@ test("one browser conversation spans native turns and rotates only at compaction
     }),
   };
   expect(chatGptConversationKey(otherThread, "provider")).not.toBe(chatGptConversationKey(before, "provider"));
-  expect(retainedConversationResumeRequest(before)?.context.messages).toEqual([
+  const changedSystem = structuredClone(before);
+  changedSystem.context.systemPrompt = ["updated system contract"];
+  expect(chatGptConversationKey(changedSystem, "provider")).not.toBe(chatGptConversationKey(before, "provider"));
+  const resume = retainedConversationResumeRequest(before);
+  expect(resume?.context.systemPrompt).toBeUndefined();
+  expect(resume?.context.messages).toEqual([
     { role: "user", content: "Continue with the next step", timestamp: 3 },
   ]);
 

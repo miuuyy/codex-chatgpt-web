@@ -1442,6 +1442,8 @@ test("a later provider round reuses only its exact connector-bound conversation"
     conversationKey,
     connectorIdentity: "Codex Native2",
     connectorBound: true,
+    retainedUrl: "https://chatgpt.com/c/original",
+    retainedNavigationInvalidated: false,
     helperPid: 111,
     status: "ready",
     loading: false,
@@ -1450,6 +1452,7 @@ test("a later provider round reuses only its exact connector-bound conversation"
     view: {
       webContents: {
         isDestroyed: () => false,
+        getURL: () => "https://chatgpt.com/c/original",
         setBackgroundThrottling: (enabled) => throttling.push(enabled),
       },
     },
@@ -1491,6 +1494,72 @@ test("a later provider round reuses only its exact connector-bound conversation"
   assert.equal(fixture.selectedTabId, tab.id);
   assert.deepEqual(throttling, [false]);
   assert.deepEqual(events, ["visible", "published", "descriptor", "browser.tab_reused"]);
+});
+
+test("navigating a retained task tab forces a fresh full-context turn", () => {
+  let currentUrl = "https://chatgpt.com/c/original";
+  const webContents = Object.assign(new EventEmitter(), {
+    setWindowOpenHandler() {},
+    isDestroyed: () => false,
+    getURL: () => currentUrl,
+  });
+  const conversationKey = "9".repeat(64);
+  const retained = {
+    id: "tab-navigated",
+    surfaceId: "surface-navigated",
+    traceId: "trace_previous",
+    conversationKey,
+    connectorIdentity: "Codex Native2",
+    connectorBound: true,
+    retainedUrl: currentUrl,
+    retainedNavigationInvalidated: false,
+    status: "ready",
+    view: { webContents },
+  };
+  const created = { id: "tab-fresh", surfaceId: "surface-fresh" };
+  const events = [];
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    manualOperation: null,
+    turnTabs: new Map([[retained.id, retained]]),
+    userCancelledTurnOwners: new Map(),
+    selectedTabId: retained.id,
+    createTurnTab: (...args) => {
+      assert.deepEqual(args, ["trace_next", 222, conversationKey, "Codex Native2"]);
+      return created;
+    },
+    syncViewVisibility() {},
+    snapshot: () => ({ tabs: [] }),
+    publishState() {},
+    logger: {
+      info: (event) => events.push(event),
+      warn() {},
+      error() {},
+    },
+  });
+  BrowserHost.prototype.bindTurnContents.call(fixture, retained);
+
+  currentUrl = "https://chatgpt.com/";
+  webContents.emit("did-navigate-in-page", {}, currentUrl, true);
+
+  assert.equal(retained.retainedNavigationInvalidated, true);
+  assert.deepEqual(
+    BrowserHost.prototype.beginTurn.call(
+      fixture,
+      "trace_next",
+      false,
+      222,
+      conversationKey,
+      "Codex Native2",
+    ),
+    {
+      surfaceId: "surface-fresh",
+      tabId: "tab-fresh",
+      reused: false,
+      connectorBound: false,
+    },
+  );
+  assert.equal(retained.status, "ready");
+  assert.deepEqual(events, ["browser.retained_conversation_invalidated", "browser.tab_created"]);
 });
 
 test("a retained conversation is not reused for a different connector identity", () => {
@@ -1709,6 +1778,7 @@ test("a completed keyed turn is retained for thirty minutes and preserves its ac
     loading: true,
     view: { webContents: {
       isDestroyed: () => false,
+      getURL: () => "https://chatgpt.com/c/retained",
       setBackgroundThrottling: (enabled) => throttling.push(enabled),
     } },
   };
@@ -1740,6 +1810,8 @@ test("a completed keyed turn is retained for thirty minutes and preserves its ac
   assert.equal(fixture.turnTabs.get(tab.id), tab);
   assert.equal(tab.status, "ready");
   assert.equal(tab.connectorBound, true);
+  assert.equal(tab.retainedUrl, "https://chatgpt.com/c/retained");
+  assert.equal(tab.retainedNavigationInvalidated, false);
   assert.equal(Number.isFinite(tab.lastHeartbeatAt), true);
   assert.deepEqual(throttling, [true]);
 
