@@ -48,6 +48,28 @@ function collectLines(stream, onLine, onError) {
   stream.on("error", (error) => onError?.(error));
 }
 
+function cloudflareStderrLogEntry(line) {
+  const match = String(line).match(/^\[cloudflared\]\s+\S+\s+(DBG|INF|WRN|ERR)\s+(.+)$/);
+  if (!match) return { level: "warning", line };
+  const [, cloudflareLevel, message] = match;
+  if (/^(?:Version |GOOS:|Settings:|cloudflared will not automatically update|Generated Connector ID:|Initial protocol |Created ICMP proxy|ICMP proxy will use |Starting metrics server|Tunnel connection curve preferences:)/.test(message)) {
+    return null;
+  }
+  if (/^precheck component=/.test(message)) return null;
+  if (/^\+-+\+$/.test(message)) return null;
+  const tableMessage = message.match(/^\|\s*(.*?)\s*\|$/)?.[1];
+  if (tableMessage !== undefined && !/\b(?:FAIL|WARNING|SUMMARY)\b/.test(tableMessage)) return null;
+  const level = cloudflareLevel === "ERR"
+    ? "error"
+    : cloudflareLevel === "WRN" || /\b(?:FAIL|WARNING)\b/.test(tableMessage || "")
+      ? "warning"
+      : "info";
+  return {
+    level,
+    line: `[cloudflared] ${tableMessage || message}`,
+  };
+}
+
 function loopbackHealthBaseURL(value) {
   if (typeof value !== "string" || !value.trim()) return null;
   try {
@@ -493,6 +515,12 @@ class RuntimeSupervisor {
     });
     collectLines(child.stderr, (line) => {
       this.lastChildOutput[name] = redactText(line).slice(0, 1_000);
+      if (name === "tunnel") {
+        const entry = cloudflareStderrLogEntry(line);
+        if (!entry) return;
+        this.logger[entry.level](`runtime.${name}_stderr`, { line: entry.line });
+        return;
+      }
       this.logger.warn(`runtime.${name}_stderr`, { line });
     }, (error) => {
       this.logger.warn(`runtime.${name}_stderr_unavailable`, { message: errorMessage(error) });
@@ -2122,6 +2150,7 @@ module.exports = {
   TUNNEL_MONITOR_INTERVAL_MS,
   TUNNEL_START_TIMEOUT_MS,
   RuntimeSupervisor,
+  cloudflareStderrLogEntry,
   managedTunnelConnectArgs,
   validateConfig,
 };

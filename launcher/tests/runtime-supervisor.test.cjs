@@ -11,6 +11,7 @@ const { linuxDesktopEntry, requireAutostartState } = require("../electron/autost
 const {
   MAX_RESTARTS_PER_WINDOW,
   RuntimeSupervisor,
+  cloudflareStderrLogEntry,
   managedTunnelConnectArgs,
   validateConfig,
 } = require("../electron/runtime-supervisor.cjs");
@@ -41,6 +42,26 @@ async function localHealthServer(statusForPath = () => 200, bodyForPath = () => 
     close: () => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
   };
 }
+
+test("Cloudflare stderr keeps failures while removing routine startup and duplicate precheck noise", () => {
+  const prefix = "[cloudflared] 2026-08-31T11:14:22Z ";
+  assert.deepEqual(
+    cloudflareStderrLogEntry(`${prefix}INF Registered tunnel connection connIndex=0 protocol=quic`),
+    { level: "info", line: "[cloudflared] Registered tunnel connection connIndex=0 protocol=quic" },
+  );
+  assert.deepEqual(
+    cloudflareStderrLogEntry(`${prefix}ERR failed to accept incoming stream requests`),
+    { level: "error", line: "[cloudflared] failed to accept incoming stream requests" },
+  );
+  assert.deepEqual(
+    cloudflareStderrLogEntry(`${prefix}INF | TCP Connectivity edge.example.com FAIL HTTP/2 is blocked |`),
+    { level: "warning", line: "[cloudflared] TCP Connectivity edge.example.com FAIL HTTP/2 is blocked" },
+  );
+  assert.equal(cloudflareStderrLogEntry(`${prefix}INF +--------------------+`), null);
+  assert.equal(cloudflareStderrLogEntry(`${prefix}INF | DNS Resolution edge.example.com PASS |`), null);
+  assert.equal(cloudflareStderrLogEntry(`${prefix}INF precheck component=\"DNS Resolution\" status=pass`), null);
+  assert.equal(cloudflareStderrLogEntry(`${prefix}INF Settings: map[credentials-file:/private/credentials.json]`), null);
+});
 
 function launcherConfig(descriptorPath, overrides = {}) {
   const root = path.dirname(descriptorPath);
