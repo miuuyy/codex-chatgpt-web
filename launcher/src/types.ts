@@ -1,6 +1,6 @@
 export type Language = "en" | "zh-CN" | "ja";
 export type LauncherProfile = "production" | "development";
-export type Surface = "home" | "chat" | "setup" | "mcp" | "activity" | "settings";
+export type Surface = "chat" | "setup" | "mcp" | "activity" | "settings";
 
 export interface LauncherState {
   version: 1;

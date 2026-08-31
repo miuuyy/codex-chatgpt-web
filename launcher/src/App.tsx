@@ -314,7 +314,7 @@ function LauncherShell({
   updateState: (state: LauncherState) => void;
 }) {
   const [surface, setSurface] = useState<Surface>(
-    snapshot.state.coreSetupComplete && snapshot.state.codexCatalogVerified ? "home" : "setup",
+    snapshot.state.coreSetupComplete && snapshot.state.codexCatalogVerified ? "chat" : "setup",
   );
   const devProfile = snapshot.profile === "development";
   const compactAtMount = useRef(window.matchMedia(COMPACT_SIDEBAR_QUERY).matches).current;
@@ -529,12 +529,6 @@ function LauncherShell({
             <nav className="sidebar-nav" aria-label={copy.workspace}>
               <SidebarGroup label={copy.workspace}>
                 <SidebarItem
-                  active={surface === "home"}
-                  icon="home"
-                  label={copy.home}
-                  onClick={() => navigateSurface("home")}
-                />
-                <SidebarItem
                   active={surface === "chat"}
                   badge={needsBrowser
                     ? <ActionDot pulse tone="required" />
@@ -599,16 +593,6 @@ function LauncherShell({
             key={surface}
             transition={{ duration: 0.16 }}
           >
-            {surface === "home" ? (
-              <HomeSurface
-                browser={browser}
-                copy={copy}
-                language={language}
-                logs={logs}
-                navigate={navigateSurface}
-                snapshot={snapshot}
-              />
-            ) : null}
             {surface === "chat" ? (
               <BrowserSurface
                 browser={browser}
@@ -749,104 +733,6 @@ function SidebarItem({
       <span>{label}</span>
       {badge ? <i className="sidebar-item-badge">{badge}</i> : null}
     </button>
-  );
-}
-
-function HomeSurface({
-  browser,
-  copy,
-  language,
-  logs,
-  navigate,
-  snapshot,
-}: {
-  browser: BrowserState | null;
-  copy: Copy;
-  language: Language;
-  logs: LogRecord[];
-  navigate: (surface: Surface) => void;
-  snapshot: LauncherSnapshot;
-}) {
-  const tabs = browser?.tabs ?? [];
-  const runningChats = tabs.filter((tab) => ["loading", "testing", "running"].includes(tab.status)).length;
-  const recentLogs = [...logs].reverse().slice(0, 4);
-  const accountReady = browser?.authenticated === true;
-  const codexReady = snapshot.state.coreSetupComplete === true && snapshot.state.codexCatalogVerified === true;
-  const mcpReady = snapshot.state.mcpSetupComplete === true;
-
-  return (
-    <ContentSurface subtitle={copy.homeSubtitle} title={copy.homeTitle}>
-      <div className="home-status-grid">
-        <StatusCard
-          body={accountReady ? copy.accountReady : copy.accountSignedOut}
-          icon="browser"
-          label={copy.accountStatus}
-          ready={accountReady}
-        />
-        <StatusCard
-          body={codexReady ? copy.codexReady : copy.codexNeedsSetup}
-          icon="setup"
-          label={copy.codexStatus}
-          ready={codexReady}
-        />
-        <StatusCard
-          body={mcpReady ? copy.mcpReadyDetail : copy.mcpOptionalDetail}
-          icon="mcp"
-          label="MCP"
-          ready={mcpReady}
-        />
-        <StatusCard
-          body={runningChats > 0 ? copy.activeChatsRunning.replace("{count}", String(runningChats)) : copy.activeChatsIdle}
-          icon="activity"
-          label={`${copy.activeChats} · ${tabs.length}`}
-          ready={runningChats > 0}
-        />
-      </div>
-
-      <SectionHeading label={copy.quickActions} spaced />
-      <div className="home-actions">
-        <button className="home-action is-primary" onClick={() => navigate("chat")} type="button">
-          <Icon name="browser" />
-          <span><strong>{copy.openChat}</strong><small>{copy.openChatBody}</small></span>
-          <Icon name="chevron" />
-        </button>
-        <button className="home-action" onClick={() => navigate("setup")} type="button">
-          <Icon name="setup" />
-          <span><strong>{copy.setup}</strong><small>{copy.setupSubtitle}</small></span>
-          <Icon name="chevron" />
-        </button>
-        <button className="home-action" onClick={() => navigate("mcp")} type="button">
-          <McpMark />
-          <span><strong>{copy.configureMcp}</strong><small>{copy.mcpSubtitle}</small></span>
-          <Icon name="chevron" />
-        </button>
-      </div>
-
-      <div className="section-heading home-activity-heading">
-        <span>{copy.recentActivity}</span>
-        <button className="text-button" onClick={() => navigate("activity")} type="button">{copy.viewAll}</button>
-      </div>
-      <div className="home-activity-card">
-        {recentLogs.length === 0 ? <div className="home-empty"><Icon name="logs" /><span>{copy.noLogs}</span></div> : null}
-        {recentLogs.map((record, index) => (
-          <div className="home-activity-row" key={`${record.at}-${record.event}-${index}`}>
-            <StateDot state={record.level === "error" ? "error" : record.level === "warning" ? "busy" : "ready"} />
-            <span><strong>{humanEvent(record.event)}</strong><small>{logDetail(record.detail)}</small></span>
-            <time>{formatTime(record.at, language)}</time>
-          </div>
-        ))}
-      </div>
-    </ContentSurface>
-  );
-}
-
-function StatusCard({ body, icon, label, ready }: { body: string; icon: IconName; label: string; ready: boolean }) {
-  return (
-    <article className={`status-card${ready ? " is-ready" : ""}`}>
-      <div><Icon name={icon} /><StateDot state={ready ? "ready" : "idle"} /></div>
-      <strong>{label}</strong>
-      <span>{body}</span>
-    </article>
   );
 }
 

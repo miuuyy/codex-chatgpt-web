@@ -24,10 +24,10 @@ test("native clicks reach the original ChatGPT browser surface instead of the wi
   assert.match(appSource, /<div className="browser-viewport" ref=\{browserSlotRef\}>/);
 });
 
-test("Home, Chat, Activity, and Settings share the launcher-native state", () => {
-  assert.match(appSource, /function HomeSurface\(/);
+test("Chat, Activity, and Settings share the launcher-native state", () => {
   assert.match(appSource, /function BrowserSurface\(/);
-  assert.match(appSource, /snapshot\.state\.mcpSetupComplete === true/);
+  assert.match(appSource, /snapshot\.state\.coreSetupComplete && snapshot\.state\.codexCatalogVerified \? "chat" : "setup"/);
+  assert.doesNotMatch(appSource, /HomeSurface|surface === "home"/);
   assert.match(appSource, /const \[filter, setFilter\] = useState<"all" \| "warning" \| "error">\("all"\)/);
   assert.match(appSource, /className="settings-card diagnostics-card"/);
   assert.doesNotMatch(appSource, /chrome\.runtime|chrome\.storage/);
