@@ -47,15 +47,15 @@ test("Cloudflare stderr keeps failures while removing routine startup and duplic
   const prefix = "[cloudflared] 2026-08-31T11:14:22Z ";
   assert.deepEqual(
     cloudflareStderrLogEntry(`${prefix}INF Registered tunnel connection connIndex=0 protocol=quic`),
-    { level: "info", line: "[cloudflared] Registered tunnel connection connIndex=0 protocol=quic" },
+    { method: "info", line: "[cloudflared] Registered tunnel connection connIndex=0 protocol=quic" },
   );
   assert.deepEqual(
     cloudflareStderrLogEntry(`${prefix}ERR failed to accept incoming stream requests`),
-    { level: "error", line: "[cloudflared] failed to accept incoming stream requests" },
+    { method: "error", line: "[cloudflared] failed to accept incoming stream requests" },
   );
   assert.deepEqual(
     cloudflareStderrLogEntry(`${prefix}INF | TCP Connectivity edge.example.com FAIL HTTP/2 is blocked |`),
-    { level: "warning", line: "[cloudflared] TCP Connectivity edge.example.com FAIL HTTP/2 is blocked" },
+    { method: "warn", line: "[cloudflared] TCP Connectivity edge.example.com FAIL HTTP/2 is blocked" },
   );
   assert.equal(cloudflareStderrLogEntry(`${prefix}INF +--------------------+`), null);
   assert.equal(cloudflareStderrLogEntry(`${prefix}INF | DNS Resolution edge.example.com PASS |`), null);

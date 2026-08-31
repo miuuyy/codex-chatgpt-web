@@ -50,7 +50,7 @@ function collectLines(stream, onLine, onError) {
 
 function cloudflareStderrLogEntry(line) {
   const match = String(line).match(/^\[cloudflared\]\s+\S+\s+(DBG|INF|WRN|ERR)\s+(.+)$/);
-  if (!match) return { level: "warning", line };
+  if (!match) return { method: "warn", line };
   const [, cloudflareLevel, message] = match;
   if (/^(?:Version |GOOS:|Settings:|cloudflared will not automatically update|Generated Connector ID:|Initial protocol |Created ICMP proxy|ICMP proxy will use |Starting metrics server|Tunnel connection curve preferences:)/.test(message)) {
     return null;
@@ -59,13 +59,13 @@ function cloudflareStderrLogEntry(line) {
   if (/^\+-+\+$/.test(message)) return null;
   const tableMessage = message.match(/^\|\s*(.*?)\s*\|$/)?.[1];
   if (tableMessage !== undefined && !/\b(?:FAIL|WARNING|SUMMARY)\b/.test(tableMessage)) return null;
-  const level = cloudflareLevel === "ERR"
+  const method = cloudflareLevel === "ERR"
     ? "error"
     : cloudflareLevel === "WRN" || /\b(?:FAIL|WARNING)\b/.test(tableMessage || "")
-      ? "warning"
+      ? "warn"
       : "info";
   return {
-    level,
+    method,
     line: `[cloudflared] ${tableMessage || message}`,
   };
 }
@@ -518,7 +518,7 @@ class RuntimeSupervisor {
       if (name === "tunnel") {
         const entry = cloudflareStderrLogEntry(line);
         if (!entry) return;
-        this.logger[entry.level](`runtime.${name}_stderr`, { line: entry.line });
+        this.logger[entry.method](`runtime.${name}_stderr`, { line: entry.line });
         return;
       }
       this.logger.warn(`runtime.${name}_stderr`, { line });
