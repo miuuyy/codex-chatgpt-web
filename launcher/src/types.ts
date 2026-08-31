@@ -103,6 +103,7 @@ export interface LauncherSnapshot {
   browser: BrowserState | null;
   connectorName: string;
   mcpCredentialsConfigured: boolean;
+  mcpCredentials: Record<"openai" | "cloudflare", boolean>;
   cloudflare: CloudflareSetup;
   logs: LogRecord[];
   urls: {

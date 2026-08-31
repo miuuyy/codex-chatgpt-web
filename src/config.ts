@@ -71,9 +71,30 @@ export interface CloudflareTunnelConfig {
 }
 
 export type TunnelConfig = OpenAiTunnelConfig | CloudflareTunnelConfig;
+export type TunnelKind = "openai" | "cloudflare";
 
 export function isCloudflareTunnel(tunnel: TunnelConfig | undefined): tunnel is CloudflareTunnelConfig {
   return tunnel?.kind === "cloudflare";
+}
+
+export function tunnelKind(tunnel: TunnelConfig): TunnelKind {
+  return isCloudflareTunnel(tunnel) ? "cloudflare" : "openai";
+}
+
+export function tunnelForKind(config: Pick<AppConfig, "tunnel" | "inactiveTunnel"> | undefined, kind: TunnelKind): TunnelConfig | undefined {
+  return [config?.tunnel, config?.inactiveTunnel].find(tunnel => tunnel && tunnelKind(tunnel) === kind);
+}
+
+export function activateTunnel(config: AppConfig, tunnel: TunnelConfig): void {
+  const kind = tunnelKind(tunnel);
+  const other = config.tunnel && tunnelKind(config.tunnel) !== kind
+    ? config.tunnel
+    : config.inactiveTunnel && tunnelKind(config.inactiveTunnel) !== kind
+      ? config.inactiveTunnel
+      : undefined;
+  config.tunnel = tunnel;
+  if (other) config.inactiveTunnel = other;
+  else delete config.inactiveTunnel;
 }
 
 export interface AppConfig {
@@ -102,6 +123,8 @@ export interface AppConfig {
   runtimeCommand: string[];
   acknowledgedUnofficialAt?: string;
   tunnel?: TunnelConfig;
+  /** Saved credentials for the non-active tunnel provider. */
+  inactiveTunnel?: TunnelConfig;
 }
 
 export function expandUserPath(value: string): string {
@@ -390,51 +413,63 @@ function parseConfig(value: unknown, path: string): AppConfig {
     throw new Error(`brokerSocketPath must be an absolute Unix socket path in ${path}`);
   }
   if (!/^[A-Za-z0-9_-]{40,}$/.test(parsed.controlToken!)) throw new Error(`Invalid controlToken in ${path}`);
-  if (parsed.mode === "full") {
-    if (!parsed.tunnel || typeof parsed.tunnel !== "object") throw new Error("Full mode requires tunnel configuration");
-    const rawTunnel = parsed.tunnel as unknown as Record<string, unknown>;
+  const parseTunnel = (value: unknown, field: "tunnel" | "inactiveTunnel"): TunnelConfig => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(`Invalid ${field} configuration in ${path}`);
+    }
+    const rawTunnel = value as Record<string, unknown>;
     const tunnelKind = rawTunnel.kind ?? "openai";
     if (tunnelKind === "openai") {
       for (const key of ["binaryPath", "tunnelId", "runtimeKeyFile", "profileDir", "profileName", "alias"] as const) {
         if (typeof rawTunnel[key] !== "string" || !(rawTunnel[key] as string).trim()) {
-          throw new Error(`Missing tunnel.${key} in ${path}`);
+          throw new Error(`Missing ${field}.${key} in ${path}`);
         }
       }
       if (!/^tunnel_[a-f0-9]{32}$/.test(rawTunnel.tunnelId as string)) {
-        throw new Error(`Invalid tunnel.tunnelId in ${path}`);
+        throw new Error(`Invalid ${field}.tunnelId in ${path}`);
       }
       for (const key of ["profileName", "alias"] as const) {
         if (!/^[A-Za-z0-9._-]+$/.test(rawTunnel[key] as string)) {
-          throw new Error(`Invalid tunnel.${key} in ${path}`);
+          throw new Error(`Invalid ${field}.${key} in ${path}`);
         }
       }
       for (const key of ["binaryPath", "runtimeKeyFile", "profileDir"] as const) {
         if (!isAbsolute(expandUserPath(rawTunnel[key] as string))) {
-          throw new Error(`tunnel.${key} must be absolute in ${path}`);
+          throw new Error(`${field}.${key} must be absolute in ${path}`);
         }
       }
-      parsed.tunnel = { ...rawTunnel, kind: "openai" } as OpenAiTunnelConfig;
+      return { ...rawTunnel, kind: "openai" } as OpenAiTunnelConfig;
     } else if (tunnelKind === "cloudflare") {
       for (const key of ["binaryPath", "configPath", "hostname", "mcpPath"] as const) {
         if (typeof rawTunnel[key] !== "string" || !(rawTunnel[key] as string).trim()) {
-          throw new Error(`Missing tunnel.${key} in ${path}`);
+          throw new Error(`Missing ${field}.${key} in ${path}`);
         }
       }
       if (!isAbsolute(expandUserPath(rawTunnel.binaryPath as string))) {
-        throw new Error(`tunnel.binaryPath must be absolute in ${path}`);
+        throw new Error(`${field}.binaryPath must be absolute in ${path}`);
       }
       if (!isAbsolute(expandUserPath(rawTunnel.configPath as string))) {
-        throw new Error(`tunnel.configPath must be absolute in ${path}`);
+        throw new Error(`${field}.configPath must be absolute in ${path}`);
       }
       if (!/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(rawTunnel.hostname as string)) {
-        throw new Error(`Invalid tunnel.hostname in ${path}`);
+        throw new Error(`Invalid ${field}.hostname in ${path}`);
       }
       if (!/^\/mcp\/[A-Za-z0-9_-]{40,}$/.test(rawTunnel.mcpPath as string)) {
-        throw new Error(`Invalid tunnel.mcpPath in ${path}`);
+        throw new Error(`Invalid ${field}.mcpPath in ${path}`);
       }
-      parsed.tunnel = rawTunnel as unknown as CloudflareTunnelConfig;
+      return rawTunnel as unknown as CloudflareTunnelConfig;
     } else {
-      throw new Error(`Invalid tunnel.kind in ${path}`);
+      throw new Error(`Invalid ${field}.kind in ${path}`);
+    }
+  };
+  if (parsed.mode === "full") {
+    if (!parsed.tunnel) throw new Error("Full mode requires tunnel configuration");
+    parsed.tunnel = parseTunnel(parsed.tunnel, "tunnel");
+    if (parsed.inactiveTunnel !== undefined) {
+      parsed.inactiveTunnel = parseTunnel(parsed.inactiveTunnel, "inactiveTunnel");
+      if (tunnelKind(parsed.inactiveTunnel) === tunnelKind(parsed.tunnel)) {
+        throw new Error(`tunnel and inactiveTunnel must use different providers in ${path}`);
+      }
     }
   }
   if (!Array.isArray(parsed.runtimeCommand) || parsed.runtimeCommand.length === 0

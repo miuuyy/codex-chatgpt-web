@@ -104,7 +104,7 @@ function cloudflareSelection() {
     publicUrl: saved.publicUrl || "",
     registrationUrl: saved.registrationUrl || "",
     authorizationPassphrase: saved.authorizationPassphrase || "",
-    kind: saved.configPath ? "cloudflare" : "openai",
+    kind: runtimeHost?.activeTunnelKind() ?? "openai",
   };
 }
 let runtimeSupervisor = null;
@@ -481,6 +481,10 @@ function registerIpc({ logger, stateStore }) {
     browser: browserHost?.snapshot() ?? null,
     connectorName: runtimeHost.browserConnectorName(),
     mcpCredentialsConfigured: runtimeHost?.mcpCredentialsConfigured() ?? false,
+    mcpCredentials: {
+      openai: runtimeHost?.mcpCredentialsConfigured("openai") ?? false,
+      cloudflare: runtimeHost?.mcpCredentialsConfigured("cloudflare") ?? false,
+    },
     cloudflare: cloudflareSelection(),
     logs: logger.recent(),
     urls: { github: GITHUB_URL, x: X_URL, connectors: CONNECTORS_URL, tunnels: TUNNELS_URL, keys: KEYS_URL },

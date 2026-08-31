@@ -403,12 +403,54 @@ test("MCP setup reuses valid private credentials without exposing or rewriting t
       "/runtime/launcher-browser.json",
       "--app-name",
       "Codex Native2",
+      "--tunnel-kind",
+      "openai",
       "--replace-codex-route",
       "--acknowledge-unofficial",
       "--restart-service",
     ]);
     assert.equal(fixture.invocation().args.includes("--refresh-account-capabilities"), false);
     assert.equal(fixture.invocation().args.includes("--replace-codex-route"), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("MCP setup reuses saved OpenAI credentials while Cloudflare is active", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-provider-slots-"));
+  const keyPath = path.join(root, "tunnel-runtime.key");
+  const cloudflaredPath = path.join(root, "cloudflared");
+  const cloudflareConfigPath = path.join(root, "config.yml");
+  fs.writeFileSync(keyPath, "saved-private-runtime-key\n", { mode: 0o600 });
+  fs.writeFileSync(cloudflaredPath, "binary");
+  fs.writeFileSync(cloudflareConfigPath, "tunnel: test\ningress: []\n");
+  const fixture = hostFor({
+    mode: "full",
+    appName: "Codex Native2",
+    tunnel: {
+      kind: "cloudflare",
+      binaryPath: cloudflaredPath,
+      configPath: cloudflareConfigPath,
+      hostname: "mcp.example.com",
+      mcpPath: `/mcp/${"a".repeat(43)}`,
+    },
+    inactiveTunnel: {
+      kind: "openai",
+      tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
+      runtimeKeyFile: keyPath,
+    },
+  });
+  try {
+    assert.equal(fixture.host.activeTunnelKind(), "cloudflare");
+    assert.equal(fixture.host.mcpCredentialsConfigured("openai"), true);
+    assert.equal(fixture.host.mcpCredentialsConfigured("cloudflare"), true);
+    await fixture.host.setupMcp({ tunnelKind: "openai", replace: false });
+    assert.deepEqual(fixture.invocation().args.slice(6, 10), [
+      "--tunnel-kind",
+      "openai",
+      "--replace-codex-route",
+      "--acknowledge-unofficial",
+    ]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

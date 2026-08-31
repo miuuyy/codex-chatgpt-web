@@ -1035,16 +1035,18 @@ function McpSurface({
 }) {
   const [step, setStep] = useState(Math.min(2, Math.max(0, snapshot.state.mcpGuideStep || 0)));
   const [connectorName, setConnectorName] = useState(snapshot.state.mcpConnectorName || snapshot.connectorName);
-  const [tunnelKind, setTunnelKind] = useState<"openai" | "cloudflare">(
-    devProfile ? "openai" : snapshot.state.mcpTunnelKind || snapshot.cloudflare.kind,
-  );
+  const initialTunnelKind: "openai" | "cloudflare" = devProfile
+    ? "openai"
+    : snapshot.state.mcpTunnelKind || snapshot.cloudflare.kind;
+  const [tunnelKind, setTunnelKind] = useState<"openai" | "cloudflare">(initialTunnelKind);
   const [cloudflare, setCloudflare] = useState(snapshot.cloudflare);
   const [cloudflareHostname, setCloudflareHostname] = useState(
     snapshot.cloudflare.hostname || snapshot.cloudflare.config.hostnames[0] || "",
   );
   const [tunnelId, setTunnelId] = useState("");
   const [runtimeKey, setRuntimeKey] = useState("");
-  const [credentialsConfigured, setCredentialsConfigured] = useState(snapshot.mcpCredentialsConfigured);
+  const [providerCredentials, setProviderCredentials] = useState(snapshot.mcpCredentials);
+  const [credentialsConfigured, setCredentialsConfigured] = useState(snapshot.mcpCredentials[initialTunnelKind]);
   const [replacingCredentials, setReplacingCredentials] = useState(false);
   const [localBusy, setLocalBusy] = useState(false);
   const busy = localBusy || operation?.status === "running";
@@ -1103,6 +1105,7 @@ function McpSurface({
       if (result.cloudflare) setCloudflare(result.cloudflare);
       setRuntimeKey("");
       setTunnelId("");
+      setProviderCredentials(current => ({ ...current, [tunnelKind]: true }));
       setCredentialsConfigured(true);
       setReplacingCredentials(false);
       updateState((await api!.snapshot()).state);
@@ -1121,6 +1124,7 @@ function McpSurface({
       replace: false,
     });
     if (result.cloudflare) setCloudflare(result.cloudflare);
+    setProviderCredentials(current => ({ ...current, cloudflare: true }));
     setCredentialsConfigured(true);
     updateState((await api!.snapshot()).state);
   };
@@ -1228,7 +1232,8 @@ function McpSurface({
                     onChange={(event) => {
                       const next = event.target.value as "openai" | "cloudflare";
                       setTunnelKind(next);
-                      setCredentialsConfigured(next === snapshot.cloudflare.kind && snapshot.mcpCredentialsConfigured);
+                      setCredentialsConfigured(providerCredentials[next]);
+                      setReplacingCredentials(false);
                       void persistPreferences(connectorName, next).catch((cause) => setError(messageOf(cause)));
                     }}
                     value={tunnelKind}

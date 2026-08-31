@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   assertDurableRuntimeCommand,
+  activateTunnel,
   CHATGPT_CONNECTOR_NAME,
   DEV_CHATGPT_CONNECTOR_NAME,
   defaultBrokerEndpoint,
@@ -123,6 +124,66 @@ test("full configuration accepts a Cloudflare named tunnel with a private MCP pa
   writeFileSync(join(root, "config.json"), `${JSON.stringify(config)}\n`);
 
   expect(loadConfig().tunnel).toEqual(config.tunnel);
+});
+
+test("OpenAI and Cloudflare tunnel credentials survive provider switches independently", () => {
+  const config = defaultConfig("full");
+  const openai = {
+    kind: "openai" as const,
+    binaryPath: "/runtime/openai-tunnel",
+    tunnelId: `tunnel_${"a".repeat(32)}`,
+    runtimeKeyFile: "/runtime/tunnel.key",
+    profileDir: "/runtime/profiles",
+    profileName: "codex-chatgpt-web",
+    alias: "codex-chatgpt-web",
+  };
+  const cloudflare = {
+    kind: "cloudflare" as const,
+    binaryPath: "/runtime/cloudflared",
+    configPath: "/runtime/cloudflare.yml",
+    hostname: "mcp.example.com",
+    mcpPath: `/mcp/${"b".repeat(43)}`,
+  };
+
+  activateTunnel(config, openai);
+  activateTunnel(config, cloudflare);
+  expect(config.tunnel).toEqual(cloudflare);
+  expect(config.inactiveTunnel).toEqual(openai);
+
+  activateTunnel(config, openai);
+  expect(config.tunnel).toEqual(openai);
+  expect(config.inactiveTunnel).toEqual(cloudflare);
+});
+
+test("full configuration loads distinct active and inactive tunnel providers", () => {
+  const root = join(tmpdir(), `codex-chatgpt-web-provider-slots-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  process.env.CODEX_CHATGPT_WEB_HOME = root;
+  mkdirSync(root, { recursive: true });
+  const config = defaultConfig("full");
+  config.runtimeCommand = [process.execPath];
+  config.tunnel = {
+    kind: "cloudflare",
+    binaryPath: join(root, "cloudflared"),
+    configPath: join(root, "config.yml"),
+    hostname: "mcp.example.com",
+    mcpPath: `/mcp/${"a".repeat(43)}`,
+  };
+  config.inactiveTunnel = {
+    kind: "openai",
+    binaryPath: join(root, "openai-tunnel"),
+    tunnelId: `tunnel_${"b".repeat(32)}`,
+    runtimeKeyFile: join(root, "tunnel.key"),
+    profileDir: join(root, "profiles"),
+    profileName: "codex-chatgpt-web",
+    alias: "codex-chatgpt-web",
+  };
+  writeFileSync(join(root, "config.json"), `${JSON.stringify(config)}\n`);
+
+  expect(loadConfig()).toMatchObject({
+    tunnel: config.tunnel,
+    inactiveTunnel: config.inactiveTunnel,
+  });
 });
 
 test("setup explicitly migrates v1 pro-only config to v3 managed browser-only", () => {

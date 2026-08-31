@@ -261,9 +261,13 @@ class RuntimeHost {
     };
   }
 
-  mcpCredentialsConfigured() {
+  mcpCredentialsConfigured(kind) {
     const config = this.runtimeConfigSnapshot().config;
-    const tunnel = config?.mode === "full" ? config.tunnel : null;
+    const active = config?.mode === "full" ? config.tunnel : null;
+    const requestedKind = kind ?? (active?.kind === "cloudflare" ? "cloudflare" : "openai");
+    const tunnel = [active, config?.inactiveTunnel].find(candidate => (
+      requestedKind === "cloudflare" ? candidate?.kind === "cloudflare" : candidate && candidate.kind !== "cloudflare"
+    ));
     return Boolean(
       tunnel
       && (tunnel.kind === "cloudflare"
@@ -278,9 +282,14 @@ class RuntimeHost {
     );
   }
 
+  activeTunnelKind() {
+    return this.runtimeConfigSnapshot().config?.tunnel?.kind === "cloudflare" ? "cloudflare" : "openai";
+  }
+
   cloudflareSettings() {
-    const tunnel = this.runtimeConfigSnapshot().config?.tunnel;
-    if (tunnel?.kind !== "cloudflare") {
+    const config = this.runtimeConfigSnapshot().config;
+    const tunnel = [config?.tunnel, config?.inactiveTunnel].find(candidate => candidate?.kind === "cloudflare");
+    if (!tunnel) {
       return {
         binaryPath: "",
         configPath: "",
@@ -314,8 +323,9 @@ class RuntimeHost {
   stableCloudflareMcpPathFile() {
     const secretsDir = path.join(this.app.getPath("userData"), "secrets");
     const filePath = path.join(secretsDir, "cloudflare-mcp-path");
-    const tunnel = this.runtimeConfigSnapshot().config?.tunnel;
-    const configuredPath = tunnel?.kind === "cloudflare" ? tunnel.mcpPath : "";
+    const config = this.runtimeConfigSnapshot().config;
+    const tunnel = [config?.tunnel, config?.inactiveTunnel].find(candidate => candidate?.kind === "cloudflare");
+    const configuredPath = tunnel?.mcpPath ?? "";
     if (typeof configuredPath === "string" && /^\/mcp\/[A-Za-z0-9_-]{40,}$/.test(configuredPath)) {
       writePrivateFileAtomic(filePath, `${configuredPath}\n`);
       return filePath;
@@ -352,8 +362,8 @@ class RuntimeHost {
       paths.add(path.join(this.launchAgentsDir, "io.github.codex-chatgpt-web.daemon.plist"));
       paths.add(path.join(this.launchAgentsDir, "io.github.codex-chatgpt-web.tunnel.plist"));
     }
-    const tunnel = snapshot.config?.tunnel;
-    if (tunnel && typeof tunnel === "object") {
+    for (const tunnel of [snapshot.config?.tunnel, snapshot.config?.inactiveTunnel]) {
+      if (!tunnel || typeof tunnel !== "object") continue;
       if (typeof tunnel.runtimeKeyFile === "string" && tunnel.runtimeKeyFile) {
         paths.add(tunnel.runtimeKeyFile);
       }
@@ -1020,10 +1030,8 @@ class RuntimeHost {
       });
     }
     if (tunnelKind !== "openai") throw new Error("Tunnel kind must be openai or cloudflare");
-    const currentTunnel = this.runtimeConfigSnapshot().config?.tunnel;
     const reuseSavedCredentials = replace !== true
-      && currentTunnel?.kind !== "cloudflare"
-      && this.mcpCredentialsConfigured();
+      && this.mcpCredentialsConfigured("openai");
     if (!reuseSavedCredentials && !/^tunnel_[a-f0-9]{32}$/.test(tunnelId)) {
       throw new Error("Tunnel ID must be tunnel_ followed by 32 lowercase hexadecimal characters");
     }
@@ -1037,6 +1045,8 @@ class RuntimeHost {
       this.browserDescriptorPath,
       "--app-name",
       validateConnectorName(appName),
+      "--tunnel-kind",
+      "openai",
       "--replace-codex-route",
     ];
     if (reuseSavedCredentials) {

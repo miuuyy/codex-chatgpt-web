@@ -185,6 +185,13 @@ test("MCP connector name and tunnel kind survive failed connection attempts", ()
   assert.match(electronMain, /getConnectorName: \(\) => \{[\s\S]*?runtimeHost\.mcpConnectorName\(\)[\s\S]*?stateStore\.read\(\)\.mcpConnectorName \|\| runtimeHost\.browserConnectorName\(\)/);
 });
 
+test("MCP credential readiness is tracked independently for each tunnel provider", () => {
+  assert.match(electronMain, /mcpCredentials:\s*\{\s*openai:[\s\S]*?mcpCredentialsConfigured\("openai"\)[\s\S]*?cloudflare:[\s\S]*?mcpCredentialsConfigured\("cloudflare"\)/);
+  assert.match(appSource, /useState\(snapshot\.mcpCredentials\)/);
+  assert.match(appSource, /setCredentialsConfigured\(providerCredentials\[next\]\)/);
+  assert.match(appSource, /setProviderCredentials\(current => \(\{ \.\.\.current, \[tunnelKind\]: true \}\)\)/);
+});
+
 test("MCP connector instructions show every required ChatGPT field", () => {
   assert.match(appSource, /copy\.connectorName/);
   assert.match(appSource, /copy\.connectorUrl/);
