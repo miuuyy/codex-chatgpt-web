@@ -1627,6 +1627,14 @@ function SettingsSurface({
               .catch((cause) => setError(messageOf(cause)))}
           />
         </SettingRow> : null}
+        {!devProfile ? <SettingRow body={copy.autoConnectMcpBody} label={copy.autoConnectMcp}>
+          <Switch
+            checked={snapshot.state.autoConnectMcp}
+            onChange={(checked) => void api!.setPreference("autoConnectMcp", checked)
+              .then(updateState)
+              .catch((cause) => setError(messageOf(cause)))}
+          />
+        </SettingRow> : null}
         <SettingRow body={devProfile ? copy.devKeepRunningBody : copy.keepRunningOnCloseBody} label={copy.keepRunningOnClose}>
           <Switch
             checked={snapshot.state.keepRunningOnClose}

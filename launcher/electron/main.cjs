@@ -894,7 +894,7 @@ function registerIpc({ logger, stateStore }) {
     return state;
   });
   handle("launcher:set-preference", (_event, key, value) => {
-    const ordinary = key === "keepRunningOnClose" || key === "showBrowserDuringTurns";
+    const ordinary = key === "autoConnectMcp" || key === "keepRunningOnClose" || key === "showBrowserDuringTurns";
     if (!ordinary) throw new Error("Unknown preference");
     return stateStore.update({ [key]: value === true });
   });
@@ -1258,7 +1258,9 @@ async function start() {
         send("launcher:state-changed", state);
       }
     }
-    const runtime = await runtimeSupervisor.startIfConfigured();
+    const runtime = await runtimeSupervisor.startIfConfigured({
+      connectMcp: stateStore.read().autoConnectMcp,
+    });
     if (runtime.status !== "ready") return runtime;
     const route = await runtimeHost.connectBridgeRoute();
     return { ...runtime, bridgeRouteChanged: route.changed === true };

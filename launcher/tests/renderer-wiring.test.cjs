@@ -9,6 +9,7 @@ const stylesSource = fs.readFileSync(path.join(launcherRoot, "src", "styles.css"
 const electronMain = fs.readFileSync(path.join(launcherRoot, "electron", "main.cjs"), "utf8");
 const browserHostSource = fs.readFileSync(path.join(launcherRoot, "electron", "browser-host.cjs"), "utf8");
 const preloadSource = fs.readFileSync(path.join(launcherRoot, "electron", "preload.cjs"), "utf8");
+const runtimeSupervisorSource = fs.readFileSync(path.join(launcherRoot, "electron", "runtime-supervisor.cjs"), "utf8");
 
 test("embedded ChatGPT is measured only after its animated surface mounts", () => {
   assert.match(appSource, /const \[browserSlot, setBrowserSlot\] = useState<HTMLDivElement \| null>\(null\)/);
@@ -129,6 +130,12 @@ test("the configured launcher exposes no persistent bridge opt-out", () => {
   assert.match(electronMain, /runtimeSupervisor\.startIfConfigured\(\)[\s\S]*?runtimeHost\.connectBridgeRoute\(\)/);
 });
 
+test("Settings can disable MCP tunnel auto-connect without disabling the Codex bridge runtime", () => {
+  assert.match(appSource, /copy\.autoConnectMcp[\s\S]*?checked=\{snapshot\.state\.autoConnectMcp\}[\s\S]*?setPreference\("autoConnectMcp", checked\)/);
+  assert.match(electronMain, /startIfConfigured\(\{\s*connectMcp:\s*stateStore\.read\(\)\.autoConnectMcp,?\s*\}\)/);
+  assert.match(runtimeSupervisorSource, /skipMcpTunnel[\s\S]*?await this\.startDaemon\(config\);[\s\S]*?this\.stopTunnelMonitor\(\)/);
+});
+
 test("the title bar connection control mirrors the live Codex bridge route", () => {
   assert.match(preloadSource, /setBridgeConnection:\s*\(active\)[\s\S]*?launcher:bridge-set-active/);
   assert.match(preloadSource, /onBridgeConnection:[\s\S]*?launcher:bridge-connection/);
@@ -242,7 +249,7 @@ test("saved ChatGPT authentication is refreshed before setup is presented", () =
   const productionStartup = electronMain.indexOf("} else void (async () => {");
   const refreshBarrier = electronMain.indexOf("await startupAuthenticationRefresh", productionStartup);
   const upgrade = electronMain.indexOf("runtimeHost.upgradeManagedRuntime()", productionStartup);
-  const runtimeStart = electronMain.indexOf("runtimeSupervisor.startIfConfigured()", upgrade);
+  const runtimeStart = electronMain.indexOf("runtimeSupervisor.startIfConfigured({", upgrade);
   const routeConnect = electronMain.indexOf("runtimeHost.connectBridgeRoute()", runtimeStart);
   assert.ok(refreshBarrier > productionStartup, "production startup must wait for saved-session refresh");
   assert.ok(upgrade > refreshBarrier, "runtime upgrade must not inspect the browser before refresh settles");

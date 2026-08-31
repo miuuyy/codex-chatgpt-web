@@ -9,6 +9,7 @@ export interface LauncherState {
   githubOpened: boolean;
   xOpened: boolean;
   autoStart: boolean;
+  autoConnectMcp: boolean;
   keepRunningOnClose: boolean;
   showBrowserDuringTurns: boolean;
   experimentalBiggerContext: boolean;
@@ -176,7 +177,7 @@ export interface LauncherApi {
   setAutostart(enabled: boolean): Promise<{ state: LauncherState; supported: boolean; enabled: boolean }>;
   setBiggerContext(enabled: boolean): Promise<LauncherState>;
   setPreference(
-    key: "keepRunningOnClose" | "showBrowserDuringTurns",
+    key: "autoConnectMcp" | "keepRunningOnClose" | "showBrowserDuringTurns",
     value: boolean,
   ): Promise<LauncherState>;
   setSidebarState(state: { open: boolean; width: number }): Promise<LauncherState>;

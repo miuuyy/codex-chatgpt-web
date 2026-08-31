@@ -1173,10 +1173,10 @@ class RuntimeSupervisor {
     }
   }
 
-  async startIfConfigured() {
+  async startIfConfigured({ connectMcp = true } = {}) {
     if (this.stopPromise) await this.stopPromise;
     if (this.startPromise) return this.startPromise;
-    this.startPromise = this.startConfigured();
+    this.startPromise = this.startConfigured({ connectMcp });
     try {
       return await this.startPromise;
     } finally {
@@ -1184,7 +1184,7 @@ class RuntimeSupervisor {
     }
   }
 
-  async startConfigured() {
+  async startConfigured({ connectMcp = true } = {}) {
     let config;
     try {
       config = this.readConfig();
@@ -1270,7 +1270,11 @@ class RuntimeSupervisor {
       message: tunnelOnly ? "Starting isolated DEV MCP runtime" : "Starting local runtime",
     });
     try {
-      if (usesCloudflareTunnel(config)) {
+      const skipMcpTunnel = !tunnelOnly && config.mode === "full" && !connectMcp;
+      if (skipMcpTunnel) {
+        await this.startDaemon(config);
+        this.stopTunnelMonitor();
+      } else if (usesCloudflareTunnel(config)) {
         if (tunnelOnly) throw new Error("DEV launcher cannot start a Cloudflare tunnel");
         await this.startDaemon(config);
         await this.startTunnel(config, "runtime-start");
@@ -1279,14 +1283,23 @@ class RuntimeSupervisor {
         if (!tunnelOnly) await this.startDaemon(config);
       }
       this.restartHistory.daemon = [];
-      this.restartHistory.tunnel = [];
+      if (!skipMcpTunnel) this.restartHistory.tunnel = [];
       this.writeState("ready");
       this.publishOperation?.({
         name: "runtime-start",
         status: "completed",
-        message: tunnelOnly ? "Isolated DEV MCP runtime is ready" : "Local runtime is ready",
+        message: tunnelOnly
+          ? "Isolated DEV MCP runtime is ready"
+          : skipMcpTunnel
+            ? "Local runtime is ready; MCP auto-connect is off"
+            : "Local runtime is ready",
       });
-      return { status: "ready", daemonPid: this.daemon?.pid, tunnelPid: this.tunnel?.pid };
+      return {
+        status: "ready",
+        daemonPid: this.daemon?.pid,
+        tunnelPid: this.tunnel?.pid,
+        mcpConnected: config.mode === "full" ? Boolean(this.tunnel) : null,
+      };
     } catch (error) {
       this.stopping = true;
       let cleanupError;
