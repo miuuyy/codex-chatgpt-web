@@ -654,6 +654,91 @@ test("server exposes authenticated standalone Web Search on the routed v1 base U
   }
 });
 
+test("server relays authenticated native realtime WebSocket traffic without rerouting Responses", async () => {
+  const upstreamRequests: Array<{ path: string; authorization: string | null; attestation: string | null }> = [];
+  const upstream = Bun.serve<{ path: string }>({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(req, server) {
+      const url = new URL(req.url);
+      upstreamRequests.push({
+        path: `${url.pathname}${url.search}`,
+        authorization: req.headers.get("authorization"),
+        attestation: req.headers.get("x-oai-attestation"),
+      });
+      if (server.upgrade(req, { data: { path: url.pathname } })) return;
+      return new Response("upgrade required", { status: 426 });
+    },
+    websocket: {
+      open(ws) { ws.send("upstream-ready"); },
+      message(ws, message) { ws.send(message); },
+    },
+  });
+  const config = { ...defaultConfig("browser-only"), port: 0 };
+  const server = startServer(config, {
+    nativeRealtime: { url: `ws://127.0.0.1:${upstream.port}/v1/live` },
+  });
+  const endpoint = `ws://127.0.0.1:${server.port}`;
+  const messages: string[] = [];
+  const BunWebSocket = WebSocket as unknown as {
+    new (url: string | URL, options?: Bun.WebSocketOptions): WebSocket;
+  };
+  const client = new BunWebSocket(`${endpoint}/v1/live?session_id=rtc_test`, {
+    headers: {
+      authorization: "Bearer test-codex-session",
+      "x-oai-attestation": "test-attestation",
+    },
+  });
+  client.addEventListener("message", event => messages.push(String(event.data)));
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      client.addEventListener("open", () => resolve(), { once: true });
+      client.addEventListener("error", () => reject(new Error("downstream realtime connection failed")), { once: true });
+    });
+    const readyDeadline = Date.now() + 1_000;
+    while (!messages.includes("upstream-ready") && Date.now() < readyDeadline) await Bun.sleep(5);
+    expect(messages).toContain("upstream-ready");
+
+    client.send("client-event");
+    const echoDeadline = Date.now() + 1_000;
+    while (!messages.includes("client-event") && Date.now() < echoDeadline) await Bun.sleep(5);
+    expect(messages).toContain("client-event");
+    expect(upstreamRequests).toEqual([{
+      path: "/v1/live?session_id=rtc_test",
+      authorization: "Bearer test-codex-session",
+      attestation: "test-attestation",
+    }]);
+    expect(await (await fetch(`http://127.0.0.1:${server.port}/healthz`)).json()).toMatchObject({
+      active_realtime_turns: 1,
+    });
+  } finally {
+    client.close();
+    const deadline = Date.now() + 1_000;
+    while (Date.now() < deadline) {
+      const health = await (await fetch(`http://127.0.0.1:${server.port}/healthz`)).json() as {
+        active_realtime_turns: number;
+      };
+      if (health.active_realtime_turns === 0) break;
+      await Bun.sleep(5);
+    }
+    await server.stop(true);
+    await upstream.stop(true);
+  }
+});
+
+test("server rejects non-WebSocket native realtime requests before upstream access", async () => {
+  const config = { ...defaultConfig("browser-only"), port: 0 };
+  const server = startServer(config);
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.port}/v1/live`);
+    expect(response.status).toBe(426);
+    expect(response.headers.get("upgrade")).toBe("websocket");
+  } finally {
+    await server.stop(true);
+  }
+});
+
 test("authenticated shutdown requires a verified idle drain", async () => {
   const config = { ...defaultConfig("browser-only"), port: 0 };
   const server = startServer(config);

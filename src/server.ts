@@ -26,6 +26,10 @@ import {
 } from "./chatgpt-web-models";
 import { forwardNativeCodexRequest, type NativeFetch } from "./native-passthrough";
 import {
+  openNativeRealtimeUpstream,
+  type NativeRealtimeUpstreamOptions,
+} from "./native-realtime-passthrough";
+import {
   buildCompactV1Output,
   COMPACT_PROMPT,
   decodeCompactionSummary,
@@ -39,6 +43,54 @@ import type { ProviderAdapter } from "./adapters/base";
 import { VERSION } from "./version";
 
 type HttpTrackedEndpoint = "models" | "responses" | "compact" | "search" | "unspecified";
+
+interface NativeRealtimeRelay {
+  upstream: WebSocket;
+  downstream?: Bun.ServerWebSocket<NativeRealtimeRelay>;
+  pending: Array<string | ArrayBuffer>;
+  closed: boolean;
+  release: () => void;
+}
+
+function wireSafeWebSocketCloseCode(code: number): number {
+  return code >= 1000
+    && code <= 4999
+    && code !== 1004
+    && code !== 1005
+    && code !== 1006
+    && code !== 1015
+    ? code
+    : 1011;
+}
+
+function closeNativeRealtimeRelay(
+  relay: NativeRealtimeRelay,
+  code = 1000,
+  reason = "native realtime relay closed",
+): void {
+  if (relay.closed) return;
+  relay.closed = true;
+  relay.release();
+  if (relay.upstream.readyState === WebSocket.OPEN || relay.upstream.readyState === WebSocket.CONNECTING) {
+    try { relay.upstream.close(code, reason); } catch {}
+  }
+}
+
+function sendNativeRealtimeDownstream(relay: NativeRealtimeRelay, data: unknown): void {
+  const normalized = typeof data === "string"
+    ? data
+    : data instanceof ArrayBuffer
+      ? data
+      : ArrayBuffer.isView(data)
+        ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength).slice().buffer
+        : null;
+  if (normalized === null) return;
+  if (!relay.downstream) {
+    relay.pending.push(normalized);
+    return;
+  }
+  relay.downstream.send(normalized);
+}
 
 export interface HttpStreamFailureEvidence {
   httpTurnId: number;
@@ -630,7 +682,10 @@ export async function compactRequest(
 
 export function startServer(
   config: AppConfig,
-  dependencies: { fetchUpstream?: NativeFetch } = {},
+  dependencies: {
+    fetchUpstream?: NativeFetch;
+    nativeRealtime?: NativeRealtimeUpstreamOptions;
+  } = {},
 ): ReturnType<typeof Bun.serve> {
   if (config.purpose === "dev-harness") {
     throw new Error("DEV harness configuration cannot start a Responses listener");
@@ -649,9 +704,11 @@ export function startServer(
   let successfulModelCatalogRequests = 0;
   let lastSuccessfulModelCatalogRequestAt: string | null = null;
   const httpTurns = new HttpTurnCounter();
+  const nativeRealtimeRelays = new Set<NativeRealtimeRelay>();
   const activity = () => ({
     active_http_turns: httpTurns.count(),
     active_browser_turns: chatGptTurnSessions.activeCount() + (turnBroker?.externalOwnerActiveCount() ?? 0),
+    active_realtime_turns: nativeRealtimeRelays.size,
   });
   const controlAuthorized = (req: Request): boolean => {
     const header = req.headers.get("authorization") ?? "";
@@ -659,11 +716,11 @@ export function startServer(
     const actual = Buffer.from(header);
     return actual.length === expected.length && timingSafeEqual(actual, expected);
   };
-  const server = Bun.serve({
+  const server = Bun.serve<NativeRealtimeRelay>({
     hostname: config.host,
     port: config.port,
     idleTimeout: 0,
-    async fetch(req) {
+    async fetch(req, bunServer) {
       const url = new URL(req.url);
       if (req.method === "GET" && url.pathname === "/healthz") {
         return Response.json({
@@ -714,17 +771,26 @@ export function startServer(
         if (!controlAuthorized(req)) return new Response("Unauthorized", { status: 401 });
         const cancelledBrowserTurns = chatGptTurnSessions.clear() + (turnBroker?.revokeExternalOwners() ?? 0);
         const cancelledHttpTurns = await httpTurns.cancelAll(new Error("Active turn cancelled by launcher"));
+        const cancelledRealtimeTurns = nativeRealtimeRelays.size;
+        for (const relay of [...nativeRealtimeRelays]) {
+          relay.downstream?.close(1012, "Active turn cancelled by launcher");
+          closeNativeRealtimeRelay(relay, 1012, "Active turn cancelled by launcher");
+        }
         return Response.json({
           status: "ok",
           cancelled_http_turns: cancelledHttpTurns,
           cancelled_browser_turns: cancelledBrowserTurns,
+          cancelled_realtime_turns: cancelledRealtimeTurns,
           ...activity(),
         });
       }
       if (req.method === "POST" && url.pathname === "/admin/shutdown") {
         if (!controlAuthorized(req)) return new Response("Unauthorized", { status: 401 });
         const current = activity();
-        if (!draining || current.active_http_turns > 0 || current.active_browser_turns > 0) {
+        if (!draining
+          || current.active_http_turns > 0
+          || current.active_browser_turns > 0
+          || current.active_realtime_turns > 0) {
           return Response.json(
             {
               status: "refused",
@@ -778,6 +844,58 @@ export function startServer(
           headers: { "content-type": "text/plain; charset=utf-8" },
         });
       }
+      if (url.pathname === "/v1/live") {
+        if (draining) {
+          return formatErrorResponse(
+            503,
+            "server_error",
+            "codex-chatgpt-web is draining for a requested service operation",
+          );
+        }
+        if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+          return new Response("Native realtime requires a WebSocket upgrade", {
+            status: 426,
+            headers: { upgrade: "websocket" },
+          });
+        }
+        let upstream: WebSocket;
+        try {
+          upstream = await openNativeRealtimeUpstream(req, dependencies.nativeRealtime);
+        } catch (error) {
+          return formatErrorResponse(
+            error instanceof Error && error.message.includes("Bearer") ? 401 : 502,
+            "upstream_error",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+        let relay!: NativeRealtimeRelay;
+        relay = {
+          upstream,
+          pending: [],
+          closed: false,
+          release: () => nativeRealtimeRelays.delete(relay),
+        };
+        nativeRealtimeRelays.add(relay);
+        upstream.addEventListener("message", event => sendNativeRealtimeDownstream(relay, event.data));
+        upstream.addEventListener("close", event => {
+          const code = wireSafeWebSocketCloseCode(event.code || 1000);
+          relay.downstream?.close(code, event.reason || "native realtime upstream closed");
+          closeNativeRealtimeRelay(relay, code, event.reason || "native realtime upstream closed");
+        });
+        upstream.addEventListener("error", () => {
+          relay.downstream?.close(1011, "native realtime upstream failed");
+          closeNativeRealtimeRelay(relay, 1011, "native realtime upstream failed");
+        });
+        const upgraded = bunServer.upgrade(req, {
+          data: relay,
+          ...(upstream.protocol ? { headers: { "sec-websocket-protocol": upstream.protocol } } : {}),
+        });
+        if (!upgraded) {
+          closeNativeRealtimeRelay(relay, 1011, "native realtime downstream upgrade failed");
+          return formatErrorResponse(400, "invalid_request_error", "Native realtime WebSocket upgrade failed");
+        }
+        return;
+      }
       if (req.method === "POST" && url.pathname === "/v1/responses") {
         if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
         return httpTurns.track(
@@ -807,11 +925,31 @@ export function startServer(
       }
       return new Response("Not found", { status: 404 });
     },
+    websocket: {
+      open(ws) {
+        const relay = ws.data;
+        relay.downstream = ws;
+        for (const message of relay.pending.splice(0)) ws.send(message);
+      },
+      message(ws, message) {
+        const relay = ws.data;
+        if (relay.upstream.readyState === WebSocket.OPEN) relay.upstream.send(message);
+      },
+      close(ws, code, reason) {
+        closeNativeRealtimeRelay(ws.data, code || 1000, reason || "native realtime downstream closed");
+      },
+      maxPayloadLength: 16 * 1024 * 1024,
+      perMessageDeflate: true,
+    },
   });
   function shutdown(): void {
     if (shutdownPromise) return;
     draining = true;
     chatGptTurnSessions.clear();
+    for (const relay of [...nativeRealtimeRelays]) {
+      relay.downstream?.close(1012, "bridge shutting down");
+      closeNativeRealtimeRelay(relay, 1012, "bridge shutting down");
+    }
     flushResponseState();
     shutdownPromise = (async () => {
       const results = await Promise.allSettled([
