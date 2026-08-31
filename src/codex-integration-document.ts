@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { stripUtf8Bom } from "./config";
 import {
   MANAGED_COMMENT,
+  MANAGED_ROUTE_COMMENT,
   MANAGED_MULTI_AGENT_LINE,
   MANAGED_MULTI_AGENT_V2_LINE,
   MANAGED_MULTI_AGENT_V2_TABLE_LINE,
@@ -193,7 +194,9 @@ export function removeDocumentLine(document: CodexConfigDocument, index: number)
 
 export function removeManagedComment(document: CodexConfigDocument): void {
   for (let index = document.lines.length - 1; index >= 0; index -= 1) {
-    if (document.lines[index] === MANAGED_COMMENT) removeDocumentLine(document, index);
+    if (document.lines[index] === MANAGED_COMMENT || document.lines[index] === MANAGED_ROUTE_COMMENT) {
+      removeDocumentLine(document, index);
+    }
   }
 }
 

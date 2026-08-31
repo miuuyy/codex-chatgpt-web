@@ -140,10 +140,12 @@ launcher runtime from a stale or external process. Legacy macOS launchd services
 removed during an explicit launcher migration; launchd remains only for the advanced terminal-only
 mode.
 
-Setup keeps Codex's built-in `openai` provider; its only managed provider-routing assignment is
-`openai_base_url`. The daemon
-forwards the authenticated official model catalog and appends only the routed models owned by the
-`chatgpt-web/` namespace; no static catalog is installed. Subagent protocol selection is explicit,
+Setup keeps Codex's built-in `openai` provider. It manages `openai_base_url` for Responses traffic
+and `experimental_realtime_webrtc_call_base_url` for Codex Voice call creation; the latter remains
+on the ChatGPT backend instead of the Responses-only local daemon. Both route overrides are journaled
+and restored exactly on disconnect or uninstall. The daemon forwards the authenticated official
+model catalog and appends only the routed models owned by the `chatgpt-web/` namespace; no static
+catalog is installed. Subagent protocol selection is explicit,
 and new installations default to Compatibility V1 because it is the only surface portable across
 native and routed Web backends:
 

@@ -62,7 +62,7 @@ Setup options:
   --app-name NAME              ChatGPT connector name (default: ${CHATGPT_CONNECTOR_NAME})
   --tunnel-id ID               Existing OpenAI tunnel id (full mode)
   --runtime-key-file PATH      File containing a Tunnels Read+Use runtime key
-  --replace-codex-route        Reversibly replace an existing openai_base_url
+  --replace-codex-route        Reversibly replace existing Codex route overrides
   --subagent-protocol MODE     compatibility-v1 (default) or native (advanced)
   --restart-service            Explicitly restart this project's daemon after an update
   --login                      Refresh the stored ChatGPT login even if one exists
