@@ -81,7 +81,7 @@ export interface OperationState {
   message: string;
 }
 
-export interface BridgeConnectionState {
+export interface McpConnectionState {
   active: boolean;
   status: "checking" | "connecting" | "connected" | "disconnecting" | "disconnected" | "unavailable" | "error";
   detail: string;
@@ -117,7 +117,7 @@ export interface LauncherSnapshot {
   version: string;
   smokePassed: boolean;
   operation: OperationState | null;
-  connection: BridgeConnectionState;
+  connection: McpConnectionState;
   update: UpdateState;
 }
 
@@ -184,7 +184,7 @@ export interface LauncherApi {
   logs(limit?: number): Promise<LogRecord[]>;
   exportLogs(destination: "clipboard" | "file"): Promise<string | null>;
   clearLogs(): Promise<{ cleared: boolean; logs: LogRecord[] }>;
-  setBridgeConnection(active: boolean): Promise<BridgeConnectionState>;
+  setMcpConnection(active: boolean): Promise<McpConnectionState>;
   installUpdate(): Promise<boolean>;
   windowState(): Promise<{ fullScreen: boolean; maximized: boolean }>;
   windowControl(action: "close" | "minimize" | "zoom"): void;
@@ -192,7 +192,7 @@ export interface LauncherApi {
   onStateChanged(listener: (state: LauncherState) => void): () => void;
   onBrowserState(listener: (state: BrowserState) => void): () => void;
   onOperation(listener: (state: OperationState) => void): () => void;
-  onBridgeConnection(listener: (state: BridgeConnectionState) => void): () => void;
+  onMcpConnection(listener: (state: McpConnectionState) => void): () => void;
   onLog(listener: (record: LogRecord) => void): () => void;
   onUpdateState(listener: (state: UpdateState) => void): () => void;
 }

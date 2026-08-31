@@ -132,19 +132,19 @@ test("the configured launcher exposes no persistent bridge opt-out", () => {
 
 test("Settings can disable MCP tunnel auto-connect without disabling the Codex bridge runtime", () => {
   assert.match(appSource, /copy\.autoConnectMcp[\s\S]*?checked=\{snapshot\.state\.autoConnectMcp\}[\s\S]*?setPreference\("autoConnectMcp", checked\)/);
-  assert.match(electronMain, /startIfConfigured\(\{\s*connectMcp:\s*stateStore\.read\(\)\.autoConnectMcp,?\s*\}\)/);
+  assert.match(electronMain, /const autoConnectMcp = stateStore\.read\(\)\.autoConnectMcp;[\s\S]*?startIfConfigured\(\{\s*connectMcp:\s*autoConnectMcp,?\s*\}\)/);
   assert.match(runtimeSupervisorSource, /skipMcpTunnel[\s\S]*?await this\.startDaemon\(config\);[\s\S]*?this\.stopTunnelMonitor\(\)/);
 });
 
-test("the title bar connection control mirrors the live Codex bridge route", () => {
-  assert.match(preloadSource, /setBridgeConnection:\s*\(active\)[\s\S]*?launcher:bridge-set-active/);
-  assert.match(preloadSource, /onBridgeConnection:[\s\S]*?launcher:bridge-connection/);
-  assert.match(electronMain, /connection:\s*bridgeConnection/);
+test("the title bar connection control mirrors the live MCP tunnel", () => {
+  assert.match(preloadSource, /setMcpConnection:\s*\(active\)[\s\S]*?launcher:mcp-set-active/);
+  assert.match(preloadSource, /onMcpConnection:[\s\S]*?launcher:mcp-connection/);
+  assert.match(electronMain, /connection:\s*mcpConnection/);
   assert.match(
     electronMain,
-    /launcher:bridge-set-active[\s\S]*?runtimeSupervisor\.startIfConfigured\(\)[\s\S]*?runtimeHost\.connectBridgeRoute\(\)[\s\S]*?runtimeHost\.restoreBridgeRoute\("bridge-disconnect"\)/,
+    /launcher:mcp-set-active[\s\S]*?runtimeSupervisor\.startIfConfigured\(\{ connectMcp: true \}\)[\s\S]*?runtimeSupervisor\.disconnectMcp\(\)/,
   );
-  assert.match(appSource, /copy\.bridgeConnected[\s\S]*?copy\.bridgeDisconnect[\s\S]*?className="titlebar-connection no-drag"/);
+  assert.match(appSource, /copy\.mcpConnected[\s\S]*?copy\.mcpDisconnect[\s\S]*?className="titlebar-connection no-drag"/);
   assert.match(stylesSource, /\.titlebar-connection\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*110;[^}]*top:\s*9px;/s);
   assert.match(stylesSource, /\.titlebar-power\.is-running\s*\{[^}]*color:\s*var\(--red-300\);/s);
 });

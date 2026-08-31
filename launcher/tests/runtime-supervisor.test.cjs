@@ -367,6 +367,47 @@ test("disabled MCP auto-connect starts the Responses daemon without starting the
   }
 });
 
+test("manual MCP disconnect stops only the configured tunnel", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-mcp-disconnect-"));
+  const descriptorPath = path.join(root, "launcher.json");
+  const config = launcherConfig(descriptorPath, {
+    mode: "full",
+    tunnel: {
+      binaryPath: path.join(root, "tunnel-client"),
+      tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
+      runtimeKeyFile: path.join(root, "runtime.key"),
+      profileDir: root,
+      profileName: "codex-web-gpt",
+      alias: "codex-web-gpt",
+    },
+  });
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root,
+    coreHome: root,
+    browserDescriptorPath: descriptorPath,
+  });
+  let tunnelStops = 0;
+  supervisor.daemon = { pid: 123_456_703, exitCode: null, signalCode: null };
+  supervisor.tunnel = { pid: 123_456_704, exitCode: null, signalCode: null, managed: true };
+  supervisor.readConfig = () => config;
+  supervisor.adoptConfiguredTunnelForStop = async () => {};
+  supervisor.stopTunnelGracefully = async () => {
+    tunnelStops += 1;
+    supervisor.tunnel = null;
+  };
+  try {
+    const result = await supervisor.disconnectMcp();
+    assert.equal(result.mcpConnected, false);
+    assert.equal(tunnelStops, 1);
+    assert.equal(supervisor.daemon?.pid, 123_456_703);
+  } finally {
+    supervisor.daemon = null;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("launcher runtime validation accepts native Windows paths and a named pipe", () => {
   const descriptorPath = "C:\\Users\\Example\\AppData\\Local\\Codex Web GPT\\launcher-browser.json";
   const config = {

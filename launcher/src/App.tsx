@@ -11,7 +11,7 @@ import {
 import { copyFor, type Copy } from "./i18n";
 import { Icon, type IconName } from "./icons";
 import type {
-  BridgeConnectionState,
+  McpConnectionState,
   BrowserState,
   DoctorReport,
   Language,
@@ -71,7 +71,7 @@ export function App() {
       setOperation(next);
       if (next.status === "failed" && next.name !== "mcp-verification") setError(next.message);
     });
-    const unsubscribeBridgeConnection = api.onBridgeConnection((connection) => {
+    const unsubscribeMcpConnection = api.onMcpConnection((connection) => {
       setSnapshot((current) => current ? { ...current, connection } : current);
     });
     const unsubscribeLog = api.onLog((record) => setLogs((current) => [...current.slice(-299), record]));
@@ -83,7 +83,7 @@ export function App() {
       unsubscribeState();
       unsubscribeBrowser();
       unsubscribeOperation();
-      unsubscribeBridgeConnection();
+      unsubscribeMcpConnection();
       unsubscribeLog();
       unsubscribeUpdate();
     };
@@ -424,10 +424,10 @@ function LauncherShell({
     setSidebarOpen(next);
   };
 
-  const toggleBridgeConnection = async () => {
+  const toggleMcpConnection = async () => {
     setError(null);
     try {
-      await api!.setBridgeConnection(!snapshot.connection.active);
+      await api!.setMcpConnection(!snapshot.connection.active);
     } catch (cause) {
       setError(messageOf(cause));
     }
@@ -501,7 +501,7 @@ function LauncherShell({
         devProfile={devProfile}
         draggable={surface !== "chat"}
         operationBusy={operation?.status === "running"}
-        onToggleConnection={() => void toggleBridgeConnection()}
+        onToggleConnection={() => void toggleMcpConnection()}
         sidebarOpen={sidebarOpen}
         toggleSidebar={toggleSidebar}
       />
@@ -695,7 +695,7 @@ function TitleBar({
   sidebarOpen,
   toggleSidebar,
 }: {
-  connection: BridgeConnectionState;
+  connection: McpConnectionState;
   copy: Copy;
   devProfile: boolean;
   draggable: boolean;
@@ -708,14 +708,14 @@ function TitleBar({
     || connection.status === "connecting"
     || connection.status === "disconnecting";
   const statusLabel = connection.status === "connected"
-    ? copy.bridgeConnected
+    ? copy.mcpConnected
     : connection.status === "connecting"
-      ? copy.bridgeConnecting
+      ? copy.mcpConnecting
       : connection.status === "disconnecting"
-        ? copy.bridgeDisconnecting
+        ? copy.mcpDisconnecting
         : connection.status === "unavailable"
-          ? copy.bridgeUnavailable
-          : copy.bridgeDisconnected;
+          ? copy.mcpUnavailable
+          : copy.mcpDisconnected;
   const statusTone = connection.status === "error"
     ? "error"
     : connection.status === "connected"
@@ -723,7 +723,7 @@ function TitleBar({
       : working
         ? "busy"
         : "idle";
-  const actionLabel = connection.active ? copy.bridgeDisconnect : copy.bridgeConnect;
+  const actionLabel = connection.active ? copy.mcpDisconnect : copy.mcpConnect;
   return (
     <header className={`app-titlebar${draggable ? " draggable" : ""}`}>
       <div className="titlebar-left no-drag">

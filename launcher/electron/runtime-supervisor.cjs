@@ -333,6 +333,7 @@ class RuntimeSupervisor {
     coreHome,
     browserDescriptorPath,
     launcherProfile = "production",
+    publishMcpConnection,
     publishOperation,
     runtimeInvocationFactory = runtimeInvocation,
   }) {
@@ -347,6 +348,7 @@ class RuntimeSupervisor {
       throw new Error("Runtime supervisor launcher profile is invalid");
     }
     this.launcherProfile = launcherProfile;
+    this.publishMcpConnection = publishMcpConnection;
     this.publishOperation = publishOperation;
     this.runtimeInvocationFactory = runtimeInvocationFactory;
     this.configPath = path.join(coreHome, "config.json");
@@ -540,6 +542,13 @@ class RuntimeSupervisor {
         : `${name} exited (${signal || code})`
           + (this.lastChildOutput[name] ? `: ${this.lastChildOutput[name]}` : "");
       this.lastChildFailure[name] = detail;
+      if (name === "tunnel") {
+        this.publishMcpConnection?.({
+          active: false,
+          status: expected ? "disconnected" : "error",
+          detail: expected ? "MCP tunnel disconnected" : detail,
+        });
+      }
       const statePersisted = this.tryWriteState(expected ? "stopping" : "degraded", detail);
       this.logger[expected ? "info" : "error"](
         error ? `runtime.${name}_spawn_failed` : `runtime.${name}_exited`,
@@ -1393,6 +1402,9 @@ class RuntimeSupervisor {
       throw new Error(message);
     }
     this.publishOperation?.({ name: "runtime-recovery", status: "completed", message: `${name} recovered` });
+    if (name === "tunnel") {
+      this.publishMcpConnection?.({ active: true, status: "connected", detail: "MCP tunnel is connected" });
+    }
   }
 
   async cleanupFailedStart(config) {
@@ -1593,6 +1605,22 @@ class RuntimeSupervisor {
       throw error;
     }
     this.tunnel = null;
+  }
+
+  async disconnectMcp() {
+    if (this.stopPromise || this.startPromise) throw new Error("Another launcher runtime operation is active");
+    const config = this.readConfig();
+    if (!config || config.mode !== "full") throw new Error("Configure MCP before disconnecting it");
+    if (this.restartTimers.tunnel) {
+      clearTimeout(this.restartTimers.tunnel);
+      this.restartTimers.tunnel = null;
+    }
+    await this.adoptConfiguredTunnelForStop(config);
+    await this.stopTunnelGracefully(config);
+    this.restartHistory.tunnel = [];
+    this.lastChildFailure.tunnel = null;
+    this.writeState(this.daemon ? "ready" : "stopped");
+    return { status: "disconnected", mcpConnected: false };
   }
 
   async adoptConfiguredTunnelForStop(config) {

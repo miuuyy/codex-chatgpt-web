@@ -115,10 +115,10 @@ let exitCommitted = false;
 let smokePassedThisSession = false;
 let cdpPort = 0;
 let lastOperation = null;
-let bridgeConnection = {
+let mcpConnection = {
   active: false,
   status: IS_DEV_PROFILE ? "unavailable" : "checking",
-  detail: IS_DEV_PROFILE ? "The DEV harness connection is controlled by the repository CLI" : "Checking Codex connection",
+  detail: IS_DEV_PROFILE ? "The DEV MCP connection is controlled by the repository CLI" : "Checking MCP connection",
 };
 let catalogVerificationTimer = null;
 let catalogVerificationInFlight = false;
@@ -148,9 +148,9 @@ function publishOperation(operation) {
   send("launcher:operation", operation);
 }
 
-function publishBridgeConnection(connection) {
-  bridgeConnection = connection;
-  send("launcher:bridge-connection", connection);
+function publishMcpConnection(connection) {
+  mcpConnection = connection;
+  send("launcher:mcp-connection", connection);
   return connection;
 }
 
@@ -489,7 +489,7 @@ function registerIpc({ logger, stateStore }) {
     version: app.getVersion(),
     smokePassed: smokePassedThisSession || smokePassedForCurrentVersion(stateStore.read()),
     operation: lastOperation,
-    connection: bridgeConnection,
+    connection: mcpConnection,
     update: updateController?.getState() ?? { status: "disabled" },
   }));
 
@@ -630,71 +630,51 @@ function registerIpc({ logger, stateStore }) {
   });
 
   handle("launcher:doctor", () => IS_DEV_PROFILE ? runtimeHost.devDoctor() : runtimeHost.doctor());
-  handle("launcher:bridge-set-active", async (_event, active) => {
-    if (IS_DEV_PROFILE) throw new Error("The DEV harness connection is controlled by the repository CLI");
-    if (typeof active !== "boolean") throw new Error("Codex bridge connection state must be boolean");
-    const previousActive = bridgeConnection.active;
+  handle("launcher:mcp-set-active", async (_event, active) => {
+    if (IS_DEV_PROFILE) throw new Error("The DEV MCP connection is controlled by the repository CLI");
+    if (typeof active !== "boolean") throw new Error("MCP connection state must be boolean");
+    const previousActive = mcpConnection.active;
     if (active === previousActive
-      && (bridgeConnection.status === "connected" || bridgeConnection.status === "disconnected")) {
-      return bridgeConnection;
+      && (mcpConnection.status === "connected" || mcpConnection.status === "disconnected")) {
+      return mcpConnection;
     }
-    publishBridgeConnection({
+    publishMcpConnection({
       active: previousActive,
       status: active ? "connecting" : "disconnecting",
-      detail: active ? "Connecting Codex to the launcher" : "Restoring the previous Codex route",
+      detail: active ? "Connecting the MCP tunnel" : "Disconnecting the MCP tunnel",
     });
     try {
-      if (browserHost.activeTraceId) {
-        throw new Error("Finish the active Codex task before changing the launcher connection");
-      }
       if (active) {
-        const runtime = await runtimeSupervisor.startIfConfigured();
-        if (runtime.status !== "ready") {
+        const runtime = await runtimeSupervisor.startIfConfigured({ connectMcp: true });
+        if (runtime.status !== "ready" || runtime.mcpConnected !== true) {
           const detail = runtime.detail || (
             runtime.status === "not-configured"
-              ? "Complete launcher setup before connecting Codex"
-              : "The launcher runtime is not ready"
+              ? "Configure MCP before connecting it"
+              : "The MCP tunnel is not ready"
           );
-          publishBridgeConnection({
+          publishMcpConnection({
             active: false,
             status: runtime.status === "not-configured" || runtime.status === "needs-setup" ? "unavailable" : "error",
             detail,
           });
           throw new Error(detail);
         }
-        const route = await runtimeHost.connectBridgeRoute();
-        if (route.changed) {
-          const state = stateStore.update({
-            codexCatalogVerified: false,
-            codexRestartRequired: true,
-          });
-          send("launcher:state-changed", state);
-          startCatalogVerificationMonitor({ logger, stateStore });
-        }
-        return publishBridgeConnection({
+        return publishMcpConnection({
           active: true,
           status: "connected",
-          detail: "Codex is routed through the launcher",
+          detail: "MCP tunnel is connected",
         });
       }
 
-      const route = await runtimeHost.restoreBridgeRoute("bridge-disconnect");
-      if (route.changed) {
-        const state = stateStore.update({
-          codexCatalogVerified: false,
-          codexRestartRequired: true,
-        });
-        send("launcher:state-changed", state);
-        stopCatalogVerificationMonitor();
-      }
-      return publishBridgeConnection({
+      await runtimeSupervisor.disconnectMcp();
+      return publishMcpConnection({
         active: false,
         status: "disconnected",
-        detail: "The previous Codex route is restored; restart Codex once",
+        detail: "MCP tunnel is disconnected",
       });
     } catch (error) {
-      if (bridgeConnection.status !== "unavailable") {
-        publishBridgeConnection({
+      if (mcpConnection.status !== "unavailable") {
+        publishMcpConnection({
           active: previousActive,
           status: "error",
           detail: error instanceof Error ? error.message : String(error),
@@ -736,10 +716,10 @@ function registerIpc({ logger, stateStore }) {
     });
     send("launcher:state-changed", state);
     stopCatalogVerificationMonitor();
-    publishBridgeConnection({
+    publishMcpConnection({
       active: false,
       status: "unavailable",
-      detail: "Install the Codex integration before connecting",
+      detail: "Configure MCP before connecting it",
     });
     return { cancelled: false, state };
   });
@@ -783,10 +763,10 @@ function registerIpc({ logger, stateStore }) {
     });
     if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
     if (!IS_DEV_PROFILE) {
-      publishBridgeConnection({
-        active: true,
-        status: "connected",
-        detail: "Codex is routed through the launcher",
+      publishMcpConnection({
+        active: result.mode === "full",
+        status: result.mode === "full" ? "connected" : "unavailable",
+        detail: result.mode === "full" ? "MCP tunnel is connected" : "Configure MCP before connecting it",
       });
     }
     return { ok: true, stdout: result.stdout, restartRequired: !IS_DEV_PROFILE };
@@ -828,10 +808,10 @@ function registerIpc({ logger, stateStore }) {
       codexRestartRequired: IS_DEV_PROFILE ? false : true,
     });
     if (!IS_DEV_PROFILE) {
-      publishBridgeConnection({
+      publishMcpConnection({
         active: true,
         status: "connected",
-        detail: "Codex is routed through the launcher",
+        detail: "MCP tunnel is connected",
       });
     }
     return {
@@ -1075,6 +1055,7 @@ async function start() {
     coreHome: CORE_HOME,
     browserDescriptorPath: BROWSER_DESCRIPTOR_PATH,
     launcherProfile: LAUNCHER_PROFILE.kind,
+    publishMcpConnection,
     publishOperation,
   });
   runtimeHost = new RuntimeHost({
@@ -1091,11 +1072,12 @@ async function start() {
     supervisor: runtimeSupervisor,
   });
   if (!IS_DEV_PROFILE) {
-    const configured = runtimeHost.runtimeConfigSnapshot().configured;
-    publishBridgeConnection({
+    const runtime = runtimeHost.runtimeConfigSnapshot();
+    const mcpConfigured = runtime.configured && runtime.mode === "full";
+    publishMcpConnection({
       active: false,
-      status: configured ? "checking" : "unavailable",
-      detail: configured ? "Checking Codex connection" : "Complete launcher setup before connecting Codex",
+      status: mcpConfigured ? "checking" : "unavailable",
+      detail: mcpConfigured ? "Checking MCP connection" : "Configure MCP before connecting it",
     });
   }
   browserHost = new BrowserHost({
@@ -1216,11 +1198,13 @@ async function start() {
       });
     }
   } else {
-    if (runtimeHost.runtimeConfigSnapshot().configured) {
-      publishBridgeConnection({
+    const startupRuntime = runtimeHost.runtimeConfigSnapshot();
+    const autoConnectMcp = stateStore.read().autoConnectMcp;
+    if (startupRuntime.configured && startupRuntime.mode === "full") {
+      publishMcpConnection({
         active: false,
-        status: "connecting",
-        detail: "Connecting Codex to the launcher",
+        status: autoConnectMcp ? "connecting" : "disconnected",
+        detail: autoConnectMcp ? "Connecting the MCP tunnel" : "MCP auto-connect is off",
       });
     }
     void (async () => {
@@ -1259,7 +1243,7 @@ async function start() {
       }
     }
     const runtime = await runtimeSupervisor.startIfConfigured({
-      connectMcp: stateStore.read().autoConnectMcp,
+      connectMcp: autoConnectMcp,
     });
     if (runtime.status !== "ready") return runtime;
     const route = await runtimeHost.connectBridgeRoute();
@@ -1286,10 +1270,18 @@ async function start() {
         send("launcher:state-changed", state);
       }
       startCatalogVerificationMonitor({ logger, stateStore });
-      publishBridgeConnection({
-        active: true,
-        status: "connected",
-        detail: "Codex is routed through the launcher",
+      publishMcpConnection({
+        active: runtime.mcpConnected === true,
+        status: runtime.mcpConnected === true
+          ? "connected"
+          : config.mode === "full"
+            ? "disconnected"
+            : "unavailable",
+        detail: runtime.mcpConnected === true
+          ? "MCP tunnel is connected"
+          : config.mode === "full"
+            ? "MCP auto-connect is off"
+            : "Configure MCP before connecting it",
       });
       return;
     }
@@ -1313,10 +1305,10 @@ async function start() {
           message: `Local runtime is not configured; restoring the previous Codex route also failed: ${routeRecovery.error}`,
         });
       }
-      publishBridgeConnection({
+      publishMcpConnection({
         active: false,
         status: "unavailable",
-        detail: "Complete launcher setup before connecting Codex",
+        detail: "Configure MCP before connecting it",
       });
       return;
     }
@@ -1338,7 +1330,7 @@ async function start() {
             ? `${detail}; the previous Codex route was restored, restart Codex once`
             : detail,
       });
-      publishBridgeConnection({
+      publishMcpConnection({
         active: false,
         status: runtime.status === "needs-setup" ? "unavailable" : "error",
         detail,
@@ -1356,7 +1348,7 @@ async function start() {
     const state = stateStore.update({ coreSetupComplete: false, codexCatalogVerified: false });
     send("launcher:state-changed", state);
     publishOperation({ name: "runtime-start", status: "failed", message });
-    publishBridgeConnection({ active: false, status: "error", detail: message });
+    publishMcpConnection({ active: false, status: "error", detail: message });
   });
   }
 
