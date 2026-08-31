@@ -269,6 +269,7 @@ test("session inspection delegates navigation and capability detection to the sh
     logger: { info() {} },
     view: { webContents: { getURL: () => "https://chatgpt.com/" } },
     refreshChatGptHomeDocument: async () => calls.push({ operation: "refresh" }),
+    markOwnedSurface: async () => calls.push({ operation: "mark-owned" }),
     runBrowserHelperOperation: async options => {
       calls.push(options);
       return {
@@ -293,11 +294,12 @@ test("session inspection delegates navigation and capability detection to the sh
     solAvailable: true,
     proAvailable: true,
   });
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   assert.equal(calls[0].operation, "refresh");
-  assert.equal(calls[1].operation, "inspect");
-  assert.equal(calls[1].appName, "Codex Native2");
-  assert.deepEqual(calls[1].payload, { detectCapabilities: true });
+  assert.equal(calls[1].operation, "mark-owned");
+  assert.equal(calls[2].operation, "inspect");
+  assert.equal(calls[2].appName, "Codex Native2");
+  assert.deepEqual(calls[2].payload, { detectCapabilities: true });
 });
 
 test("session inspection fails closed on incomplete shared-helper capability evidence", async () => {
@@ -308,6 +310,7 @@ test("session inspection fails closed on incomplete shared-helper capability evi
     logger: { info() {} },
     view: { webContents: { getURL: () => "https://chatgpt.com/?temporary-chat=true" } },
     refreshChatGptHomeDocument: async () => {},
+    markOwnedSurface: async () => {},
     runBrowserHelperOperation: async () => ({
       type: "result",
       value: { authenticated: true, temporary: true, url: "https://chatgpt.com/?temporary-chat=true" },

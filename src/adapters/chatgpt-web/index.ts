@@ -419,6 +419,7 @@ export function createChatGptWebAdapter(
       modelId: parsed.modelId,
       reasoning: parsed.options.reasoning,
       capabilities: turnCapabilities,
+      internalTurnToken: token.promise,
       prepare: () => prepareWith(checkpointInput.parsed),
       ...(resumeInput ? { prepareResume: () => prepareWith(resumeInput) } : {}),
       ...(retainConversation ? { retainConversation: true, conversationKey } : {}),

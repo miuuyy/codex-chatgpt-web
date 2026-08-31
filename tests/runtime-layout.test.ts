@@ -106,6 +106,25 @@ test("the DEV profile uses a distinct connector identity without overwriting cus
   expect(resolveDevSetupConnectorName(undefined, "Explicit DEV Harness")).toBe("Explicit DEV Harness");
 });
 
+test("full configuration accepts a Cloudflare named tunnel with a private MCP path", () => {
+  const root = join(tmpdir(), `codex-chatgpt-web-cloudflare-config-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  process.env.CODEX_CHATGPT_WEB_HOME = root;
+  mkdirSync(root, { recursive: true });
+  const config = defaultConfig("full");
+  config.runtimeCommand = [process.execPath];
+  config.tunnel = {
+    kind: "cloudflare",
+    binaryPath: join(root, "cloudflared"),
+    configPath: join(root, "config.yml"),
+    hostname: "mcp.example.com",
+    mcpPath: `/mcp/${"a".repeat(43)}`,
+  };
+  writeFileSync(join(root, "config.json"), `${JSON.stringify(config)}\n`);
+
+  expect(loadConfig().tunnel).toEqual(config.tunnel);
+});
+
 test("setup explicitly migrates v1 pro-only config to v3 managed browser-only", () => {
   const root = join(tmpdir(), `codex-chatgpt-web-config-migration-${process.pid}-${Date.now()}`);
   roots.push(root);

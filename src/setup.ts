@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
-import { join } from "node:path";
-import type { AppConfig, RuntimeMode, SubagentProtocol } from "./config";
+import { isAbsolute, join, resolve } from "node:path";
+import { isCloudflareTunnel, type AppConfig, type RuntimeMode, type SubagentProtocol } from "./config";
 import {
   currentRuntimeCommand,
   defaultBrokerEndpoint,
@@ -41,6 +41,8 @@ import {
 import { connectTunnel, createTunnelConfig, installRuntimeKey, installRuntimeKeyBytes, installTunnelClient, managedRuntimeKeyPath, stopTunnel, waitForTunnelReady } from "./tunnel";
 import { getTunnelServiceStatus, installTunnelService, restartTunnelService, stopTunnelService, tunnelServiceDefinitionMatches, uninstallTunnelService } from "./tunnel-service";
 import { VERSION } from "./version";
+import { inspectCloudflareConfig } from "./cloudflare-config";
+import { ensureMcpOAuthCredentials } from "./mcp-oauth";
 
 export interface SetupOptions {
   mode: RuntimeMode;
@@ -59,6 +61,11 @@ export interface SetupOptions {
   tunnelId?: string;
   runtimeKeyFile?: string;
   runtimeKeyValue?: string;
+  tunnelKind?: "openai" | "cloudflare";
+  cloudflaredBinaryPath?: string;
+  cloudflareConfigPath?: string;
+  cloudflareHostname?: string;
+  cloudflareMcpPath?: string;
 }
 
 export interface SetupResult {
@@ -96,8 +103,8 @@ export function launcherCapabilityProbeRequired(
 export function existingFullSetupCredentials(existing: AppConfig | undefined): ExistingFullSetupCredentials {
   const tunnel = existing?.mode === "full" ? existing.tunnel : undefined;
   return {
-    tunnelId: Boolean(tunnel?.tunnelId),
-    runtimeKey: Boolean(tunnel?.runtimeKeyFile && existsSync(tunnel.runtimeKeyFile)),
+    tunnelId: Boolean(tunnel && !isCloudflareTunnel(tunnel) && tunnel.tunnelId),
+    runtimeKey: Boolean(tunnel && !isCloudflareTunnel(tunnel) && existsSync(tunnel.runtimeKeyFile)),
   };
 }
 
@@ -259,7 +266,43 @@ async function configureTunnel(config: AppConfig, existing: AppConfig | undefine
     delete config.tunnel;
     return;
   }
-  const existingTunnel = existing?.mode === "full" ? existing.tunnel : undefined;
+  const requestedKind = options.tunnelKind
+    ?? (existing?.mode === "full" && isCloudflareTunnel(existing.tunnel) ? "cloudflare" : "openai");
+  if (requestedKind === "cloudflare") {
+    if (!options.browserHostDescriptorPath) {
+      throw new Error("Cloudflare named tunnels require the desktop launcher");
+    }
+    const previous = existing?.mode === "full" && isCloudflareTunnel(existing.tunnel)
+      ? existing.tunnel
+      : undefined;
+    const binaryPath = options.cloudflaredBinaryPath ?? previous?.binaryPath;
+    const configPath = options.cloudflareConfigPath ?? previous?.configPath;
+    const hostname = (options.cloudflareHostname ?? previous?.hostname ?? "").trim().toLowerCase();
+    if (!binaryPath || !isAbsolute(binaryPath)) throw new Error("Cloudflare mode requires an absolute cloudflared binary path");
+    if (!existsSync(binaryPath)) throw new Error(`cloudflared is missing: ${binaryPath}`);
+    if (!configPath || !isAbsolute(configPath)) throw new Error("Cloudflare mode requires an absolute YAML config path");
+    const inspected = await inspectCloudflareConfig(configPath);
+    if (inspected.error) throw new Error(inspected.error);
+    if (!inspected.hostnames.includes(hostname)) {
+      throw new Error(`Cloudflare hostname ${JSON.stringify(hostname)} is not in the selected config`);
+    }
+    const mcpPath = options.cloudflareMcpPath ?? previous?.mcpPath
+      ?? `/mcp/${randomBytes(32).toString("base64url")}`;
+    if (!/^\/mcp\/[A-Za-z0-9_-]{40,}$/.test(mcpPath)) {
+      throw new Error("Cloudflare MCP path is invalid");
+    }
+    config.tunnel = {
+      kind: "cloudflare",
+      binaryPath: resolve(binaryPath),
+      configPath: inspected.path,
+      hostname,
+      mcpPath,
+    };
+    return;
+  }
+  const existingTunnel = existing?.mode === "full" && existing.tunnel && !isCloudflareTunnel(existing.tunnel)
+    ? existing.tunnel
+    : undefined;
   const tunnelId = options.tunnelId ?? existingTunnel?.tunnelId;
   if (!tunnelId) {
     throw new Error("Full mode requires --tunnel-id. Create it at https://platform.openai.com/settings/organization/tunnels");
@@ -387,7 +430,15 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   }
   config.solAvailable = solAvailable === true;
   config.proAvailable = config.solAvailable && proAvailable === true;
-  const explicitTunnelChange = Boolean(options.tunnelId || options.runtimeKeyFile || options.runtimeKeyValue);
+  const explicitTunnelChange = Boolean(
+    options.tunnelKind
+    || options.tunnelId
+    || options.runtimeKeyFile
+    || options.runtimeKeyValue
+    || options.cloudflaredBinaryPath
+    || options.cloudflareConfigPath
+    || options.cloudflareHostname,
+  );
   const preliminaryChange = Boolean(existing && (meaningfulRuntimeChange(existing, config) || explicitTunnelChange || options.forceLogin));
   if (beforeService.loaded && preliminaryChange && !options.restartService) {
     throw new Error(
@@ -397,6 +448,9 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   }
   if (beforeService.loaded && preliminaryChange && existing) await assertServiceIdle(existing);
   await configureTunnel(config, existing, options);
+  if (config.mode === "full" && isCloudflareTunnel(config.tunnel)) {
+    ensureMcpOAuthCredentials();
+  }
 
   const changedWhileLoaded = Boolean(existing && beforeService.loaded && meaningfulRuntimeChange(existing, config));
   if (changedWhileLoaded && !options.restartService) {
@@ -422,28 +476,32 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     stopTunnel(existing);
   }
   if (config.mode === "full") {
-    const profilePath = join(config.tunnel!.profileDir, `${config.tunnel!.profileName}.yaml`);
-    const tunnelService = getTunnelServiceStatus();
-    const needsProfile = !existsSync(profilePath);
-    if (launcherOwned) {
-      if (tunnelService.installed || tunnelService.loaded) await uninstallTunnelService();
-      if (needsProfile || refreshTunnelWorker || explicitTunnelChange) {
-        await bootstrapTunnelProfile(config);
-      }
+    if (isCloudflareTunnel(config.tunnel)) {
+      if (!launcherOwned) throw new Error("Cloudflare named tunnels require the desktop launcher");
     } else {
-      const needsOwnershipMigration = !tunnelService.installed || !tunnelService.loaded || !tunnelServiceDefinitionMatches(config);
-      if (needsOwnershipMigration || needsProfile) {
-        await assertServiceIdle(config);
-        if (tunnelService.loaded) await stopTunnelService();
-        await bootstrapTunnelProfile(config);
-        installTunnelService(config);
-      } else if (refreshTunnelWorker) {
-        await assertServiceIdle(config);
-        await restartTunnelService();
+      const profilePath = join(config.tunnel!.profileDir, `${config.tunnel!.profileName}.yaml`);
+      const tunnelService = getTunnelServiceStatus();
+      const needsProfile = !existsSync(profilePath);
+      if (launcherOwned) {
+        if (tunnelService.installed || tunnelService.loaded) await uninstallTunnelService();
+        if (needsProfile || refreshTunnelWorker || explicitTunnelChange) {
+          await bootstrapTunnelProfile(config);
+        }
+      } else {
+        const needsOwnershipMigration = !tunnelService.installed || !tunnelService.loaded || !tunnelServiceDefinitionMatches(config);
+        if (needsOwnershipMigration || needsProfile) {
+          await assertServiceIdle(config);
+          if (tunnelService.loaded) await stopTunnelService();
+          await bootstrapTunnelProfile(config);
+          installTunnelService(config);
+        } else if (refreshTunnelWorker) {
+          await assertServiceIdle(config);
+          await restartTunnelService();
+        }
+        const status = await waitForTunnelReady(config);
+        if (!status.ok) throw new Error(`Tunnel runtime did not become healthy and ready: ${status.detail}`);
+        tunnelReady = true;
       }
-      const status = await waitForTunnelReady(config);
-      if (!status.ok) throw new Error(`Tunnel runtime did not become healthy and ready: ${status.detail}`);
-      tunnelReady = true;
     }
   }
   if (launcherOwned && (beforeService.installed || beforeService.loaded)) {
@@ -501,10 +559,21 @@ export async function setupDevProfile(options: SetupOptions): Promise<DevProfile
   config.solAvailable = capabilities.solAvailable;
   config.proAvailable = capabilities.solAvailable && capabilities.proAvailable;
 
-  const explicitTunnelChange = Boolean(options.tunnelId || options.runtimeKeyFile || options.runtimeKeyValue);
+  const explicitTunnelChange = Boolean(
+    options.tunnelKind
+    || options.tunnelId
+    || options.runtimeKeyFile
+    || options.runtimeKeyValue
+    || options.cloudflaredBinaryPath
+    || options.cloudflareConfigPath
+    || options.cloudflareHostname,
+  );
   await configureTunnel(config, existing, options);
   let tunnelReady: boolean | null = null;
   if (config.mode === "full") {
+    if (isCloudflareTunnel(config.tunnel)) {
+      throw new Error("The DEV harness requires an OpenAI tunnel because it has no Responses HTTP listener");
+    }
     config.tunnel!.alias = DEV_TUNNEL_BASE_NAME;
     config.tunnel!.profileName = DEV_TUNNEL_BASE_NAME;
     const profilePath = join(config.tunnel!.profileDir, `${config.tunnel!.profileName}.yaml`);

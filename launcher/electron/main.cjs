@@ -6,6 +6,7 @@ const { pathToFileURL } = require("node:url");
 const {
   app,
   BrowserWindow,
+  clipboard,
   dialog,
   ipcMain,
   Menu,
@@ -23,12 +24,19 @@ const {
   exportSanitizedLogs,
   installProcessDiagnosticGuards,
   registerLoggedIpc,
+  sanitizedLogText,
 } = require("./logging.cjs");
 const { RuntimeHost } = require("./runtime.cjs");
 const { ensurePackagedRuntime } = require("./runtime-install.cjs");
 const { RuntimeSupervisor } = require("./runtime-supervisor.cjs");
 const { DEVELOPMENT_PROFILE, resolveLauncherProfile } = require("./profile.cjs");
 const { runtimeBundlePaths } = require("./runtime-command.cjs");
+const { validateConnectorName } = require("./connector-identity.cjs");
+const {
+  defaultCloudflareConfigPath,
+  inspectCloudflareConfig,
+  locateCloudflared,
+} = require("./cloudflare-config.cjs");
 const { createUpdateController } = require("./update.cjs");
 const {
   createStateStore,
@@ -78,6 +86,27 @@ let mainWindow = null;
 let browserHost = null;
 let runtimeHost = null;
 let browserControl = null;
+let selectedCloudflareConfigPath = "";
+let selectedCloudflaredBinaryPath = "";
+
+function cloudflareSelection() {
+  const saved = runtimeHost?.cloudflareSettings() ?? {};
+  if (!selectedCloudflareConfigPath) {
+    selectedCloudflareConfigPath = saved.configPath || defaultCloudflareConfigPath();
+  }
+  if (!selectedCloudflaredBinaryPath) {
+    selectedCloudflaredBinaryPath = locateCloudflared(saved.binaryPath || "");
+  }
+  return {
+    config: inspectCloudflareConfig(selectedCloudflareConfigPath),
+    binaryPath: selectedCloudflaredBinaryPath,
+    hostname: saved.hostname || "",
+    publicUrl: saved.publicUrl || "",
+    registrationUrl: saved.registrationUrl || "",
+    authorizationPassphrase: saved.authorizationPassphrase || "",
+    kind: saved.configPath ? "cloudflare" : "openai",
+  };
+}
 let runtimeSupervisor = null;
 let tray = null;
 let quitting = false;
@@ -193,6 +222,10 @@ const NATIVE_COPY = Object.freeze({
     openLauncher: "Open Codex Web GPT",
     quit: "Quit",
     exportDiagnostics: "Export privacy-safe diagnostics",
+    clear: "Clear",
+    clearLogsTitle: "Clear activity logs",
+    clearLogsMessage: "Permanently clear all local activity logs?",
+    clearLogsDetail: "Current and rotated launcher logs will be deleted. New activity will continue to appear.",
     cancel: "Cancel",
     remove: "Remove",
     removeTitle: "Remove Codex Web GPT",
@@ -203,6 +236,10 @@ const NATIVE_COPY = Object.freeze({
     openLauncher: "打开 Codex Web GPT",
     quit: "退出",
     exportDiagnostics: "导出隐私安全诊断",
+    clear: "清理",
+    clearLogsTitle: "清理活动日志",
+    clearLogsMessage: "永久清理所有本地活动日志？",
+    clearLogsDetail: "当前和已轮转的启动器日志都会被删除，之后产生的新活动仍会继续显示。",
     cancel: "取消",
     remove: "移除",
     removeTitle: "移除 Codex Web GPT",
@@ -213,6 +250,10 @@ const NATIVE_COPY = Object.freeze({
     openLauncher: "Codex Web GPT を開く",
     quit: "終了",
     exportDiagnostics: "プライバシー保護済みの診断情報をエクスポート",
+    clear: "消去",
+    clearLogsTitle: "アクティビティログを消去",
+    clearLogsMessage: "ローカルのアクティビティログをすべて完全に消去しますか？",
+    clearLogsDetail: "現在およびローテーション済みのランチャーログが削除されます。新しいアクティビティは引き続き表示されます。",
     cancel: "キャンセル",
     remove: "削除",
     removeTitle: "Codex Web GPT を削除",
@@ -402,6 +443,22 @@ function smokePassedForCurrentVersion(state) {
 
 function registerIpc({ logger, stateStore }) {
   const handle = (channel, handler) => registerLoggedIpc(ipcMain, logger, channel, handler);
+  const persistMcpPreferences = (input) => {
+    const connectorName = validateConnectorName(input?.connectorName);
+    const tunnelKind = input?.tunnelKind;
+    if (tunnelKind !== "openai" && tunnelKind !== "cloudflare") {
+      throw new Error("Tunnel kind must be openai or cloudflare");
+    }
+    if (IS_DEV_PROFILE && tunnelKind !== "openai") {
+      throw new Error("DEV profile supports only OpenAI Tunnel");
+    }
+    const state = stateStore.update({
+      mcpConnectorName: connectorName,
+      mcpTunnelKind: tunnelKind,
+    });
+    send("launcher:state-changed", state);
+    return state;
+  };
   handle("launcher:snapshot", async () => ({
     profile: LAUNCHER_PROFILE.kind,
     profilePaths: {
@@ -413,6 +470,7 @@ function registerIpc({ logger, stateStore }) {
     browser: browserHost?.snapshot() ?? null,
     connectorName: runtimeHost.browserConnectorName(),
     mcpCredentialsConfigured: runtimeHost?.mcpCredentialsConfigured() ?? false,
+    cloudflare: cloudflareSelection(),
     logs: logger.recent(),
     urls: { github: GITHUB_URL, x: X_URL, connectors: CONNECTORS_URL, tunnels: TUNNELS_URL, keys: KEYS_URL },
     platform: process.platform,
@@ -525,7 +583,8 @@ function registerIpc({ logger, stateStore }) {
     }
     try {
       publishOperation({ name: operationName, status: "running", message: "Checking ChatGPT connector" });
-      await browserHost.verifyConnector(runtimeHost.mcpConnectorName());
+      const connectorName = runtimeHost.mcpConnectorName();
+      await browserHost.verifyConnector(connectorName);
       const state = stateStore.update({ mcpSetupComplete: true });
       send("launcher:state-changed", state);
       const successMessage = IS_DEV_PROFILE
@@ -538,7 +597,7 @@ function registerIpc({ logger, stateStore }) {
           ? {
               id: "connector",
               status: "ok",
-              message: `ChatGPT connector ${JSON.stringify(runtimeHost.mcpConnectorName())} is available`,
+              message: `ChatGPT connector ${JSON.stringify(connectorName)} is available`,
             }
           : check),
       };
@@ -640,9 +699,29 @@ function registerIpc({ logger, stateStore }) {
     const setup = IS_DEV_PROFILE
       ? runtimeHost.setupDevMcp.bind(runtimeHost)
       : runtimeHost.setupMcp.bind(runtimeHost);
+    const tunnelKind = input?.tunnelKind === "cloudflare" ? "cloudflare" : "openai";
+    const connectorName = validateConnectorName(input?.appName);
+    persistMcpPreferences({ connectorName, tunnelKind });
+    const cloudflare = cloudflareSelection();
+    const hostname = typeof input?.cloudflareHostname === "string"
+      ? input.cloudflareHostname.trim().toLowerCase()
+      : "";
+    if (tunnelKind === "cloudflare") {
+      if (cloudflare.config.error || !cloudflare.config.hostnames.includes(hostname)) {
+        throw new Error("Select an exact hostname from the chosen Cloudflare config");
+      }
+      if (!cloudflare.binaryPath) throw new Error("Select an installed cloudflared executable");
+    }
     const result = await setup({
+      appName: connectorName,
+      tunnelKind,
       tunnelId: typeof input?.tunnelId === "string" ? input.tunnelId.trim() : "",
       runtimeKey: typeof input?.runtimeKey === "string" ? input.runtimeKey : "",
+      ...(tunnelKind === "cloudflare" ? {
+        cloudflaredBinaryPath: cloudflare.binaryPath,
+        cloudflareConfigPath: cloudflare.config.path,
+        cloudflareHostname: hostname,
+      } : {}),
       replace: input?.replace === true,
     });
     stateStore.update({
@@ -651,12 +730,44 @@ function registerIpc({ logger, stateStore }) {
       mcpGuideStep: 2,
       codexRestartRequired: IS_DEV_PROFILE ? false : true,
     });
-    return { ok: true, stdout: result.stdout };
+    return {
+      ok: true,
+      stdout: result.stdout,
+      ...(tunnelKind === "cloudflare" ? { cloudflare: cloudflareSelection() } : {}),
+    };
+  });
+  handle("launcher:pick-cloudflare-config", async () => {
+    if (!mainWindow) throw new Error("Launcher window is unavailable");
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: "Select the Cloudflare tunnel config",
+      properties: ["openFile"],
+      filters: [{ name: "YAML", extensions: ["yml", "yaml"] }],
+    });
+    if (!result.canceled && result.filePaths[0]) {
+      const inspected = inspectCloudflareConfig(result.filePaths[0]);
+      if (inspected.error) throw new Error(inspected.error);
+      selectedCloudflareConfigPath = inspected.path;
+    }
+    return cloudflareSelection();
+  });
+  handle("launcher:pick-cloudflared-binary", async () => {
+    if (!mainWindow) throw new Error("Launcher window is unavailable");
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: "Select cloudflared",
+      properties: ["openFile"],
+    });
+    if (!result.canceled && result.filePaths[0]) {
+      const located = locateCloudflared(result.filePaths[0]);
+      if (!located) throw new Error("The selected cloudflared file is not executable");
+      selectedCloudflaredBinaryPath = located;
+    }
+    return cloudflareSelection();
   });
   handle("launcher:set-mcp-step", (_event, step) => {
     if (!Number.isInteger(step) || step < 0 || step > 2) throw new Error("Invalid MCP guide step");
     return stateStore.update({ mcpGuideStep: step });
   });
+  handle("launcher:set-mcp-preferences", (_event, input) => persistMcpPreferences(input));
 
   handle("launcher:autostart", (_event, enabled) => {
     if (IS_DEV_PROFILE) throw new Error("The isolated DEV launcher is started explicitly from the repository CLI");
@@ -685,7 +796,14 @@ function registerIpc({ logger, stateStore }) {
   });
   handle("launcher:sidebar-state", (_event, value) => stateStore.update(validateSidebarState(value)));
   handle("launcher:logs", (_event, limit) => logger.recent(limit));
-  handle("launcher:export-logs", async () => {
+  handle("launcher:export-logs", async (_event, destination) => {
+    if (destination === "clipboard") {
+      const sanitized = sanitizedLogText({ filePath: logger.filePath });
+      clipboard.writeText(sanitized.text);
+      logger.info("launcher.logs_copied", { recordCount: sanitized.recordCount });
+      return "clipboard";
+    }
+    if (destination !== "file") throw new Error("Unknown safe log export destination");
     const date = new Date().toISOString().slice(0, 10);
     const copy = nativeCopyFor(stateStore.read().language);
     const result = await dialog.showSaveDialog(mainWindow, {
@@ -700,6 +818,22 @@ function registerIpc({ logger, stateStore }) {
     });
     logger.info("launcher.logs_exported", { recordCount });
     return result.filePath;
+  });
+  handle("launcher:clear-logs", async () => {
+    const copy = nativeCopyFor(stateStore.read().language);
+    const confirmation = await dialog.showMessageBox(mainWindow, {
+      type: "warning",
+      buttons: [copy.cancel, copy.clear],
+      defaultId: 0,
+      cancelId: 0,
+      title: copy.clearLogsTitle,
+      message: copy.clearLogsMessage,
+      detail: copy.clearLogsDetail,
+      noLink: true,
+    });
+    if (confirmation.response !== 1) return { cleared: false, logs: logger.recent() };
+    logger.clear();
+    return { cleared: true, logs: [] };
   });
   handle("launcher:update-install", async () => {
     if (!updateController) throw new Error("Launcher updates are unavailable");
@@ -858,7 +992,11 @@ async function start() {
     cdpPort,
     control: browserControl.descriptor(),
     cancelTurn: IS_DEV_PROFILE ? undefined : traceId => runtimeSupervisor.cancelBrowserTurn(traceId),
-    getConnectorName: () => runtimeHost.browserConnectorName(),
+    getConnectorName: () => {
+      const runtime = runtimeHost.runtimeConfigSnapshot();
+      if (runtime.configured && runtime.mode === "full") return runtimeHost.mcpConnectorName();
+      return stateStore.read().mcpConnectorName || runtimeHost.browserConnectorName();
+    },
     helper: { executable: process.execPath, script: BROWSER_HELPER_PATH },
     logger,
     partition: LAUNCHER_PROFILE.browserPartition,

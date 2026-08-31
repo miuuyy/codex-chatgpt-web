@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
-import type { AppConfig } from "./config";
-import { atomicWriteFile, getConfigDir } from "./config";
+import type { AppConfig, OpenAiTunnelConfig } from "./config";
+import { atomicWriteFile, getConfigDir, isCloudflareTunnel } from "./config";
 import { runCommand, runChecked } from "./process";
 
 const LABEL = "io.github.codex-chatgpt-web.tunnel";
@@ -37,8 +37,9 @@ function serviceTarget(): string {
   return `${launchDomain()}/${LABEL}`;
 }
 
-function settings(config: AppConfig) {
+function settings(config: AppConfig): OpenAiTunnelConfig {
   if (config.mode !== "full" || !config.tunnel) throw new Error("Tunnel service requires full mode");
+  if (isCloudflareTunnel(config.tunnel)) throw new Error("The macOS tunnel service supports only OpenAI tunnel-client");
   return config.tunnel;
 }
 

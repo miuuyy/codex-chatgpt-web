@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { unzipSync } from "fflate";
-import type { AppConfig, TunnelConfig } from "./config";
+import { isCloudflareTunnel, type AppConfig, type OpenAiTunnelConfig, type TunnelConfig } from "./config";
 import { atomicWriteFile, getConfigDir } from "./config";
 import { runCommand, runChecked } from "./process";
 
@@ -181,7 +181,7 @@ export function createTunnelConfig(options: {
   runtimeKeyFile: string;
   profileName?: string;
   alias?: string;
-}): TunnelConfig {
+}): OpenAiTunnelConfig {
   if (!/^tunnel_[a-f0-9]{32}$/.test(options.tunnelId)) throw new Error("--tunnel-id must be tunnel_ followed by 32 lowercase hexadecimal characters");
   const profileName = options.profileName ?? "codex-chatgpt-web";
   const alias = options.alias ?? "codex-chatgpt-web";
@@ -189,6 +189,7 @@ export function createTunnelConfig(options: {
     throw new Error("Tunnel profile and alias may contain only letters, digits, dot, underscore, and dash");
   }
   return {
+    kind: "openai",
     binaryPath: options.binaryPath,
     tunnelId: options.tunnelId,
     runtimeKeyFile: options.runtimeKeyFile,
@@ -218,8 +219,9 @@ export function mcpCommand(config: AppConfig, platform = process.platform): stri
   return [...config.runtimeCommand, "mcp", "--broker-socket", config.brokerSocketPath].map(shellQuote).join(" ");
 }
 
-function tunnel(config: AppConfig): TunnelConfig {
+function tunnel(config: AppConfig): OpenAiTunnelConfig {
   if (config.mode !== "full" || !config.tunnel) throw new Error("Tunnel commands require full mode");
+  if (isCloudflareTunnel(config.tunnel)) throw new Error("OpenAI tunnel commands cannot manage a Cloudflare tunnel");
   return config.tunnel;
 }
 

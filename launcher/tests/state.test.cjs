@@ -30,6 +30,8 @@ test("launcher state persists onboarding, language, and autostart atomically", (
       sidebarOpen: true,
       sidebarWidth: 252,
       mcpGuideStep: 0,
+      mcpConnectorName: null,
+      mcpTunnelKind: null,
       sessionRefreshReminderAt: null,
     });
     store.update({
@@ -38,6 +40,8 @@ test("launcher state persists onboarding, language, and autostart atomically", (
       keepRunningOnClose: false,
       browserSmokePassed: true,
       browserSmokeVersion: "0.2.0",
+      mcpConnectorName: "XR Local MCP",
+      mcpTunnelKind: "cloudflare",
     });
     assert.deepEqual(createStateStore(file).read(), {
       version: 1,
@@ -54,6 +58,8 @@ test("launcher state persists onboarding, language, and autostart atomically", (
       sidebarOpen: true,
       sidebarWidth: 252,
       mcpGuideStep: 0,
+      mcpConnectorName: "XR Local MCP",
+      mcpTunnelKind: "cloudflare",
       sessionRefreshReminderAt: null,
     });
     if (process.platform !== "win32") assert.equal(fs.statSync(file).mode & 0o077, 0);
@@ -99,6 +105,8 @@ test("persisted sidebar corruption is repaired without changing the rest of laun
       sidebarOpen: "yes",
       sidebarWidth: 900,
       mcpGuideStep: 99,
+      mcpConnectorName: "",
+      mcpTunnelKind: "invalid",
       sessionRefreshReminderAt: "not-a-date",
       coreSetupComplete: "yes",
     }));
@@ -117,6 +125,8 @@ test("persisted sidebar corruption is repaired without changing the rest of laun
       sidebarOpen: true,
       sidebarWidth: 252,
       mcpGuideStep: 0,
+      mcpConnectorName: null,
+      mcpTunnelKind: null,
       sessionRefreshReminderAt: null,
     });
   } finally {

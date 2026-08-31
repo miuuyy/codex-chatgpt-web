@@ -9,9 +9,9 @@ launcher-owned codex-chatgpt-web daemon
   ├─ native Responses passthrough or ChatGPT Responses/SSE bridge
   ├─ ChatGPT browser worker (up to five task-bound Electron tabs)
   ├─ capability broker (full mode only)
-  └─ stdio MCP server
+  └─ MCP server (stdio or secret-path HTTP)
             ▲
-            │ outbound OpenAI Tunnel
+            │ outbound OpenAI Tunnel or Cloudflare named tunnel
             ▼
       ChatGPT custom connector
 ```
@@ -31,10 +31,13 @@ launcher-owned codex-chatgpt-web daemon
 
 - Exposes the same fixed models and attaches the turn-bound connector capability to every available
   effort, from Luna through Pro. There are no effort-specific MCP exclusions.
-- ChatGPT uses a custom MCP connector backed by `openai/tunnel-client`.
-- Every connector call presents one outer Codex turn capability; the MCP server keeps the derived
-  binding private and dispatches the requested action immediately.
-- Tool calls and results remain in the same ChatGPT response while Codex executes them locally.
+- ChatGPT uses a custom MCP connector backed by either `openai/tunnel-client` or an existing
+  Cloudflare named tunnel. The connector name is selected during setup rather than fixed in code.
+- Cloudflare connector calls pass OAuth 2.1 authorization before MCP dispatch. ChatGPT registers a
+  public client through DCR, the user approves it with a local passphrase, and later requests use a
+  persisted bearer token. The connector URL itself is not authorization.
+- MCP tools execute directly in the local runtime and do not accept an outer-Codex `turn_token`.
+  Tool calls and results remain inside the same ChatGPT response.
 
 ### Repository DEV driver
 
@@ -46,10 +49,10 @@ configuration, chat store, diagnostic store, broker path, tunnel profile, and al
 DEV launchers can therefore run at the same time with different ChatGPT accounts.
 
 The working-tree adapter attaches to a tab leased only from that DEV launcher. In Full mode the DEV
-launcher owns one persistent, isolated tunnel runtime; a named CLI chat owns only the private turn
-broker attached to that tunnel for the command's lifetime. The distinct `Codex Native2 DEV`
-connector reaches the same MCP server and turn-token contract without requiring any Responses
-daemon or colliding with the production `Codex Native2` connector.
+launcher owns one persistent, isolated OpenAI tunnel runtime; a named CLI chat owns only the private
+turn broker attached to that tunnel for the command's lifetime. Its separately configured connector
+reaches the same MCP server and turn-token contract without requiring any Responses daemon or
+colliding with the production connector. DEV does not reuse production Cloudflare settings.
 
 Only the responsibilities normally owned by native Codex are synthetic: named history storage,
 turn metadata, tool-result execution, context-threshold scheduling, and installation of compacted
@@ -65,14 +68,11 @@ probe. The DEV launcher supervisor owns only the isolated MCP tunnel. Browser di
 state, thread authority, checkpoints, and named chat state live
 under `~/.codex-chatgpt-web-dev` by default.
 
-The ChatGPT connector name is also the public MCP ABI identity. The direct turn-token contract uses
-`Codex Native2`; the retired `Codex Native` identity is never selected or refreshed in place. Setup
-migrates known legacy local configuration to the new name, clears prior verification state, and
-requires the user to create the new connector. Browser verification accepts the exact new identity,
-reports a specific migration error when only the legacy identity is visible, and never falls back to
-the legacy connector. Future public schema changes require another explicit connector identity.
-Repository DEV mode uses `Codex Native2 DEV` so the same ChatGPT account can keep both production
-and development connectors installed without renaming, refreshing, or deleting either one.
+The ChatGPT connector name is also the public MCP ABI identity. Setup stores the exact user-selected
+name, clears prior verification state when it changes, and requires a new connector for a new public
+contract. Browser verification accepts only that configured identity and never falls back to a
+legacy connector. `Codex Native2` and `Codex Native2 DEV` remain defaults for compatibility, not
+hard-coded requirements. Production and repository DEV connectors may use different custom names.
 
 ## Browser lifecycle
 
@@ -122,23 +122,34 @@ Codex commentary.
 
 Each native desktop package contains Electron, a platform-matched pinned Bun executable, the
 Responses bridge, Playwright client code, MCP server, setup, doctor, and the browser helper.
-Browser-only mode downloads no browser and requires no installed Chrome/Chromium or system Node/Bun;
-sign-in and model turns both remain in Electron. Full mode separately downloads the official pinned
-`openai/tunnel-client` build for the current OS/architecture and verifies it against the release
-SHA-256 manifest.
+Browser-only mode downloads no browser and requires no browser extension, installed Chrome/Chromium,
+or system Node/Bun; sign-in and model turns both remain in Electron. OpenAI Full mode separately
+downloads the official pinned `openai/tunnel-client` build for the current OS/architecture and
+verifies it against the release SHA-256 manifest. Cloudflare Full mode instead uses a user-selected
+installed `cloudflared` executable and an existing named-tunnel YAML configuration.
+
+The Cloudflare configuration file is selected only through a main-process file picker; renderer
+input cannot nominate an arbitrary path. The launcher reads exact hostname ingress entries and the
+user selects one. At runtime, the daemon first binds its random loopback port, then the launcher
+creates a private temporary YAML file that preserves tunnel credentials while replacing ingress
+with one exact random MCP path plus its OAuth and standard metadata subpaths, a dynamic loopback
+service, an explicit local Host header, and a 404 fallback. The source YAML is never changed, and
+the temporary file is deleted when `cloudflared` stops. OAuth DCR, local passphrase consent, PKCE,
+and bearer-token checks protect MCP dispatch even when another party learns the public URL.
 
 On first launch, the embedded runtime is identity-checked and copied atomically into a private
 versioned directory under the application home. Daemon and MCP commands use that durable copy,
 which is required because Linux AppImage mount paths are temporary and must never be persisted in
 Codex or tunnel configuration.
 
-The launcher is the sole process supervisor on macOS, Windows, and Linux. It starts the optional
-tunnel first, waits for healthy/ready evidence, starts the Responses daemon, and then waits for its
-versioned health payload. Native login items or an owner-local XDG autostart file launch the app
-hidden after sign-in. A marker containing only launcher-owned PIDs lets doctor distinguish the
-launcher runtime from a stale or external process. Legacy macOS launchd services are drained and
-removed during an explicit launcher migration; launchd remains only for the advanced terminal-only
-mode.
+The launcher is the sole process supervisor on macOS, Windows, and Linux. OpenAI Full mode starts
+the optional tunnel first and waits for healthy/ready evidence before starting the Responses daemon.
+Cloudflare Full mode starts the daemon first so its dynamic loopback port exists, then starts the
+named tunnel and waits for a registered connection. Browser-only mode starts only the daemon. Native
+login items or an owner-local XDG autostart file launch the app hidden after sign-in. A marker
+containing only launcher-owned PIDs lets doctor distinguish the launcher runtime from a stale or
+external process. Legacy macOS launchd services are drained and removed during an explicit launcher
+migration; launchd remains only for the advanced terminal-only mode.
 
 Setup keeps Codex's built-in `openai` provider; its only managed provider-routing assignment is
 `openai_base_url`. The daemon
@@ -189,6 +200,8 @@ launcher error.
 - Store browser state and tunnel credentials under the application home with mode `0600`.
 - Protect lifecycle control endpoints with a random application-owned bearer token.
 - Never place secret values in command-line arguments, logs, generated profiles, or Git.
+- Accept Cloudflare MCP traffic only on the generated ingress paths, require OAuth bearer
+  authorization before MCP dispatch, and reject a forged HTTP Host in the MCP transport.
 - Limit browser turns to five independent task-bound tabs and reject unsupported models explicitly.
   The selected routed model fixes the adapter effort; a conflicting request effort cannot change it.
 - Do not retry or switch modes to evade product usage limits.

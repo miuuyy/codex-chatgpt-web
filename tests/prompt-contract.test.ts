@@ -27,7 +27,7 @@ function request(reasoning: "low" | "medium" | "high" | "xhigh" | "max"): CodexP
   };
 }
 
-test("Full-mode Pro prompts pass one stable turn token directly to native actions", () => {
+test("Full-mode Pro prompts use the authenticated connector without exposing a turn token", () => {
   const token = "turn_12345678901234567890123456789012";
   const parsed = request("max");
   parsed.context.messages[1]!.content = `Diagnose an invalid binding_id safety failure without replaying ${token}`;
@@ -38,7 +38,6 @@ test("Full-mode Pro prompts pass one stable turn token directly to native action
   );
   const envelopeEnd = compiled.text.indexOf("</codex_context_json>");
   const resume = compiled.text.indexOf("<codex_transport_resume>", envelopeEnd);
-  const tokenMatches = compiled.text.match(new RegExp(token, "g"));
   const transportOnly = compiled.text.replace(
     /<codex_context_json>[\s\S]*<\/codex_context_json>/,
     "<codex_context_json>[task context]</codex_context_json>",
@@ -46,7 +45,7 @@ test("Full-mode Pro prompts pass one stable turn token directly to native action
 
   expect(envelopeEnd).toBeGreaterThan(0);
   expect(resume).toBeGreaterThan(envelopeEnd);
-  expect(tokenMatches).toHaveLength(1);
+  expect(compiled.text).not.toContain(token);
   expect(compiled.text).toContain("[retired turn handle]");
   expect(transportOnly).toContain("For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.");
   expect(transportOnly).toContain("Call a Codex Native tool only when the latest active request requires a local effect or fresh local evidence that is not already present in the supplied context; otherwise answer the request directly without a tool call.");
@@ -55,7 +54,7 @@ test("Full-mode Pro prompts pass one stable turn token directly to native action
   expect(transportOnly).toContain("After a deterministic tool failure, update the working hypothesis from that result");
   expect(transportOnly).toContain("do not repeat the same call unless its inputs or observable state changed.");
   expect(transportOnly).toContain("Continue using the available tools until the requested work is complete and verified.");
-  expect(transportOnly).toContain(`The task context is complete. Pass turn_token ${token} unchanged to every Codex Native call in this response, including continuations after tool results; do not expose it in the answer. Execute the latest active user request now.`);
+  expect(transportOnly).toContain("The task context is complete. Use the authenticated Codex Native connector directly when local work is required; its tools do not accept or require a turn token. Execute the latest active user request now.");
   expect(transportOnly).not.toMatch(/codex_bind_turn|binding_id|outer_tool_gateway|command_tool/);
   expect(transportOnly).not.toMatch(/codex_exec|codex_write_stdin|codex_apply_patch|codex_view_image|codex_tool_inventory|codex_tool_call/);
   expect(transportOnly).not.toMatch(/expired|invalid|revoked|blocked|safety|security layer|permission gate/i);
@@ -71,7 +70,8 @@ test("Pro preserves the same native Codex delegation contract as Extra High", ()
 
   for (const compiled of [pro, extraHigh]) {
     expect(compiled.text).toContain("For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.");
-    expect(compiled.text).toContain(`Pass turn_token ${token} unchanged to every Codex Native call in this response`);
+    expect(compiled.text).not.toContain(token);
+    expect(compiled.text).toContain("its tools do not accept or require a turn token");
     expect(compiled.text).not.toContain("Complete this task directly in the current parent response.");
     expect(compiled.text).not.toContain("Do not create, spawn, delegate to, or wait on sub-agents");
     expect(compiled.text).not.toContain("Use non-agent tools directly instead.");
@@ -124,7 +124,7 @@ test("Bigger Context sends three semantic record envelopes and starts work from 
     (record.message as { role: string }).role
   ))).toEqual(["developer", "user", "assistant", "user"]);
   expect(compiled.multipart!.parts.join("\n")).not.toContain(token);
-  expect(compiled.multipart!.commit.match(new RegExp(token, "g"))).toHaveLength(1);
+  expect(compiled.multipart!.commit).not.toContain(token);
   expect(compiled.text).toBe(compiled.multipart!.commit);
   expect(compiled.text).not.toContain("<codex_context_json>");
 
@@ -152,7 +152,7 @@ test("Bigger Context sends three semantic record envelopes and starts work from 
   expect(commit).toContain("The final part is included in this same message and starts the task");
   expect(commit).toContain(compiled.multipart!.parts[2]!);
   expect(commit).toContain("latest-request");
-  expect(commit.match(new RegExp(token, "g"))).toHaveLength(1);
+  expect(commit).not.toContain(token);
 });
 
 test("Bigger Context uses the minimum transport and reserves three stages for compaction", () => {
@@ -494,7 +494,7 @@ test("the replayed context never carries a finished turn's broker handles", () =
   expect(compiled.text).not.toContain(staleBinding);
   expect(compiled.text).toContain("[retired turn handle]");
   expect(compiled.text).toContain("[retired binding handle]");
-  expect(compiled.text).toContain(token);
+  expect(compiled.text).not.toContain(token);
   expect(compiled.text).toContain("keep working");
   const envelope = compiled.text.split("<codex_context_json>")[1]!.split("</codex_context_json>")[0]!.trim();
   expect(() => JSON.parse(envelope) as unknown).not.toThrow();
@@ -541,7 +541,7 @@ test("keeps large contexts intact in the inline text envelope", () => {
 
   expect(compiled.text.length).toBeGreaterThan(600_000);
   expect(compiled.text).toContain(largeContent);
-  expect(compiled.text).toContain(token);
+  expect(compiled.text).not.toContain(token);
   expect(compiled.text).toContain(`<codex_context_json>`);
   expect(compiled.text).not.toContain(`<codex_context_attachment>`);
   expect(compiled.text).not.toContain("sha256");

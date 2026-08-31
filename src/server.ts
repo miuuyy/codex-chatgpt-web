@@ -37,8 +37,11 @@ import { namespacedToolName, type AdapterEvent, type CodexParsedRequest } from "
 import type { CodexProviderConfig } from "./types";
 import type { ProviderAdapter } from "./adapters/base";
 import { VERSION } from "./version";
+import { isCloudflareTunnel } from "./config";
+import { handleChatGptMcpHttpRequest } from "./adapters/chatgpt-web/mcp-server";
+import { McpOAuthServer } from "./mcp-oauth";
 
-type HttpTrackedEndpoint = "models" | "responses" | "compact" | "search" | "unspecified";
+type HttpTrackedEndpoint = "models" | "responses" | "compact" | "search" | "mcp" | "unspecified";
 
 export interface HttpStreamFailureEvidence {
   httpTurnId: number;
@@ -637,6 +640,9 @@ export function startServer(
   }
   const startedAt = Date.now();
   const turnBroker = config.mode === "full" ? TurnBroker.forSocket(config.brokerSocketPath) : undefined;
+  const mcpOAuth = config.mode === "full" && isCloudflareTunnel(config.tunnel)
+    ? new McpOAuthServer(`https://${config.tunnel.hostname}`, config.tunnel.mcpPath)
+    : undefined;
   if (config.mode === "full") {
     void turnBroker!.listen().catch(error => {
       console.error(
@@ -665,6 +671,16 @@ export function startServer(
     idleTimeout: 0,
     async fetch(req) {
       const url = new URL(req.url);
+      if (mcpOAuth && (
+        url.pathname.startsWith(`${mcpOAuth.mcpPath}/oauth/`)
+        || url.pathname === mcpOAuth.protectedResourceMetadataPath
+        || url.pathname === mcpOAuth.authorizationServerMetadataPath
+        || url.pathname === `${mcpOAuth.mcpPath}/.well-known/openid-configuration`
+        || (req.method === "OPTIONS" && url.pathname === mcpOAuth.mcpPath)
+      )) {
+        const oauthResponse = await mcpOAuth.handle(req, url.pathname);
+        if (oauthResponse) return oauthResponse;
+      }
       if (req.method === "GET" && url.pathname === "/healthz") {
         return Response.json({
           status: "ok",
@@ -736,6 +752,26 @@ export function startServer(
         }
         setTimeout(shutdown, 0);
         return Response.json({ status: "ok", accepting_turns: false, ...current });
+      }
+      if (config.mode === "full"
+        && isCloudflareTunnel(config.tunnel)
+        && url.pathname === config.tunnel.mcpPath) {
+        if (!mcpOAuth?.verify(req)) return mcpOAuth!.unauthorized();
+        if (draining) {
+          return Response.json(
+            { jsonrpc: "2.0", error: { code: -32000, message: "Runtime is draining" }, id: null },
+            { status: 503 },
+          );
+        }
+        return httpTurns.track(
+          signal => handleChatGptMcpHttpRequest(new Request(req, { signal }), {
+            brokerSocketPath: config.brokerSocketPath,
+            allowedHost: `${config.host}:${config.port}`,
+          }),
+          req.signal,
+          process.platform,
+          "mcp",
+        );
       }
       if (req.method === "GET" && url.pathname === "/v1/models") {
         if (draining) {

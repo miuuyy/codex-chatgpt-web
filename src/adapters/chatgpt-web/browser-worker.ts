@@ -770,6 +770,8 @@ export interface BrowserTurn {
   modelId: string;
   reasoning?: string;
   capabilities: ChatGptWebCapabilities;
+  /** Internal broker lifecycle handle; never serialized into the ChatGPT prompt or MCP arguments. */
+  internalTurnToken?: Promise<string>;
   prepare: () => Promise<CompiledChatGptWebPrompt & { release: () => void }>;
   prepareResume?: () => Promise<CompiledChatGptWebPrompt & { release: () => void }>;
   /** Select the Codex Native connector without advertising the ordinary turn tool environment. */

@@ -97,6 +97,10 @@ function tunnelRuntimeStopped(health) {
     || (health?.state === "stopped" && health?.processRunning === false);
 }
 
+function usesCloudflareTunnel(config) {
+  return config?.mode === "full" && config?.tunnel?.kind === "cloudflare";
+}
+
 function runtimeOwnershipMayBeLive(state) {
   if (!state) return false;
   if (processRunning(state.daemonPid) || processRunning(state.tunnelPid)) return true;
@@ -255,22 +259,42 @@ function validateConfig(config, descriptorPath, platform = process.platform, lau
     if (!config.tunnel || typeof config.tunnel !== "object") {
       throw new Error("Full mode is missing tunnel configuration");
     }
-    for (const key of ["binaryPath", "tunnelId", "runtimeKeyFile", "profileDir", "profileName", "alias"]) {
-      if (typeof config.tunnel[key] !== "string" || !config.tunnel[key].trim()) {
-        throw new Error(`Full mode is missing tunnel.${key}`);
+    if (config.tunnel.kind === "cloudflare") {
+      for (const key of ["binaryPath", "configPath", "hostname", "mcpPath"]) {
+        if (typeof config.tunnel[key] !== "string" || !config.tunnel[key].trim()) {
+          throw new Error(`Full Cloudflare mode is missing tunnel.${key}`);
+        }
       }
-    }
-    if (!/^tunnel_[a-f0-9]{32}$/.test(config.tunnel.tunnelId)) {
-      throw new Error("Full mode has an invalid tunnel id");
-    }
-    for (const key of ["profileName", "alias"]) {
-      if (!/^[A-Za-z0-9._-]+$/.test(config.tunnel[key])) {
-        throw new Error(`Full mode has an invalid tunnel.${key}`);
+      for (const key of ["binaryPath", "configPath"]) {
+        if (!absolutePath(config.tunnel[key], platform)) {
+          throw new Error(`Full Cloudflare mode requires an absolute tunnel.${key}`);
+        }
       }
-    }
-    for (const key of ["binaryPath", "runtimeKeyFile", "profileDir"]) {
-      if (!absolutePath(config.tunnel[key], platform)) {
-        throw new Error(`Full mode requires an absolute tunnel.${key}`);
+      if (!/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(config.tunnel.hostname)) {
+        throw new Error("Full Cloudflare mode has an invalid tunnel.hostname");
+      }
+      if (!/^\/mcp\/[A-Za-z0-9_-]{40,}$/.test(config.tunnel.mcpPath)) {
+        throw new Error("Full Cloudflare mode has an invalid tunnel.mcpPath");
+      }
+      if (launcherProfile === "development") throw new Error("DEV launcher does not support Cloudflare tunnels");
+    } else {
+      for (const key of ["binaryPath", "tunnelId", "runtimeKeyFile", "profileDir", "profileName", "alias"]) {
+        if (typeof config.tunnel[key] !== "string" || !config.tunnel[key].trim()) {
+          throw new Error(`Full mode is missing tunnel.${key}`);
+        }
+      }
+      if (!/^tunnel_[a-f0-9]{32}$/.test(config.tunnel.tunnelId)) {
+        throw new Error("Full mode has an invalid tunnel id");
+      }
+      for (const key of ["profileName", "alias"]) {
+        if (!/^[A-Za-z0-9._-]+$/.test(config.tunnel[key])) {
+          throw new Error(`Full mode has an invalid tunnel.${key}`);
+        }
+      }
+      for (const key of ["binaryPath", "runtimeKeyFile", "profileDir"]) {
+        if (!absolutePath(config.tunnel[key], platform)) {
+          throw new Error(`Full mode requires an absolute tunnel.${key}`);
+        }
       }
     }
   }
@@ -323,6 +347,7 @@ class RuntimeSupervisor {
     this.restartableChildren = new WeakSet();
     this.lastChildFailure = { daemon: null, tunnel: null };
     this.lastChildOutput = { daemon: null, tunnel: null };
+    this.cloudflareTunnelReady = false;
   }
 
   readConfig() {
@@ -458,6 +483,9 @@ class RuntimeSupervisor {
     this.lastChildFailure[name] = null;
     this.lastChildOutput[name] = null;
     collectLines(child.stdout, (line) => {
+      if (name === "tunnel" && line.includes('"event":"cloudflare_ready"')) {
+        this.cloudflareTunnelReady = true;
+      }
       this.lastChildOutput[name] = redactText(line).slice(0, 1_000);
       this.logger.info(`runtime.${name}_stdout`, { line });
     }, (error) => {
@@ -478,6 +506,7 @@ class RuntimeSupervisor {
       const restartable = this.restartableChildren.has(child);
       this.restartableChildren.delete(child);
       if (this[name] === child) this[name] = null;
+      if (name === "tunnel") this.cloudflareTunnelReady = false;
       const detail = error
         ? `${name} failed to start: ${error.message}`
         : `${name} exited (${signal || code})`
@@ -517,6 +546,12 @@ class RuntimeSupervisor {
     const tunnel = config.tunnel;
     if (!tunnel || !fs.existsSync(tunnel.binaryPath)) {
       throw new Error(`Tunnel client is missing: ${tunnel?.binaryPath || "not configured"}`);
+    }
+    if (usesCloudflareTunnel(config)) {
+      if (!fs.existsSync(tunnel.configPath)) {
+        throw new Error(`Cloudflare config is missing: ${tunnel.configPath}`);
+      }
+      return;
     }
     if (!fs.existsSync(tunnel.runtimeKeyFile)) {
       throw new Error(`Tunnel runtime key is missing: ${tunnel.runtimeKeyFile}`);
@@ -811,6 +846,23 @@ class RuntimeSupervisor {
   }
 
   async observeTunnelForMonitor(config) {
+    if (usesCloudflareTunnel(config)) {
+      const pid = Number.isInteger(this.tunnel?.pid) ? this.tunnel.pid : null;
+      const running = pid !== null && processRunning(pid);
+      const ready = running && this.cloudflareTunnelReady;
+      return {
+        ready,
+        pid,
+        state: ready ? "ready" : running ? "starting" : "stopped",
+        processRunning: running,
+        healthy: ready,
+        absent: !running,
+        statusKnown: true,
+        detail: ready
+          ? `cloudflared ready for ${config.tunnel.hostname}`
+          : running ? "cloudflared has not reported a registered connection" : "cloudflared process is not running",
+      };
+    }
     const local = await this.readLocalTunnelHealth();
     if (local.statusKnown) return local;
     try {
@@ -893,6 +945,29 @@ class RuntimeSupervisor {
   async startTunnel(config, operationName = "runtime-start", { forceRestart = false } = {}) {
     if (config.mode !== "full") return;
     this.assertTunnelClientReady(config);
+    if (usesCloudflareTunnel(config)) {
+      if (!await this.proxyHealth(config, 2_000, this.daemon?.pid, true)) {
+        throw new Error("Responses proxy must be healthy before starting a Cloudflare tunnel");
+      }
+      if (forceRestart && this.tunnel) await this.stopChild("tunnel");
+      if (this.tunnel && processRunning(this.tunnel.pid)) return;
+      this.cloudflareTunnelReady = false;
+      const child = this.spawnChild("tunnel", this.runtimeCommand(["tunnel", "cloudflare-run"]));
+      this.restartableChildren.add(child);
+      const deadline = Date.now() + TUNNEL_START_TIMEOUT_MS;
+      while (Date.now() < deadline) {
+        if (!this.tunnel || !processRunning(child.pid)) {
+          throw new Error(this.lastChildFailure.tunnel || "Cloudflare tunnel exited during startup");
+        }
+        if (this.cloudflareTunnelReady) {
+          this.startTunnelMonitor(config);
+          return;
+        }
+        await sleep(TUNNEL_HEALTH_POLL_INTERVAL_MS);
+      }
+      await this.stopChild("tunnel");
+      throw new Error(`Cloudflare tunnel did not become ready within ${TUNNEL_START_TIMEOUT_MS}ms`);
+    }
     try {
       const existing = await this.waitForKnownTunnelStatus(config);
       if (existing.ready && !forceRestart) {
@@ -1167,8 +1242,14 @@ class RuntimeSupervisor {
       message: tunnelOnly ? "Starting isolated DEV MCP runtime" : "Starting local runtime",
     });
     try {
-      await this.startTunnel(config, "runtime-start");
-      if (!tunnelOnly) await this.startDaemon(config);
+      if (usesCloudflareTunnel(config)) {
+        if (tunnelOnly) throw new Error("DEV launcher cannot start a Cloudflare tunnel");
+        await this.startDaemon(config);
+        await this.startTunnel(config, "runtime-start");
+      } else {
+        await this.startTunnel(config, "runtime-start");
+        if (!tunnelOnly) await this.startDaemon(config);
+      }
       this.restartHistory.daemon = [];
       this.restartHistory.tunnel = [];
       this.writeState("ready");
@@ -1248,7 +1329,11 @@ class RuntimeSupervisor {
     }
     if (!tunnelOnly) await this.waitForProxy(config);
     if (config.mode === "full") {
-      await this.waitForTunnel(config, TUNNEL_START_TIMEOUT_MS, "runtime-recovery");
+      if (usesCloudflareTunnel(config)) {
+        if (!await this.tunnelHealth(config)) throw new Error("Cloudflare tunnel is unavailable after runtime recovery");
+      } else {
+        await this.waitForTunnel(config, TUNNEL_START_TIMEOUT_MS, "runtime-recovery");
+      }
     }
     if (!this.tryWriteState("ready")) {
       let cleanupError;
@@ -1442,6 +1527,11 @@ class RuntimeSupervisor {
     const tunnel = config.tunnel;
     if (!tunnel) throw new Error("launcher-owned tunnel has no runtime configuration");
     this.stopTunnelMonitor();
+    if (usesCloudflareTunnel(config)) {
+      await this.stopChild("tunnel", timeoutMs);
+      this.tunnel = null;
+      return;
+    }
     let result;
     try {
       result = await this.runTunnelStopCommand(config);
@@ -1466,6 +1556,13 @@ class RuntimeSupervisor {
 
   async adoptConfiguredTunnelForStop(config) {
     if (config.mode !== "full" || this.tunnel) return;
+    if (usesCloudflareTunnel(config)) {
+      const state = this.readState();
+      if (state?.tunnelPid && processRunning(state.tunnelPid)) {
+        throw new Error("A previous Cloudflare tunnel process is still alive but is not owned by this launcher process");
+      }
+      return;
+    }
     const health = await this.waitForKnownTunnelStatus(config);
     if (tunnelRuntimeStopped(health)) {
       return;
@@ -1635,19 +1732,23 @@ class RuntimeSupervisor {
     }
     let managedTunnelRunning = false;
     if (config.mode === "full") {
-      const tunnelHealth = await this.waitForKnownTunnelStatus(config);
-      managedTunnelRunning = !tunnelRuntimeStopped(tunnelHealth);
-      if (managedTunnelRunning
-        && tunnelHealth.processRunning !== true
-        && tunnelHealth.pid === null
-        && typeof tunnelHealth.state !== "string") {
-        throw new Error(`The stale tunnel runtime state is ambiguous: ${tunnelHealth.detail}`);
-      }
-      if (!managedTunnelRunning && processRunning(state.tunnelPid)) {
-        throw new Error(
-          `The stale tunnel PID ${state.tunnelPid} is still alive but the native runtime manager`
-          + " does not recognize it; refusing to terminate an unverified process",
-        );
+      if (usesCloudflareTunnel(config)) {
+        managedTunnelRunning = processRunning(state.tunnelPid);
+      } else {
+        const tunnelHealth = await this.waitForKnownTunnelStatus(config);
+        managedTunnelRunning = !tunnelRuntimeStopped(tunnelHealth);
+        if (managedTunnelRunning
+          && tunnelHealth.processRunning !== true
+          && tunnelHealth.pid === null
+          && typeof tunnelHealth.state !== "string") {
+          throw new Error(`The stale tunnel runtime state is ambiguous: ${tunnelHealth.detail}`);
+        }
+        if (!managedTunnelRunning && processRunning(state.tunnelPid)) {
+          throw new Error(
+            `The stale tunnel PID ${state.tunnelPid} is still alive but the native runtime manager`
+            + " does not recognize it; refusing to terminate an unverified process",
+          );
+        }
       }
     } else if (processRunning(state.tunnelPid)) {
       throw new Error(
@@ -1688,11 +1789,22 @@ class RuntimeSupervisor {
       }
     }
     if (managedTunnelRunning) {
-      const stopped = await this.runTunnelStopCommand(config);
-      if (stopped.code !== 0) {
-        throw new Error(`stale tunnel refused graceful shutdown: ${tunnelControlDiagnostic(stopped)}`);
+      if (usesCloudflareTunnel(config)) {
+        const staleChild = {
+          pid: state.tunnelPid,
+          exitCode: null,
+          signalCode: null,
+          kill: signal => process.kill(state.tunnelPid, signal),
+        };
+        terminateOwnedProcessTree(staleChild);
+        await this.waitForProcessExit("stale Cloudflare tunnel", state.tunnelPid);
+      } else {
+        const stopped = await this.runTunnelStopCommand(config);
+        if (stopped.code !== 0) {
+          throw new Error(`stale tunnel refused graceful shutdown: ${tunnelControlDiagnostic(stopped)}`);
+        }
+        await this.waitForTunnelStopped(config, 10_000);
       }
-      await this.waitForTunnelStopped(config, 10_000);
     }
     this.clearState();
     this.logger.info("runtime.stale_owner_recovered");
@@ -1958,10 +2070,14 @@ class RuntimeSupervisor {
         try {
           const config = this.readConfig();
           if (!config) throw new Error("runtime configuration is unavailable");
-          const stopped = await this.runTunnelStopCommand(config);
-          if (stopped.code !== 0) throw new Error(tunnelControlDiagnostic(stopped));
-          await this.waitForTunnelStopped(config, 5_000);
-          this.tunnel = null;
+          if (usesCloudflareTunnel(config)) {
+            await this.stopChild("tunnel", 5_000);
+          } else {
+            const stopped = await this.runTunnelStopCommand(config);
+            if (stopped.code !== 0) throw new Error(tunnelControlDiagnostic(stopped));
+            await this.waitForTunnelStopped(config, 5_000);
+            this.tunnel = null;
+          }
         } catch (error) {
           failures.push(`tunnel: ${errorMessage(error)}`);
         }

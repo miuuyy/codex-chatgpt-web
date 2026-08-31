@@ -19,6 +19,8 @@ const DEFAULT_STATE = Object.freeze({
   sidebarOpen: true,
   sidebarWidth: 252,
   mcpGuideStep: 0,
+  mcpConnectorName: null,
+  mcpTunnelKind: null,
   sessionRefreshReminderAt: null,
 });
 
@@ -60,6 +62,19 @@ function readState(filePath) {
     }
     if (!Number.isInteger(state.mcpGuideStep) || state.mcpGuideStep < 0 || state.mcpGuideStep > 2) {
       state.mcpGuideStep = DEFAULT_STATE.mcpGuideStep;
+    }
+    if (state.mcpConnectorName !== null
+      && (typeof state.mcpConnectorName !== "string"
+        || !state.mcpConnectorName.trim()
+        || state.mcpConnectorName.length > 80)) {
+      state.mcpConnectorName = DEFAULT_STATE.mcpConnectorName;
+    } else if (typeof state.mcpConnectorName === "string") {
+      state.mcpConnectorName = state.mcpConnectorName.trim();
+    }
+    if (state.mcpTunnelKind !== null
+      && state.mcpTunnelKind !== "openai"
+      && state.mcpTunnelKind !== "cloudflare") {
+      state.mcpTunnelKind = DEFAULT_STATE.mcpTunnelKind;
     }
     if (state.sessionRefreshReminderAt !== null
       && (typeof state.sessionRefreshReminderAt !== "string"

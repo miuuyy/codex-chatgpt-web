@@ -386,9 +386,6 @@ export function compileChatGptWebPrompt(
   if (captureLunaCheckpoint && (parsed.modelId !== CHATGPT_WEB_LUNA_MODEL_ID || parsed._compactionRequest)) {
     throw new Error("Rolling checkpoints are supported only for normal ChatGPT Luna turns");
   }
-  if (mode.localTools && !turnToken) {
-    throw new Error("Tool-capable ChatGPT web mode requires a broker turn token");
-  }
   if (!mode.localTools && turnToken !== undefined) {
     throw new Error("A read-only ChatGPT Web effort must not receive a local-tool capability token");
   }
@@ -475,7 +472,7 @@ export function compileChatGptWebPrompt(
     : mode.localTools
     ? [
       "<codex_transport_resume>",
-      `The task context is complete. Pass turn_token ${turnToken} unchanged to every Codex Native call in this response, including continuations after tool results; do not expose it in the answer. Execute the latest active user request now.`,
+      "The task context is complete. Use the authenticated Codex Native connector directly when local work is required; its tools do not accept or require a turn token. Execute the latest active user request now.",
       "</codex_transport_resume>",
     ]
     : [

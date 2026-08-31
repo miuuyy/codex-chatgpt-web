@@ -51,12 +51,8 @@ function sanitizeForExport(value, seen = new WeakSet()) {
   );
 }
 
-function exportSanitizedLogs({ filePath, destinationPath }) {
+function sanitizedLogText({ filePath }) {
   const sourcePaths = [`${filePath}.1`, filePath];
-  const destination = path.resolve(destinationPath);
-  if (sourcePaths.some(sourcePath => path.resolve(sourcePath) === destination)) {
-    throw new Error("Refusing to overwrite a launcher source log with an exported diagnostic");
-  }
   const records = [];
   for (const sourcePath of sourcePaths) {
     let lines;
@@ -84,14 +80,23 @@ function exportSanitizedLogs({ filePath, destinationPath }) {
       } catch {}
     }
   }
+  return {
+    recordCount: records.length,
+    text: records.length > 0 ? `${records.map(record => JSON.stringify(record)).join("\n")}\n` : "",
+  };
+}
+
+function exportSanitizedLogs({ filePath, destinationPath }) {
+  const sourcePaths = [`${filePath}.1`, filePath];
+  const destination = path.resolve(destinationPath);
+  if (sourcePaths.some(sourcePath => path.resolve(sourcePath) === destination)) {
+    throw new Error("Refusing to overwrite a launcher source log with an exported diagnostic");
+  }
+  const sanitized = sanitizedLogText({ filePath });
   fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(
-    destination,
-    records.length > 0 ? `${records.map(record => JSON.stringify(record)).join("\n")}\n` : "",
-    { mode: 0o600 },
-  );
+  fs.writeFileSync(destination, sanitized.text, { mode: 0o600 });
   if (process.platform !== "win32") fs.chmodSync(destination, 0o600);
-  return records.length;
+  return sanitized.recordCount;
 }
 
 function sanitize(value, seen = new WeakSet()) {
@@ -171,6 +176,11 @@ function createLogger({ filePath, publish }) {
     warn: (event, detail) => append("warning", event, detail),
     error: (event, detail) => append("error", event, detail),
     recent: (limit = 150) => records.slice(-Math.max(1, Math.min(300, limit))),
+    clear() {
+      fs.rmSync(`${filePath}.1`, { force: true });
+      fs.rmSync(filePath, { force: true });
+      records.splice(0);
+    },
     filePath,
   };
 }
@@ -219,4 +229,5 @@ module.exports = {
   registerLoggedIpc,
   sanitize,
   sanitizeForExport,
+  sanitizedLogText,
 };

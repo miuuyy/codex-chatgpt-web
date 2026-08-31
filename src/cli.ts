@@ -2,7 +2,7 @@
 import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
 import { timingSafeEqual } from "node:crypto";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { stdin, stdout } from "node:process";
 import { checkBrowserEngine, loginToChatGpt } from "./browser-login";
 import { CHATGPT_CONNECTOR_NAME, getConfigDir, getConfigPath, loadConfig, loadConfigForSetup } from "./config";
@@ -22,6 +22,7 @@ import { startServer } from "./server";
 import { assertServiceIdle, cancelActiveTurns, getServiceStatus, installService, restartService, startService, stopService, uninstallService } from "./service";
 import { existingFullSetupCredentials, setup, type SetupOptions } from "./setup";
 import { installRuntimeKeyBytes, managedRuntimeKeyPath, stopTunnel, tunnelStatus, waitForTunnelReady } from "./tunnel";
+import { runCloudflareTunnel } from "./cloudflare-tunnel";
 import { getTunnelServiceStatus, restartTunnelService, startTunnelService, stopTunnelService, uninstallTunnelService } from "./tunnel-service";
 import { VERSION } from "./version";
 import { runDevCommand } from "./dev-chat/cli";
@@ -60,8 +61,14 @@ Setup options:
   --refresh-account-capabilities
                                Re-read the authenticated account's available Web models
   --app-name NAME              ChatGPT connector name (default: ${CHATGPT_CONNECTOR_NAME})
+  --tunnel-kind KIND           openai (default) or cloudflare
   --tunnel-id ID               Existing OpenAI tunnel id (full mode)
   --runtime-key-file PATH      File containing a Tunnels Read+Use runtime key
+  --cloudflared-binary PATH    Absolute cloudflared executable path
+  --cloudflare-config PATH     Absolute named-tunnel YAML config path
+  --cloudflare-hostname HOST   Exact hostname ingress entry from that config
+  --cloudflare-mcp-path-file PATH
+                               Private file containing the stable random MCP URL path
   --replace-codex-route        Reversibly replace an existing openai_base_url
   --subagent-protocol MODE     compatibility-v1 (default) or native (advanced)
   --restart-service            Explicitly restart this project's daemon after an update
@@ -170,16 +177,40 @@ async function setupCommand(args: string[]): Promise<void> {
     options.subagentProtocol = subagentProtocol;
   }
   const appName = takeOption(args, "--app-name");
+  const tunnelKind = takeOption(args, "--tunnel-kind");
   const tunnelId = takeOption(args, "--tunnel-id");
   const runtimeKeyFile = takeOption(args, "--runtime-key-file");
+  const cloudflaredBinaryPath = takeOption(args, "--cloudflared-binary");
+  const cloudflareConfigPath = takeOption(args, "--cloudflare-config");
+  const cloudflareHostname = takeOption(args, "--cloudflare-hostname");
+  const cloudflareMcpPathFile = takeOption(args, "--cloudflare-mcp-path-file");
   const chrome = takeOption(args, "--chrome");
   const browserHostDescriptorPath = takeOption(args, "--browser-host-descriptor");
   if (chrome) options.chromeExecutablePath = chrome;
   if (browserHostDescriptorPath) options.browserHostDescriptorPath = browserHostDescriptorPath;
   options.refreshAccountCapabilities = takeFlag(args, "--refresh-account-capabilities");
   if (appName) options.appName = appName;
+  if (tunnelKind !== undefined) {
+    if (tunnelKind !== "openai" && tunnelKind !== "cloudflare") {
+      throw new Error("--tunnel-kind must be openai or cloudflare");
+    }
+    options.tunnelKind = tunnelKind;
+  }
   if (tunnelId) options.tunnelId = tunnelId;
   if (runtimeKeyFile) options.runtimeKeyFile = runtimeKeyFile;
+  if (cloudflaredBinaryPath) options.cloudflaredBinaryPath = cloudflaredBinaryPath;
+  if (cloudflareConfigPath) options.cloudflareConfigPath = cloudflareConfigPath;
+  if (cloudflareHostname) options.cloudflareHostname = cloudflareHostname;
+  if (cloudflareMcpPathFile) {
+    if (tunnelKind !== "cloudflare") {
+      throw new Error("--cloudflare-mcp-path-file requires --tunnel-kind cloudflare");
+    }
+    const mcpPath = readFileSync(cloudflareMcpPathFile, "utf8").trim();
+    if (!/^\/mcp\/[A-Za-z0-9_-]{40,}$/.test(mcpPath)) {
+      throw new Error("--cloudflare-mcp-path-file contains an invalid MCP path");
+    }
+    options.cloudflareMcpPath = mcpPath;
+  }
   options.forceLogin = takeFlag(args, "--login");
   options.autoApproveToolCalls = takeFlag(args, "--auto-approve-tool-calls");
   const biggerContext = takeFlag(args, "--bigger-context");
@@ -209,7 +240,9 @@ async function setupCommand(args: string[]): Promise<void> {
     && !reusableCredentials.runtimeKey
     && !existsSync(managedRuntimeKeyPath());
 
-  if (full && (needsTunnelId || needsRuntimeKey) && stdin.isTTY) {
+  const usesOpenAiTunnel = options.tunnelKind !== "cloudflare"
+    && !(existing?.mode === "full" && existing.tunnel?.kind === "cloudflare" && options.tunnelKind === undefined);
+  if (full && usesOpenAiTunnel && (needsTunnelId || needsRuntimeKey) && stdin.isTTY) {
     stdout.write("Full mode needs an OpenAI tunnel and a runtime key with Tunnels Read + Use.\n");
     stdout.write("Tunnels: https://platform.openai.com/settings/organization/tunnels\n");
     stdout.write("Runtime keys: https://platform.openai.com/settings/organization/api-keys\n");
@@ -307,6 +340,10 @@ async function serviceCommand(args: string[]): Promise<void> {
 async function tunnelCommand(args: string[]): Promise<void> {
   const action = args.shift() ?? "status";
   assertNoArgs(args);
+  if (action === "cloudflare-run") {
+    await runCloudflareTunnel(loadConfig());
+    return;
+  }
   if (action === "key-import") {
     const key = await secretPrompt("Runtime key (hidden): ");
     if (!key) throw new Error("A non-empty runtime key is required");

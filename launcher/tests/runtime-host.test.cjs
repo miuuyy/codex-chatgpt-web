@@ -6,15 +6,16 @@ const path = require("node:path");
 const { CURRENT_CONNECTOR_NAME, DEV_CONNECTOR_NAME } = require("../electron/connector-identity.cjs");
 const { RuntimeHost } = require("../electron/runtime.cjs");
 
-function hostFor(existingConfig) {
+function hostFor(existingConfig, userData = path.join(os.tmpdir(), "codex-web-gpt-runtime-host-test"), coreHome) {
   const host = new RuntimeHost({
     app: {
-      getPath: () => path.join(os.tmpdir(), "codex-web-gpt-runtime-host-test"),
+      getPath: () => userData,
       getVersion: () => "1.1.3",
     },
     logger: { info() {}, warn() {}, error() {} },
     sourceRoot: "/source",
     browserDescriptorPath: "/runtime/launcher-browser.json",
+    ...(coreHome ? { coreHome } : {}),
     supervisor: {
       readConfig: () => existingConfig,
       readSetupConfig: () => existingConfig,
@@ -29,6 +30,31 @@ function hostFor(existingConfig) {
   };
   return { host, invocation: () => invocation };
 }
+
+test("Cloudflare connector details expose DCR registration and the private authorization passphrase", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-oauth-ui-test-"));
+  const coreHome = path.join(root, "core");
+  fs.mkdirSync(path.join(coreHome, "oauth"), { recursive: true });
+  fs.writeFileSync(path.join(coreHome, "oauth", "passphrase.txt"), "private-passphrase\n", { mode: 0o600 });
+  const config = {
+    mode: "full",
+    tunnel: {
+      kind: "cloudflare",
+      binaryPath: "/bin/cloudflared",
+      configPath: "/config.yml",
+      hostname: "mcp.example.com",
+      mcpPath: `/mcp/${"a".repeat(43)}`,
+    },
+  };
+  try {
+    const settings = hostFor(config, path.join(root, "launcher"), coreHome).host.cloudflareSettings();
+    assert.equal(settings.publicUrl, `https://mcp.example.com${config.tunnel.mcpPath}`);
+    assert.equal(settings.registrationUrl, `${settings.publicUrl}/oauth/register`);
+    assert.equal(settings.authorizationPassphrase, "private-passphrase");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 function devHostFor(existingConfig) {
   const host = new RuntimeHost({
@@ -404,6 +430,78 @@ test("new MCP setup uses the explicit default connector name", async () => {
     "--app-name",
     "Codex Native2",
   ]);
+});
+
+test("MCP setup accepts a custom connector name", async () => {
+  const fixture = hostFor(null);
+  await fixture.host.setupMcp({
+    appName: "XR Local Codex",
+    replace: true,
+    tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
+    runtimeKey: "new-private-runtime-key",
+  });
+
+  assert.deepEqual(fixture.invocation().args.slice(0, 6), [
+    "setup",
+    "--full",
+    "--browser-host-descriptor",
+    "/runtime/launcher-browser.json",
+    "--app-name",
+    "XR Local Codex",
+  ]);
+});
+
+test("MCP setup passes a selected Cloudflare named tunnel without OpenAI credentials", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-cloudflare-setup-"));
+  const binaryPath = path.join(root, "cloudflared");
+  const configPath = path.join(root, "config.yml");
+  fs.writeFileSync(binaryPath, "binary");
+  fs.writeFileSync(configPath, "tunnel: test\ningress: []\n");
+  const userData = path.join(root, "launcher-data");
+  const fixture = hostFor(null, userData);
+  try {
+    await fixture.host.setupMcp({
+      appName: "XR Local Codex",
+      tunnelKind: "cloudflare",
+      cloudflaredBinaryPath: binaryPath,
+      cloudflareConfigPath: configPath,
+      cloudflareHostname: "mcp.example.com",
+    });
+    const mcpPathFile = path.join(userData, "secrets", "cloudflare-mcp-path");
+    assert.deepEqual(fixture.invocation().args.slice(0, 18), [
+      "setup",
+      "--full",
+      "--browser-host-descriptor",
+      "/runtime/launcher-browser.json",
+      "--app-name",
+      "XR Local Codex",
+      "--tunnel-kind",
+      "cloudflare",
+      "--cloudflared-binary",
+      binaryPath,
+      "--cloudflare-config",
+      configPath,
+      "--cloudflare-hostname",
+      "mcp.example.com",
+      "--cloudflare-mcp-path-file",
+      mcpPathFile,
+      "--replace-codex-route",
+      "--acknowledge-unofficial",
+    ]);
+    const firstPath = fs.readFileSync(mcpPathFile, "utf8").trim();
+    assert.match(firstPath, /^\/mcp\/[A-Za-z0-9_-]{40,}$/);
+
+    await fixture.host.setupMcp({
+      appName: "XR Local Codex",
+      tunnelKind: "cloudflare",
+      cloudflaredBinaryPath: binaryPath,
+      cloudflareConfigPath: configPath,
+      cloudflareHostname: "mcp.example.com",
+    });
+    assert.equal(fs.readFileSync(mcpPathFile, "utf8").trim(), firstPath);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("MCP credential replacement remains explicit and requires a complete new pair", async () => {

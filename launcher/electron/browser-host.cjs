@@ -1827,6 +1827,9 @@ class BrowserHost {
     const initialUrl = this.view.webContents.getURL();
     const startedIdle = initialUrl === IDLE_BROWSER_URL;
     if (detectCapabilities) await this.refreshChatGptHomeDocument();
+    // Navigation replaces the page global that carries launcher ownership. Await an explicit
+    // marker immediately before the helper connects so setup cannot race did-finish-load.
+    await this.markOwnedSurface();
     const result = await this.runBrowserHelperOperation({
       helper: this.helper,
       descriptorPath: this.descriptorPath,

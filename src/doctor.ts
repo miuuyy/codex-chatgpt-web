@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import type { AppConfig } from "./config";
+import { isCloudflareTunnel, type AppConfig } from "./config";
 import { getConfigDir, getConfigPath, loadConfig } from "./config";
 import { join } from "node:path";
 import { inspectCodexIntegration } from "./codex-integration";
@@ -168,6 +168,24 @@ export async function runDoctor(): Promise<DoctorReport> {
 
   if (config.mode === "full") {
     const settings = config.tunnel!;
+    if (isCloudflareTunnel(settings)) {
+      checks.push(existsSync(settings.binaryPath)
+        ? { id: "tunnel-binary", status: "ok", message: "cloudflared binary is installed" }
+        : { id: "tunnel-binary", status: "error", message: `cloudflared is missing: ${settings.binaryPath}` });
+      checks.push(existsSync(settings.configPath)
+        ? { id: "tunnel-config", status: "ok", message: `Cloudflare config is available for ${settings.hostname}` }
+        : { id: "tunnel-config", status: "error", message: `Cloudflare config is missing: ${settings.configPath}` });
+      checks.push({
+        id: "connector",
+        status: "warning",
+        message: `Local checks cannot prove that ChatGPT connector ${JSON.stringify(config.appName)} is attached to Cloudflare hostname ${settings.hostname}`,
+      });
+      return {
+        ok: !checks.some(check => check.status === "error"),
+        mode: config.mode,
+        checks,
+      };
+    }
     if (!existsSync(settings.binaryPath)) {
       checks.push({ id: "tunnel-binary", status: "error", message: `tunnel-client is missing: ${settings.binaryPath}` });
     } else {

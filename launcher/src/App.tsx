@@ -127,6 +127,7 @@ export function App() {
             logs={logs}
             operation={operation}
             setError={setError}
+            setLogs={setLogs}
             snapshot={snapshot}
             updateState={updateState}
           />
@@ -298,6 +299,7 @@ function LauncherShell({
   logs,
   operation,
   setError,
+  setLogs,
   snapshot,
   updateState,
 }: {
@@ -307,11 +309,12 @@ function LauncherShell({
   logs: LogRecord[];
   operation: OperationState | null;
   setError: (error: string | null) => void;
+  setLogs: (logs: LogRecord[]) => void;
   snapshot: LauncherSnapshot;
   updateState: (state: LauncherState) => void;
 }) {
   const [surface, setSurface] = useState<Surface>(
-    snapshot.state.coreSetupComplete && snapshot.state.codexCatalogVerified ? "browser" : "setup",
+    snapshot.state.coreSetupComplete && snapshot.state.codexCatalogVerified ? "home" : "setup",
   );
   const devProfile = snapshot.profile === "development";
   const compactAtMount = useRef(window.matchMedia(COMPACT_SIDEBAR_QUERY).matches).current;
@@ -325,13 +328,13 @@ function LauncherShell({
   );
   const [biggerContextRecommendationBusy, setBiggerContextRecommendationBusy] = useState(false);
   const browserSlotRef = useCallback((node: HTMLDivElement | null) => setBrowserSlot(node), []);
-  const browserSurfaceActive = surface === "browser"
+  const browserSurfaceActive = surface === "chat"
     && !(compactSidebar && sidebarOpen)
     && !biggerContextRecommendationOpen;
   const needsBrowser = browser?.authenticated !== true;
   const needsSetup = !needsBrowser
     && (snapshot.state.coreSetupComplete !== true || snapshot.state.codexCatalogVerified !== true);
-  const mcpOptional = snapshot.state.codexCatalogVerified === true && snapshot.state.mcpSetupComplete !== true;
+  const mcpOptional = snapshot.state.mcpSetupComplete !== true;
   const updateVisible = ["available", "downloading", "installing"].includes(snapshot.update.status);
   const updateBusy = snapshot.update.status === "downloading" || snapshot.update.status === "installing";
   const updateVersion = "version" in snapshot.update ? snapshot.update.version : null;
@@ -400,14 +403,14 @@ function LauncherShell({
   }, [browser?.authenticated, snapshot.state.sessionRefreshReminderAt]);
 
   const activateBrowser = useCallback(async (show = false) => {
-    setSurface("browser");
+    setSurface("chat");
     await api!.setBrowserSurfaceActive(true);
     if (show) await api!.showBrowser();
   }, []);
 
   const toggleSidebar = () => {
     const next = !sidebarOpen;
-    if (compactSidebar && next && surface === "browser") {
+    if (compactSidebar && next && surface === "chat") {
       void api!.setBrowserSurfaceActive(false)
         .then(() => setSidebarOpen(true))
         .catch((cause) => setError(messageOf(cause)));
@@ -450,7 +453,7 @@ function LauncherShell({
     try {
       const result = await api!.logoutChatGpt();
       updateState(result.state);
-      navigateSurface("browser");
+      navigateSurface("chat");
       await api!.setBrowserSurfaceActive(true);
     } catch (cause) {
       setError(messageOf(cause));
@@ -481,7 +484,7 @@ function LauncherShell({
       <TitleBar
         copy={copy}
         devProfile={devProfile}
-        draggable={surface !== "browser"}
+        draggable={surface !== "chat"}
         sidebarOpen={sidebarOpen}
         toggleSidebar={toggleSidebar}
       />
@@ -526,15 +529,21 @@ function LauncherShell({
             <nav className="sidebar-nav" aria-label={copy.workspace}>
               <SidebarGroup label={copy.workspace}>
                 <SidebarItem
-                  active={surface === "browser"}
+                  active={surface === "home"}
+                  icon="home"
+                  label={copy.home}
+                  onClick={() => navigateSurface("home")}
+                />
+                <SidebarItem
+                  active={surface === "chat"}
                   badge={needsBrowser
                     ? <ActionDot pulse tone="required" />
                     : browser?.status === "error"
                       ? <ActionDot tone="error" />
                       : null}
                   icon="browser"
-                  label={copy.browser}
-                  onClick={() => navigateSurface("browser")}
+                  label={copy.chat}
+                  onClick={() => navigateSurface("chat")}
                 />
               </SidebarGroup>
               <SidebarGroup label={copy.configuration}>
@@ -590,7 +599,17 @@ function LauncherShell({
             key={surface}
             transition={{ duration: 0.16 }}
           >
-            {surface === "browser" ? (
+            {surface === "home" ? (
+              <HomeSurface
+                browser={browser}
+                copy={copy}
+                language={language}
+                logs={logs}
+                navigate={navigateSurface}
+                snapshot={snapshot}
+              />
+            ) : null}
+            {surface === "chat" ? (
               <BrowserSurface
                 browser={browser}
                 browserSlotRef={browserSlotRef}
@@ -615,7 +634,7 @@ function LauncherShell({
               <McpSurface
                 copy={copy}
                 devProfile={devProfile}
-                onDone={() => setSurface("browser")}
+                onDone={() => setSurface("chat")}
                 operation={operation}
                 setError={setError}
                 snapshot={snapshot}
@@ -623,7 +642,7 @@ function LauncherShell({
               />
             ) : null}
             {surface === "activity" ? (
-              <ActivitySurface copy={copy} language={language} logs={logs} setError={setError} />
+              <ActivitySurface copy={copy} language={language} logs={logs} setError={setError} setLogs={setLogs} />
             ) : null}
             {surface === "settings" ? (
               <SettingsSurface
@@ -733,6 +752,104 @@ function SidebarItem({
   );
 }
 
+function HomeSurface({
+  browser,
+  copy,
+  language,
+  logs,
+  navigate,
+  snapshot,
+}: {
+  browser: BrowserState | null;
+  copy: Copy;
+  language: Language;
+  logs: LogRecord[];
+  navigate: (surface: Surface) => void;
+  snapshot: LauncherSnapshot;
+}) {
+  const tabs = browser?.tabs ?? [];
+  const runningChats = tabs.filter((tab) => ["loading", "testing", "running"].includes(tab.status)).length;
+  const recentLogs = [...logs].reverse().slice(0, 4);
+  const accountReady = browser?.authenticated === true;
+  const codexReady = snapshot.state.coreSetupComplete === true && snapshot.state.codexCatalogVerified === true;
+  const mcpReady = snapshot.state.mcpSetupComplete === true;
+
+  return (
+    <ContentSurface subtitle={copy.homeSubtitle} title={copy.homeTitle}>
+      <div className="home-status-grid">
+        <StatusCard
+          body={accountReady ? copy.accountReady : copy.accountSignedOut}
+          icon="browser"
+          label={copy.accountStatus}
+          ready={accountReady}
+        />
+        <StatusCard
+          body={codexReady ? copy.codexReady : copy.codexNeedsSetup}
+          icon="setup"
+          label={copy.codexStatus}
+          ready={codexReady}
+        />
+        <StatusCard
+          body={mcpReady ? copy.mcpReadyDetail : copy.mcpOptionalDetail}
+          icon="mcp"
+          label="MCP"
+          ready={mcpReady}
+        />
+        <StatusCard
+          body={runningChats > 0 ? copy.activeChatsRunning.replace("{count}", String(runningChats)) : copy.activeChatsIdle}
+          icon="activity"
+          label={`${copy.activeChats} · ${tabs.length}`}
+          ready={runningChats > 0}
+        />
+      </div>
+
+      <SectionHeading label={copy.quickActions} spaced />
+      <div className="home-actions">
+        <button className="home-action is-primary" onClick={() => navigate("chat")} type="button">
+          <Icon name="browser" />
+          <span><strong>{copy.openChat}</strong><small>{copy.openChatBody}</small></span>
+          <Icon name="chevron" />
+        </button>
+        <button className="home-action" onClick={() => navigate("setup")} type="button">
+          <Icon name="setup" />
+          <span><strong>{copy.setup}</strong><small>{copy.setupSubtitle}</small></span>
+          <Icon name="chevron" />
+        </button>
+        <button className="home-action" onClick={() => navigate("mcp")} type="button">
+          <McpMark />
+          <span><strong>{copy.configureMcp}</strong><small>{copy.mcpSubtitle}</small></span>
+          <Icon name="chevron" />
+        </button>
+      </div>
+
+      <div className="section-heading home-activity-heading">
+        <span>{copy.recentActivity}</span>
+        <button className="text-button" onClick={() => navigate("activity")} type="button">{copy.viewAll}</button>
+      </div>
+      <div className="home-activity-card">
+        {recentLogs.length === 0 ? <div className="home-empty"><Icon name="logs" /><span>{copy.noLogs}</span></div> : null}
+        {recentLogs.map((record, index) => (
+          <div className="home-activity-row" key={`${record.at}-${record.event}-${index}`}>
+            <StateDot state={record.level === "error" ? "error" : record.level === "warning" ? "busy" : "ready"} />
+            <span><strong>{humanEvent(record.event)}</strong><small>{logDetail(record.detail)}</small></span>
+            <time>{formatTime(record.at, language)}</time>
+          </div>
+        ))}
+      </div>
+    </ContentSurface>
+  );
+}
+
+function StatusCard({ body, icon, label, ready }: { body: string; icon: IconName; label: string; ready: boolean }) {
+  return (
+    <article className={`status-card${ready ? " is-ready" : ""}`}>
+      <div><Icon name={icon} /><StateDot state={ready ? "ready" : "idle"} /></div>
+      <strong>{label}</strong>
+      <span>{body}</span>
+    </article>
+  );
+}
+
 function BrowserSurface({
   browser,
   browserSlotRef,
@@ -747,68 +864,43 @@ function BrowserSurface({
   const visible = browser?.visible === true;
   const navigationLocked = browser?.status === "running" || browser?.status === "testing";
   const navigate = async (action: "back" | "forward" | "reload") => {
-    try {
-      await api!.navigateBrowser(action);
-    } catch (cause) {
-      setError(messageOf(cause));
-    }
+    try { await api!.navigateBrowser(action); }
+    catch (cause) { setError(messageOf(cause)); }
   };
   const zoom = async (action: "in" | "out" | "reset") => {
-    try {
-      await api!.zoomBrowser(action);
-    } catch (cause) {
-      setError(messageOf(cause));
-    }
+    try { await api!.zoomBrowser(action); }
+    catch (cause) { setError(messageOf(cause)); }
   };
   const toggle = async () => {
     try {
       if (visible) await api!.hideBrowser();
       else await api!.showBrowser();
-    } catch (cause) {
-      setError(messageOf(cause));
-    }
+    } catch (cause) { setError(messageOf(cause)); }
   };
   const selectTab = async (tabId: string) => {
-    try {
-      await api!.selectBrowserTab(tabId);
-    } catch (cause) {
-      setError(messageOf(cause));
-    }
+    try { await api!.selectBrowserTab(tabId); }
+    catch (cause) { setError(messageOf(cause)); }
   };
   const closeTab = async (tabId: string) => {
-    try {
-      await api!.closeBrowserTab(tabId);
-    } catch (cause) {
-      setError(messageOf(cause));
-    }
+    try { await api!.closeBrowserTab(tabId); }
+    catch (cause) { setError(messageOf(cause)); }
   };
-
   return (
     <section className="browser-surface">
       <div className="browser-tab-strip" title={copy.browserTabLimit}>
         {(browser?.tabs ?? []).map((tab) => (
           <div
+            aria-selected={tab.active}
             className={`browser-tab${tab.active ? " is-active" : ""}`}
             key={tab.id}
             onClick={() => void selectTab(tab.id)}
             role="tab"
-            aria-selected={tab.active}
           >
             <BrandMark small />
-            <span title={tab.traceId ? `${tab.title} · ${tab.traceId}` : tab.title}>
-              {browserTabTitleFromTitle(tab.title, copy)}
-            </span>
+            <span title={tab.traceId ? `${tab.title} · ${tab.traceId}` : tab.title}>{browserTabTitleFromTitle(tab.title, copy)}</span>
             {tab.loading ? <i className="tab-spinner" /> : <StateDot state={browserTabTone(tab.status)} />}
             {tab.closable ? (
-              <button
-                aria-label={copy.hideTab}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  void closeTab(tab.id);
-                }}
-                title={copy.hideTab}
-                type="button"
-              >
+              <button aria-label={copy.hideTab} onClick={(event) => { event.stopPropagation(); void closeTab(tab.id); }} title={copy.hideTab} type="button">
                 <Icon name="close" />
               </button>
             ) : null}
@@ -818,40 +910,17 @@ function BrowserSurface({
       </div>
       <div className="browser-toolbar">
         <div className="browser-history">
-          <IconButton
-            disabled={navigationLocked || !browser?.canGoBack}
-            icon="back"
-            label={copy.back}
-            onClick={() => void navigate("back")}
-          />
-          <IconButton
-            disabled={navigationLocked || !browser?.canGoForward}
-            icon="forward"
-            label={copy.forward}
-            onClick={() => void navigate("forward")}
-          />
+          <IconButton disabled={navigationLocked || !browser?.canGoBack} icon="back" label={copy.back} onClick={() => void navigate("back")} />
+          <IconButton disabled={navigationLocked || !browser?.canGoForward} icon="forward" label={copy.forward} onClick={() => void navigate("forward")} />
           <IconButton disabled={navigationLocked || !visible} icon="reload" label={copy.reload} onClick={() => void navigate("reload")} />
         </div>
-        <div className="browser-address" title={browser?.url || copy.browserAddress}>
-          <Icon name="globe" />
-          <span>{formatBrowserAddress(browser?.url, copy)}</span>
-        </div>
+        <div className="browser-address" title={browser?.url || copy.browserAddress}><Icon name="globe" /><span>{formatBrowserAddress(browser?.url, copy)}</span></div>
         <div className="browser-zoom-controls">
           <IconButton icon="minus" label={copy.zoomOut} onClick={() => void zoom("out")} />
-          <button
-            aria-label={copy.zoomReset}
-            className="browser-zoom-reset"
-            onClick={() => void zoom("reset")}
-            title={copy.zoomReset}
-            type="button"
-          >
-            {Math.round((browser?.zoomFactor ?? 1) * 100)}%
-          </button>
+          <button aria-label={copy.zoomReset} className="browser-zoom-reset" onClick={() => void zoom("reset")} title={copy.zoomReset} type="button">{Math.round((browser?.zoomFactor ?? 1) * 100)}%</button>
           <IconButton icon="plus" label={copy.zoomIn} onClick={() => void zoom("in")} />
         </div>
-        <button className="toolbar-text-button" onClick={() => void toggle()} type="button">
-          {visible ? copy.hideBrowser : copy.openChatgpt}
-        </button>
+        <button className="toolbar-text-button" onClick={() => void toggle()} type="button">{visible ? copy.hideBrowser : copy.openChatgpt}</button>
         {browser?.loading ? <i className="browser-loading-line" /> : null}
       </div>
       <div className="browser-viewport" ref={browserSlotRef}>
@@ -860,15 +929,9 @@ function BrowserSurface({
             <BrandMark />
             <h1>{browser?.authenticated ? copy.noActiveTask : copy.stepAccount}</h1>
             <p>{browser?.authenticated ? copy.noActiveTaskBody : copy.stepAccountBody}</p>
-            <PrimaryButton onClick={() => void toggle()}>
-              {browser?.authenticated ? copy.openChatgpt : copy.signIn}
-            </PrimaryButton>
+            <PrimaryButton onClick={() => void toggle()}>{browser?.authenticated ? copy.openChatgpt : copy.signIn}</PrimaryButton>
           </div>
-        ) : (
-          <div className="browser-underlay" aria-hidden="true">
-            <span>{copy.loading}</span>
-          </div>
-        )}
+        ) : <div className="browser-underlay" aria-hidden="true"><span>{copy.loading}</span></div>}
       </div>
     </section>
   );
@@ -927,7 +990,6 @@ function SetupSurface({
     await api!.setupCore();
     updateState((await api!.snapshot()).state);
   });
-
   return (
     <ContentSurface
       eyebrow={copy.required}
@@ -978,7 +1040,7 @@ function SetupSurface({
       ) : null}
 
       <SectionHeading label="MCP" meta={copy.optional} spaced />
-      <button className="next-surface-row" disabled={!snapshot.state.codexCatalogVerified} onClick={showMcp} type="button">
+      <button className="next-surface-row" onClick={showMcp} type="button">
         <McpMark />
         <span>
           <strong>{devProfile ? copy.devMcpTitle : copy.mcpTitle}</strong>
@@ -1009,6 +1071,14 @@ function McpSurface({
   updateState: (state: LauncherState) => void;
 }) {
   const [step, setStep] = useState(Math.min(2, Math.max(0, snapshot.state.mcpGuideStep || 0)));
+  const [connectorName, setConnectorName] = useState(snapshot.state.mcpConnectorName || snapshot.connectorName);
+  const [tunnelKind, setTunnelKind] = useState<"openai" | "cloudflare">(
+    devProfile ? "openai" : snapshot.state.mcpTunnelKind || snapshot.cloudflare.kind,
+  );
+  const [cloudflare, setCloudflare] = useState(snapshot.cloudflare);
+  const [cloudflareHostname, setCloudflareHostname] = useState(
+    snapshot.cloudflare.hostname || snapshot.cloudflare.config.hostnames[0] || "",
+  );
   const [tunnelId, setTunnelId] = useState("");
   const [runtimeKey, setRuntimeKey] = useState("");
   const [credentialsConfigured, setCredentialsConfigured] = useState(snapshot.mcpCredentialsConfigured);
@@ -1019,8 +1089,8 @@ function McpSurface({
   const steps = useMemo(() => [
     { title: copy.mcpStepOne, body: copy.mcpStepOneBody },
     { title: copy.mcpStepTwo, body: copy.mcpStepTwoBody },
-    { title: copy.mcpStepThree, body: copy.mcpStepThreeBody },
-  ], [copy]);
+    { title: copy.mcpStepThree, body: tunnelKind === "cloudflare" ? copy.cloudflareConnectorBody : copy.mcpStepThreeBody },
+  ], [copy, tunnelKind]);
 
   const move = async (next: number) => {
     setStep(next);
@@ -1035,6 +1105,17 @@ function McpSurface({
       setError(messageOf(cause));
     }
   };
+  const persistPreferences = async (
+    nextConnectorName = connectorName,
+    nextTunnelKind = tunnelKind,
+  ) => {
+    const normalizedName = nextConnectorName.trim();
+    if (!normalizedName) return;
+    updateState(await api!.setMcpPreferences({
+      connectorName: normalizedName,
+      tunnelKind: nextTunnelKind,
+    }));
+  };
   const openExternal = async (url: string) => {
     setError(null);
     try {
@@ -1048,17 +1129,70 @@ function McpSurface({
     setLocalBusy(true);
     setError(null);
     try {
-      await api!.setupMcp({
+      const result = await api!.setupMcp({
+        appName: connectorName.trim(),
+        tunnelKind,
+        ...(tunnelKind === "cloudflare" ? { cloudflareHostname } : {}),
         ...(credentialsConfigured && !replacingCredentials
           ? { replace: false }
           : { tunnelId, runtimeKey, replace: true }),
       });
+      if (result.cloudflare) setCloudflare(result.cloudflare);
       setRuntimeKey("");
       setTunnelId("");
       setCredentialsConfigured(true);
       setReplacingCredentials(false);
       updateState((await api!.snapshot()).state);
       await move(2);
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setLocalBusy(false);
+    }
+  };
+  const reconnectCloudflare = async (hostname: string) => {
+    const result = await api!.setupMcp({
+      appName: connectorName.trim(),
+      tunnelKind: "cloudflare",
+      cloudflareHostname: hostname,
+      replace: false,
+    });
+    if (result.cloudflare) setCloudflare(result.cloudflare);
+    setCredentialsConfigured(true);
+    updateState((await api!.snapshot()).state);
+  };
+  const pickCloudflareConfig = async () => {
+    if (busy) return;
+    setLocalBusy(true);
+    setError(null);
+    try {
+      const next = await api!.pickCloudflareConfig();
+      const nextHostname = next.config.hostnames.includes(cloudflareHostname)
+        ? cloudflareHostname
+        : next.config.hostnames[0] || "";
+      const changed = next.config.path !== cloudflare.config.path;
+      setCloudflare(next);
+      setCloudflareHostname(nextHostname);
+      if (changed && credentialsConfigured && cloudflare.publicUrl && nextHostname) {
+        await reconnectCloudflare(nextHostname);
+      }
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setLocalBusy(false);
+    }
+  };
+  const pickCloudflaredBinary = async () => {
+    if (busy) return;
+    setLocalBusy(true);
+    setError(null);
+    try {
+      const next = await api!.pickCloudflaredBinary();
+      const changed = next.binaryPath !== cloudflare.binaryPath;
+      setCloudflare(next);
+      if (changed && credentialsConfigured && cloudflare.publicUrl && cloudflareHostname) {
+        await reconnectCloudflare(cloudflareHostname);
+      }
     } catch (cause) {
       setError(messageOf(cause));
     } finally {
@@ -1086,10 +1220,6 @@ function McpSurface({
       subtitle={devProfile ? copy.devMcpSubtitle : copy.mcpSubtitle}
       title={devProfile ? copy.devMcpTitle : "MCP"}
     >
-      {!snapshot.state.codexCatalogVerified ? (
-        <NoticeRow icon="setup" tone="warning">{copy.mcpCatalogRequired}</NoticeRow>
-      ) : null}
-
       <div className="wizard-stepper" aria-label={`${step + 1} / 3`}>
         {steps.map((item, index) => (
           <button
@@ -1128,17 +1258,77 @@ function McpSurface({
             </header>
 
             {step === 0 ? (
-              <div className="inline-actions">
+              <div className="field-list">
+                <FieldRow label={copy.tunnelProvider}>
+                  <select
+                    disabled={devProfile}
+                    onChange={(event) => {
+                      const next = event.target.value as "openai" | "cloudflare";
+                      setTunnelKind(next);
+                      setCredentialsConfigured(next === snapshot.cloudflare.kind && snapshot.mcpCredentialsConfigured);
+                      void persistPreferences(connectorName, next).catch((cause) => setError(messageOf(cause)));
+                    }}
+                    value={tunnelKind}
+                  >
+                    <option value="openai">{copy.openAiTunnel}</option>
+                    {!devProfile ? <option value="cloudflare">{copy.cloudflareTunnel}</option> : null}
+                  </select>
+                </FieldRow>
+              {tunnelKind === "openai" ? <div className="inline-actions">
                 <SecondaryButton icon="external" onClick={() => void openExternal(snapshot.urls.tunnels)}>
                   {copy.openTunnels}
                 </SecondaryButton>
                 <SecondaryButton icon="external" onClick={() => void openExternal(snapshot.urls.keys)}>
                   {copy.openKeys}
                 </SecondaryButton>
+              </div> : null}
               </div>
             ) : null}
             {step === 1 ? (
-              credentialsConfigured && !replacingCredentials ? (
+              <div className="field-list">
+                <FieldRow label={copy.connectorName}>
+                  <input
+                    maxLength={80}
+                    onChange={(event) => setConnectorName(event.target.value)}
+                    onBlur={() => void persistPreferences().catch((cause) => setError(messageOf(cause)))}
+                    spellCheck={false}
+                    value={connectorName}
+                  />
+                </FieldRow>
+              {tunnelKind === "cloudflare" ? (
+                <>
+                  <FieldRow label={copy.cloudflareConfig}>
+                    <div className="field-with-action">
+                      <input readOnly value={cloudflare.config.path} />
+                      <SecondaryButton onClick={() => void pickCloudflareConfig()}>{copy.browse}</SecondaryButton>
+                    </div>
+                  </FieldRow>
+                  {cloudflare.config.error ? <p className="mcp-step-two-hint">{cloudflare.config.error}</p> : null}
+                  <FieldRow label={copy.cloudflareHostname}>
+                    <select
+                      onChange={(event) => {
+                        const nextHostname = event.target.value;
+                        setCloudflareHostname(nextHostname);
+                        if (!credentialsConfigured || !cloudflare.publicUrl || busy) return;
+                        setLocalBusy(true);
+                        setError(null);
+                        void reconnectCloudflare(nextHostname)
+                          .catch(cause => setError(messageOf(cause)))
+                          .finally(() => setLocalBusy(false));
+                      }}
+                      value={cloudflareHostname}
+                    >
+                      {cloudflare.config.hostnames.map(hostname => <option key={hostname} value={hostname}>{hostname}</option>)}
+                    </select>
+                  </FieldRow>
+                  <FieldRow label={copy.cloudflaredBinary}>
+                    <div className="field-with-action">
+                      <input readOnly value={cloudflare.binaryPath} />
+                      <SecondaryButton onClick={() => void pickCloudflaredBinary()}>{copy.browse}</SecondaryButton>
+                    </div>
+                  </FieldRow>
+                </>
+              ) : credentialsConfigured && !replacingCredentials ? (
                 <div className="saved-credentials">
                   <NoticeRow icon="check" tone="success">
                     <span>
@@ -1156,7 +1346,7 @@ function McpSurface({
                   </button>
                 </div>
               ) : (
-                <div className="field-list">
+                <>
                   <FieldRow label={copy.tunnelId}>
                     <input
                       autoCapitalize="none"
@@ -1192,12 +1382,13 @@ function McpSurface({
                       {copy.keepCredentials}
                     </button>
                   ) : null}
-                </div>
-              )
+                </>
+              )}
+              </div>
             ) : null}
             {step === 1 ? (
               <p className="mcp-step-two-hint">
-                {snapshot.state.codexCatalogVerified ? copy.mcpStepTwoHint : copy.mcpCatalogRequired}
+                {copy.mcpStepTwoHint}
               </p>
             ) : null}
             {step === 2 ? (
@@ -1207,7 +1398,33 @@ function McpSurface({
                 </NoticeRow>
                 <div className="connector-name">
                   <span>{copy.connectorName}</span>
-                  <code>{snapshot.connectorName}</code>
+                  <code>{connectorName.trim()}</code>
+                </div>
+                {tunnelKind === "cloudflare" ? (
+                  <div className="connector-name">
+                    <span>{copy.connectorUrl}</span>
+                    <code>{cloudflare.publicUrl}</code>
+                  </div>
+                ) : null}
+                <div className="connector-name">
+                  <span>{copy.authentication}</span>
+                  <code>{tunnelKind === "cloudflare" ? copy.authenticationOAuth : copy.authenticationNone}</code>
+                </div>
+                {tunnelKind === "cloudflare" ? (
+                  <>
+                    <div className="connector-name">
+                      <span>{copy.registrationUrl}</span>
+                      <code>{cloudflare.registrationUrl}</code>
+                    </div>
+                    <div className="connector-name">
+                      <span>{copy.authorizationPassphrase}</span>
+                      <code>{cloudflare.authorizationPassphrase}</code>
+                    </div>
+                  </>
+                ) : null}
+                <div className="connector-name">
+                  <span>{copy.permissions}</span>
+                  <code>{copy.allowAllActions}</code>
                 </div>
                 <div className="inline-actions">
                   <SecondaryButton
@@ -1240,8 +1457,9 @@ function McpSurface({
           <PrimaryButton
             disabled={
               busy
-              || !snapshot.state.codexCatalogVerified
-              || ((!credentialsConfigured || replacingCredentials) && (!tunnelId || !runtimeKey))
+              || !connectorName.trim()
+              || (tunnelKind === "openai" && (!credentialsConfigured || replacingCredentials) && (!tunnelId || !runtimeKey))
+              || (tunnelKind === "cloudflare" && (!cloudflareHostname || !cloudflare.binaryPath || Boolean(cloudflare.config.error)))
             }
             onClick={() => void install()}
           >
@@ -1270,39 +1488,101 @@ function ActivitySurface({
   language,
   logs,
   setError,
+  setLogs,
 }: {
   copy: Copy;
   language: Language;
   logs: LogRecord[];
   setError: (error: string | null) => void;
+  setLogs: (logs: LogRecord[]) => void;
 }) {
+  const [filter, setFilter] = useState<"all" | "warning" | "error">("all");
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
+  const orderedLogs = [...logs].reverse();
+  const visibleLogs = orderedLogs.filter((record) => filter === "all" || record.level === filter);
+  const warningCount = logs.filter((record) => record.level === "warning").length;
+  const errorCount = logs.filter((record) => record.level === "error").length;
+  const clearLogs = async () => {
+    setError(null);
+    try {
+      const result = await api!.clearLogs();
+      if (!result.cleared) return;
+      setFilter("all");
+      setLogs(result.logs);
+    } catch (cause) {
+      setError(messageOf(cause));
+    }
+  };
+  const exportLogs = async (destination: "clipboard" | "file") => {
+    setError(null);
+    setExportNotice(null);
+    try {
+      const result = await api!.exportLogs(destination);
+      if (result) setExportNotice(destination === "clipboard" ? copy.safeLogCopied : copy.safeLogSaved);
+    } catch (cause) {
+      setError(messageOf(cause));
+    }
+  };
+
   return (
     <ContentSurface subtitle={copy.activitySubtitle} title={copy.activityTitle}>
+      <div className="activity-summary-grid">
+        <article><Icon name="logs" /><span><strong>{logs.length}</strong><small>{copy.totalEvents}</small></span></article>
+        <article className="is-warning"><StateDot state="busy" /><span><strong>{warningCount}</strong><small>{copy.warningEvents}</small></span></article>
+        <article className="is-error"><StateDot state="error" /><span><strong>{errorCount}</strong><small>{copy.errorEvents}</small></span></article>
+      </div>
       <div className="section-heading activity-heading">
         <span>{copy.recentActivity}</span>
-        <SecondaryButton
-          icon="external"
-          onClick={() => void api!.exportLogs().catch((cause) => setError(messageOf(cause)))}
-        >
-          {copy.exportSafeLog}
-        </SecondaryButton>
+        <div className="activity-heading-actions">
+          <div className="segmented-control" role="group" aria-label={copy.filterEvents}>
+            {(["all", "warning", "error"] as const).map((value) => (
+              <button className={filter === value ? "is-active" : ""} key={value} onClick={() => setFilter(value)} type="button">
+                {value === "all" ? copy.allEvents : value === "warning" ? copy.warnings : copy.errors}
+              </button>
+            ))}
+          </div>
+          <div className="activity-log-actions" role="group" aria-label={copy.exportSafeLog}>
+            <SecondaryButton
+              disabled={logs.length === 0}
+              icon="copy"
+              onClick={() => void exportLogs("clipboard")}
+            >
+              {copy.copySafeLog}
+            </SecondaryButton>
+            <SecondaryButton
+              disabled={logs.length === 0}
+              icon="file"
+              onClick={() => void exportLogs("file")}
+            >
+              {copy.saveSafeLog}
+            </SecondaryButton>
+            <SecondaryButton disabled={logs.length === 0} icon="trash" onClick={() => void clearLogs()} tone="danger">
+              {copy.clearLogs}
+            </SecondaryButton>
+          </div>
+        </div>
       </div>
+      {exportNotice ? <div className="activity-export-notice" role="status"><Icon name="check" />{exportNotice}</div> : null}
       <div className="activity-table">
-        {logs.length === 0 ? (
+        {visibleLogs.length === 0 ? (
           <div className="surface-empty">
             <Icon name="logs" />
-            <span>{copy.noLogs}</span>
+            <span>{logs.length === 0 ? copy.noLogs : copy.noMatchingEvents}</span>
           </div>
         ) : null}
-        {[...logs].reverse().map((record, index) => (
-          <div className="activity-row" key={`${record.at}-${record.event}-${index}`}>
-            <StateDot state={record.level === "error" ? "error" : record.level === "warning" ? "busy" : "ready"} />
-            <div>
-              <strong>{humanEvent(record.event)}</strong>
-              <span>{logDetail(record.detail)}</span>
-            </div>
-            <time>{formatTime(record.at, language)}</time>
-          </div>
+        {visibleLogs.map((record, index) => (
+          <details className="activity-row" key={`${record.at}-${record.event}-${index}`}>
+            <summary>
+              <StateDot state={record.level === "error" ? "error" : record.level === "warning" ? "busy" : "ready"} />
+              <div>
+                <strong>{humanEvent(record.event)}</strong>
+                <span>{logDetail(record.detail)}</span>
+              </div>
+              <time>{formatTime(record.at, language)}</time>
+              <Icon className="activity-row-chevron" name="chevron" />
+            </summary>
+            <pre className="activity-row-detail">{JSON.stringify(record.detail, null, 2)}</pre>
+          </details>
         ))}
       </div>
     </ContentSurface>
@@ -1388,7 +1668,8 @@ function SettingsSurface({
   return (
     <ContentSurface narrow title={devProfile ? copy.devSettingsTitle : copy.settingsTitle}>
       <SectionHeading label={copy.general} />
-      <div className="settings-list">
+      <div className="settings-card">
+        <div className="settings-list">
         {!devProfile ? <SettingRow body={copy.launchAtLoginBody} label={copy.launchAtLogin}>
           <Switch
             checked={snapshot.state.autoStart}
@@ -1423,6 +1704,7 @@ function SettingsSurface({
         <SettingRow body={copy.chooseLanguageHint} label={copy.language}>
           <LanguageMenu copy={copy} language={language} onChange={(next) => void updateLanguage(next)} />
         </SettingRow>
+        </div>
       </div>
 
       {!devProfile && snapshot.state.codexRestartRequired ? (
@@ -1432,31 +1714,33 @@ function SettingsSurface({
       ) : null}
 
       <SectionHeading label={copy.diagnostics} spaced />
-      <button className="diagnostic-row" disabled={busy} onClick={() => void runDoctor()} type="button">
-        <Icon name="activity" />
-        <span>
-          <strong>{copy.runDoctor}</strong>
-          <small>{doctor ? (doctor.ok ? copy.healthy : copy.needsAttention) : copy.status}</small>
-        </span>
-        <Icon name="chevron" />
-      </button>
-      {!devProfile ? <button className="diagnostic-row" disabled={busy} onClick={() => void cancelTurns()} type="button">
-        <Icon name="close" />
-        <span>
-          <strong>{copy.cancelTurns}</strong>
-          <small>{turnsCancelled ? copy.turnsCancelled : copy.cancelTurnsBody}</small>
-        </span>
-        <Icon name="chevron" />
-      </button> : null}
-      {!devProfile ? <button className="diagnostic-row" disabled={busy} onClick={() => void uninstallIntegration()} type="button">
-        <Icon name="close" />
-        <span>
-          <strong>{copy.uninstallIntegration}</strong>
-          <small>{integrationRemoved ? copy.integrationRemoved : copy.uninstallIntegrationBody}</small>
-        </span>
-        <Icon name="chevron" />
-      </button> : null}
-      {doctor ? <DoctorSummary copy={copy} report={doctor} /> : null}
+      <div className="settings-card diagnostics-card">
+        <button className="diagnostic-row is-primary" disabled={busy} onClick={() => void runDoctor()} type="button">
+          <span className="diagnostic-row-icon"><Icon name={doctor?.ok ? "check" : "activity"} /></span>
+          <span>
+            <strong>{copy.runDoctor}</strong>
+            <small>{doctor ? (doctor.ok ? copy.healthy : copy.needsAttention) : copy.runDoctorBody}</small>
+          </span>
+          <Icon className="diagnostic-row-chevron" name="chevron" />
+        </button>
+        {doctor ? <DoctorSummary copy={copy} report={doctor} /> : null}
+        {!devProfile ? <button className={`diagnostic-row${turnsCancelled ? " is-complete" : ""}`} disabled={busy} onClick={() => void cancelTurns()} type="button">
+          <span className="diagnostic-row-icon"><Icon name={turnsCancelled ? "check" : "close"} /></span>
+          <span>
+            <strong>{copy.cancelTurns}</strong>
+            <small>{turnsCancelled ? copy.turnsCancelled : copy.cancelTurnsBody}</small>
+          </span>
+          <Icon className="diagnostic-row-chevron" name="chevron" />
+        </button> : null}
+        {!devProfile ? <button className={`diagnostic-row is-danger${integrationRemoved ? " is-complete" : ""}`} disabled={busy} onClick={() => void uninstallIntegration()} type="button">
+          <span className="diagnostic-row-icon"><Icon name={integrationRemoved ? "check" : "trash"} /></span>
+          <span>
+            <strong>{copy.uninstallIntegration}</strong>
+            <small>{integrationRemoved ? copy.integrationRemoved : copy.uninstallIntegrationBody}</small>
+          </span>
+          <Icon className="diagnostic-row-chevron" name="chevron" />
+        </button> : null}
+      </div>
 
       <div className="about-row">
         <BrandMark small />
@@ -1523,13 +1807,15 @@ function SetupRow({
   return (
     <div className={`setup-row${complete ? " is-complete" : ""}`}>
       <span className="setup-index">{complete ? <Icon name="check" /> : index}</span>
-      <div>
+      <div className="setup-row-copy">
         <strong>{title}</strong>
         <p>{description}</p>
       </div>
-      <SecondaryButton disabled={disabled || (complete && !repeatable)} onClick={onAction}>
-        {action}
-      </SecondaryButton>
+      <div className="setup-row-actions">
+        <SecondaryButton disabled={disabled || (complete && !repeatable)} onClick={onAction}>
+          {action}
+        </SecondaryButton>
+      </div>
     </div>
   );
 }
@@ -1680,14 +1966,16 @@ function SecondaryButton({
   disabled = false,
   icon,
   onClick,
+  tone,
 }: {
   children: ReactNode;
   disabled?: boolean;
   icon?: IconName;
   onClick: () => void;
+  tone?: "danger";
 }) {
   return (
-    <button className="button-secondary" disabled={disabled} onClick={onClick} type="button">
+    <button className={`button-secondary${tone === "danger" ? " is-danger" : ""}`} disabled={disabled} onClick={onClick} type="button">
       {icon ? <Icon name={icon} /> : null}
       <span>{children}</span>
     </button>
@@ -1959,11 +2247,28 @@ function browserTabTitleFromTitle(value: string | undefined, copy: Copy): string
   return title.replace(/\s*[|–-]\s*ChatGPT\s*$/i, "") || copy.temporaryChat;
 }
 
+function formatCompactNumber(value: number): string {
+  return new Intl.NumberFormat(document.documentElement.lang || "en", {
+    maximumFractionDigits: 1,
+    notation: value >= 1_000 ? "compact" : "standard",
+  }).format(value);
+}
+
 function browserTabTone(status: BrowserState["tabs"][number]["status"]): "idle" | "ready" | "busy" | "error" {
   if (status === "error" || status === "aborted") return "error";
   if (status === "loading" || status === "running" || status === "testing") return "busy";
   if (status === "ready") return "ready";
   return "idle";
+}
+
+function chatTabStatus(status: BrowserState["tabs"][number]["status"], copy: Copy): string {
+  if (status === "loading") return copy.loading;
+  if (status === "running" || status === "testing") return copy.running;
+  if (status === "ready") return copy.browserReady;
+  if (status === "signed-out") return copy.accountSignedOut;
+  if (status === "error") return copy.error;
+  if (status === "aborted") return copy.turnsCancelled;
+  return copy.status;
 }
 
 function formatBrowserAddress(url: string | undefined, copy: Copy): string {

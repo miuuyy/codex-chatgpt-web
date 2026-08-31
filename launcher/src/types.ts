@@ -1,6 +1,6 @@
 export type Language = "en" | "zh-CN" | "ja";
 export type LauncherProfile = "production" | "development";
-export type Surface = "browser" | "setup" | "mcp" | "activity" | "settings";
+export type Surface = "home" | "chat" | "setup" | "mcp" | "activity" | "settings";
 
 export interface LauncherState {
   version: 1;
@@ -22,6 +22,8 @@ export interface LauncherState {
   mcpRuntimeInstalled?: boolean;
   codexRestartRequired?: boolean;
   mcpGuideStep: number;
+  mcpConnectorName: string | null;
+  mcpTunnelKind: "openai" | "cloudflare" | null;
   sessionRefreshReminderAt: string | null;
 }
 
@@ -94,6 +96,7 @@ export interface LauncherSnapshot {
   browser: BrowserState | null;
   connectorName: string;
   mcpCredentialsConfigured: boolean;
+  cloudflare: CloudflareSetup;
   logs: LogRecord[];
   urls: {
     github: string;
@@ -108,6 +111,21 @@ export interface LauncherSnapshot {
   smokePassed: boolean;
   operation: OperationState | null;
   update: UpdateState;
+}
+
+export interface CloudflareSetup {
+  kind: "openai" | "cloudflare";
+  binaryPath: string;
+  hostname: string;
+  publicUrl: string;
+  registrationUrl: string;
+  authorizationPassphrase: string;
+  config: {
+    path: string;
+    exists: boolean;
+    hostnames: string[];
+    error: string | null;
+  };
 }
 
 export interface LauncherApi {
@@ -134,11 +152,20 @@ export interface LauncherApi {
   uninstallIntegration(): Promise<{ cancelled: true } | { cancelled: false; state: LauncherState }>;
   setupCore(): Promise<{ ok: boolean; stdout: string; restartRequired: boolean }>;
   setupMcp(input: {
+    appName: string;
+    tunnelKind: "openai" | "cloudflare";
     tunnelId?: string;
     runtimeKey?: string;
+    cloudflareHostname?: string;
     replace?: boolean;
-  }): Promise<{ ok: boolean; stdout: string }>;
+  }): Promise<{ ok: boolean; stdout: string; cloudflare?: CloudflareSetup }>;
+  pickCloudflareConfig(): Promise<CloudflareSetup>;
+  pickCloudflaredBinary(): Promise<CloudflareSetup>;
   setMcpStep(step: number): Promise<LauncherState>;
+  setMcpPreferences(input: {
+    connectorName: string;
+    tunnelKind: "openai" | "cloudflare";
+  }): Promise<LauncherState>;
   setAutostart(enabled: boolean): Promise<{ state: LauncherState; supported: boolean; enabled: boolean }>;
   setBiggerContext(enabled: boolean): Promise<LauncherState>;
   setPreference(
@@ -147,7 +174,8 @@ export interface LauncherApi {
   ): Promise<LauncherState>;
   setSidebarState(state: { open: boolean; width: number }): Promise<LauncherState>;
   logs(limit?: number): Promise<LogRecord[]>;
-  exportLogs(): Promise<string | null>;
+  exportLogs(destination: "clipboard" | "file"): Promise<string | null>;
+  clearLogs(): Promise<{ cleared: boolean; logs: LogRecord[] }>;
   installUpdate(): Promise<boolean>;
   windowState(): Promise<{ fullScreen: boolean; maximized: boolean }>;
   windowControl(action: "close" | "minimize" | "zoom"): void;

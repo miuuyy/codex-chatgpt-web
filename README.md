@@ -96,7 +96,8 @@ only Luna, while Pro appears only when the signed-in account exposes it. The sep
 is optional and guides the full-harness setup without terminal commands.
 
 The packaged launcher keeps sign-in and ChatGPT model turns in its embedded browser. It needs no
-model API key, installed Chrome/Chromium, system Node/Bun, or project-managed browser download.
+browser extension, model API key, installed Chrome/Chromium, system Node/Bun, or project-managed
+browser download.
 
 **Run from source**
 
@@ -113,7 +114,7 @@ This source path requires Bun 1.4.0. The command installs locked dependencies an
 | Mode | Models | Local Codex tools | Extra setup |
 | --- | --- | --- | --- |
 | **Browser-only** | Free/Go: Luna; Plus: Instant–High; Pro: adds Extra High and Pro | No; Codex shows a warning | None |
-| **Full harness** | Free/Go: Luna; Plus: Instant–High; Pro: adds Extra High and Pro | Yes for every listed effort, including Pro | OpenAI tunnel + ChatGPT connector |
+| **Full harness** | Free/Go: Luna; Plus: Instant–High; Pro: adds Extra High and Pro | Yes for every listed effort, including Pro | OpenAI or Cloudflare tunnel + ChatGPT connector |
 
 Every picker entry has one fixed ChatGPT mode. Codex still displays its built-in Effort and Speed
 rows, but changing them cannot silently change the selected browser model. In Full mode every
@@ -122,30 +123,38 @@ reduced tool contract.
 
 ## Full harness
 
-Full mode connects ChatGPT's tool calls back to the current Codex task through the official
-[OpenAI tunnel-client](https://github.com/openai/tunnel-client). The tunnel is outbound: it does
-not expose a public IP, open an inbound port, or require router forwarding.
+Full mode connects ChatGPT's tool calls back to the current Codex task through either the official
+[OpenAI tunnel-client](https://github.com/openai/tunnel-client) or an existing Cloudflare named
+tunnel. Both are outbound connections and require no router forwarding. The Cloudflare option is
+available in the production desktop launcher; the repository DEV harness continues to use OpenAI
+Tunnel because it intentionally has no Responses HTTP listener.
 
 > [!WARNING]
-> Create a **new** connector named **Codex Native2** and set its permissions to
-> **Allow all actions**. Do not rename, refresh, or reuse an older **Codex Native** connector:
-> ChatGPT caches the public MCP contract by connector identity, and **Allow low-risk actions**
-> blocks commands and patches before they reach the Codex harness.
+> Choose a connector name in the launcher, create a connector with that exact name, and set its
+> permissions to **Allow all actions**. This release changes the MCP authentication contract: delete
+> an older connector that uses the same name, then recreate it from the launcher fields.
 
 1. Finish the required launcher setup.
-2. Open **MCP** in the launcher. Create the Tunnel and a regular API key on the same OpenAI account
-   that will use the ChatGPT connector; creating the key is free and does not consume model API
-   credits.
-3. Paste the Tunnel ID and API key, then press **Connect harness**.
-4. Enable **Developer Mode** in ChatGPT settings. Create a **new** connector using **Tunnel**, select
-   that exact Tunnel, set **Authentication** to **None**, and name it exactly **Codex Native2**.
-5. If an older **Codex Native** connector exists, leave it untouched. Do not rename or refresh it:
-   ChatGPT caches the public MCP contract by connector identity, and this release uses a new direct
-   turn-token contract. Under **Permissions** on **Codex Native2**, choose **Allow all actions**;
-   **Allow low-risk actions** blocks commands and patches before they reach this runtime. The outer
-   Codex harness still enforces its sandbox and approvals.
-6. Run **Verify runtime**. It selects **Codex Native2** exactly. If only **Codex Native** is found,
-   verification fails with an explicit migration error instead of accepting the legacy connector.
+2. Open **MCP** in the launcher and enter the connector name you want to use.
+3. Choose one tunnel provider:
+   - **OpenAI Tunnel:** create a Tunnel and a regular API key on the same OpenAI account that will
+     use the ChatGPT connector, paste both values, and press **Connect harness**. Creating the key
+     is free and does not consume model API credits.
+   - **Cloudflare named tunnel:** install `cloudflared`, select its executable and a YAML config,
+     then choose one exact hostname from that config and press **Connect harness**. The launcher
+     automatically checks `~/.cloudflared/config.yml` first. It creates a private temporary config
+     that routes only a random MCP URL path to the current loopback port; it never edits the source
+     YAML and removes the temporary file when the tunnel stops.
+4. Enable **Developer Mode** in ChatGPT settings and create a **new** connector with the exact name
+   shown by the launcher. For OpenAI Tunnel, choose **Tunnel** and the configured tunnel. For
+   Cloudflare, create a custom MCP connector using the complete URL displayed by the launcher. Set
+   **Authentication** to **OAuth**, paste the displayed **Registration URL** into Advanced OAuth
+   settings, keep DCR and token endpoint authentication **None**, then enter the launcher's local
+   authorization passphrase on the consent page. Possessing the URL alone does not grant access.
+5. Under **Permissions**, choose **Allow all actions**; **Allow low-risk actions** blocks command
+   calls before they reach this runtime.
+6. Run **Verify runtime**. Verification selects the configured connector name exactly and does not
+   fall back to a legacy connector.
 
 Write/modify actions also require the ChatGPT workspace and its administrator policy to permit
 them. See
@@ -200,8 +209,9 @@ bun run app:package
 `dev:launcher` starts a second launcher profile under `~/.codex-chatgpt-web-dev`: separate Electron
 state, browser cookies/login, ChatGPT account, configuration, sandboxed `CODEX_HOME`, chats,
 diagnostics, broker, and tunnel profile. It can run beside the normal launcher and never starts a
-Responses daemon or changes Codex. Optional Full setup starts and supervises only its isolated MCP
-tunnel, using the distinct ChatGPT connector name `Codex Native2 DEV`.
+Responses daemon or changes Codex. Optional Full setup starts and supervises only its isolated
+OpenAI MCP tunnel, using a separately configurable connector name; it does not reuse production
+Cloudflare settings.
 
 `dev:chat` is a named, persistent synthetic outer-Codex harness. It executes the current working
 tree through that isolated launcher browser, Temporary Chat, prompt compiler, Responses parser, and
@@ -211,8 +221,8 @@ not open a Responses listener, change `openai_base_url`, stop the live daemon, o
 Run it without a message for `/status`, `/fill 30000`, `/compact`, `/model`, and `/reset` commands.
 Sign in and initialize the profile once inside the window labelled **DEV**. Configure optional Full
 harness only for simulated tool rounds; its launcher keeps the DEV tunnel ready while named chats
-attach their broker on demand. Production credentials and the `Codex Native2` connector are never
-reused implicitly. See
+attach their broker on demand. Production credentials and the production connector are never reused
+implicitly. See
 [DEV chat harness](docs/dev-chat.md).
 
 - [Architecture](docs/architecture.md)

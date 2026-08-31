@@ -233,6 +233,77 @@ test("launcher runtime validation rejects a relative full-mode executable before
   }), descriptorPath), /absolute tunnel\.binaryPath/);
 });
 
+test("launcher runtime validation accepts Cloudflare only for production", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-cloudflare-validation-"));
+  const descriptorPath = path.join(root, "launcher.json");
+  const config = launcherConfig(descriptorPath, {
+    mode: "full",
+    tunnel: {
+      kind: "cloudflare",
+      binaryPath: path.join(root, "cloudflared"),
+      configPath: path.join(root, "config.yml"),
+      hostname: "mcp.example.com",
+      mcpPath: `/mcp/${"a".repeat(43)}`,
+    },
+  });
+  try {
+    assert.deepEqual(
+      validateConfig(config, descriptorPath, process.platform, "production"),
+      { ...config, solAvailable: true },
+    );
+    assert.throws(
+      () => validateConfig({ ...config, purpose: "dev-harness" }, descriptorPath, process.platform, "development"),
+      /DEV launcher does not support Cloudflare/,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Cloudflare startup brings up the HTTP daemon before the tunnel", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-cloudflare-order-"));
+  const descriptorPath = path.join(root, "launcher.json");
+  const config = launcherConfig(descriptorPath, {
+    mode: "full",
+    tunnel: {
+      kind: "cloudflare",
+      binaryPath: path.join(root, "cloudflared"),
+      configPath: path.join(root, "config.yml"),
+      hostname: "mcp.example.com",
+      mcpPath: `/mcp/${"a".repeat(43)}`,
+    },
+  });
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root,
+    coreHome: root,
+    browserDescriptorPath: descriptorPath,
+  });
+  const events = [];
+  supervisor.readConfig = () => config;
+  supervisor.readState = () => null;
+  supervisor.proxyHealth = async () => false;
+  supervisor.startDaemon = async () => {
+    events.push("daemon");
+    supervisor.daemon = { pid: 123_456_700, exitCode: null, signalCode: null };
+  };
+  supervisor.startTunnel = async () => {
+    assert.ok(supervisor.daemon);
+    events.push("tunnel");
+    supervisor.tunnel = { pid: 123_456_701, exitCode: null, signalCode: null };
+  };
+  try {
+    const result = await supervisor.startConfigured();
+    assert.equal(result.status, "ready");
+    assert.deepEqual(events, ["daemon", "tunnel"]);
+  } finally {
+    supervisor.daemon = null;
+    supervisor.tunnel = null;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("launcher runtime validation accepts native Windows paths and a named pipe", () => {
   const descriptorPath = "C:\\Users\\Example\\AppData\\Local\\Codex Web GPT\\launcher-browser.json";
   const config = {

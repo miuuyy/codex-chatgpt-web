@@ -10,6 +10,7 @@ const {
   installProcessDiagnosticGuards,
   registerLoggedIpc,
   sanitize,
+  sanitizedLogText,
 } = require("../electron/logging.cjs");
 
 test("launcher logs redact tunnel ids, runtime keys, and bearer credentials", () => {
@@ -64,6 +65,25 @@ test("launcher activity restores valid records from the previous process", () =>
   }
 });
 
+test("clearing launcher activity removes memory and current and rotated logs", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-clear-logs-"));
+  const filePath = path.join(root, "launcher.jsonl");
+  try {
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(`${filePath}.1`, "rotated\n");
+    const logger = createLogger({ filePath });
+    logger.info("current", {});
+
+    logger.clear();
+
+    assert.deepEqual(logger.recent(), []);
+    assert.equal(fs.existsSync(filePath), false);
+    assert.equal(fs.existsSync(`${filePath}.1`), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("exported launcher logs remove local usernames, private ChatGPT titles, and URL paths", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-export-"));
   const filePath = path.join(root, "launcher.jsonl");
@@ -90,8 +110,11 @@ test("exported launcher logs remove local usernames, private ChatGPT titles, and
       },
     })}\n`);
 
+    const clipboardExport = sanitizedLogText({ filePath });
+    assert.equal(clipboardExport.recordCount, 2);
     assert.equal(exportSanitizedLogs({ filePath, destinationPath }), 2);
     const exported = fs.readFileSync(destinationPath, "utf8");
+    assert.equal(clipboardExport.text, exported);
     assert.doesNotMatch(exported, /private\.user|local-person|Private roadmap|Health notes|private prompt|private-conversation|oauth-secret|private@example\.com/);
     assert.match(exported, /\[user-home\]/);
     assert.match(exported, /visible rows: \[redacted\]/);

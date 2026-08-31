@@ -94,7 +94,7 @@ Free/Go アカウントでは Luna のみが表示され、Pro はサインイ�
 独立した **MCP** ページは任意で、ターミナルコマンドを使わずに Full ハーネスの設定を案内します。
 
 パッケージ版ランチャーは、サインインと ChatGPT モデルのターンを内蔵ブラウザーで処理します。
-モデル API キー、インストール済みの Chrome/Chromium、システムの Node/Bun、
+ブラウザー拡張、モデル API キー、インストール済みの Chrome/Chromium、システムの Node/Bun、
 プロジェクト管理のブラウザーダウンロードは不要です。
 
 **ソースから実行**
@@ -112,7 +112,7 @@ bun run app
 | モード | モデル | ローカル Codex ツール | 追加設定 |
 | --- | --- | --- | --- |
 | **Browser-only** | Free/Go: Luna、Plus: Instant～High、Pro: Extra High と Pro を追加 | なし。Codex が警告を表示 | なし |
-| **Full harness** | Free/Go: Luna、Plus: Instant～High、Pro: Extra High と Pro を追加 | Pro を含むすべての表示 effort で使用可能 | OpenAI トンネル + ChatGPT コネクタ |
+| **Full harness** | Free/Go: Luna、Plus: Instant～High、Pro: Extra High と Pro を追加 | Pro を含むすべての表示 effort で使用可能 | OpenAI または Cloudflare トンネル + ChatGPT コネクタ |
 
 モデル選択画面の各項目は、1 つの固定 ChatGPT モードに対応します。Codex には内蔵の Effort と Speed 行も表示されますが、
 それらを変更しても、選択済みのブラウザーモデルが黙って切り替わることはありません。
@@ -121,28 +121,38 @@ Pro 専用の制限や縮小されたツール契約はありません。
 
 ## Full ハーネス
 
-Full モードは、公式の [OpenAI tunnel-client](https://github.com/openai/tunnel-client) を通じて、
-ChatGPT のツール呼び出しを現在の Codex タスクへ接続します。トンネルは外向きであり、公開 IP の露出、
-受信ポートの開放、ルーターのポート転送は不要です。
+Full モードは、公式の [OpenAI tunnel-client](https://github.com/openai/tunnel-client) または既存の
+Cloudflare Named Tunnel を通じて、ChatGPT のツール呼び出しを現在の Codex タスクへ接続します。
+どちらも外向き接続で、ルーターのポート転送は不要です。Cloudflare は本番デスクトップランチャーで
+のみ使用できます。リポジトリの DEV ハーネスは意図的に Responses HTTP リスナーを持たないため、
+引き続き OpenAI Tunnel を使用します。
 
 > [!WARNING]
-> **Codex Native2** という名前の**新しい**コネクタを作成し、権限を **Allow all actions** に設定してください。
-> 古い **Codex Native** コネクタの名前変更、更新、再利用は行わないでください。
-> ChatGPT は公開 MCP 契約をコネクタ ID ごとにキャッシュしており、**Allow low-risk actions** では
-> コマンドとパッチが Codex ハーネスへ到達する前にブロックされます。
+> ランチャーでコネクタ名を指定し、その正確な名前でコネクタを作成して、権限を
+> **Allow all actions** に設定してください。このリリースでは MCP 認証契約が変わったため、
+> 同じ名前の既存コネクタは削除し、ランチャーの表示項目から作り直します。
 
 1. ランチャーの必須セットアップを完了します。
-2. ランチャーで **MCP** を開きます。ChatGPT コネクタを使用するものと同じ OpenAI アカウントで
-   Tunnel と通常の API キーを作成します。キーの作成は無料で、モデル API クレジットを消費しません。
-3. Tunnel ID と API キーを貼り付け、**ハーネスを接続**を押します。
-4. ChatGPT の設定で **Developer Mode** を有効にします。**Tunnel** を使う**新しい**コネクタを作成し、
-   対象の Tunnel を選択して、**Authentication** を **None**、名前を正確に **Codex Native2** に設定します。
-5. 古い **Codex Native** コネクタが存在する場合は、そのまま残してください。名前変更や更新は行わないでください。
-   このリリースでは新しい直接 turn-token 契約を使用します。**Codex Native2** の **Permissions** で
-   **Allow all actions** を選択します。**Allow low-risk actions** では、コマンドとパッチがこのランタイムへ
-   到達する前にブロックされます。外側の Codex ハーネスでは、引き続きサンドボックスと承認が適用されます。
-6. **ランタイムを検証**を実行します。**Codex Native2** が正確に選択されます。
-   **Codex Native** しか見つからない場合、古いコネクタを受け入れず、明示的な移行エラーで失敗します。
+2. ランチャーで **MCP** を開き、使用するコネクタ名を入力します。
+3. トンネル方式を 1 つ選択します。
+   - **OpenAI Tunnel:** ChatGPT コネクタと同じ OpenAI アカウントで Tunnel と通常の API キーを
+     作成し、両方を貼り付けて **ハーネスを接続**を押します。キーの作成は無料で、モデル API
+     クレジットを消費しません。
+   - **Cloudflare 名前付きトンネル:** `cloudflared` をインストールし、実行ファイルと YAML 設定を
+     選択して、設定内の正確なホスト名を 1 つ選んでから **ハーネスを接続**を押します。ランチャーは
+     最初に `~/.cloudflared/config.yml` を自動確認します。実行時には、ランダムな MCP URL パスだけを
+     現在の loopback ポートへ転送する非公開の一時設定を作成します。元の YAML は変更せず、
+     トンネル停止時に一時ファイルを削除します。
+4. ChatGPT の設定で **Developer Mode** を有効にし、ランチャーに表示された正確な名前で
+   **新しい**コネクタを作成します。OpenAI Tunnel では **Tunnel** と設定済みトンネルを選択します。
+   Cloudflare ではランチャーの完全な URL でカスタム MCP コネクタを作成し、**Authentication** は
+   **OAuth** を選びます。Advanced OAuth settings に表示された **Registration URL** を貼り、DCR と
+   token endpoint authentication は **None** のままにして、認可ページでローカルパスフレーズを入力します。
+   URL を知っているだけではアクセスできません。
+5. **Permissions** で **Allow all actions** を選択します。**Allow low-risk actions** ではコマンド呼び出しが
+   ブロックされます。このリリースでは認証契約が変わったため、同名の既存コネクタは削除して作り直します。
+6. **ランタイムを検証**を実行します。検証は設定済みのコネクタ名のみを正確に選択し、古いコネクタへ
+   フォールバックしません。
 
 書き込み／変更操作には、ChatGPT ワークスペースと管理者ポリシー側での許可も必要です。
 [Developer Mode と MCP アプリ](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt)を参照してください。
@@ -196,8 +206,9 @@ bun run app:package
 `dev:launcher` は `~/.codex-chatgpt-web-dev` に 2 つ目のランチャープロファイルを作成します。
 Electron state、ブラウザーの cookie／ログイン、ChatGPT アカウント、設定、サンドボックス化された `CODEX_HOME`、
 チャット、診断、broker、トンネルプロファイルは本番環境から分離されます。通常のランチャーと同時に実行でき、
-Responses daemon の起動や Codex の変更は行いません。任意の Full セットアップでは、独立した ChatGPT コネクタ名
-`Codex Native2 DEV` を使用し、隔離された MCP トンネルのみを起動・監視します。
+Responses daemon の起動や Codex の変更は行いません。任意の Full セットアップでは、個別に設定した
+ChatGPT コネクタ名を使用し、隔離された OpenAI MCP トンネルのみを起動・監視します。本番の
+Cloudflare 設定は再利用しません。
 
 `dev:chat` は名前付きの永続的な synthetic outer-Codex ハーネスです。現在の作業ツリーを、隔離されたランチャーの
 ブラウザー、一時チャット、プロンプトコンパイラー、Responses parser、コンパクションハンドラーを通して実行します。
@@ -208,7 +219,7 @@ Browser-only チャットは外側のツールを公開しません。Responses 
 **DEV** と表示されたウィンドウ内で一度サインインし、プロファイルを初期化してください。
 シミュレーションツールのターンが必要な場合にのみ、任意の Full ハーネスを設定します。
 ランチャーは DEV トンネルを使用可能な状態に保ち、名前付きチャットは必要に応じて broker を接続します。
-本番の認証情報や `Codex Native2` コネクタが暗黙的に再利用されることはありません。
+本番の認証情報や本番コネクタが暗黙的に再利用されることはありません。
 [DEV chat ハーネス](docs/dev-chat.md)を参照してください。
 
 - [アーキテクチャ](docs/architecture.md)

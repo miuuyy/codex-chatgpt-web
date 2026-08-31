@@ -1,6 +1,6 @@
 {
   "name": "codex-web-gpt-launcher",
-  "version": "4.0.7",
+  "version": "4.0.8",
   "private": true,
   "description": "Desktop control center for Codex ChatGPT Web",
   "author": "miuuyy",
@@ -24,7 +24,8 @@
   "dependencies": {
     "motion": "^12.42.2",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

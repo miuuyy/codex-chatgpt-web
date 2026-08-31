@@ -266,11 +266,71 @@ class RuntimeHost {
     const tunnel = config?.mode === "full" ? config.tunnel : null;
     return Boolean(
       tunnel
-      && /^tunnel_[a-f0-9]{32}$/.test(tunnel.tunnelId)
-      && typeof tunnel.runtimeKeyFile === "string"
-      && path.isAbsolute(tunnel.runtimeKeyFile)
-      && fs.existsSync(tunnel.runtimeKeyFile),
+      && (tunnel.kind === "cloudflare"
+        ? path.isAbsolute(tunnel.binaryPath)
+          && fs.existsSync(tunnel.binaryPath)
+          && path.isAbsolute(tunnel.configPath)
+          && fs.existsSync(tunnel.configPath)
+        : /^tunnel_[a-f0-9]{32}$/.test(tunnel.tunnelId)
+          && typeof tunnel.runtimeKeyFile === "string"
+          && path.isAbsolute(tunnel.runtimeKeyFile)
+          && fs.existsSync(tunnel.runtimeKeyFile)),
     );
+  }
+
+  cloudflareSettings() {
+    const tunnel = this.runtimeConfigSnapshot().config?.tunnel;
+    if (tunnel?.kind !== "cloudflare") {
+      return {
+        binaryPath: "",
+        configPath: "",
+        hostname: "",
+        publicUrl: "",
+        registrationUrl: "",
+        authorizationPassphrase: "",
+      };
+    }
+    const publicUrl = `https://${tunnel.hostname}${tunnel.mcpPath}`;
+    const coreHome = this.supervisor.coreHome
+      || this.coreHome
+      || path.dirname(this.supervisor.configPath);
+    let authorizationPassphrase = "";
+    try {
+      const value = fs.readFileSync(path.join(coreHome, "oauth", "passphrase.txt"), "utf8").trim();
+      if (/^[A-Za-z0-9_-]{12,64}$/.test(value)) authorizationPassphrase = value;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    return {
+      binaryPath: tunnel.binaryPath,
+      configPath: tunnel.configPath,
+      hostname: tunnel.hostname,
+      publicUrl,
+      registrationUrl: `${publicUrl}/oauth/register`,
+      authorizationPassphrase,
+    };
+  }
+
+  stableCloudflareMcpPathFile() {
+    const secretsDir = path.join(this.app.getPath("userData"), "secrets");
+    const filePath = path.join(secretsDir, "cloudflare-mcp-path");
+    const tunnel = this.runtimeConfigSnapshot().config?.tunnel;
+    const configuredPath = tunnel?.kind === "cloudflare" ? tunnel.mcpPath : "";
+    if (typeof configuredPath === "string" && /^\/mcp\/[A-Za-z0-9_-]{40,}$/.test(configuredPath)) {
+      writePrivateFileAtomic(filePath, `${configuredPath}\n`);
+      return filePath;
+    }
+    try {
+      const savedPath = fs.readFileSync(filePath, "utf8").trim();
+      if (!/^\/mcp\/[A-Za-z0-9_-]{40,}$/.test(savedPath)) {
+        throw new Error("Saved Cloudflare MCP path is invalid");
+      }
+      return filePath;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    writePrivateFileAtomic(filePath, `/mcp/${randomBytes(32).toString("base64url")}\n`);
+    return filePath;
   }
 
   captureSetupCheckpoint(snapshot) {
@@ -913,10 +973,57 @@ class RuntimeHost {
     };
   }
 
-  setupMcp({ tunnelId = "", runtimeKey = "", replace = false } = {}) {
+  setupMcp({
+    appName = this.browserConnectorName(),
+    tunnelKind = "openai",
+    tunnelId = "",
+    runtimeKey = "",
+    cloudflaredBinaryPath = "",
+    cloudflareConfigPath = "",
+    cloudflareHostname = "",
+    replace = false,
+  } = {}) {
     this.assertProductionProfile("Native Codex MCP setup");
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
-    const reuseSavedCredentials = replace !== true && this.mcpCredentialsConfigured();
+    if (tunnelKind === "cloudflare") {
+      if (!path.isAbsolute(cloudflaredBinaryPath) || !fs.existsSync(cloudflaredBinaryPath)) {
+        throw new Error("Select an installed cloudflared executable");
+      }
+      if (!path.isAbsolute(cloudflareConfigPath) || !fs.existsSync(cloudflareConfigPath)) {
+        throw new Error("Select a readable Cloudflare YAML config");
+      }
+      const args = [
+        "setup",
+        "--full",
+        "--browser-host-descriptor",
+        this.browserDescriptorPath,
+        "--app-name",
+        validateConnectorName(appName),
+        "--tunnel-kind",
+        "cloudflare",
+        "--cloudflared-binary",
+        cloudflaredBinaryPath,
+        "--cloudflare-config",
+        cloudflareConfigPath,
+        "--cloudflare-hostname",
+        cloudflareHostname,
+        "--cloudflare-mcp-path-file",
+        this.stableCloudflareMcpPathFile(),
+        "--replace-codex-route",
+        "--acknowledge-unofficial",
+        "--restart-service",
+      ];
+      return this.runSetup("mcp-setup", args, {
+        message: "Connecting the native Codex harness through Cloudflare",
+        successMessage: "Local MCP tools are ready",
+        timeoutMs: MCP_SETUP_TIMEOUT_MS,
+      });
+    }
+    if (tunnelKind !== "openai") throw new Error("Tunnel kind must be openai or cloudflare");
+    const currentTunnel = this.runtimeConfigSnapshot().config?.tunnel;
+    const reuseSavedCredentials = replace !== true
+      && currentTunnel?.kind !== "cloudflare"
+      && this.mcpCredentialsConfigured();
     if (!reuseSavedCredentials && !/^tunnel_[a-f0-9]{32}$/.test(tunnelId)) {
       throw new Error("Tunnel ID must be tunnel_ followed by 32 lowercase hexadecimal characters");
     }
@@ -929,7 +1036,7 @@ class RuntimeHost {
       "--browser-host-descriptor",
       this.browserDescriptorPath,
       "--app-name",
-      this.browserConnectorName(),
+      validateConnectorName(appName),
       "--replace-codex-route",
     ];
     if (reuseSavedCredentials) {
@@ -960,7 +1067,7 @@ class RuntimeHost {
     }).finally(() => fs.rmSync(keyPath, { force: true }));
   }
 
-  setupDevMcp({ tunnelId = "", runtimeKey = "", replace = false } = {}) {
+  setupDevMcp({ appName = this.browserConnectorName(), tunnelId = "", runtimeKey = "", replace = false } = {}) {
     if (this.launcherProfile !== "development") {
       throw new Error("DEV MCP setup requires the isolated DEV launcher");
     }
@@ -979,7 +1086,7 @@ class RuntimeHost {
       "--browser-host-descriptor",
       this.browserDescriptorPath,
       "--app-name",
-      this.browserConnectorName(),
+      validateConnectorName(appName),
       "--acknowledge-unofficial",
     ];
     if (reuseSavedCredentials) {
