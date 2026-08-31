@@ -121,4 +121,72 @@ describe("MCP OAuth DCR", () => {
     }), `${oauth.mcpPath}/oauth/token`);
     expect(refreshed?.status).toBe(200);
   });
+
+  test("recovers a saved ChatGPT public client only after passphrase consent", async () => {
+    const home = tempHome();
+    const oauth = new McpOAuthServer("https://mcp.example.com", `/mcp/${"a".repeat(43)}`, home);
+    const credentials = ensureMcpOAuthCredentials(home);
+    const clientId = "b".repeat(32);
+    const callback = "https://chatgpt.com/connector/oauth/existing-instance";
+    const verifier = "pkce-verifier-abcdefghijklmnopqrstuvwxyz0123456789";
+    const challenge = createHash("sha256").update(verifier).digest("base64url");
+    const authorize = new URL(`${oauth.issuer}/oauth/authorize`);
+    authorize.searchParams.set("client_id", clientId);
+    authorize.searchParams.set("redirect_uri", callback);
+    authorize.searchParams.set("response_type", "code");
+    authorize.searchParams.set("code_challenge", challenge);
+    authorize.searchParams.set("code_challenge_method", "S256");
+    authorize.searchParams.set("state", "state-test");
+
+    const consent = await oauth.handle(new Request(authorize), `${oauth.mcpPath}/oauth/authorize`);
+    expect(consent?.status).toBe(200);
+    expect(JSON.parse(readFileSync(credentials.paths.clients, "utf8"))).toEqual({});
+
+    const wrongBody = new URLSearchParams(authorize.searchParams);
+    wrongBody.set("passphrase", "wrong-passphrase");
+    const denied = await oauth.handle(new Request(authorize, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: wrongBody,
+    }), `${oauth.mcpPath}/oauth/authorize`);
+    expect(denied?.status).toBe(401);
+    expect(JSON.parse(readFileSync(credentials.paths.clients, "utf8"))).toEqual({});
+
+    const approvalBody = new URLSearchParams(authorize.searchParams);
+    approvalBody.set("passphrase", credentials.passphrase);
+    const approved = await oauth.handle(new Request(authorize, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: approvalBody,
+      redirect: "manual",
+    }), `${oauth.mcpPath}/oauth/authorize`);
+    expect(approved?.status).toBe(302);
+    expect(JSON.parse(readFileSync(credentials.paths.clients, "utf8"))).toEqual({
+      [clientId]: {
+        clientId,
+        clientName: "ChatGPT",
+        redirectUris: [callback],
+      },
+    });
+
+    const restarted = new McpOAuthServer("https://mcp.example.com", oauth.mcpPath, home);
+    const resumed = await restarted.handle(new Request(authorize), `${oauth.mcpPath}/oauth/authorize`);
+    expect(resumed?.status).toBe(200);
+  });
+
+  test("does not recover malformed clients or non-ChatGPT redirects", async () => {
+    const oauth = new McpOAuthServer("https://mcp.example.com", `/mcp/${"a".repeat(43)}`, tempHome());
+    const authorize = new URL(`${oauth.issuer}/oauth/authorize`);
+    authorize.searchParams.set("client_id", "not-a-client-id");
+    authorize.searchParams.set("redirect_uri", "https://attacker.invalid/callback");
+    authorize.searchParams.set("response_type", "code");
+    authorize.searchParams.set("code_challenge", "challenge");
+    authorize.searchParams.set("code_challenge_method", "S256");
+
+    const rejected = await oauth.handle(new Request(authorize), `${oauth.mcpPath}/oauth/authorize`);
+    expect(rejected?.status).toBe(400);
+    expect(await rejected!.text()).toBe(
+      "This connection request does not match the current MCP server. Reconnect the MCP connector in ChatGPT to request a new authorization link.",
+    );
+  });
 });

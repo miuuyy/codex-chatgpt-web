@@ -64,6 +64,10 @@ function allowedRedirect(uri: unknown): uri is string {
     && (uri === CHATGPT_LEGACY_CALLBACK || uri.startsWith(CHATGPT_CALLBACK_PREFIX));
 }
 
+function recoverableClientId(value: string): boolean {
+  return /^[a-f0-9]{32}$/.test(value);
+}
+
 function escapeHtml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -249,19 +253,34 @@ export class McpOAuthServer {
     const challenge = form.get("code_challenge") || "";
     const state = form.get("state") || "";
     const client = this.clients[clientId];
-    if (!client
-      || !client.redirectUris.includes(redirectUri)
+    const recoverableClient = !client
+      && recoverableClientId(clientId)
+      && allowedRedirect(redirectUri);
+    if ((!client && !recoverableClient)
+      || (client && !client.redirectUris.includes(redirectUri))
       || form.get("response_type") !== "code"
       || form.get("code_challenge_method") !== "S256"
       || !challenge) {
-      return response("Invalid or expired connection request", 400, { "content-type": "text/plain; charset=utf-8" });
+      return response(
+        "This connection request does not match the current MCP server. Reconnect the MCP connector in ChatGPT to request a new authorization link.",
+        400,
+        { "content-type": "text/plain; charset=utf-8" },
+      );
     }
     if (request.method === "GET") {
       const hidden = (name: string, value: string) => `<input type="hidden" name="${name}" value="${escapeHtml(value)}">`;
-      return response(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize local MCP</title><style>body{font:14px system-ui;background:#f5f5f5;margin:0;min-height:100vh;display:grid;place-items:center}.card{width:min(360px,calc(100% - 32px));background:white;border:1px solid #ddd;border-radius:14px;padding:22px;box-sizing:border-box}h1{font-size:18px;margin:0 0 8px}p{color:#666;line-height:1.5}input,button{width:100%;box-sizing:border-box;padding:11px;border-radius:9px;border:1px solid #ccc}button{margin-top:10px;background:#111;color:white;border-color:#111}</style></head><body><form class="card" method="post"><h1>Authorize local MCP</h1><p>${escapeHtml(client.clientName)} wants access to this computer. Enter the passphrase shown in Codex Web GPT.</p>${hidden("client_id", clientId)}${hidden("redirect_uri", redirectUri)}${hidden("response_type", "code")}${hidden("code_challenge", challenge)}${hidden("code_challenge_method", "S256")}${hidden("state", state)}<input name="passphrase" type="password" autocomplete="current-password" autofocus><button>Authorize</button></form></body></html>`, 200, { "content-type": "text/html; charset=utf-8" });
+      return response(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize local MCP</title><style>body{font:14px system-ui;background:#f5f5f5;margin:0;min-height:100vh;display:grid;place-items:center}.card{width:min(360px,calc(100% - 32px));background:white;border:1px solid #ddd;border-radius:14px;padding:22px;box-sizing:border-box}h1{font-size:18px;margin:0 0 8px}p{color:#666;line-height:1.5}input,button{width:100%;box-sizing:border-box;padding:11px;border-radius:9px;border:1px solid #ccc}button{margin-top:10px;background:#111;color:white;border-color:#111}</style></head><body><form class="card" method="post"><h1>Authorize local MCP</h1><p>${escapeHtml(client?.clientName ?? "ChatGPT")} wants access to this computer. Enter the passphrase shown in Codex Web GPT.</p>${hidden("client_id", clientId)}${hidden("redirect_uri", redirectUri)}${hidden("response_type", "code")}${hidden("code_challenge", challenge)}${hidden("code_challenge_method", "S256")}${hidden("state", state)}<input name="passphrase" type="password" autocomplete="current-password" autofocus><button>Authorize</button></form></body></html>`, 200, { "content-type": "text/html; charset=utf-8" });
     }
     if (!safeEqual(form.get("passphrase"), this.passphrase)) {
       return response("Wrong passphrase", 401, { "content-type": "text/plain; charset=utf-8" });
+    }
+    if (recoverableClient) {
+      this.clients[clientId] = {
+        clientId,
+        clientName: "ChatGPT",
+        redirectUris: [redirectUri],
+      };
+      this.saveClients();
     }
     const code = randomBytes(24).toString("base64url");
     this.codes.set(code, {
