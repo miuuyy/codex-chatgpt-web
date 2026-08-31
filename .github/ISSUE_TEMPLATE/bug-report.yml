@@ -1,0 +1,142 @@
+name: Bug report
+description: Report one reproducible Codex Web GPT failure with fresh privacy-safe diagnostics.
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please read [Troubleshooting](https://github.com/miuuyy/codex-chatgpt-web/blob/main/TROUBLESHOOTING.md), update to the latest release, and reproduce the failure once before filing.
+        Never upload cookies, browser storage, API keys, Tunnel IDs, raw launcher logs, or unredacted Codex prompts/tool output.
+
+  - type: input
+    id: launcher-version
+    attributes:
+      label: Codex Web GPT version
+      description: Use the version shown by the launcher or release installer, not "latest".
+      placeholder: x.y.z
+    validations:
+      required: true
+
+  - type: input
+    id: codex-version
+    attributes:
+      label: Codex version
+      description: Include Codex Desktop and/or `codex --version`, whichever reproduces the failure.
+      placeholder: Codex Desktop … / codex-cli …
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS arm64
+        - macOS x64
+        - Windows x64
+        - Linux x64
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version
+      placeholder: macOS 15.7 / Windows 11 24H2 / Ubuntu 24.04
+    validations:
+      required: true
+
+  - type: dropdown
+    id: account-tier
+    attributes:
+      label: ChatGPT account tier
+      options:
+        - Free
+        - Go
+        - Plus
+        - Pro
+        - Business / Enterprise / Edu
+        - Unknown
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Integration mode
+      options:
+        - Browser-only
+        - Full harness (MCP)
+        - Setup / sign-in (no model turn yet)
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Selected model
+      description: Use the exact Codex model-picker name, or write "not applicable" for setup failures.
+      placeholder: ChatGPT Web — High
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the observed result and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Number the smallest reliable sequence starting from a fresh Codex task or launcher state.
+      placeholder: |
+        1. …
+        2. …
+        3. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: exact-error
+    attributes:
+      label: Complete final error
+      description: Include the detailed error after reconnect attempts, not only "Reconnecting" or a screenshot.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Privacy-safe diagnostics
+      description: Reproduce once, then attach the file from Activity → Export safe log. If export itself fails, explain that here.
+    validations:
+      required: true
+
+  - type: textarea
+    id: route-owners
+    attributes:
+      label: Other Codex wrappers or route owners
+      description: List OpenCodex, Headroom, OmniRoute, Codex++, CC Switch, custom providers, or manual `openai_base_url` edits. Write "none" if none apply.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Preflight checklist
+      options:
+        - label: I tested the latest release and, for catalog or turn failures, fully restarted Codex including its background process.
+          required: true
+        - label: I stated whether the failure also occurs in a fresh Codex task, or explained why that does not apply.
+          required: true
+        - label: I attached only a privacy-safe export, or explained why the exporter could not produce one; I removed any remaining private content.
+          required: true
+        - label: I searched existing issues for this exact final error.
+          required: true

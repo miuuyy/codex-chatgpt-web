@@ -10,6 +10,10 @@
 </p>
 
 <p align="center">
+  <a href="TROUBLESHOOTING.md">トラブルシューティング</a> · <a href="SECURITY.md">セキュリティ</a> · <a href="CONTRIBUTING.md">コントリビューション</a>
+</p>
+
+<p align="center">
   <a href="https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml"><img src="https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT ライセンス"></a>
   <img src="https://img.shields.io/badge/macOS-arm64%20%7C%20x64-black?logo=apple" alt="macOS arm64 および x64">
@@ -226,6 +230,7 @@ Browser-only チャットは外側のツールを公開しません。Responses 
 - [アーキテクチャ](docs/architecture.md)
 - [DEV chat ハーネス](docs/dev-chat.md)
 - [セキュリティモデル](docs/security-model.md)
+- [トラブルシューティング](TROUBLESHOOTING.md)
 - [コントリビューションガイド](CONTRIBUTING.md)
 
 ## Star の履歴

@@ -10,6 +10,10 @@
 </p>
 
 <p align="center">
+  <a href="TROUBLESHOOTING.md">Troubleshooting</a> · <a href="SECURITY.md">Security</a> · <a href="CONTRIBUTING.md">Contributing</a>
+</p>
+
+<p align="center">
   <a href="https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml"><img src="https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/macOS-arm64%20%7C%20x64-black?logo=apple" alt="macOS arm64 and x64">
@@ -229,6 +233,7 @@ implicitly. See
 - [Architecture](docs/architecture.md)
 - [DEV chat harness](docs/dev-chat.md)
 - [Security model](docs/security-model.md)
+- [Troubleshooting](TROUBLESHOOTING.md)
 - [Contributing](CONTRIBUTING.md)
 
 ## Star History

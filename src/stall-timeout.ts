@@ -7,8 +7,7 @@
  */
 export const DEFAULT_STALL_TIMEOUT_SEC = 300;
 
-// Keep a malformed or accidentally enormous configuration from overflowing the bridge's
-// heartbeat tick budget and disabling the hung-upstream watchdog entirely.
+// Keep a malformed or accidentally enormous configuration within a practical recovery budget.
 export const MAX_STALL_TIMEOUT_SEC = 3_600;
 
 /**

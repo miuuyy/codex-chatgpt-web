@@ -1,0 +1,69 @@
+name: Feature request
+description: Propose one focused addition that fits the ChatGPT Web-backed Codex architecture.
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Large rewrites, generic provider routing, and unrelated product surfaces are normally out of scope. Please describe the user problem before proposing an implementation.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: What concrete workflow is blocked today, and who encounters it?
+    validations:
+      required: true
+
+  - type: textarea
+    id: current-workflow
+    attributes:
+      label: Current workflow or workaround
+      description: Explain what users do today and why it is insufficient.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-behavior
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest observable product behavior that would solve the problem.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Primary surface
+      options:
+        - Browser-only model turn
+        - Full harness / MCP
+        - Launcher setup or diagnostics
+        - Codex integration / model catalog
+        - Packaging or installer
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Safety and compatibility boundaries
+      description: Note any account limits, browser automation, credential, routing, platform, or fail-closed implications.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Scope checklist
+      options:
+        - label: I searched existing issues and Discussions for this request.
+          required: true
+        - label: This request does not rely on bypassing authentication, access controls, or account limits.
+          required: true
+        - label: I understand that opening an issue does not guarantee implementation or acceptance of a pull request.
+          required: true

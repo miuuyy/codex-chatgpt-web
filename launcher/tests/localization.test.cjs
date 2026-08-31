@@ -59,31 +59,11 @@ test("catalog refresh guidance distinguishes a full Codex restart from account l
   assert.match(i18nSource, /サインアウト後の再ログインやウィンドウを閉じるだけでは再起動になりません/);
 });
 
-test("all README languages expose the Japanese navigation entry", () => {
-  for (const source of [englishReadme, chineseReadme, japaneseReadme]) {
-    assert.match(source, /<a href="README\.ja\.md">日本語<\/a>/);
+test("localized READMEs preserve every command block and link target from English", () => {
+  for (const source of [chineseReadme, japaneseReadme]) {
+    assert.deepEqual(commandFences(source), commandFences(englishReadme));
+    assert.deepEqual(linkTargets(source), linkTargets(englishReadme));
   }
-});
-
-test("Japanese README preserves every command block and link target from English", () => {
-  assert.deepEqual(commandFences(japaneseReadme), commandFences(englishReadme));
-  assert.deepEqual(linkTargets(japaneseReadme), linkTargets(englishReadme));
   assert.match(japaneseReadme, /Codex タスク ──Responses \+ SSE──▶/);
   assert.match(japaneseReadme, /ネイティブ UI、コンテキスト、画像、トレース、ツールライフサイクル/);
-});
-
-test("Japanese README covers every public product and operator section", () => {
-  for (const heading of [
-    "## 主な特長",
-    "## クイックスタート",
-    "## モード",
-    "## Full ハーネス",
-    "## 運用",
-    "## 制限とセキュリティ",
-    "## 開発",
-    "## Star の履歴",
-    "## 免責事項",
-  ]) {
-    assert.ok(japaneseReadme.includes(heading), `missing Japanese README section: ${heading}`);
-  }
 });

@@ -14,6 +14,7 @@ function bridged(
   events: AsyncGenerator<AdapterEvent>,
   stallTimeoutSec: number,
   heartbeatMs: number,
+  now?: () => number,
 ): ReadableStream<Uint8Array> {
   return bridgeToResponsesSSE(
     events,
@@ -23,18 +24,26 @@ function bridged(
     undefined,
     undefined,
     heartbeatMs,
-    { streamPlatform: "darwin", stallTimeoutSec },
+    { streamPlatform: "darwin", stallTimeoutSec, ...(now ? { now } : {}) },
   );
 }
 
-test("an adapter that goes silent past the budget is cancelled as a hung upstream", async () => {
+test("an adapter that goes silent past the budget is cancelled after coalesced timer ticks", async () => {
   async function* silent(): AsyncGenerator<AdapterEvent> {
-    await sleep(1_500);
+    await sleep(50);
     yield { type: "text_delta", text: "too late" };
     yield { type: "done", endTurn: true };
   }
 
-  const body = await new Response(bridged(silent(), 1, 10)).text();
+  let firstClockRead = true;
+  const coalescedClock = () => {
+    if (firstClockRead) {
+      firstClockRead = false;
+      return 0;
+    }
+    return 1_500;
+  };
+  const body = await new Response(bridged(silent(), 1, 10, coalescedClock)).text();
 
   expect(body).toContain("upstream_stall_timeout");
   expect(body).not.toContain("too late");

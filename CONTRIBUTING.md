@@ -10,6 +10,10 @@ requests are expected to be small, focused, and easy to review and verify. Good 
 include isolated bug fixes, regression tests, documentation corrections, and narrow
 platform-specific fixes.
 
+Before opening a bug report, work through [TROUBLESHOOTING.md](TROUBLESHOOTING.md) and use the
+structured issue form. Reproduce once on the latest release and attach the privacy-safe export from
+**Activity → Export safe log**; never upload raw browser state, credentials, or unredacted logs.
+
 Large feature branches, broad refactors, rewrites, new providers, and changes to core behavior or
 architecture are generally not accepted. In rare cases they may be considered, but discuss the
 proposal in an issue before implementation. Prior discussion does not guarantee acceptance, and a
@@ -38,6 +42,9 @@ large unsolicited pull request may be closed even when substantial work went int
    broaden selectors speculatively.
 5. Keep Terms and trademark claims factual. Do not market the project as a quota or rate-limit
    bypass.
+6. Manually test the affected behavior. DEV mode is sufficient only when the change does not affect
+   local-tool execution, MCP execution, or the outer Codex agent loop. Execution changes require a
+   real installed Codex integration; DEV simulation is not end-to-end acceptance evidence.
 
 Launcher changes must preserve native packaging on macOS, Windows, and Linux. Platform packages
 must be built on their matching operating system. See [DEV chat mode](docs/dev-chat.md) for isolated
