@@ -1677,6 +1677,95 @@ test("a later provider round reuses only its exact connector-bound conversation"
   assert.deepEqual(events, ["visible", "published", "descriptor", "browser.tab_reused"]);
 });
 
+test("a destroyed retained browser surface is discarded before a later provider round", () => {
+  const conversationKey = "9".repeat(64);
+  const stale = {
+    id: "tab-stale",
+    surfaceId: "surface-stale",
+    traceId: "trace_previous",
+    conversationKey,
+    connectorIdentity: "Codex Native2",
+    connectorBound: true,
+    helperPid: 111,
+    status: "ready",
+    view: { webContents: { isDestroyed: () => true } },
+  };
+  const fresh = {
+    id: "tab-fresh",
+    surfaceId: "surface-fresh",
+    connectorBound: false,
+  };
+  const events = [];
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    manualOperation: null,
+    turnTabs: new Map([[stale.id, stale]]),
+    userCancelledTurnOwners: new Map(),
+    removeTurnTab: (tab, abortRunning) => {
+      events.push(["removed", tab.id, abortRunning]);
+      fixture.turnTabs.delete(tab.id);
+    },
+    createTurnTab: (...args) => {
+      assert.deepEqual(args, ["trace_next", 222, conversationKey, "Codex Native2"]);
+      fixture.turnTabs.set(fresh.id, fresh);
+      return fresh;
+    },
+    syncViewVisibility() {},
+    publishState() {},
+    snapshot: () => ({ tabs: [] }),
+    logger: {
+      warn: (event) => events.push(event),
+      info() {},
+    },
+  });
+
+  const lease = BrowserHost.prototype.beginTurn.call(
+    fixture,
+    "trace_next",
+    false,
+    222,
+    conversationKey,
+    "Codex Native2",
+  );
+
+  assert.deepEqual(lease, {
+    surfaceId: "surface-fresh",
+    tabId: "tab-fresh",
+    reused: false,
+    connectorBound: false,
+  });
+  assert.equal(fixture.turnTabs.has(stale.id), false);
+  assert.deepEqual(events, [
+    "browser.stale_retained_tab_discarded",
+    ["removed", "tab-stale", false],
+  ]);
+});
+
+test("destroying a retained browser surface removes its ownership record immediately", () => {
+  const contents = new EventEmitter();
+  contents.setWindowOpenHandler = () => {};
+  const tab = {
+    id: "tab-destroyed",
+    traceId: "trace_destroyed",
+    status: "ready",
+    view: { webContents: contents },
+  };
+  const removed = [];
+  const fixture = {
+    turnTabs: new Map([[tab.id, tab]]),
+    logger: { warn() {}, error() {}, info() {} },
+    removeTurnTab(candidate, abortRunning) {
+      removed.push([candidate.id, abortRunning]);
+      this.turnTabs.delete(candidate.id);
+    },
+  };
+
+  BrowserHost.prototype.bindTurnContents.call(fixture, tab);
+  contents.emit("destroyed");
+
+  assert.deepEqual(removed, [[tab.id, false]]);
+  assert.equal(fixture.turnTabs.size, 0);
+});
+
 test("a retained conversation is not reused for a different connector identity", () => {
   const conversationKey = "b".repeat(64);
   const retained = {

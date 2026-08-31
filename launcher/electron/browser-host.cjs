@@ -515,6 +515,15 @@ class BrowserHost {
 
   bindTurnContents(tab) {
     const contents = tab.view.webContents;
+    contents.once("destroyed", () => {
+      if (this.turnTabs.get(tab.id) !== tab) return;
+      this.logger.warn("browser.tab_destroyed", {
+        tabId: tab.id,
+        traceId: tab.traceId,
+        status: tab.status,
+      });
+      this.removeTurnTab(tab, tab.status === "running");
+    });
     contents.setWindowOpenHandler(({ url }) => {
       if (allowedAuthUrl(url)) {
         this.logger.warn("browser.turn_authentication_blocked", { tabId: tab.id, traceId: tab.traceId });
@@ -1405,6 +1414,15 @@ class BrowserHost {
     }
     if (this.userCancelledTurnOwners.has(traceId)) {
       throw new BrowserTurnCancelledError(traceId);
+    }
+    for (const tab of [...this.turnTabs.values()]) {
+      if (tab.status !== "ready" || tab.view?.webContents?.isDestroyed?.() !== true) continue;
+      this.logger.warn("browser.stale_retained_tab_discarded", {
+        tabId: tab.id,
+        traceId: tab.traceId,
+        evidence: "webContents destroyed",
+      });
+      this.removeTurnTab(tab, false);
     }
     const sameTrace = [...this.turnTabs.values()].find((tab) => tab.traceId === traceId);
     if (sameTrace && (sameTrace.conversationKey !== conversationKey
