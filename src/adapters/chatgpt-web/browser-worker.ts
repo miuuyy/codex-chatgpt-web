@@ -122,7 +122,6 @@ export const CHATGPT_COMPLETION_ACTION_GRACE_MS = 60_000;
 export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
 export const CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS = 60_000;
 export const MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS = 3;
-const CHATGPT_CONNECTOR_MENTION_QUERY = "@codex";
 const CHATGPT_SMOKE_TEXT = "Reply with exactly: CODEX WEB GPT READY";
 const CHATGPT_SMOKE_EXPECTED = "CODEX WEB GPT READY";
 /**
@@ -2389,6 +2388,7 @@ export class ChatGptBrowserWorker {
     attemptBudget: ChatGptConnectorAttemptBudget = { triggerAttempts: 0 },
   ): Promise<Locator> {
     let composer: Locator;
+    const mentionQuery = `@${this.config.appName}`;
     const menuRows = page.locator('.__menu-item[tabindex="0"]');
     const appResult = menuRows.filter({
       has: page.getByText(this.config.appName, { exact: true }),
@@ -2401,7 +2401,7 @@ export class ChatGptBrowserWorker {
         await composer.fill("");
         await composer.focus();
         await settleChatGptUi();
-        await composer.pressSequentially(CHATGPT_CONNECTOR_MENTION_QUERY, { delay: 25 });
+        await composer.pressSequentially(mentionQuery, { delay: 25 });
         try {
           await appResult.waitFor({ state: "visible", timeout: 2_500 });
           return true;
@@ -2427,7 +2427,7 @@ export class ChatGptBrowserWorker {
       await composer.fill("");
       await composer.focus();
       await settleChatGptUi();
-      await composer.pressSequentially(CHATGPT_CONNECTOR_MENTION_QUERY, { delay: 25 });
+      await composer.pressSequentially(mentionQuery, { delay: 25 });
       if (!firstMenuCaptured) {
         firstMenuCaptured = true;
         await captureDiagnostic?.("connector-mention-triggered");

@@ -569,7 +569,7 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
       expect(selector).toBe('[data-id^="plugin:"][data-keyword]');
       return {
         filter: (options: { hasText: string; visible: boolean }) => {
-          expect(options).toEqual({ hasText: "Codex Native2", visible: true });
+          expect(options).toEqual({ hasText: "XR Local MCP", visible: true });
           return selectedConnector;
         },
       };
@@ -586,7 +586,7 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
   const page = {
     getByRole: personalizedTemporaryChatRole,
     getByText: (text: string, options: { exact: boolean }) => {
-      expect(text).toBe("Codex Native2");
+      expect(text).toBe("XR Local MCP");
       expect(options).toEqual({ exact: true });
       return { exactConnectorLabel: true };
     },
@@ -616,7 +616,7 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
 
   let activeComposerCalls = 0;
   const resolved = await selectConnector.call({
-    config: { appName: "Codex Native2" },
+    config: { appName: "XR Local MCP" },
     connectorIsSelected: async () => connectorSelected,
     selectedConnectorControl: () => selectedConnector,
     activeComposer: async () => {
@@ -631,7 +631,7 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
     ["fill", ""],
     ["fill", ""],
     ["focus"],
-    ["pressSequentially", "@codex"],
+    ["pressSequentially", "@XR Local MCP"],
     ["waitForResult"],
     ["press"],
     ["waitForSelectedConnector"],
@@ -710,7 +710,7 @@ test("connector selection retriggers the complete mention after a fresh-page hyd
     fill: async () => { calls.push("clear"); },
     focus: async () => { calls.push("focus"); },
     pressSequentially: async (value: string) => {
-      expect(value).toBe("@codex");
+      expect(value).toBe("@Codex Native2");
       calls.push("type");
     },
   };
@@ -985,7 +985,7 @@ test("tool-capable prompts use the shared Playwright connector selection before 
     ["fill", ""],
     ["fill", ""],
     ["focus"],
-    ["type", "@codex"],
+    ["type", "@Codex Native2"],
     ["connectorMenu"],
     ["selectConnector"],
     ["selectedConnector"],
