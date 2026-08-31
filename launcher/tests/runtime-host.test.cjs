@@ -23,11 +23,13 @@ function hostFor(existingConfig) {
     },
   });
   let invocation;
-  host.runSetup = async (name, args) => {
+  let runOptions;
+  host.runSetup = async (name, args, options) => {
     invocation = { name, args };
+    runOptions = options;
     return { code: 0, stdout: "", stderr: "" };
   };
-  return { host, invocation: () => invocation };
+  return { host, invocation: () => invocation, runOptions: () => runOptions };
 }
 
 function devHostFor(existingConfig) {
@@ -287,6 +289,7 @@ test("launcher update transaction upgrades its owned full runtime with saved con
     "--app-name",
     "Codex Native2",
   ]);
+  assert.equal(fixture.runOptions().embedded, true);
   assert.deepEqual(result, {
     updated: true,
     mode: "full",

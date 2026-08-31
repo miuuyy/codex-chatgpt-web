@@ -902,6 +902,7 @@ class RuntimeHost {
       message: `Upgrading launcher runtime from ${existing.config.releaseVersion} to ${currentVersion}`,
       successMessage: `Launcher runtime upgraded to ${currentVersion}`,
       timeoutMs: existing.mode === "full" ? MCP_SETUP_TIMEOUT_MS : CORE_SETUP_TIMEOUT_MS,
+      embedded: true,
     });
     return {
       updated: true,
