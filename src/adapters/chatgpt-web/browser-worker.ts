@@ -2571,7 +2571,11 @@ export class ChatGptBrowserWorker {
     await captureDiagnostic?.("send-ready");
     const initialToolBatchRevision = externalProgress?.snapshot().lastToolBatchRevision ?? 0;
     await submissionLifecycle?.onSendActivated?.();
-    await sendButton.press("Enter");
+    // ChatGPT may replace the composer or schedule a history/navigation update as soon as Enter
+    // activates Send. Waiting for Playwright's post-action navigation can therefore time out even
+    // though the message was already submitted. Submission is proven below from turn/MCP evidence,
+    // so keep activation bounded by the browser stage instead of Playwright's default action timeout.
+    await sendButton.press("Enter", { noWaitAfter: true, signal: abortSignal, timeout: 0 });
     const evidence = await this.waitForSubmissionAccepted(
       page,
       baseline,

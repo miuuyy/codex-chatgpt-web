@@ -29,7 +29,9 @@ test("browser turn orchestration retains owned prompt insertion and semantic sub
   expect(runBrowserTurn).toContain("connectorAttemptBudget");
   expect(workerSource).toContain('.locator("xpath=ancestor::form[1]")');
   expect(workerSource).toContain('.getByTestId("send-button")');
-  expect(workerSource).toContain('await sendButton.press("Enter")');
+  expect(workerSource).toContain(
+    'await sendButton.press("Enter", { noWaitAfter: true, signal: abortSignal, timeout: 0 })',
+  );
   expect(workerSource).toContain("await this.waitForSubmissionAccepted(");
   const sendAttachedPrompt = workerSource.slice(
     workerSource.indexOf("  private async sendAttachedPrompt("),
@@ -42,7 +44,9 @@ test("browser turn orchestration retains owned prompt insertion and semantic sub
   const enabledChecked = sendAttachedPrompt.indexOf("if (await sendButton.isEnabled()) break;", rateLimitChecked);
   const sendReady = sendAttachedPrompt.indexOf('await captureDiagnostic?.("send-ready")');
   const sendActivated = sendAttachedPrompt.indexOf("submissionLifecycle?.onSendActivated?.()");
-  const sendPressed = sendAttachedPrompt.indexOf('await sendButton.press("Enter")');
+  const sendPressed = sendAttachedPrompt.indexOf(
+    'await sendButton.press("Enter", { noWaitAfter: true, signal: abortSignal, timeout: 0 })',
+  );
   const submissionWait = sendAttachedPrompt.indexOf("await this.waitForSubmissionAccepted(");
   const submitted = sendAttachedPrompt.indexOf("submissionLifecycle?.onSubmitted?.()");
   expect(sendSettled).toBeGreaterThan(-1);
@@ -1539,6 +1543,66 @@ test("terminal model errors are scoped to the new assistant turn instead of glob
   const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
   expect(workerSource).toContain("throwIfChatGptTerminalErrorAlert(responseTurn.locator)");
   expect(workerSource).not.toContain("throwIfChatGptTerminalErrorAlert(page)");
+});
+
+test("send activation survives the composer detaching without Playwright's action timeout", async () => {
+  const events: string[] = [];
+  let composerDetached = false;
+  const controller = new AbortController();
+  const hiddenLocator = {
+    filter() { return this; },
+    last() { return this; },
+    isVisible: async () => false,
+  };
+  const sendButton = {
+    waitFor: async () => {},
+    isEnabled: async () => true,
+    press: async (
+      key: string,
+      options?: { noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number },
+    ) => {
+      events.push(`press:${key}`);
+      composerDetached = true;
+      if (
+        options?.noWaitAfter !== true
+        || options.signal !== controller.signal
+        || options.timeout !== 0
+      ) {
+        const error = new Error("locator.press: Timeout 30000ms exceeded.");
+        error.name = "TimeoutError";
+        throw error;
+      }
+    },
+  };
+  const composerForm = { getByTestId: () => sendButton };
+  const composer = { locator: () => composerForm };
+  const page = {
+    isClosed: () => false,
+    locator: () => hiddenLocator,
+  } as unknown as Page;
+  const sendAttachedPrompt = (ChatGptBrowserWorker.prototype as unknown as {
+    sendAttachedPrompt(
+      page: Page,
+      baseline: unknown,
+      captureDiagnostic?: (checkpoint: string) => Promise<void>,
+      abortSignal?: AbortSignal,
+      externalProgress?: ChatGptExternalTurnProgress,
+      submissionLifecycle?: { onSendActivated?: () => void; onSubmitted?: () => void },
+    ): Promise<unknown>;
+  }).sendAttachedPrompt;
+
+  await expect(sendAttachedPrompt.call({
+    activeComposer: async () => composer,
+    waitForSubmissionAccepted: async () => {
+      expect(composerDetached).toBeTrue();
+      events.push("accepted");
+      return "user_turn";
+    },
+  }, page, {}, undefined, controller.signal, undefined, {
+    onSendActivated: () => { events.push("activated"); },
+    onSubmitted: () => { events.push("submitted"); },
+  })).resolves.toBe("user_turn");
+  expect(events).toEqual(["activated", "press:Enter", "accepted", "submitted"]);
 });
 
 test("submission acceptance stops when its stage is aborted", async () => {
