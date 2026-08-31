@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { PassThrough } = require("node:stream");
 const {
+  collapseStructuredRuntimeOutput,
   createLogger,
   exportSanitizedLogs,
   installProcessDiagnosticGuards,
@@ -12,6 +13,26 @@ const {
   sanitize,
   sanitizedLogText,
 } = require("../electron/logging.cjs");
+
+test("legacy multiline JSON stdout is presented as one expandable activity event", () => {
+  const lines = ["{", '  "installed": true,', '  "active": true,', '  "errors": []', "}"];
+  const records = lines.map((line, index) => ({
+    at: `2026-08-31T00:00:0${index}.000Z`,
+    level: "info",
+    event: "runtime.stdout",
+    detail: { operation: "bridge-connect", line },
+  }));
+
+  assert.deepEqual(collapseStructuredRuntimeOutput(records), [{
+    at: "2026-08-31T00:00:04.000Z",
+    level: "info",
+    event: "runtime.operation_result",
+    detail: {
+      operation: "bridge-connect",
+      output: { installed: true, active: true, errors: [] },
+    },
+  }]);
+});
 
 test("launcher logs redact tunnel ids, runtime keys, and bearer credentials", () => {
   assert.deepEqual(sanitize({

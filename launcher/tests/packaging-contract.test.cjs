@@ -15,6 +15,17 @@ test("the public launcher command uses the Electron bootstrap", () => {
   assert.equal(repositoryManifest.scripts.launcher, repositoryManifest.scripts.app);
 });
 
+test("macOS development install replaces the fixed application without generating release artifacts", () => {
+  const installer = fs.readFileSync(path.join(launcherRoot, "scripts", "install-mac.cjs"), "utf8");
+  assert.equal(repositoryManifest.scripts["app:install:mac"], "bun run --cwd launcher install:mac");
+  assert.equal(manifest.scripts["install:mac"], "bun run build && bun run build:runtime && bun run scripts/install-mac.cjs");
+  assert.match(installer, /const installedApp = "\/Applications\/Codex Web GPT\.app"/);
+  assert.match(installer, /"--mac",\s*"--dir"/);
+  assert.match(installer, /process\.kill\(pid, "SIGTERM"\)/);
+  assert.match(installer, /fs\.rmSync\(installedApp, \{ recursive: true, force: true \}\);\s*fs\.renameSync\(next, installedApp\)/);
+  assert.doesNotMatch(installer, /backup|\.swap-/i);
+});
+
 test("the full verification gate audits launcher dependencies", () => {
   const verify = fs.readFileSync(path.join(repositoryRoot, "scripts", "verify.ts"), "utf8");
   assert.equal(manifest.scripts.audit, "bun audit");

@@ -623,6 +623,38 @@ test("launcher leaves an already connected route unchanged", async () => {
   assert.deepEqual(fixture.calls, ["route status"]);
 });
 
+test("machine-readable route output is recorded as one structured activity event", async () => {
+  const records = [];
+  const host = new RuntimeHost({
+    app: { getPath: () => path.join(os.tmpdir(), "codex-web-gpt-structured-output") },
+    logger: {
+      info(event, detail) { records.push({ event, detail }); },
+      warn() {},
+      error() {},
+    },
+    sourceRoot: "/source",
+    browserDescriptorPath: "/runtime/launcher-browser.json",
+    supervisor: {},
+  });
+  host.command = () => ({
+    executable: process.execPath,
+    args: ["-e", "process.stdout.write(JSON.stringify({ installed: true, active: true, errors: [] }, null, 2))"],
+    cwd: process.cwd(),
+  });
+
+  await host.run("bridge-connect", [], { stdoutLog: "json" });
+
+  const output = records.filter(record => record.event === "runtime.operation_result");
+  assert.deepEqual(output, [{
+    event: "runtime.operation_result",
+    detail: {
+      operation: "bridge-connect",
+      output: { installed: true, active: true, errors: [] },
+    },
+  }]);
+  assert.equal(records.some(record => record.event === "runtime.stdout"), false);
+});
+
 test("bridge connection rejects a route command that did not reach the requested state", async () => {
   const fixture = bridgeFixture({ active: false });
   fixture.host.run = async (_name, args) => {

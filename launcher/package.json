@@ -15,6 +15,7 @@
     "build:runtime": "bun run scripts/prepare-runtime.cjs",
     "package": "bun run build && bun run build:runtime && bun run scripts/package.cjs",
     "package:mac": "bun run build && bun run build:runtime && bun run scripts/package.cjs --mac",
+    "install:mac": "bun run build && bun run build:runtime && bun run scripts/install-mac.cjs",
     "package:win": "bun run build && bun run build:runtime && bun run scripts/package.cjs --win",
     "package:linux": "bun run build && bun run build:runtime && bun run scripts/package.cjs --linux",
     "smoke:package": "bun run scripts/smoke-package.cjs",

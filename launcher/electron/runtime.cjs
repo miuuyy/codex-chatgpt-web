@@ -34,16 +34,16 @@ function collect(stream, chunks, onLine, onError) {
       if (newline < 0) break;
       const line = buffered.slice(0, newline).trimEnd();
       buffered = buffered.slice(newline + 1);
-      if (line) onLine(line);
+      if (line) onLine?.(line);
     }
     if (buffered.length > MAX_RUNTIME_LOG_LINE_CHARS) {
-      onLine(`${buffered.slice(0, MAX_RUNTIME_LOG_LINE_CHARS)}…[truncated]`);
+      onLine?.(`${buffered.slice(0, MAX_RUNTIME_LOG_LINE_CHARS)}…[truncated]`);
       buffered = "";
     }
   });
   stream.on("end", () => {
     const line = buffered.trim();
-    if (line) onLine(line);
+    if (line) onLine?.(line);
   });
   stream.on("error", (error) => onError?.(error));
 }
@@ -504,10 +504,12 @@ class RuntimeHost {
         const recordPipeError = (stream) => (error) => {
           pipeErrors.push(`${name} ${stream} pipe failed: ${error instanceof Error ? error.message : String(error)}`);
         };
-        collect(child.stdout, stdout, (line) => {
-          this.logger.info("runtime.stdout", { operation: name, line });
-          this.publishOperation?.({ name, status: "running", message: redactText(line) });
-        }, recordPipeError("stdout"));
+        collect(child.stdout, stdout, options.stdoutLog === "json" || options.stdoutLog === "none"
+          ? undefined
+          : (line) => {
+              this.logger.info("runtime.stdout", { operation: name, line });
+              this.publishOperation?.({ name, status: "running", message: redactText(line) });
+            }, recordPipeError("stdout"));
         collect(child.stderr, stderr, (line) => {
           this.logger.warn("runtime.stderr", { operation: name, line });
           this.publishOperation?.({ name, status: "running", message: redactText(line) });
@@ -596,6 +598,15 @@ class RuntimeHost {
           });
         });
       });
+      if (options.stdoutLog === "json" && result.stdout.trim()) {
+        let output;
+        try {
+          output = JSON.parse(result.stdout);
+        } catch {
+          output = redactText(result.stdout.trim());
+        }
+        this.logger.info("runtime.operation_result", { operation: name, output });
+      }
       const acceptedExitCodes = options.acceptedExitCodes || [0];
       if (!acceptedExitCodes.includes(result.code)) {
         const detail = result.stderr.trim() || result.stdout.trim() || `exit ${result.code}`;
@@ -700,6 +711,7 @@ class RuntimeHost {
       message: "Checking Codex bridge route",
       successMessage: "Codex bridge route checked",
       timeoutMs: 15_000,
+      stdoutLog: "none",
     });
     return parseBridgeRouteResult(result.stdout, { requireInstalled: true });
   }
@@ -712,6 +724,7 @@ class RuntimeHost {
       message: "Restoring the previous Codex route",
       successMessage: "Previous Codex route restored",
       timeoutMs: 15_000,
+      stdoutLog: "json",
     });
     const result = parseBridgeRouteResult(disconnected.stdout, { expectedActive: false });
     const verified = await this.bridgeStatus(operationName);
@@ -749,6 +762,7 @@ class RuntimeHost {
           message: "Connecting Codex to the launcher",
           successMessage: "Codex bridge connected",
           timeoutMs: 15_000,
+          stdoutLog: "json",
         });
         const result = parseBridgeRouteResult(connected.stdout, { expectedActive: true });
         const verified = await this.bridgeStatus(name);

@@ -43,6 +43,7 @@
     "launcher": "bun run scripts/start-launcher.ts",
     "app": "bun run scripts/start-launcher.ts",
     "app:package": "bun run --cwd launcher package",
+    "app:install:mac": "bun run --cwd launcher install:mac",
     "app:smoke": "bun run --cwd launcher smoke:package",
     "launcher:dev": "bun run --cwd launcher dev",
     "launcher:audit": "bun run --cwd launcher audit",

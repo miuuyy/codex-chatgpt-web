@@ -115,9 +115,49 @@ function sanitize(value, seen = new WeakSet()) {
   );
 }
 
+function collapseStructuredRuntimeOutput(records) {
+  const collapsed = [];
+  for (let index = 0; index < records.length;) {
+    const first = records[index];
+    const operation = first?.event === "runtime.stdout" && typeof first.detail?.operation === "string"
+      ? first.detail.operation
+      : null;
+    if (!operation || typeof first.detail.line !== "string") {
+      collapsed.push(first);
+      index += 1;
+      continue;
+    }
+    let end = index;
+    const lines = [];
+    while (end < records.length
+      && records[end].event === "runtime.stdout"
+      && records[end].detail?.operation === operation
+      && typeof records[end].detail?.line === "string") {
+      lines.push(records[end].detail.line);
+      end += 1;
+    }
+    let output;
+    try {
+      output = JSON.parse(lines.join("\n"));
+    } catch {
+      collapsed.push(...records.slice(index, end));
+      index = end;
+      continue;
+    }
+    collapsed.push({
+      at: records[end - 1].at,
+      level: first.level,
+      event: "runtime.operation_result",
+      detail: { operation, output },
+    });
+    index = end;
+  }
+  return collapsed;
+}
+
 function readRecent(filePath) {
   try {
-    return fs.readFileSync(filePath, "utf8")
+    const records = fs.readFileSync(filePath, "utf8")
       .split(/\r?\n/)
       .filter(Boolean)
       .slice(-MAX_MEMORY_RECORDS)
@@ -140,6 +180,7 @@ function readRecent(filePath) {
           return [];
         }
       });
+    return collapseStructuredRuntimeOutput(records);
   } catch {
     return [];
   }
@@ -230,4 +271,5 @@ module.exports = {
   sanitize,
   sanitizeForExport,
   sanitizedLogText,
+  collapseStructuredRuntimeOutput,
 };
