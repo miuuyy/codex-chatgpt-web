@@ -22,6 +22,9 @@ test("native clicks reach the original ChatGPT browser surface instead of the wi
   assert.match(appSource, /draggable=\{surface !== "chat"\}/);
   assert.match(appSource, /className=\{`app-titlebar\$\{draggable \? " draggable" : ""\}`\}/);
   assert.match(appSource, /className=\{`browser-tab\$\{tab\.active \? " is-active" : ""\}`\}/);
+  assert.doesNotMatch(appSource, /className="browser-tab-drag draggable"/);
+  assert.match(appSource, /className="browser-tab-drag">\s*<div className="browser-tab-drag-handle draggable"/);
+  assert.match(stylesSource, /\.browser-tab-drag-handle\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0 216px 0 0;/s);
   assert.match(appSource, /<div className="browser-viewport" ref=\{browserSlotRef\}>/);
 });
 
@@ -144,9 +147,18 @@ test("the title bar connection control mirrors the live MCP tunnel", () => {
     electronMain,
     /launcher:mcp-set-active[\s\S]*?runtimeSupervisor\.startIfConfigured\(\{ connectMcp: true \}\)[\s\S]*?runtimeSupervisor\.disconnectMcp\(\)/,
   );
-  assert.match(appSource, /copy\.mcpConnected[\s\S]*?copy\.mcpDisconnect[\s\S]*?className="titlebar-connection no-drag"/);
-  assert.match(stylesSource, /\.titlebar-connection\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*110;[^}]*top:\s*9px;/s);
+  assert.match(appSource, /copy\.mcpConnected[\s\S]*?copy\.mcpDisconnect[\s\S]*?className="mcp-connection-overlay no-drag"/);
+  assert.match(stylesSource, /\.mcp-connection-overlay\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*110;[^}]*top:\s*9px;[^}]*pointer-events:\s*auto;/s);
   assert.match(stylesSource, /\.titlebar-power\.is-running\s*\{[^}]*color:\s*var\(--red-300\);/s);
+});
+
+test("the MCP control floats outside the title bar hit-test and drag hierarchy", () => {
+  const titleBarStart = appSource.indexOf("function TitleBar(");
+  const mcpControlStart = appSource.indexOf("function McpConnectionControl(");
+  assert.ok(titleBarStart >= 0 && mcpControlStart > titleBarStart);
+  assert.doesNotMatch(appSource.slice(titleBarStart, mcpControlStart), /mcp-connection-overlay/);
+  assert.match(appSource, /<TitleBar[\s\S]*?\/>\s*\{!devProfile \? \(\s*<McpConnectionControl/);
+  assert.match(stylesSource, /\.app-titlebar\s*\{[^}]*pointer-events:\s*none;/s);
 });
 
 test("MCP connection is available independently of model catalog verification", () => {

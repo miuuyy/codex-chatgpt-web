@@ -155,7 +155,7 @@ code {
   border-radius: 8px;
 }
 
-.titlebar-connection {
+.mcp-connection-overlay {
   position: fixed;
   z-index: 110;
   top: 9px;
@@ -248,7 +248,7 @@ code {
   left: 8px;
 }
 
-.app-root:not([data-platform="darwin"]) .titlebar-connection {
+.app-root:not([data-platform="darwin"]) .mcp-connection-overlay {
   right: 148px;
 }
 
@@ -692,9 +692,20 @@ code {
 }
 
 .browser-tab-drag {
+  position: relative;
   height: 100%;
   min-width: 20px;
   flex: 1;
+  -webkit-app-region: no-drag;
+}
+
+.browser-tab-drag-handle {
+  position: absolute;
+  inset: 0 216px 0 0;
+}
+
+.app-root:not([data-platform="darwin"]) .browser-tab-drag-handle {
+  right: 352px;
 }
 
 .tab-spinner {

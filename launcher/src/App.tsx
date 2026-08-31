@@ -496,15 +496,20 @@ function LauncherShell({
       initial={{ opacity: 0 }}
     >
       <TitleBar
-        connection={snapshot.connection}
         copy={copy}
         devProfile={devProfile}
         draggable={surface !== "chat"}
-        operationBusy={operation?.status === "running"}
-        onToggleConnection={() => void toggleMcpConnection()}
         sidebarOpen={sidebarOpen}
         toggleSidebar={toggleSidebar}
       />
+      {!devProfile ? (
+        <McpConnectionControl
+          connection={snapshot.connection}
+          copy={copy}
+          operationBusy={operation?.status === "running"}
+          onToggle={() => void toggleMcpConnection()}
+        />
+      ) : null}
 
       {compactSidebar && sidebarOpen ? (
         <button
@@ -686,23 +691,42 @@ function LauncherShell({
 }
 
 function TitleBar({
-  connection,
   copy,
   devProfile,
   draggable,
-  operationBusy,
-  onToggleConnection,
   sidebarOpen,
   toggleSidebar,
 }: {
-  connection: McpConnectionState;
   copy: Copy;
   devProfile: boolean;
   draggable: boolean;
-  operationBusy: boolean;
-  onToggleConnection: () => void;
   sidebarOpen: boolean;
   toggleSidebar: () => void;
+}) {
+  return (
+    <header className={`app-titlebar${draggable ? " draggable" : ""}`}>
+      <div className="titlebar-left no-drag">
+        <IconButton
+          icon="sidebar"
+          label={sidebarOpen ? copy.hideSidebar : copy.showSidebar}
+          onClick={toggleSidebar}
+        />
+        {devProfile ? <span className="titlebar-dev-profile">{copy.devBadge}</span> : null}
+      </div>
+    </header>
+  );
+}
+
+function McpConnectionControl({
+  connection,
+  copy,
+  operationBusy,
+  onToggle,
+}: {
+  connection: McpConnectionState;
+  copy: Copy;
+  operationBusy: boolean;
+  onToggle: () => void;
 }) {
   const working = connection.status === "checking"
     || connection.status === "connecting"
@@ -725,36 +749,24 @@ function TitleBar({
         : "idle";
   const actionLabel = connection.active ? copy.mcpDisconnect : copy.mcpConnect;
   return (
-    <header className={`app-titlebar${draggable ? " draggable" : ""}`}>
-      <div className="titlebar-left no-drag">
-        <IconButton
-          icon="sidebar"
-          label={sidebarOpen ? copy.hideSidebar : copy.showSidebar}
-          onClick={toggleSidebar}
-        />
-        {devProfile ? <span className="titlebar-dev-profile">{copy.devBadge}</span> : null}
-      </div>
-      {!devProfile ? (
-        <div className="titlebar-connection no-drag">
-          <span className={`titlebar-connection-state is-${connection.status}`} title={connection.detail}>
-            <StateDot state={statusTone} />
-            <span>{statusLabel}</span>
-          </span>
-          <button
-            aria-label={actionLabel}
-            aria-pressed={connection.active}
-            className={`titlebar-power${connection.active ? " is-running" : ""}`}
-            disabled={working || operationBusy || connection.status === "unavailable"}
-            onClick={onToggleConnection}
-            title={connection.detail}
-            type="button"
-          >
-            <Icon name="power" />
-            <span>{actionLabel}</span>
-          </button>
-        </div>
-      ) : null}
-    </header>
+    <div className="mcp-connection-overlay no-drag">
+      <span className={`titlebar-connection-state is-${connection.status}`} title={connection.detail}>
+        <StateDot state={statusTone} />
+        <span>{statusLabel}</span>
+      </span>
+      <button
+        aria-label={actionLabel}
+        aria-pressed={connection.active}
+        className={`titlebar-power${connection.active ? " is-running" : ""}`}
+        disabled={working || operationBusy || connection.status === "unavailable"}
+        onClick={onToggle}
+        title={connection.detail}
+        type="button"
+      >
+        <Icon name="power" />
+        <span>{actionLabel}</span>
+      </button>
+    </div>
   );
 }
 
@@ -855,7 +867,9 @@ function BrowserSurface({
             ) : null}
           </div>
         ))}
-        <div className="browser-tab-drag draggable" />
+        <div className="browser-tab-drag">
+          <div className="browser-tab-drag-handle draggable" />
+        </div>
       </div>
       <div className="browser-toolbar">
         <div className="browser-history">
