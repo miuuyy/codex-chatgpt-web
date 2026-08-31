@@ -185,8 +185,18 @@ describe("MCP OAuth DCR", () => {
 
     const rejected = await oauth.handle(new Request(authorize), `${oauth.mcpPath}/oauth/authorize`);
     expect(rejected?.status).toBe(400);
-    expect(await rejected!.text()).toBe(
-      "This connection request does not match the current MCP server. Reconnect the MCP connector in ChatGPT to request a new authorization link.",
-    );
+    const help = await rejected!.text();
+    expect(help).toContain("Reconnect from ChatGPT");
+    expect(help).toContain("Open ChatGPT connector settings");
+    expect(help).toContain(oauth.mcpUrl);
+    expect(help).toContain(oauth.registrationUrl);
+
+    authorize.searchParams.set("ui_locales", "zh-CN");
+    const localized = await oauth.handle(new Request(authorize), `${oauth.mcpPath}/oauth/authorize`);
+    expect(localized?.status).toBe(400);
+    const localizedHelp = await localized!.text();
+    expect(localizedHelp).toContain("需要从 ChatGPT 重新连接");
+    expect(localizedHelp).toContain("打开 ChatGPT 连接器设置");
+    expect(localizedHelp).toContain("无需先删除原连接器");
   });
 });

@@ -77,6 +77,30 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
+function connectionRequestHelp(request: Request, form: URLSearchParams, oauth: McpOAuthServer): string {
+  const locale = `${form.get("ui_locales") ?? ""} ${request.headers.get("accept-language") ?? ""}`.toLowerCase();
+  const chinese = locale.includes("zh");
+  const title = chinese ? "需要从 ChatGPT 重新连接" : "Reconnect from ChatGPT";
+  const summary = chinese
+    ? "该连接请求与当前 MCP 服务不匹配。授权链接必须由 ChatGPT 生成，不能在这里手动刷新。"
+    : "This connection request does not match the current MCP server. ChatGPT must generate the authorization link; it cannot be refreshed here.";
+  const steps = chinese
+    ? [
+      "打开 ChatGPT 的插件/连接器设置，并进入原来的 MCP 连接器。",
+      "选择“连接”或“重新连接”。如果没有该按钮，请编辑连接器，确认下方两个 URL 后保存，再选择“连接”。",
+      "新的授权页面打开后，输入 Codex Web GPT 中显示的授权口令。无需先删除原连接器。",
+    ]
+    : [
+      "Open ChatGPT plugin or connector settings, then open the existing MCP connector.",
+      "Choose Connect or Reconnect. If neither action is shown, edit the connector, confirm the two URLs below, save it, then choose Connect.",
+      "Enter the authorization passphrase shown in Codex Web GPT when the new authorization page opens. You do not need to delete the connector first.",
+    ];
+  const button = chinese ? "打开 ChatGPT 连接器设置" : "Open ChatGPT connector settings";
+  const mcpLabel = chinese ? "MCP URL" : "MCP URL";
+  const registrationLabel = chinese ? "Registration URL" : "Registration URL";
+  return `<!doctype html><html lang="${chinese ? "zh-CN" : "en"}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>body{font:14px system-ui;background:#f5f5f5;margin:0;min-height:100vh;display:grid;place-items:center}.card{width:min(560px,calc(100% - 32px));background:white;border:1px solid #ddd;border-radius:14px;padding:24px;box-sizing:border-box}h1{font-size:19px;margin:0 0 10px}p,li{color:#555;line-height:1.55}ol{padding-left:22px}.field{margin-top:12px}.label{font-size:12px;color:#777;margin-bottom:4px}code{display:block;padding:9px 10px;border-radius:8px;background:#f2f2f2;overflow-wrap:anywhere;user-select:all}a{display:block;margin-top:18px;padding:11px;border-radius:9px;background:#111;color:white;text-align:center;text-decoration:none}</style></head><body><main class="card"><h1>${title}</h1><p>${summary}</p><ol>${steps.map(step => `<li>${step}</li>`).join("")}</ol><div class="field"><div class="label">${mcpLabel}</div><code>${escapeHtml(oauth.mcpUrl)}</code></div><div class="field"><div class="label">${registrationLabel}</div><code>${escapeHtml(oauth.registrationUrl)}</code></div><a href="https://chatgpt.com/#settings/Plugins" target="_blank" rel="noreferrer">${button}</a></main></body></html>`;
+}
+
 function response(body: BodyInit | null, status = 200, headers: HeadersInit = {}): Response {
   return new Response(body, {
     status,
@@ -252,6 +276,7 @@ export class McpOAuthServer {
     const redirectUri = form.get("redirect_uri") || "";
     const challenge = form.get("code_challenge") || "";
     const state = form.get("state") || "";
+    const resource = form.get("resource");
     const client = this.clients[clientId];
     const recoverableClient = !client
       && recoverableClientId(clientId)
@@ -260,11 +285,12 @@ export class McpOAuthServer {
       || (client && !client.redirectUris.includes(redirectUri))
       || form.get("response_type") !== "code"
       || form.get("code_challenge_method") !== "S256"
-      || !challenge) {
+      || !challenge
+      || (resource !== null && resource !== this.mcpUrl)) {
       return response(
-        "This connection request does not match the current MCP server. Reconnect the MCP connector in ChatGPT to request a new authorization link.",
+        connectionRequestHelp(request, form, this),
         400,
-        { "content-type": "text/plain; charset=utf-8" },
+        { "content-type": "text/html; charset=utf-8" },
       );
     }
     if (request.method === "GET") {

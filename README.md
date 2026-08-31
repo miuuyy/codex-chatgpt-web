@@ -131,8 +131,9 @@ Tunnel because it intentionally has no Responses HTTP listener.
 
 > [!WARNING]
 > Choose a connector name in the launcher, create a connector with that exact name, and set its
-> permissions to **Allow all actions**. This release changes the MCP authentication contract: delete
-> an older connector that uses the same name, then recreate it from the launcher fields.
+> permissions to **Allow all actions**. If an existing connector needs the current MCP authentication
+> contract, open it and choose Connect or Reconnect. If neither action is shown, edit it using the
+> launcher fields, save it, and connect again; deletion is not normally required.
 
 1. Finish the required launcher setup.
 2. Open **MCP** in the launcher and enter the connector name you want to use.
@@ -145,7 +146,7 @@ Tunnel because it intentionally has no Responses HTTP listener.
      automatically checks `~/.cloudflared/config.yml` first. It creates a private temporary config
      that routes only a random MCP URL path to the current loopback port; it never edits the source
      YAML and removes the temporary file when the tunnel stops.
-4. Enable **Developer Mode** in ChatGPT settings and create a **new** connector with the exact name
+4. Enable **Developer Mode** in ChatGPT settings and create or update a connector with the exact name
    shown by the launcher. For OpenAI Tunnel, choose **Tunnel** and the configured tunnel. For
    Cloudflare, create a custom MCP connector using the complete URL displayed by the launcher. Set
    **Authentication** to **OAuth**, paste the displayed **Registration URL** into Advanced OAuth
