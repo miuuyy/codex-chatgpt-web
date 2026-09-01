@@ -318,9 +318,10 @@ export async function modelsRequest(
 export async function nativeSearchRequest(
   req: Request,
   fetchUpstream?: NativeFetch,
+  backendBaseUrl?: string,
 ): Promise<Response> {
   try {
-    return await forwardNativeCodexRequest(req, "alpha/search", fetchUpstream);
+    return await forwardNativeCodexRequest(req, "alpha/search", fetchUpstream, undefined, backendBaseUrl);
   } catch (error) {
     return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
   }
@@ -364,7 +365,13 @@ export async function responseRequest(
     : undefined;
   if (typeof requestedModel === "string" && !isChatGptWebModelSlug(requestedModel)) {
     try {
-      return await forwardNativeCodexRequest(nativeRequest, "responses", undefined, raw);
+      return await forwardNativeCodexRequest(
+        nativeRequest,
+        "responses",
+        undefined,
+        raw,
+        config.nativePassthroughBaseUrl,
+      );
     } catch (error) {
       return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
     }
@@ -559,7 +566,13 @@ export async function compactRequest(
   }
   if (!isChatGptWebModelSlug(raw.model)) {
     try {
-      return await forwardNativeCodexRequest(nativeRequest, "responses/compact", undefined, raw);
+      return await forwardNativeCodexRequest(
+        nativeRequest,
+        "responses/compact",
+        undefined,
+        raw,
+        config.nativePassthroughBaseUrl,
+      );
     } catch (error) {
       return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
     }
@@ -799,7 +812,11 @@ export function startServer(
       if (req.method === "POST" && url.pathname === "/v1/alpha/search") {
         if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
         return httpTurns.track(
-          signal => nativeSearchRequest(new Request(req, { signal }), dependencies.fetchUpstream),
+          signal => nativeSearchRequest(
+            new Request(req, { signal }),
+            dependencies.fetchUpstream,
+            config.nativePassthroughBaseUrl,
+          ),
           req.signal,
           process.platform,
           "search",

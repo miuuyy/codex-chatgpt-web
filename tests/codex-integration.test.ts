@@ -14,6 +14,7 @@ import {
   preflightCodexIntegration,
   readCodexSubagentProtocol,
   readCodexModelContextOverride,
+  readCodexOpenAiBaseUrl,
   setCodexSubagentProtocol,
   uninstallCodexIntegration,
 } from "../src/codex-integration";
@@ -74,6 +75,20 @@ describe("reversible native Codex route integration", () => {
     expect(readCodexModelContextOverride()).toEqual({
       contextWindow: 1_000_000,
     });
+  });
+
+  test("reads the existing Codex route for downstream passthrough", () => {
+    const { codexHome } = fixture();
+    writeFileSync(
+      join(codexHome, "config.toml"),
+      [
+        'openai_base_url = "http://127.0.0.1:4202/_codex-router/private/v1"',
+        "",
+      ].join("\n"),
+    );
+
+    expect(readCodexOpenAiBaseUrl())
+      .toBe("http://127.0.0.1:4202/_codex-router/private/v1");
   });
 
   test("keeps the built-in openai provider without changing native feature defaults", () => {

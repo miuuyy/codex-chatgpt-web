@@ -38,6 +38,47 @@ test("forwards native Codex requests verbatim to the official backend", async ()
   expect(await response.text()).toBe("data: native\n\n");
 });
 
+test("forwards non-Web requests to a configured loopback Codex Router route", async () => {
+  const routerBase = "http://127.0.0.1:4202/_codex-router/private-capability/v1";
+  const cases = [
+    { endpoint: "responses" as const, source: "/v1/responses", expected: "/responses" },
+    {
+      endpoint: "responses/compact" as const,
+      source: "/v1/responses/compact",
+      expected: "/responses/compact",
+    },
+    {
+      endpoint: "alpha/search" as const,
+      source: "/v1/alpha/search?locale=en",
+      expected: "/alpha/search?locale=en",
+    },
+  ];
+
+  for (const entry of cases) {
+    const request = new Request(`http://127.0.0.1:17841${entry.source}`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer codex-oauth-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ model: "bai/glm-5.3-flash", input: [] }),
+    });
+    let upstreamRequest: Request | undefined;
+    await forwardNativeCodexRequest(
+      request,
+      entry.endpoint,
+      async input => {
+        upstreamRequest = input;
+        return Response.json({ ok: true });
+      },
+      undefined,
+      routerBase,
+    );
+    expect(upstreamRequest!.url).toBe(`${routerBase}${entry.expected}`);
+    expect(upstreamRequest!.headers.get("authorization")).toBe("Bearer codex-oauth-token");
+  }
+});
+
 test("forwards native Codex compaction requests to the official compact endpoint", async () => {
   const originalBody = Bun.zstdCompressSync(Buffer.from('{"model":"gpt-5.6-sol","input":[]}'));
   const encoded = new ArrayBuffer(originalBody.byteLength);

@@ -108,6 +108,12 @@ export function readCodexModelContextOverride(): CodexModelContextOverride | und
   return contextWindow === undefined ? undefined : { contextWindow };
 }
 
+export function readCodexOpenAiBaseUrl(): string | undefined {
+  const path = getCodexConfigPath();
+  if (!existsSync(path)) return undefined;
+  return findTopLevelAssignment(splitLines(readFileSync(path, "utf8")), "openai_base_url").value;
+}
+
 export function assignments(lines: string[]): Record<ManagedAssignmentKey, PreviousAssignment> {
   return {
     openai_base_url: findTopLevelAssignment(lines, "openai_base_url"),

@@ -82,6 +82,8 @@ export interface AppConfig {
   experimentalBiggerContext: boolean;
   /** Optional adapter-silence budget for the Responses watchdog. */
   stallTimeoutSec?: number;
+  /** Existing loopback Responses route used for every non-Web model. */
+  nativePassthroughBaseUrl?: string;
   autoApproveToolCalls: boolean;
   controlToken: string;
   runtimeCommand: string[];
@@ -112,6 +114,22 @@ export function defaultBrokerEndpoint(home = getConfigDir(), platform = process.
   if (platform !== "win32") return join(home, "runtime", "turn-broker.sock");
   const identity = createHash("sha256").update(resolve(home).toLowerCase()).digest("hex").slice(0, 20);
   return `\\\\.\\pipe\\codex-chatgpt-web-${identity}`;
+}
+
+export function normalizeNativePassthroughBaseUrl(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("nativePassthroughBaseUrl must be a valid URL");
+  }
+  if (url.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) {
+    throw new Error("nativePassthroughBaseUrl must use an HTTP loopback address");
+  }
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error("nativePassthroughBaseUrl must not contain credentials, query parameters, or a fragment");
+  }
+  return url.toString().replace(/\/+$/, "");
 }
 
 export function resolveBrokerEndpoint(value: string): string {
@@ -414,6 +432,11 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (parsed.stallTimeoutSec !== undefined
     && (!Number.isFinite(parsed.stallTimeoutSec) || parsed.stallTimeoutSec <= 0)) {
     throw new Error(`Invalid stallTimeoutSec in ${path}`);
+  }
+  if (parsed.nativePassthroughBaseUrl !== undefined) {
+    parsed.nativePassthroughBaseUrl = normalizeNativePassthroughBaseUrl(
+      parsed.nativePassthroughBaseUrl,
+    );
   }
   const solAvailable = parsed.solAvailable !== false;
   const proAvailable = parsed.proAvailable === true;

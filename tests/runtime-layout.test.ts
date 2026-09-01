@@ -13,6 +13,7 @@ import {
   installedBunExecutable,
   loadConfig,
   loadConfigForSetup,
+  normalizeNativePassthroughBaseUrl,
   providerConfig,
   resolveBrokerEndpoint,
   resolveDevSetupConnectorName,
@@ -86,6 +87,19 @@ test("permission-denied process probes preserve ownership evidence", () => {
 test("user-home expansion accepts native Unix and Windows separators", () => {
   expect(expandUserPath("~/runtime")).toBe(join(homedir(), "runtime"));
   expect(expandUserPath("~\\runtime")).toBe(join(homedir(), "runtime"));
+});
+
+test("native passthrough accepts only credential-free loopback URLs", () => {
+  expect(normalizeNativePassthroughBaseUrl("http://127.0.0.1:4202/capability/v1/"))
+    .toBe("http://127.0.0.1:4202/capability/v1");
+  expect(normalizeNativePassthroughBaseUrl("http://localhost:4202/v1"))
+    .toBe("http://localhost:4202/v1");
+  expect(() => normalizeNativePassthroughBaseUrl("https://127.0.0.1:4202/v1"))
+    .toThrow("HTTP loopback");
+  expect(() => normalizeNativePassthroughBaseUrl("http://example.com/v1"))
+    .toThrow("HTTP loopback");
+  expect(() => normalizeNativePassthroughBaseUrl("http://user:secret@127.0.0.1:4202/v1"))
+    .toThrow("must not contain credentials");
 });
 
 test("the direct-turn connector identity migrates known legacy setup without overwriting custom names", () => {

@@ -204,6 +204,7 @@ export async function forwardNativeCodexRequest(
   endpoint: NativeCodexEndpoint,
   fetchUpstream: NativeFetch = fetch,
   decodedBody?: unknown,
+  backendBaseUrl = CODEX_BACKEND,
 ): Promise<Response> {
   const authorization = request.headers.get("authorization") ?? "";
   if (!authorization.startsWith("Bearer ") || authorization.length <= "Bearer ".length) {
@@ -232,7 +233,7 @@ export async function forwardNativeCodexRequest(
       body = originalBody;
     }
   }
-  const upstreamRequest = new Request(`${CODEX_BACKEND}/${endpoint}${incomingUrl.search}`, {
+  const upstreamRequest = new Request(`${backendBaseUrl}/${endpoint}${incomingUrl.search}`, {
     method,
     headers,
     ...(body ? { body } : {}),

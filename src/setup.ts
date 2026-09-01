@@ -7,6 +7,7 @@ import {
   currentRuntimeCommand,
   defaultBrokerEndpoint,
   defaultConfig,
+  normalizeNativePassthroughBaseUrl,
   getConfigPath,
   loadConfigForSetup,
   resolveDevSetupConnectorName,
@@ -22,6 +23,7 @@ import {
 import {
   installCodexIntegration,
   preflightCodexIntegration,
+  readCodexOpenAiBaseUrl,
   readCodexSubagentProtocol,
 } from "./codex-integration";
 import { inspectLauncherBrowserHost } from "./launcher-browser-host";
@@ -124,6 +126,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     solAvailable: before.solAvailable,
     proAvailable: before.proAvailable,
     experimentalBiggerContext: before.experimentalBiggerContext,
+    nativePassthroughBaseUrl: before.nativePassthroughBaseUrl,
     autoApproveToolCalls: before.autoApproveToolCalls,
     controlToken: before.controlToken,
     runtimeCommand: before.runtimeCommand,
@@ -145,6 +148,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     solAvailable: after.solAvailable,
     proAvailable: after.proAvailable,
     experimentalBiggerContext: after.experimentalBiggerContext,
+    nativePassthroughBaseUrl: after.nativePassthroughBaseUrl,
     autoApproveToolCalls: after.autoApproveToolCalls,
     controlToken: after.controlToken,
     runtimeCommand: after.runtimeCommand,
@@ -317,6 +321,11 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
       ?? readCodexSubagentProtocol(existing?.subagentProtocol ?? "compatibility-v1"),
   });
   delete config.purpose;
+  const installedRoute = `http://${config.host}:${config.port}/v1`;
+  const currentRoute = readCodexOpenAiBaseUrl();
+  if (!config.nativePassthroughBaseUrl && currentRoute && currentRoute !== installedRoute) {
+    config.nativePassthroughBaseUrl = normalizeNativePassthroughBaseUrl(currentRoute);
+  }
   const launcherOwned = config.browserHost === "launcher";
   if (!launcherOwned && process.platform !== "darwin") {
     throw new Error(

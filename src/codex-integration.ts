@@ -80,7 +80,7 @@ export {
   getCodexJournalRecoveryPath,
   getCodexModelsCachePath,
 } from "./codex-integration-shared";
-export { readCodexModelContextOverride } from "./codex-integration-document";
+export { readCodexModelContextOverride, readCodexOpenAiBaseUrl } from "./codex-integration-document";
 export type {
   CodexIntegrationJournal,
   CodexModelContextOverride,
