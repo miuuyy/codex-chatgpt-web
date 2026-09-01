@@ -4,8 +4,55 @@ import {
   CHATGPT_EFFORT_CONTROL_SELECTOR,
   CHATGPT_EFFORT_MENU_SELECTOR,
   CHATGPT_EFFORT_SLIDER_SELECTOR,
+  activateChatGptEffortMenu,
+  chatGptEffortMenuForControl,
   detectChatGptAccountCapabilities,
 } from "../src/chatgpt-session";
+
+test("the effort menu is bound to the control-owned surface without localized text", async () => {
+  const ownedMenu = {} as never;
+  const control = { getAttribute: async () => "radix-effort-menu" };
+  const page = { locator: (selector: string) => {
+    expect(selector).toBe('[id="radix-effort-menu"]');
+    return ownedMenu;
+  } };
+  await expect(chatGptEffortMenuForControl(page as never, control as never)).resolves.toBe(ownedMenu);
+});
+
+test("effort activation uses one primary pointerdown only after click did not open the owned surface", async () => {
+  let visible = false;
+  const events: unknown[] = [];
+  const control = {
+    click: async (options: unknown) => { events.push(["click", options]); },
+    getAttribute: async () => "false",
+    dispatchEvent: async (name: string, detail: unknown) => {
+      events.push([name, detail]);
+      visible = true;
+    },
+  };
+  const surface = { isVisible: async () => visible };
+  const page = { keyboard: { press: async () => {} } };
+  await expect(activateChatGptEffortMenu(page as never, control as never, surface as never, surface as never, {
+    settleMs: 0,
+  })).resolves.toBe("pointerdown");
+  expect(events).toEqual([
+    ["click", { force: true }],
+    ["pointerdown", { button: 0, buttons: 1, pointerType: "mouse", isPrimary: true }],
+  ]);
+});
+
+test("effort activation fails closed when neither activation exposes a structural surface", async () => {
+  const control = {
+    click: async () => {},
+    getAttribute: async () => "false",
+    dispatchEvent: async () => {},
+  };
+  const surface = { isVisible: async () => false };
+  const page = { keyboard: { press: async () => {} } };
+  await expect(activateChatGptEffortMenu(page as never, control as never, surface as never, surface as never, {
+    settleMs: 0,
+  })).rejects.toThrow("did not expose its owned menu or slider");
+});
 
 test("login keeps the established turn composer contract", () => {
   const turnSelectors = CHATGPT_COMPOSER_SELECTOR.split(",").map(selector => selector.trim());

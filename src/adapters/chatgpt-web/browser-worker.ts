@@ -50,12 +50,13 @@ import {
   CHATGPT_COMPOSER_SELECTOR,
   CHATGPT_EFFORT_CONTROL_SELECTOR,
   CHATGPT_EFFORT_ITEM_SELECTOR,
-  CHATGPT_EFFORT_MENU_SELECTOR,
   CHATGPT_EFFORT_SLIDER_SELECTOR,
+  activateChatGptEffortMenu,
   CHATGPT_STOP_BUTTON_SELECTOR,
   CHATGPT_TEMPORARY_CHAT_URL,
   CHATGPT_USER_TURN_SELECTOR,
   detectChatGptAccountCapabilities,
+  chatGptEffortMenuForControl,
   parseChatGptEffortSliderState,
 } from "../../chatgpt-session";
 import { loginVerificationMarkerPath } from "../../browser-login";
@@ -1823,20 +1824,14 @@ export class ChatGptBrowserWorker {
     await settleChatGptUi();
     await throwIfChatGptRateLimitDialog(page);
     await captureDiagnostic?.("effort-control-ready");
-    const effortMenu = page.locator(CHATGPT_EFFORT_MENU_SELECTOR).last();
-    const menuVisible = await effortMenu.isVisible().catch(() => false);
-    const menuExpanded = await currentEffort.getAttribute("aria-expanded").catch(() => null);
-    if (!menuVisible && menuExpanded !== "true") {
-      await throwIfChatGptRateLimitDialog(page);
-      // ChatGPT's current Radix trigger no longer responds to synthetic Enter/Space on background
-      // Electron surfaces. Force only the exact, visible effort control; the menu/slider state
-      // below remains the authoritative postcondition, so this cannot become an unproved click.
-      await currentEffort.click({ force: true });
-    }
+    const effortMenu = await chatGptEffortMenuForControl(page, currentEffort);
+    const effortSlider = page.locator(CHATGPT_EFFORT_SLIDER_SELECTOR).filter({ visible: true }).last();
+    await throwIfChatGptRateLimitDialog(page);
+    const activation = await activateChatGptEffortMenu(page, currentEffort, effortMenu, effortSlider);
+    if (activation === "pointerdown") await captureDiagnostic?.("effort-menu-pointerdown-fallback");
     await captureDiagnostic?.("effort-menu-open-requested");
     const effortChoices = effortMenu.locator(CHATGPT_EFFORT_ITEM_SELECTOR);
     const effortChoice = effortChoices.nth(uiEffortIndex);
-    const effortSlider = page.locator(CHATGPT_EFFORT_SLIDER_SELECTOR).filter({ visible: true }).last();
     const waitAbort = new AbortController();
     let ready: "effort" | "slider" | "rate-limit" | "session-expired";
     try {

@@ -1094,7 +1094,7 @@ test("effort selection uses structural menu and slider indices instead of locali
   const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
   const sessionSource = readFileSync(new URL("../src/chatgpt-session.ts", import.meta.url), "utf8");
   expect(workerSource).toContain("mode.uiEffortIndex");
-  expect(workerSource).toContain("CHATGPT_EFFORT_MENU_SELECTOR");
+  expect(sessionSource).toContain("CHATGPT_EFFORT_MENU_SELECTOR");
   expect(workerSource).toContain("CHATGPT_EFFORT_ITEM_SELECTOR");
   expect(workerSource).toContain('timeout: 70_000');
   expect(sessionSource).toContain('[role="menu"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider])');
@@ -1208,14 +1208,15 @@ test("effort selection handles the known ChatGPT rate-limit dialog before backgr
   const selectionEnd = workerSource.indexOf("private async activeComposer", selectionStart);
   const selectionSource = workerSource.slice(selectionStart, selectionEnd);
   const guard = selectionSource.indexOf("throwIfChatGptRateLimitDialog(page)");
-  const activation = selectionSource.indexOf("currentEffort.click({ force: true })");
+  const activation = selectionSource.indexOf("activateChatGptEffortMenu(page, currentEffort, effortMenu, effortSlider)");
 
   expect(workerSource).toContain("Too many requests");
   expect(workerSource).toContain("making requests too quickly");
   expect(guard).toBeGreaterThan(-1);
   expect(activation).toBeGreaterThan(guard);
   expect(selectionSource).not.toContain('currentEffort.press("Enter")');
-  expect(selectionSource).not.toContain("currentEffort.evaluate(");
+  const sessionSource = readFileSync(new URL("../src/chatgpt-session.ts", import.meta.url), "utf8");
+  expect(sessionSource).toContain('dispatchEvent("pointerdown"');
   expect(selectionSource).toContain('effortChoice.press("Enter")');
   expect(selectionSource).not.toContain("effortChoice.click(");
   expect(selectionSource).not.toContain("is unavailable");

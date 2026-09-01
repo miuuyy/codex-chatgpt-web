@@ -38,6 +38,56 @@ export interface ChatGptEffortSliderState {
   value: number;
 }
 
+function selectorForOwnedMenu(menuId: string): string {
+  return `[id=${JSON.stringify(menuId)}]`;
+}
+
+export async function chatGptEffortMenuForControl(page: Page, control: Locator): Promise<Locator> {
+  const menuId = await control.getAttribute("aria-controls").catch(() => null);
+  if (menuId) return page.locator(selectorForOwnedMenu(menuId));
+  return page.locator(CHATGPT_EFFORT_MENU_SELECTOR).last();
+}
+
+async function waitForEffortSurface(menu: Locator, slider: Locator, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    if (await menu.isVisible().catch(() => false) || await slider.isVisible().catch(() => false)) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise(resolveSleep => setTimeout(resolveSleep, 50));
+  } while (true);
+}
+
+export async function activateChatGptEffortMenu(
+  page: Page,
+  control: Locator,
+  menu: Locator,
+  slider: Locator,
+  options: { settleMs?: number } = {},
+): Promise<"already-open" | "click" | "pointerdown"> {
+  if (await waitForEffortSurface(menu, slider, 0)) return "already-open";
+  if (await control.getAttribute("aria-expanded").catch(() => null) === "true") {
+    await page.keyboard.press("Escape").catch(() => {});
+  }
+
+  await control.click({ force: true });
+  const settleMs = options.settleMs ?? 3_000;
+  if (await waitForEffortSurface(menu, slider, settleMs)) return "click";
+
+  if (await control.getAttribute("aria-expanded").catch(() => null) === "true") {
+    await page.keyboard.press("Escape").catch(() => {});
+  }
+  await control.dispatchEvent("pointerdown", {
+    button: 0,
+    buttons: 1,
+    pointerType: "mouse",
+    isPrimary: true,
+  });
+  if (await waitForEffortSurface(menu, slider, settleMs)) return "pointerdown";
+  throw new Error(
+    "ChatGPT effort control did not expose its owned menu or slider after click and primary pointerdown",
+  );
+}
+
 function safeIntegerAttribute(value: string | null): number | undefined {
   if (value === null || !/^-?\d+$/.test(value)) return undefined;
   const parsed = Number(value);
