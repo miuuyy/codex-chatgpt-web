@@ -76,6 +76,17 @@ request and long-lived browser/tool loop are idle, flush response state, and sto
 token does not turn loopback into a hostile-local-process security boundary; it prevents accidental
 or unauthenticated lifecycle control through ordinary requests.
 
+### Native V2 subagent message confidentiality
+
+Native MultiAgent V2 normally marks delegation messages for provider-private encryption. When the
+user selects the **Native** subagent protocol, this proxy deliberately removes that marker only for
+the `message` fields of `spawn_agent`, `send_message`, and `followup_task`, then marks the returned
+calls for Codex's plaintext delivery path. This is what lets native and ChatGPT Web agents delegate
+to each other, but it also means those delegation prompts can appear as plaintext in the trusted
+local Codex history and rollout files. Compatibility V1 also uses readable cross-agent messages.
+Use either mode only on a trusted workstation, and do not place secrets in subagent prompts that
+should not be present in local task history.
+
 ### Browser/UI drift
 
 ChatGPT DOM and labels are not a stable API. Selectors are narrow; Full-mode completion requires

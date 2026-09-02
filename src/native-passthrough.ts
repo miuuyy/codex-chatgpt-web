@@ -29,6 +29,10 @@ const HOP_BY_HOP_HEADERS = new Set([
 export type NativeFetch = (request: Request) => Promise<Response>;
 export type NativeCodexEndpoint = "models" | "responses" | "responses/compact" | "alpha/search";
 
+export interface NativeCodexPassthroughOptions {
+  plaintextMultiAgentV2Messages?: boolean;
+}
+
 type JsonObject = Record<string, unknown>;
 type BridgeCompactionItem = JsonObject & { type: "compaction"; encrypted_content: string };
 
@@ -122,6 +126,124 @@ export function scrubBridgeArtifactsForNative(value: unknown): { value: unknown;
   return { value: clean, changed: true };
 }
 
+const MULTI_AGENT_V2_MESSAGE_TOOLS = new Set([
+  "spawn_agent",
+  "send_message",
+  "followup_task",
+]);
+
+interface PlaintextMultiAgentV2Surface {
+  namespaces: Set<string>;
+  unnamespaced: boolean;
+}
+
+function emptyPlaintextMultiAgentV2Surface(): PlaintextMultiAgentV2Surface {
+  return { namespaces: new Set(), unnamespaced: false };
+}
+
+function isMultiAgentV2Namespace(tool: JsonObject): tool is JsonObject & { name: string; tools: unknown[] } {
+  if (tool.type !== "namespace" || typeof tool.name !== "string" || !Array.isArray(tool.tools)) {
+    return false;
+  }
+  if (tool.name === "collaboration") return true;
+  const names = new Set(tool.tools.flatMap(inner => isObject(inner)
+    && inner.type === "function"
+    && typeof inner.name === "string"
+    ? [inner.name]
+    : []));
+  return [...MULTI_AGENT_V2_MESSAGE_TOOLS].every(name => names.has(name));
+}
+
+function plaintextMultiAgentV2MessageTool(tool: unknown): { tool: unknown; changed: boolean } {
+  if (!isObject(tool)
+    || tool.type !== "function"
+    || typeof tool.name !== "string"
+    || !MULTI_AGENT_V2_MESSAGE_TOOLS.has(tool.name)
+    || !isObject(tool.parameters)
+    || !isObject(tool.parameters.properties)
+    || !isObject(tool.parameters.properties.message)
+    || tool.parameters.properties.message.encrypted !== true) return { tool, changed: false };
+  const message = { ...tool.parameters.properties.message };
+  delete message.encrypted;
+  return {
+    tool: {
+      ...tool,
+      parameters: {
+        ...tool.parameters,
+        properties: {
+          ...tool.parameters.properties,
+          message,
+        },
+      },
+    },
+    changed: true,
+  };
+}
+
+function plaintextMultiAgentV2ToolSchemas(
+  tools: unknown[],
+  surface: PlaintextMultiAgentV2Surface,
+): { tools: unknown[]; changed: boolean } {
+  let changed = false;
+  const topLevelNames = new Set(tools.flatMap(tool => isObject(tool)
+    && tool.type === "function"
+    && typeof tool.name === "string"
+    ? [tool.name]
+    : []));
+  const unnamespaced = [...MULTI_AGENT_V2_MESSAGE_TOOLS]
+    .every(name => topLevelNames.has(name));
+  if (unnamespaced) surface.unnamespaced = true;
+  const rewritten = tools.map(tool => {
+    if (unnamespaced && isObject(tool) && tool.type === "function") {
+      const result = plaintextMultiAgentV2MessageTool(tool);
+      if (result.changed) changed = true;
+      return result.tool;
+    }
+    if (!isObject(tool) || !isMultiAgentV2Namespace(tool)) return tool;
+    surface.namespaces.add(tool.name);
+    let namespaceChanged = false;
+    const innerTools = tool.tools.map(inner => {
+      const result = plaintextMultiAgentV2MessageTool(inner);
+      if (!result.changed) return inner;
+      changed = true;
+      namespaceChanged = true;
+      return result.tool;
+    });
+    return namespaceChanged ? { ...tool, tools: innerTools } : tool;
+  });
+  return { tools: changed ? rewritten : tools, changed };
+}
+
+function plaintextMultiAgentV2MessageSchemas(value: unknown): {
+  value: unknown;
+  changed: boolean;
+  surface: PlaintextMultiAgentV2Surface;
+} {
+  const surface = emptyPlaintextMultiAgentV2Surface();
+  if (!isObject(value)) return { value, changed: false, surface };
+  const topLevel = Array.isArray(value.tools)
+    ? plaintextMultiAgentV2ToolSchemas(value.tools, surface)
+    : { tools: value.tools, changed: false };
+  let inputChanged = false;
+  const input = Array.isArray(value.input) ? value.input.map(item => {
+    if (!isObject(item) || item.type !== "additional_tools" || !Array.isArray(item.tools)) return item;
+    const rewritten = plaintextMultiAgentV2ToolSchemas(item.tools, surface);
+    if (!rewritten.changed) return item;
+    inputChanged = true;
+    return { ...item, tools: rewritten.tools };
+  }) : value.input;
+  if (!topLevel.changed && !inputChanged) return { value, changed: false, surface };
+  return {
+    value: {
+      ...value,
+      ...(topLevel.changed ? { tools: topLevel.tools } : {}),
+      ...(inputChanged ? { input } : {}),
+    },
+    changed: true,
+    surface,
+  };
+}
+
 function endToEndHeaders(source: Headers): Headers {
   const headers = new Headers();
   for (const [name, value] of source) {
@@ -199,11 +321,80 @@ function withUncleanCloseTolerance(
   });
 }
 
+function markPlaintextMultiAgentV2Calls(
+  value: unknown,
+  surface: PlaintextMultiAgentV2Surface,
+): boolean {
+  if (Array.isArray(value)) {
+    return value.reduce(
+      (changed, item) => markPlaintextMultiAgentV2Calls(item, surface) || changed,
+      false,
+    );
+  }
+  if (!isObject(value)) return false;
+  let changed = false;
+  const surfaceMatches = typeof value.namespace === "string"
+    ? surface.namespaces.has(value.namespace)
+    : value.namespace === undefined && surface.unnamespaced;
+  if (value.type === "function_call"
+    && surfaceMatches
+    && typeof value.name === "string"
+    && MULTI_AGENT_V2_MESSAGE_TOOLS.has(value.name)
+    && value.encrypted_function_args === undefined) {
+    value.encrypted_function_args = [];
+    changed = true;
+  }
+  for (const child of Object.values(value)) {
+    if (markPlaintextMultiAgentV2Calls(child, surface)) changed = true;
+  }
+  return changed;
+}
+
+function withPlaintextMultiAgentV2Markers(
+  body: ReadableStream<Uint8Array>,
+  surface: PlaintextMultiAgentV2Surface,
+): ReadableStream<Uint8Array> {
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let buffered = "";
+  const rewriteLine = (line: string): string => {
+    const suffix = line.endsWith("\r\n") ? "\r\n" : line.endsWith("\n") ? "\n" : "";
+    const content = suffix ? line.slice(0, -suffix.length) : line;
+    if (!content.startsWith("data:")) return line;
+    const data = content.slice(5).trimStart();
+    if (!data || data === "[DONE]") return line;
+    try {
+      const event = JSON.parse(data) as unknown;
+      return markPlaintextMultiAgentV2Calls(event, surface)
+        ? `data: ${JSON.stringify(event)}${suffix}`
+        : line;
+    } catch {
+      return line;
+    }
+  };
+  return body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      buffered += decoder.decode(chunk, { stream: true });
+      let newline = buffered.indexOf("\n");
+      while (newline >= 0) {
+        controller.enqueue(encoder.encode(rewriteLine(buffered.slice(0, newline + 1))));
+        buffered = buffered.slice(newline + 1);
+        newline = buffered.indexOf("\n");
+      }
+    },
+    flush(controller) {
+      buffered += decoder.decode();
+      if (buffered) controller.enqueue(encoder.encode(rewriteLine(buffered)));
+    },
+  }));
+}
+
 export async function forwardNativeCodexRequest(
   request: Request,
   endpoint: NativeCodexEndpoint,
   fetchUpstream: NativeFetch = fetch,
   decodedBody?: unknown,
+  options: NativeCodexPassthroughOptions = {},
 ): Promise<Response> {
   const authorization = request.headers.get("authorization") ?? "";
   if (!authorization.startsWith("Bearer ") || authorization.length <= "Bearer ".length) {
@@ -219,15 +410,24 @@ export async function forwardNativeCodexRequest(
   if (endpoint === "models") headers.delete("if-none-match");
   const method = endpoint === "models" ? "GET" : "POST";
   let body: BodyInit | undefined;
+  let plaintextSurface = emptyPlaintextMultiAgentV2Surface();
   if (method === "POST") {
     const parseRequest = decodedBody === undefined ? request.clone() : undefined;
     const originalBody = await request.arrayBuffer();
     const scrubbed = scrubBridgeArtifactsForNative(
       decodedBody === undefined ? await readJsonRequestBody(parseRequest!) : decodedBody,
     );
-    if (scrubbed.changed) {
+    const prepared = options.plaintextMultiAgentV2Messages
+      ? plaintextMultiAgentV2MessageSchemas(scrubbed.value)
+      : {
+        value: scrubbed.value,
+        changed: false,
+        surface: emptyPlaintextMultiAgentV2Surface(),
+      };
+    plaintextSurface = prepared.surface;
+    if (scrubbed.changed || prepared.changed) {
       headers.delete("content-encoding");
-      body = JSON.stringify(scrubbed.value);
+      body = JSON.stringify(prepared.value);
     } else {
       body = originalBody;
     }
@@ -240,18 +440,45 @@ export async function forwardNativeCodexRequest(
   });
   const upstream = await fetchUpstream(upstreamRequest);
   const responseHeaders = endToEndHeaders(upstream.headers);
-  const isEventStream = (upstream.headers.get("content-type") ?? "")
-    .toLowerCase()
-    .includes("text/event-stream");
+  const contentType = (upstream.headers.get("content-type") ?? "").toLowerCase();
+  const isEventStream = contentType.includes("text/event-stream");
+  const rewritePlaintextCalls = plaintextSurface.unnamespaced
+    || plaintextSurface.namespaces.size > 0;
+  if (rewritePlaintextCalls && upstream.body && contentType.includes("application/json")) {
+    const original = await upstream.text();
+    let rewritten = original;
+    try {
+      const json = JSON.parse(original) as unknown;
+      if (markPlaintextMultiAgentV2Calls(json, plaintextSurface)) {
+        rewritten = JSON.stringify(json);
+      }
+    } catch {
+      // Preserve a malformed upstream body so the native Codex client reports the protocol error.
+    }
+    responseHeaders.delete("content-encoding");
+    responseHeaders.delete("content-length");
+    return new Response(rewritten, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers: responseHeaders,
+    });
+  }
+  if (rewritePlaintextCalls && upstream.body && isEventStream) {
+    responseHeaders.delete("content-encoding");
+    responseHeaders.delete("content-length");
+  }
+  const upstreamBody = upstream.body
+    ? withUncleanCloseTolerance(upstream.body, isEventStream, bytes => {
+      console.warn(
+        `[codex-chatgpt-web] native_upstream_unclean_close endpoint=${endpoint} bytes=${bytes}`
+        + " (turn had already completed; closing the client stream normally)",
+      );
+    })
+    : upstream.body;
   return new Response(
-    upstream.body
-      ? withUncleanCloseTolerance(upstream.body, isEventStream, bytes => {
-        console.warn(
-          `[codex-chatgpt-web] native_upstream_unclean_close endpoint=${endpoint} bytes=${bytes}`
-          + " (turn had already completed; closing the client stream normally)",
-        );
-      })
-      : upstream.body,
+    rewritePlaintextCalls && upstreamBody && isEventStream
+      ? withPlaintextMultiAgentV2Markers(upstreamBody, plaintextSurface)
+      : upstreamBody,
     {
       status: upstream.status,
       statusText: upstream.statusText,

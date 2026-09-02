@@ -163,9 +163,12 @@ Use **Activity** for safe local diagnostics and **Settings → Run doctor** for 
 Settings can also cancel a retained browser turn or remove the Codex integration before uninstall.
 Set `CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1` only when every browser checkpoint needs a screenshot.
 
-New installs use **Compatibility V1** for cross-backend subagents. **Native** preserves Codex's own
-feature settings and enables plaintext Web-to-Web V2 delegation. Restart Codex and start a new task
-after changing the protocol:
+New installs use **Compatibility V1** for the conservative cross-backend path. **Native** preserves
+Codex's own feature settings and enables V2 delegation between native and ChatGPT Web models. In
+Native mode, the authenticated local proxy makes only `spawn_agent`, `send_message`, and
+`followup_task` message arguments plaintext so either backend can read them; those delegation
+prompts are therefore locally readable instead of provider-opaque. Restart Codex Web GPT and Codex,
+then start a new task after changing the protocol:
 
 ```bash
 codex-chatgpt-web subagents status

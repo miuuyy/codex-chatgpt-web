@@ -5,11 +5,14 @@ import { spawnSync } from "node:child_process";
 import { bridgeToResponsesSSE } from "../src/bridge";
 import { defaultConfig } from "../src/config";
 import { augmentNativeModelCatalog } from "../src/model-catalog";
+import { forwardNativeCodexRequest } from "../src/native-passthrough";
 import type { AdapterEvent } from "../src/types";
 
 const protocol = process.argv.includes("--v1") ? "v1" : "v2";
-const explicitChildModel = "gpt-5.6-sol";
-const explicitChildReasoningEffort = "max";
+const rootModel = protocol === "v2" ? "gpt-5.6-sol" : "chatgpt-web/pro";
+const explicitChildModel = protocol === "v2" ? "chatgpt-web/pro" : "gpt-5.6-sol";
+const requestedChildReasoningEffort = protocol === "v2" ? "ultra" : "max";
+const effectiveChildReasoningEffort = protocol === "v2" ? "medium" : "max";
 const codexArg = process.argv.slice(2).find(argument => argument !== "--v1" && argument !== "--v2");
 const codex = resolve(codexArg ?? "/Applications/ChatGPT.app/Contents/Resources/codex");
 if (!existsSync(codex)) throw new Error(`Codex executable is missing: ${codex}`);
@@ -61,6 +64,68 @@ const collaborationMap = new Map([
     name: protocol === "v1" ? "send_input" : "followup_task",
   }],
 ]);
+
+const v2MessageTools = new Set(["spawn_agent", "send_message", "followup_task"]);
+
+function hasEncryptedV2MessageSchema(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  if (Array.isArray(value)) return value.some(hasEncryptedV2MessageSchema);
+  const record = value as Record<string, unknown>;
+  const parameters = record.parameters && typeof record.parameters === "object"
+    ? record.parameters as Record<string, unknown>
+    : undefined;
+  const properties = parameters?.properties && typeof parameters.properties === "object"
+    ? parameters.properties as Record<string, unknown>
+    : undefined;
+  const message = properties?.message && typeof properties.message === "object"
+    ? properties.message as Record<string, unknown>
+    : undefined;
+  if (record.type === "function"
+    && typeof record.name === "string"
+    && v2MessageTools.has(record.name)
+    && message?.encrypted === true) return true;
+  return Object.values(record).some(hasEncryptedV2MessageSchema);
+}
+
+function removePlaintextV2Markers(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  if (Array.isArray(value)) {
+    return value.reduce((changed, item) => removePlaintextV2Markers(item) || changed, false);
+  }
+  const record = value as Record<string, unknown>;
+  let changed = false;
+  if (record.type === "function_call"
+    && record.namespace === "collaboration"
+    && typeof record.name === "string"
+    && v2MessageTools.has(record.name)
+    && Array.isArray(record.encrypted_function_args)
+    && record.encrypted_function_args.length === 0) {
+    delete record.encrypted_function_args;
+    changed = true;
+  }
+  for (const child of Object.values(record)) {
+    if (removePlaintextV2Markers(child)) changed = true;
+  }
+  return changed;
+}
+
+async function nativeResponseWithoutPlaintextMarkers(
+  events: ReadableStream<Uint8Array>,
+): Promise<Response> {
+  const text = await new Response(events).text();
+  const rewritten = text.split("\n").map(line => {
+    if (!line.startsWith("data: ") || line === "data: [DONE]") return line;
+    try {
+      const event = JSON.parse(line.slice(6)) as unknown;
+      return removePlaintextV2Markers(event) ? `data: ${JSON.stringify(event)}` : line;
+    } catch {
+      return line;
+    }
+  }).join("\n");
+  return new Response(rewritten, {
+    headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+  });
+}
 
 function hasEncryptedContent(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
@@ -176,13 +241,13 @@ function responseFor(role: Role, step: number, body: Record<string, unknown>): A
       message: "CHILD_LIFECYCLE: spawn the requested grandchild, wait for it, then report success.",
       fork_context: false,
       model: explicitChildModel,
-      reasoning_effort: explicitChildReasoningEffort,
+      reasoning_effort: requestedChildReasoningEffort,
     } : {
       task_name: "lifecycle_child",
       message: "CHILD_LIFECYCLE: spawn the requested grandchild, wait for it, then report success.",
       fork_turns: "none",
       model: explicitChildModel,
-      reasoning_effort: explicitChildReasoningEffort,
+      reasoning_effort: requestedChildReasoningEffort,
     });
     if (step === 1) return toolCall("wait_agent", protocol === "v1"
       ? { targets: [spawnedAgentId(body)], timeout_ms: 500 }
@@ -205,13 +270,13 @@ function responseFor(role: Role, step: number, body: Record<string, unknown>): A
       message: "GRANDCHILD_LIFECYCLE: reply with GRANDCHILD_LIFECYCLE_OK.",
       fork_context: false,
       model: explicitChildModel,
-      reasoning_effort: explicitChildReasoningEffort,
+      reasoning_effort: requestedChildReasoningEffort,
     } : {
       task_name: "lifecycle_grandchild",
       message: "GRANDCHILD_LIFECYCLE: reply with GRANDCHILD_LIFECYCLE_OK.",
       fork_turns: "none",
       model: explicitChildModel,
-      reasoning_effort: explicitChildReasoningEffort,
+      reasoning_effort: requestedChildReasoningEffort,
     });
     if (step === 1) return toolCall("wait_agent", protocol === "v1"
       ? { targets: [spawnedAgentId(body)], timeout_ms: 500 }
@@ -276,11 +341,29 @@ const server = Bun.serve({
           failures.push(`${role} received encrypted_content instead of plaintext agent_message input`);
         }
       }
-      return new Response(bridgeToResponsesSSE(
+      const responseStream = bridgeToResponsesSSE(
         responseFor(role, step, body),
         "chatgpt-web/pro",
         collaborationMap,
-      ), {
+      );
+      if (protocol === "v2" && role === "root") {
+        const proxyRequest = new Request(request.url, {
+          method: "POST",
+          headers: {
+            authorization: "Bearer local-lifecycle-smoke",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(body),
+        });
+        return await forwardNativeCodexRequest(proxyRequest, "responses", async upstreamRequest => {
+          const forwarded = await upstreamRequest.clone().json() as unknown;
+          if (hasEncryptedV2MessageSchema(forwarded)) {
+            failures.push("native V2 proxy left collaboration message schemas encrypted");
+          }
+          return await nativeResponseWithoutPlaintextMarkers(responseStream);
+        }, body, { plaintextMultiAgentV2Messages: true });
+      }
+      return new Response(responseStream, {
         headers: {
           "content-type": "text/event-stream",
           "cache-control": "no-cache",
@@ -294,7 +377,7 @@ const server = Bun.serve({
 });
 
 writeFileSync(join(codexHome, "config.toml"), [
-  'model = "chatgpt-web/pro"',
+  `model = ${JSON.stringify(rootModel)}`,
   'model_provider = "lifecycle"',
   `model_catalog_json = ${JSON.stringify(join(root, "models.json"))}`,
   "",
@@ -329,7 +412,7 @@ try {
     "--json",
     "--dangerously-bypass-approvals-and-sandbox",
     "--model",
-    "chatgpt-web/pro",
+    rootModel,
     "ROOT_LIFECYCLE: complete the nested subagent lifecycle and the follow-up.",
   ], {
     cwd: root,
@@ -368,9 +451,9 @@ try {
     if (firstRequest?.model !== explicitChildModel) {
       failures.push(`${role} used ${firstRequest?.model ?? "no model"}, expected ${explicitChildModel}`);
     }
-    if (firstRequest?.reasoningEffort !== explicitChildReasoningEffort) {
+    if (firstRequest?.reasoningEffort !== effectiveChildReasoningEffort) {
       failures.push(
-        `${role} used reasoning ${firstRequest?.reasoningEffort ?? "none"}, expected ${explicitChildReasoningEffort}`,
+        `${role} used reasoning ${firstRequest?.reasoningEffort ?? "none"}, expected ${effectiveChildReasoningEffort}`,
       );
     }
   }

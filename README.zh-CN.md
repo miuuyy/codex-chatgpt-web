@@ -152,8 +152,11 @@ bun run app
 取消保留的浏览器任务，或在卸载前移除 Codex 集成。仅在需要为每个浏览器检查点保存截图时设置
 `CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1`。
 
-新安装默认使用 **Compatibility V1** 以支持跨后端 subagent。**Native** 会保留 Codex 自身的
-功能设置，并启用明文 Web-to-Web V2 委派。切换协议后，请重启 Codex 并创建新任务：
+新安装默认使用较保守的 **Compatibility V1** 跨后端方案。**Native** 会保留 Codex 自身的
+功能设置，并支持原生模型与 ChatGPT Web 模型之间的 V2 委派。在 Native 模式下，本地认证代理
+只会将 `spawn_agent`、`send_message` 和 `followup_task` 的消息参数改为明文，使任一后端都能
+读取；因此这些委派提示在本机可读，而不再是仅提供方可解密的内容。切换协议后，请重启
+Codex Web GPT 和 Codex，然后创建新任务：
 
 ```bash
 codex-chatgpt-web subagents status

@@ -160,9 +160,12 @@ ChatGPT のツール呼び出しを現在の Codex タスクへ接続します�
 アンインストール前の Codex 統合削除も行えます。すべてのブラウザーチェックポイントでスクリーンショットが必要な場合にのみ、
 `CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1` を設定してください。
 
-新規インストールでは、クロスバックエンドのサブエージェントに **Compatibility V1** を使用します。
-**Native** は Codex 独自の機能設定を維持し、プレーンテキストの Web-to-Web V2 delegation を有効にします。
-プロトコル変更後は Codex を再起動し、新しいタスクを開始してください。
+新規インストールでは、保守的なクロスバックエンド方式として **Compatibility V1** を使用します。
+**Native** は Codex 独自の機能設定を維持し、ネイティブモデルと ChatGPT Web モデル間の V2 delegation を有効にします。
+Native モードでは、ローカルの認証済みプロキシが `spawn_agent`、`send_message`、`followup_task` の
+メッセージ引数だけをプレーンテキストにするため、どちらのバックエンドでも読み取れます。そのため、これらの委任プロンプトは
+プロバイダー専用の暗号化データではなく、ローカルで読み取り可能になります。プロトコル変更後は Codex Web GPT と Codex を再起動し、
+新しいタスクを開始してください。
 
 ```bash
 codex-chatgpt-web subagents status

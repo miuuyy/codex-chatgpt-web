@@ -38,6 +38,383 @@ test("forwards native Codex requests verbatim to the official backend", async ()
   expect(await response.text()).toBe("data: native\n\n");
 });
 
+test("Native V2 removes encryption from collaboration message schemas", async () => {
+  const body = {
+    model: "gpt-5.6-sol",
+    stream: true,
+    tools: [{
+      type: "namespace",
+      name: "collaboration",
+      description: "Subagent tools",
+      tools: [
+        {
+          type: "function",
+          name: "spawn_agent",
+          parameters: {
+            type: "object",
+            properties: {
+              task_name: { type: "string" },
+              message: { type: "string", encrypted: true },
+            },
+          },
+        },
+        {
+          type: "function",
+          name: "send_message",
+          parameters: {
+            type: "object",
+            properties: { message: { type: "string", encrypted: true } },
+          },
+        },
+        {
+          type: "function",
+          name: "followup_task",
+          parameters: {
+            type: "object",
+            properties: { message: { type: "string", encrypted: true } },
+          },
+        },
+        {
+          type: "function",
+          name: "wait_agent",
+          parameters: {
+            type: "object",
+            properties: { timeout_ms: { type: "integer", encrypted: true } },
+          },
+        },
+      ],
+    }],
+  };
+  const compressedBody = Uint8Array.from(
+    Bun.zstdCompressSync(new TextEncoder().encode(JSON.stringify(body))),
+  );
+  const request = new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer codex-oauth-token",
+      "content-type": "application/json",
+      "content-encoding": "zstd",
+    },
+    body: compressedBody,
+  });
+  let upstreamRequest: Request | undefined;
+
+  await forwardNativeCodexRequest(request, "responses", async input => {
+    upstreamRequest = input;
+    return new Response("data: [DONE]\n\n", {
+      headers: { "content-type": "text/event-stream" },
+    });
+  }, body, { plaintextMultiAgentV2Messages: true });
+
+  expect(upstreamRequest!.headers.get("content-encoding")).toBeNull();
+  const forwarded = await upstreamRequest!.json() as {
+    tools: Array<{ tools: Array<{ name: string; parameters: { properties: Record<string, Record<string, unknown>> } }> }>;
+  };
+  const tools = forwarded.tools[0]!.tools;
+  for (const name of ["spawn_agent", "send_message", "followup_task"]) {
+    expect(tools.find(tool => tool.name === name)!.parameters.properties.message)
+      .not.toHaveProperty("encrypted");
+  }
+  expect(tools.find(tool => tool.name === "wait_agent")!.parameters.properties.timeout_ms)
+    .toHaveProperty("encrypted", true);
+});
+
+test("Native V2 marks plaintext collaboration calls for Codex delivery", async () => {
+  const body = {
+    model: "gpt-5.6-sol",
+    stream: true,
+    tools: [{
+      type: "namespace",
+      name: "collaboration",
+      tools: [{
+        type: "function",
+        name: "spawn_agent",
+        parameters: {
+          type: "object",
+          properties: { message: { type: "string", encrypted: true } },
+        },
+      }],
+    }],
+  };
+  const request = new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: { authorization: "Bearer codex-oauth-token", "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const event = {
+    type: "response.output_item.done",
+    item: {
+      type: "function_call",
+      name: "spawn_agent",
+      namespace: "collaboration",
+      call_id: "call_plaintext_spawn",
+      arguments: JSON.stringify({ task_name: "inspect", message: "Inspect the repository" }),
+    },
+  };
+
+  const response = await forwardNativeCodexRequest(request, "responses", async () => new Response(
+    `event: response.output_item.done\ndata: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n`,
+    { headers: { "content-type": "text/event-stream" } },
+  ), body, { plaintextMultiAgentV2Messages: true });
+
+  const data = (await response.text())
+    .split("\n")
+    .find(line => line.startsWith("data: {") && line.includes("function_call"));
+  expect(JSON.parse(data!.slice(6))).toMatchObject({
+    item: {
+      type: "function_call",
+      name: "spawn_agent",
+      namespace: "collaboration",
+      encrypted_function_args: [],
+    },
+  });
+});
+
+test("Native V2 preserves encrypted and unrelated collaboration calls", async () => {
+  const body = {
+    model: "gpt-5.6-sol",
+    stream: true,
+    tools: [{
+      type: "namespace",
+      name: "collaboration",
+      tools: [{
+        type: "function",
+        name: "spawn_agent",
+        parameters: {
+          type: "object",
+          properties: { message: { type: "string", encrypted: true } },
+        },
+      }],
+    }],
+  };
+  const request = new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: { authorization: "Bearer codex-oauth-token", "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const encryptedCall = {
+    type: "response.output_item.done",
+    item: {
+      type: "function_call",
+      name: "spawn_agent",
+      namespace: "collaboration",
+      call_id: "call_encrypted_spawn",
+      arguments: "opaque",
+      encrypted_function_args: ["ciphertext"],
+    },
+  };
+  const unrelatedCall = {
+    type: "response.output_item.done",
+    item: {
+      type: "function_call",
+      name: "wait_agent",
+      namespace: "collaboration",
+      call_id: "call_wait",
+      arguments: JSON.stringify({ timeout_ms: 500 }),
+    },
+  };
+
+  const response = await forwardNativeCodexRequest(request, "responses", async () => new Response(
+    `data: ${JSON.stringify(encryptedCall)}\n\ndata: ${JSON.stringify(unrelatedCall)}\n\ndata: [DONE]\n\n`,
+    { headers: { "content-type": "text/event-stream" } },
+  ), body, { plaintextMultiAgentV2Messages: true });
+
+  const events = (await response.text())
+    .split("\n")
+    .filter(line => line.startsWith("data: {") && line.includes("function_call"))
+    .map(line => JSON.parse(line.slice(6)) as { item: Record<string, unknown> });
+  expect(events[0]!.item.encrypted_function_args).toEqual(["ciphertext"]);
+  expect(events[1]!.item).not.toHaveProperty("encrypted_function_args");
+});
+
+test("Native V2 rewrites Responses Lite additional collaboration tools", async () => {
+  const body = {
+    model: "gpt-5.6-sol",
+    stream: true,
+    input: [{
+      type: "additional_tools",
+      role: "developer",
+      tools: [{
+        type: "namespace",
+        name: "collaboration",
+        tools: [{
+          type: "function",
+          name: "followup_task",
+          parameters: {
+            type: "object",
+            properties: { message: { type: "string", encrypted: true } },
+          },
+        }],
+      }],
+    }],
+  };
+  const request = new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: { authorization: "Bearer codex-oauth-token", "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  let upstreamRequest: Request | undefined;
+
+  await forwardNativeCodexRequest(request, "responses", async input => {
+    upstreamRequest = input;
+    return new Response("data: [DONE]\n\n", {
+      headers: { "content-type": "text/event-stream" },
+    });
+  }, body, { plaintextMultiAgentV2Messages: true });
+
+  const forwarded = await upstreamRequest!.json() as {
+    input: Array<{ tools: Array<{ tools: Array<{ parameters: { properties: { message: Record<string, unknown> } } }> }> }>;
+  };
+  expect(forwarded.input[0]!.tools[0]!.tools[0]!.parameters.properties.message)
+    .not.toHaveProperty("encrypted");
+});
+
+test("Native V2 recognizes a configured collaboration namespace by its tool set", async () => {
+  const messageTool = (name: string) => ({
+    type: "function",
+    name,
+    parameters: {
+      type: "object",
+      properties: { message: { type: "string", encrypted: true } },
+    },
+  });
+  const body = {
+    model: "gpt-5.6-sol",
+    stream: true,
+    tools: [{
+      type: "namespace",
+      name: "agents",
+      tools: [
+        messageTool("spawn_agent"),
+        messageTool("send_message"),
+        messageTool("followup_task"),
+      ],
+    }],
+  };
+  const request = new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: { authorization: "Bearer codex-oauth-token", "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  let upstreamRequest: Request | undefined;
+  const event = {
+    type: "response.output_item.done",
+    item: {
+      type: "function_call",
+      name: "spawn_agent",
+      namespace: "agents",
+      call_id: "call_custom_namespace",
+      arguments: JSON.stringify({ task_name: "inspect", message: "Inspect the repository" }),
+    },
+  };
+
+  const response = await forwardNativeCodexRequest(request, "responses", async input => {
+    upstreamRequest = input;
+    return new Response(
+      `data: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n`,
+      { headers: { "content-type": "text/event-stream" } },
+    );
+  }, body, { plaintextMultiAgentV2Messages: true });
+
+  const forwarded = await upstreamRequest!.json() as {
+    tools: Array<{ tools: Array<{ parameters: { properties: { message: Record<string, unknown> } } }> }>;
+  };
+  expect(forwarded.tools[0]!.tools.every(tool => !("encrypted" in tool.parameters.properties.message)))
+    .toBe(true);
+  const callData = (await response.text()).split("\n").find(line => line.includes("function_call"));
+  expect(JSON.parse(callData!.slice(6)).item.encrypted_function_args).toEqual([]);
+});
+
+test("Native V2 recognizes an unnamespaced collaboration surface", async () => {
+  const messageTool = (name: string) => ({
+    type: "function",
+    name,
+    parameters: {
+      type: "object",
+      properties: { message: { type: "string", encrypted: true } },
+    },
+  });
+  const body = {
+    model: "gpt-5.6-sol",
+    stream: true,
+    tools: [
+      messageTool("spawn_agent"),
+      messageTool("send_message"),
+      messageTool("followup_task"),
+    ],
+  };
+  const request = new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: { authorization: "Bearer codex-oauth-token", "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  let upstreamRequest: Request | undefined;
+  const event = {
+    type: "response.output_item.done",
+    item: {
+      type: "function_call",
+      name: "followup_task",
+      call_id: "call_unnamespaced",
+      arguments: JSON.stringify({ target: "/root/inspect", message: "Continue" }),
+    },
+  };
+
+  const response = await forwardNativeCodexRequest(request, "responses", async input => {
+    upstreamRequest = input;
+    return new Response(
+      `data: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n`,
+      { headers: { "content-type": "text/event-stream" } },
+    );
+  }, body, { plaintextMultiAgentV2Messages: true });
+
+  const forwarded = await upstreamRequest!.json() as {
+    tools: Array<{ parameters: { properties: { message: Record<string, unknown> } } }>;
+  };
+  expect(forwarded.tools.every(tool => !("encrypted" in tool.parameters.properties.message)))
+    .toBe(true);
+  const callData = (await response.text()).split("\n").find(line => line.includes("function_call"));
+  expect(JSON.parse(callData!.slice(6)).item.encrypted_function_args).toEqual([]);
+});
+
+test("Native V2 marks plaintext collaboration calls in JSON responses", async () => {
+  const body = {
+    model: "gpt-5.6-sol",
+    stream: false,
+    tools: [{
+      type: "namespace",
+      name: "collaboration",
+      tools: [{
+        type: "function",
+        name: "send_message",
+        parameters: {
+          type: "object",
+          properties: { message: { type: "string", encrypted: true } },
+        },
+      }],
+    }],
+  };
+  const request = new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: { authorization: "Bearer codex-oauth-token", "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  const response = await forwardNativeCodexRequest(request, "responses", async () => Response.json({
+    id: "resp_native_v2_json",
+    output: [{
+      type: "function_call",
+      name: "send_message",
+      namespace: "collaboration",
+      call_id: "call_json_message",
+      arguments: JSON.stringify({ target: "/root/inspect", message: "Status?" }),
+    }],
+  }), body, { plaintextMultiAgentV2Messages: true });
+
+  expect(await response.json()).toMatchObject({
+    output: [{ encrypted_function_args: [] }],
+  });
+});
+
 test("forwards native Codex compaction requests to the official compact endpoint", async () => {
   const originalBody = Bun.zstdCompressSync(Buffer.from('{"model":"gpt-5.6-sol","input":[]}'));
   const encoded = new ArrayBuffer(originalBody.byteLength);

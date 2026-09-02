@@ -278,6 +278,8 @@ export interface ResponseRequestOptions {
   rememberState?: boolean;
   /** Observe the exact production adapter stream when invoking the handler in-process. */
   onAdapterEvent?: (event: AdapterEvent) => void;
+  /** Test and embedding seam for authenticated native Codex passthrough. */
+  fetchUpstream?: NativeFetch;
 }
 
 export function routeChatGptWebRequest(parsed: CodexParsedRequest, config: AppConfig): ChatGptWebModelRoute {
@@ -364,7 +366,9 @@ export async function responseRequest(
     : undefined;
   if (typeof requestedModel === "string" && !isChatGptWebModelSlug(requestedModel)) {
     try {
-      return await forwardNativeCodexRequest(nativeRequest, "responses", undefined, raw);
+      return await forwardNativeCodexRequest(nativeRequest, "responses", options.fetchUpstream, raw, {
+        plaintextMultiAgentV2Messages: config.subagentProtocol === "native",
+      });
     } catch (error) {
       return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
     }
@@ -386,7 +390,8 @@ export async function responseRequest(
       400,
       "invalid_request_error",
       "ChatGPT Web cannot read this encrypted cross-backend subagent payload. "
-        + "Start a new Compatibility V1 task, or delegate from a Web model whose collaboration call uses the plaintext-delivery marker.",
+        + "Restart Codex Web GPT and Codex, then start a new Native V2 task; "
+        + "use Compatibility V1 if the native backend still requires encrypted delegation.",
     );
   }
   if (typeof requestedPreviousResponseId === "string" && expanded === raw) {
@@ -781,7 +786,9 @@ export function startServer(
       if (req.method === "POST" && url.pathname === "/v1/responses") {
         if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
         return httpTurns.track(
-          signal => responseRequest(new Request(req, { signal }), config),
+          signal => responseRequest(new Request(req, { signal }), config, createChatGptWebAdapter, {
+            fetchUpstream: dependencies.fetchUpstream,
+          }),
           req.signal,
           process.platform,
           "responses",
