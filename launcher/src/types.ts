@@ -11,6 +11,7 @@ export interface LauncherState {
   autoStart: boolean;
   keepRunningOnClose: boolean;
   hideDockIcon: boolean;
+  hideTaskbarIcon: boolean;
   showBrowserDuringTurns: boolean;
   experimentalBiggerContext: boolean;
   sidebarOpen: boolean;
@@ -145,7 +146,7 @@ export interface LauncherApi {
   setAutostart(enabled: boolean): Promise<{ state: LauncherState; supported: boolean; enabled: boolean }>;
   setBiggerContext(enabled: boolean): Promise<LauncherState>;
   setPreference(
-    key: "keepRunningOnClose" | "hideDockIcon" | "showBrowserDuringTurns",
+    key: "keepRunningOnClose" | "hideDockIcon" | "hideTaskbarIcon" | "showBrowserDuringTurns",
     value: boolean,
   ): Promise<LauncherState>;
   setSidebarState(state: { open: boolean; width: number }): Promise<LauncherState>;

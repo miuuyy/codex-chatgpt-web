@@ -50,6 +50,16 @@ test("macOS can hide the launcher Dock icon while keeping the menu bar launcher 
   assert.match(appSource, /snapshot\.platform === "darwin"[\s\S]*?copy\.hideDockIcon[\s\S]*?setPreference\("hideDockIcon", checked\)/);
 });
 
+test("Windows and Linux can hide the launcher taskbar icon while keeping the system tray available", () => {
+  assert.match(electronMain, /supportsTaskbarVisibility = process\.platform === "win32" \|\| process\.platform === "linux"/);
+  assert.match(electronMain, /skipTaskbar: supportsTaskbarVisibility && state\.hideTaskbarIcon/);
+  assert.match(electronMain, /process\.platform !== "win32" && process\.platform !== "linux"/);
+  assert.match(electronMain, /if \(hidden && !tray\) throw new Error\("The system tray icon must be available before hiding the taskbar icon"\);/);
+  assert.match(electronMain, /mainWindow\.setSkipTaskbar\(hidden\)/);
+  assert.match(electronMain, /stateStore\.read\(\)\.hideTaskbarIcon[\s\S]*?!trayAvailable[\s\S]*?mainWindow\.setSkipTaskbar\(false\)/);
+  assert.match(appSource, /snapshot\.platform === "win32" \|\| snapshot\.platform === "linux"[\s\S]*?copy\.hideTaskbarIcon[\s\S]*?setPreference\("hideTaskbarIcon", checked\)/);
+});
+
 test("normal shutdown persists the ChatGPT session before closing browser views", () => {
   assert.match(
     electronMain,

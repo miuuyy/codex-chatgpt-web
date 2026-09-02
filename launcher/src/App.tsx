@@ -1506,6 +1506,16 @@ function SettingsSurface({
             />
           </SettingRow>
         ) : null}
+        {snapshot.platform === "win32" || snapshot.platform === "linux" ? (
+          <SettingRow body={copy.hideTaskbarIconBody} label={copy.hideTaskbarIcon}>
+            <Switch
+              checked={snapshot.state.hideTaskbarIcon}
+              onChange={(checked) => void api!.setPreference("hideTaskbarIcon", checked)
+                .then(updateState)
+                .catch((cause) => setError(messageOf(cause)))}
+            />
+          </SettingRow>
+        ) : null}
         <SettingRow body={copy.showDuringTurnsBody} label={copy.showDuringTurns}>
           <Switch
             checked={snapshot.state.showBrowserDuringTurns}

@@ -258,6 +258,15 @@ async function setDockHidden(hidden) {
   else await app.dock.show();
 }
 
+function setTaskbarHidden(hidden) {
+  if (process.platform !== "win32" && process.platform !== "linux") {
+    throw new Error("Taskbar visibility is only available on Windows and Linux");
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) throw new Error("The launcher window is unavailable");
+  if (hidden && !tray) throw new Error("The system tray icon must be available before hiding the taskbar icon");
+  mainWindow.setSkipTaskbar(hidden);
+}
+
 function showMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (mainWindow.isMinimized()) mainWindow.restore();
@@ -301,6 +310,7 @@ function windowStateSnapshot(window) {
 
 function createWindow({ logger, stateStore, windowStatePath, startHidden }) {
   const isMac = process.platform === "darwin";
+  const supportsTaskbarVisibility = process.platform === "win32" || process.platform === "linux";
   const state = stateStore.read();
   const windowState = readWindowState(windowStatePath, screen.getAllDisplays());
   const window = new BrowserWindow({
@@ -314,6 +324,7 @@ function createWindow({ logger, stateStore, windowStatePath, startHidden }) {
     title: LAUNCHER_PROFILE.displayName,
     icon: APP_ICON_PATH,
     show: false,
+    skipTaskbar: supportsTaskbarVisibility && state.hideTaskbarIcon,
     backgroundColor: isMac ? "#00000000" : "#181818",
     titleBarStyle: isMac ? "hiddenInset" : "hidden",
     transparent: isMac,
@@ -702,6 +713,11 @@ function registerIpc({ logger, stateStore }) {
       await setDockHidden(hidden);
       return stateStore.update({ hideDockIcon: hidden });
     }
+    if (key === "hideTaskbarIcon") {
+      const hidden = value === true;
+      setTaskbarHidden(hidden);
+      return stateStore.update({ hideTaskbarIcon: hidden });
+    }
     const ordinary = key === "keepRunningOnClose" || key === "showBrowserDuringTurns";
     if (!ordinary) throw new Error("Unknown preference");
     return stateStore.update({ [key]: value === true });
@@ -917,6 +933,11 @@ async function start() {
         message: error instanceof Error ? error.message : String(error),
       });
     });
+  }
+  if ((process.platform === "win32" || process.platform === "linux")
+    && stateStore.read().hideTaskbarIcon
+    && !trayAvailable) {
+    mainWindow.setSkipTaskbar(false);
   }
   if (startHidden && !trayAvailable) mainWindow.once("ready-to-show", () => showMainWindow());
   const launcherSmokeTest = process.argv.includes("--launcher-smoke-test");
