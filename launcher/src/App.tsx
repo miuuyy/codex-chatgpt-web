@@ -1496,6 +1496,16 @@ function SettingsSurface({
               .catch((cause) => setError(messageOf(cause)))}
           />
         </SettingRow>
+        {snapshot.platform === "darwin" ? (
+          <SettingRow body={copy.hideDockIconBody} label={copy.hideDockIcon}>
+            <Switch
+              checked={snapshot.state.hideDockIcon}
+              onChange={(checked) => void api!.setPreference("hideDockIcon", checked)
+                .then(updateState)
+                .catch((cause) => setError(messageOf(cause)))}
+            />
+          </SettingRow>
+        ) : null}
         <SettingRow body={copy.showDuringTurnsBody} label={copy.showDuringTurns}>
           <Switch
             checked={snapshot.state.showBrowserDuringTurns}

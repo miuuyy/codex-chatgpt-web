@@ -42,6 +42,14 @@ test("closing the launcher follows the persisted background-runtime preference",
   assert.match(appSource, /setPreference\("keepRunningOnClose", checked\)/);
 });
 
+test("macOS can hide the launcher Dock icon while keeping the menu bar launcher available", () => {
+  assert.match(electronMain, /if \(process\.platform === "darwin" && persistedState\.hideDockIcon\) app\.dock\.hide\(\);/);
+  assert.match(electronMain, /if \(hidden && !tray\) throw new Error\("The menu bar icon must be available before hiding the Dock icon"\);/);
+  assert.match(electronMain, /if \(hidden\) app\.dock\.hide\(\);\s*else await app\.dock\.show\(\);/);
+  assert.match(electronMain, /stateStore\.read\(\)\.hideDockIcon && !trayAvailable[\s\S]*?app\.dock\.show\(\)/);
+  assert.match(appSource, /snapshot\.platform === "darwin"[\s\S]*?copy\.hideDockIcon[\s\S]*?setPreference\("hideDockIcon", checked\)/);
+});
+
 test("normal shutdown persists the ChatGPT session before closing browser views", () => {
   assert.match(
     electronMain,

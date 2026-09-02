@@ -249,6 +249,15 @@ function createTray(logger, language) {
   }
 }
 
+async function setDockHidden(hidden) {
+  if (process.platform !== "darwin" || !app.dock) {
+    throw new Error("Dock visibility is only available on macOS");
+  }
+  if (hidden && !tray) throw new Error("The menu bar icon must be available before hiding the Dock icon");
+  if (hidden) app.dock.hide();
+  else await app.dock.show();
+}
+
 function showMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (mainWindow.isMinimized()) mainWindow.restore();
@@ -687,7 +696,12 @@ function registerIpc({ logger, stateStore }) {
     if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
     return state;
   });
-  handle("launcher:set-preference", (_event, key, value) => {
+  handle("launcher:set-preference", async (_event, key, value) => {
+    if (key === "hideDockIcon") {
+      const hidden = value === true;
+      await setDockHidden(hidden);
+      return stateStore.update({ hideDockIcon: hidden });
+    }
     const ordinary = key === "keepRunningOnClose" || key === "showBrowserDuringTurns";
     if (!ordinary) throw new Error("Unknown preference");
     return stateStore.update({ [key]: value === true });
@@ -810,6 +824,7 @@ async function start() {
     stateStore.update({ sessionRefreshReminderAt: nextSessionRefreshReminderAt() });
   }
   const persistedState = stateStore.read();
+  if (process.platform === "darwin" && persistedState.hideDockIcon) app.dock.hide();
   if (persistedState.coreSetupComplete === true && persistedState.codexCatalogVerified === undefined) {
     stateStore.update({
       coreSetupComplete: false,
@@ -896,6 +911,13 @@ async function start() {
   });
   registerIpc({ logger, stateStore });
   const trayAvailable = createTray(logger, stateStore.read().language);
+  if (process.platform === "darwin" && stateStore.read().hideDockIcon && !trayAvailable) {
+    void app.dock.show().catch((error) => {
+      logger.warn("launcher.dock_restore_failed", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
   if (startHidden && !trayAvailable) mainWindow.once("ready-to-show", () => showMainWindow());
   const launcherSmokeTest = process.argv.includes("--launcher-smoke-test");
   let startupAuthenticationRefresh = Promise.resolve();
