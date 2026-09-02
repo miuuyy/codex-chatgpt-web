@@ -104,6 +104,28 @@ describe("trusted current Codex environment envelope", () => {
     });
   });
 
+  test("uses the first workspace root when a resumed turn omits cwd", () => {
+    const visualizationsRoot = resolve(root, "visualizations", "thread_current");
+    const resumedEnvironment = `<environment_context>
+  <current_date>2026-09-02</current_date>
+  <timezone>America/Asuncion</timezone>
+  <filesystem><workspace_roots><root>${root}</root><root>${visualizationsRoot}</root></workspace_roots>${dangerFullAccessProfileXml}</filesystem>
+</environment_context>`;
+    const request = currentWire({ environmentXml: resumedEnvironment });
+    const body = request._rawBody as { input: Array<Record<string, unknown>> };
+    for (const item of body.input) {
+      item.internal_chat_message_metadata_passthrough = { turn_id: "turn_current" };
+    }
+
+    expect(extractChatGptTurnEnvironment(request)).toEqual({
+      cwd: root,
+      roots: [root, visualizationsRoot],
+      writableRoots: [root, visualizationsRoot],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: [],
+    });
+  });
+
   test("accepts either canonical provenance form on an intervening developer message", () => {
     for (const developer of [
       {

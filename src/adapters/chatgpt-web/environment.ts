@@ -510,13 +510,16 @@ function matchesPath(root: string, path: string): boolean {
 
 export function extractChatGptTurnEnvironment(parsed: CodexParsedRequest): ChatGptTurnEnvironment {
   const text = trustedEnvironmentText(parsed);
+  const rootMatches = [...text.matchAll(/<workspace_roots>[\s\S]*?<\/workspace_roots>/g)]
+    .flatMap(section => [...section[0].matchAll(/<root>([^<]+)<\/root>/g)].map(match => match[1] ?? ""));
   const cwdMatches = environmentCwdMatches(text, clientMetadataWorkspaceRoots(parsed));
-  const cwdCandidates = uniqueAbsolutePaths(cwdMatches, "cwd");
+  const cwdCandidates = uniqueAbsolutePaths(
+    cwdMatches.length > 0 ? cwdMatches : rootMatches.slice(0, 1),
+    "cwd",
+  );
   if (cwdCandidates.length !== 1) throw new Error("ChatGPT web turn has conflicting trusted Codex cwd values");
   const cwd = cwdCandidates[0]!;
 
-  const rootMatches = [...text.matchAll(/<workspace_roots>[\s\S]*?<\/workspace_roots>/g)]
-    .flatMap(section => [...section[0].matchAll(/<root>([^<]+)<\/root>/g)].map(match => match[1] ?? ""));
   const roots = rootMatches.length > 0 ? uniqueAbsolutePaths(rootMatches, "workspace_roots") : [cwd];
   if (!roots.some(root => matchesPath(root, cwd))) {
     throw new Error("ChatGPT web cwd is outside the trusted Codex workspace roots");
