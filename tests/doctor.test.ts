@@ -131,6 +131,22 @@ describe("model catalog doctor evidence", () => {
     expect(check.detail).toContain("duplicate top-level model_provider");
   });
 
+  test("fails closed when model_catalog_json is empty or whitespace", () => {
+    for (const emptyAssignment of ['model_catalog_json = ""', 'model_catalog_json = "   "', "model_catalog_json = ''"]) {
+      const routing = inspectCodexCatalogRoutingFromText([
+        'openai_base_url = "http://127.0.0.1:17841/v1"',
+        emptyAssignment,
+        "",
+      ].join("\n"));
+      expect(routing).toEqual({ status: "unreadable", detail: "top-level model_catalog_json is empty" });
+      const check = modelCatalogDoctorCheck({ successfulModelCatalogRequests: 0, routing });
+      expect(check.status).toBe("warning");
+      expect(check.message).toBe("Codex has not requested the ChatGPT Web model catalog since this daemon started");
+      expect(check.detail).toContain("top-level model_catalog_json is empty");
+      expect(check.detail).toContain("did not assume an alternate catalog owner");
+    }
+  });
+
   test("keeps catalog proof even when a custom provider is also selected", () => {
     const check = modelCatalogDoctorCheck({
       successfulModelCatalogRequests: 4,
@@ -183,12 +199,17 @@ describe("Codex catalog routing inspection", () => {
 });
 
 describe("healthz catalog counters", () => {
-  test("reads successful_model_catalog_requests and rejects malformed counts", () => {
+  test("reads successful_model_catalog_requests and rejects non-integer or malformed counts", () => {
     expect(readCatalogRequestCount({ successful_model_catalog_requests: 0 })).toBe(0);
-    expect(readCatalogRequestCount({ successful_model_catalog_requests: 2 })).toBe(2);
-    expect(readCatalogRequestCount({})).toBeUndefined();
+    expect(readCatalogRequestCount({ successful_model_catalog_requests: 1 })).toBe(1);
+    expect(readCatalogRequestCount({ successful_model_catalog_requests: 42 })).toBe(42);
     expect(readCatalogRequestCount({ successful_model_catalog_requests: -1 })).toBeUndefined();
-    expect(readCatalogRequestCount({ successful_model_catalog_requests: "0" })).toBeUndefined();
+    expect(readCatalogRequestCount({ successful_model_catalog_requests: 0.5 })).toBeUndefined();
+    expect(readCatalogRequestCount({ successful_model_catalog_requests: 1.25 })).toBeUndefined();
+    expect(readCatalogRequestCount({ successful_model_catalog_requests: "1" })).toBeUndefined();
+    expect(readCatalogRequestCount({ successful_model_catalog_requests: null })).toBeUndefined();
+    expect(readCatalogRequestCount({ successful_model_catalog_requests: undefined })).toBeUndefined();
+    expect(readCatalogRequestCount({})).toBeUndefined();
   });
 
   test("warns when healthz omits catalog request counts", () => {

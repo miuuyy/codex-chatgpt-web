@@ -116,7 +116,7 @@ async function inspectProxy(config: AppConfig): Promise<ProxyInspection> {
 
 export function readCatalogRequestCount(health: Record<string, unknown>): number | undefined {
   const value = health.successful_model_catalog_requests;
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
 export function inspectCodexCatalogRoutingFromText(text: string): CodexCatalogRouting {
@@ -126,6 +126,9 @@ export function inspectCodexCatalogRoutingFromText(text: string): CodexCatalogRo
     const catalog = findTopLevelAssignment(lines, "model_catalog_json");
     if (provider.present && !provider.value?.trim()) {
       return { status: "unreadable", detail: "top-level model_provider is empty" };
+    }
+    if (catalog.present && !catalog.value?.trim()) {
+      return { status: "unreadable", detail: "top-level model_catalog_json is empty" };
     }
     const customProvider = provider.present && provider.value && provider.value !== BUILTIN_CODEX_MODEL_PROVIDER
       ? provider.value
