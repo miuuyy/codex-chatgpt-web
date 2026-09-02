@@ -32,6 +32,12 @@ If the models still do not appear:
 - make sure another Codex wrapper is not replacing the route; and
 - export a safe log after the failed catalog check.
 
+Doctor can prove whether this daemon received a Codex `/v1/models` request. A green setup step and a
+healthy proxy are not catalog evidence. If top-level `model_provider` selects a provider other than
+the built-in `openai` provider, or `model_catalog_json` is set, Codex may never query the ChatGPT Web
+catalog; a `[model_providers.*]` table alone does not select a provider. First-class
+external-provider coexistence is tracked in [#205](https://github.com/miuuyy/codex-chatgpt-web/issues/205).
+
 A green step 3 followed by a browser-turn error means installation succeeded. Repeating step 3 will
 not repair an unrelated ChatGPT browser or model-turn failure.
 
