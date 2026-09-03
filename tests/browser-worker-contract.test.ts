@@ -1549,6 +1549,406 @@ test("effort slider ARIA state fails closed on malformed and unsupported ranges"
   }
 });
 
+test("slider overflow resolves the requested tier through its model radio row", async () => {
+  const neverVisible = new Promise<void>(() => {});
+  let pressed: string[] = [];
+  let tierClicks = 0;
+  let tierChecked = "false";
+  const tierRow = {
+    filter() { return this; },
+    first() { return this; },
+    waitFor: async () => {},
+    isVisible: async () => true,
+    getAttribute: async (attribute: string) => {
+      if (attribute === "aria-disabled") return null;
+      if (attribute === "data-disabled") return null;
+      if (attribute === "aria-checked") return tierChecked;
+      return null;
+    },
+    click: async () => {
+      tierClicks += 1;
+      tierChecked = "true";
+    },
+  };
+  const effortMenu = {
+    last() { return this; },
+    isVisible: async () => true,
+    locator: (selector: string) => {
+      if (selector.includes('aria-label="Pro"')) return tierRow;
+      return {
+        nth: () => ({ waitFor: async () => await neverVisible }),
+        count: async () => 3,
+      };
+    },
+  };
+  const effortSlider = {
+    filter() { return this; },
+    last() { return this; },
+    waitFor: async () => "slider",
+    getAttribute: async (attribute: string) => ({
+      "aria-valuemin": "0",
+      "aria-valuemax": "3",
+      "aria-valuenow": "0",
+    })[attribute as "aria-valuemin"] ?? null,
+  };
+  const hiddenDialog = {
+    filter() { return this; },
+    last() { return this; },
+    waitFor: async () => await neverVisible,
+    isVisible: async () => false,
+  };
+  const checkpoints: string[] = [];
+  const page = {
+    keyboard: { press: async (key: string) => { pressed.push(key); } },
+    locator: (selector: string) => {
+      if (selector.includes('[role="menu"]') || selector.includes("composer-intelligence-picker-content")) return effortMenu;
+      if (selector.includes("data-model-reasoning-effort-slider")) return effortSlider;
+      return hiddenDialog;
+    },
+  };
+  const composerForm = {
+    locator: () => ({
+      last() { return this; },
+      waitFor: async () => {},
+      getAttribute: async () => "true",
+    }),
+  };
+  const composer = { locator: () => composerForm };
+  const selectModelAndEffort = (ChatGptBrowserWorker.prototype as unknown as {
+    selectModelAndEffort(
+      page: unknown,
+      modelId: string,
+      reasoning: string,
+      capabilities: { localToolsEnabled: boolean; solAvailable: boolean; proAvailable: boolean },
+      captureDiagnostic: (checkpoint: string) => Promise<void>,
+    ): Promise<{ displayLabel: string; uiEffortIndex: number }>;
+  }).selectModelAndEffort;
+
+  const mode = await selectModelAndEffort.call({
+    activeComposer: async () => composer,
+  }, page, "gpt-5.6-sol", "max", {
+    localToolsEnabled: true,
+    solAvailable: true,
+    proAvailable: true,
+  }, async checkpoint => { checkpoints.push(checkpoint); });
+
+  expect(mode).toMatchObject({ displayLabel: "Pro", uiEffortIndex: 4 });
+  expect(tierClicks).toBe(1);
+  expect(pressed).toEqual(["Escape"]);
+  expect(checkpoints).toEqual([
+    "effort-control-ready",
+    "effort-menu-open-requested",
+    "effort-slider-visible",
+    "effort-choice-activated",
+    "effort-selected",
+  ]);
+});
+
+test("slider overflow tiers fail closed when the model radio row is disabled or absent", async () => {
+  const neverVisible = new Promise<void>(() => {});
+  const makeHarness = (tierVisible: boolean, tierDisabled: string | null) => {
+    let tierClicks = 0;
+    const tierRow = {
+      filter() { return this; },
+      first() { return this; },
+      waitFor: async () => {
+        if (!tierVisible) throw new Error("tier row not rendered");
+      },
+      isVisible: async () => tierVisible,
+      getAttribute: async (attribute: string) => {
+        if (attribute === "aria-disabled") return tierDisabled;
+        if (attribute === "data-disabled") return null;
+        return "false";
+      },
+      click: async () => { tierClicks += 1; },
+    };
+    const effortMenu = {
+      last() { return this; },
+      isVisible: async () => true,
+      locator: (selector: string) => {
+        if (selector.includes('aria-label="Pro"')) return tierRow;
+        return {
+          nth: () => ({ waitFor: async () => await neverVisible }),
+          count: async () => 3,
+        };
+      },
+    };
+    const effortSlider = {
+      filter() { return this; },
+      last() { return this; },
+      waitFor: async () => "slider",
+      getAttribute: async (attribute: string) => ({
+        "aria-valuemin": "0",
+        "aria-valuemax": "3",
+        "aria-valuenow": "0",
+      })[attribute as "aria-valuemin"] ?? null,
+    };
+    const page = {
+      locator: (selector: string) => {
+        if (selector.includes('[role="menu"]') || selector.includes("composer-intelligence-picker-content")) return effortMenu;
+        if (selector.includes("data-model-reasoning-effort-slider")) return effortSlider;
+        return {
+          filter() { return this; },
+          last() { return this; },
+          waitFor: async () => await neverVisible,
+          isVisible: async () => false,
+        };
+      },
+    };
+    const composerForm = {
+      locator: () => ({
+        last() { return this; },
+        waitFor: async () => {},
+        getAttribute: async () => "true",
+      }),
+    };
+    return {
+      clicks: () => tierClicks,
+      select: (ChatGptBrowserWorker.prototype as unknown as {
+        selectModelAndEffort(
+          page: unknown,
+          modelId: string,
+          reasoning: string,
+          capabilities: { localToolsEnabled: boolean; solAvailable: boolean; proAvailable: boolean },
+        ): Promise<unknown>;
+      }).selectModelAndEffort,
+      page,
+    };
+  };
+  const composerForm = {
+    locator: () => ({
+      last() { return this; },
+      waitFor: async () => {},
+      getAttribute: async () => "true",
+    }),
+  };
+  const composer = { locator: () => composerForm };
+
+  const disabledHarness = makeHarness(true, "true");
+  await expect(disabledHarness.select.call({
+    activeComposer: async () => composer,
+  }, disabledHarness.page, "gpt-5.6-sol", "max", {
+    localToolsEnabled: true,
+    solAvailable: true,
+    proAvailable: true,
+  })).rejects.toMatchObject({
+    name: "ChatGptWebAdapterError",
+    status: 502,
+    code: "upstream_server_error",
+    retryable: false,
+    message: expect.stringContaining("Pro option disabled"),
+  });
+  expect(disabledHarness.clicks()).toBe(0);
+
+  const absentHarness = makeHarness(false, null);
+  await expect(absentHarness.select.call({
+    activeComposer: async () => composer,
+  }, absentHarness.page, "gpt-5.6-sol", "max", {
+    localToolsEnabled: true,
+    solAvailable: true,
+    proAvailable: true,
+  })).rejects.toThrow("ChatGPT effort slider does not expose item index 4 (min=0; max=3)");
+});
+
+test("slider overflow skips clicking an already-selected tier row", async () => {
+  const neverVisible = new Promise<void>(() => {});
+  let tierClicks = 0;
+  const tierRow = {
+    filter() { return this; },
+    first() { return this; },
+    waitFor: async () => {},
+    isVisible: async () => true,
+    getAttribute: async (attribute: string) => {
+      if (attribute === "data-disabled") return null;
+      if (attribute === "aria-checked") return "true";
+      return null;
+    },
+    click: async () => { tierClicks += 1; },
+  };
+  const effortMenu = {
+    last() { return this; },
+    isVisible: async () => true,
+    locator: (selector: string) => {
+      if (selector.includes('aria-label="Pro"')) return tierRow;
+      return {
+        nth: () => ({ waitFor: async () => await neverVisible }),
+        count: async () => 3,
+      };
+    },
+  };
+  const effortSlider = {
+    filter() { return this; },
+    last() { return this; },
+    waitFor: async () => "slider",
+    getAttribute: async (attribute: string) => ({
+      "aria-valuemin": "0",
+      "aria-valuemax": "3",
+      "aria-valuenow": "0",
+    })[attribute as "aria-valuemin"] ?? null,
+  };
+  const pressed: string[] = [];
+  const checkpoints: string[] = [];
+  const page = {
+    keyboard: { press: async (key: string) => { pressed.push(key); } },
+    locator: (selector: string) => {
+      if (selector.includes('[role="menu"]') || selector.includes("composer-intelligence-picker-content")) return effortMenu;
+      if (selector.includes("data-model-reasoning-effort-slider")) return effortSlider;
+      return {
+        filter() { return this; },
+        last() { return this; },
+        waitFor: async () => await neverVisible,
+        isVisible: async () => false,
+      };
+    },
+  };
+  const composerForm = {
+    locator: () => ({
+      last() { return this; },
+      waitFor: async () => {},
+      getAttribute: async () => "true",
+    }),
+  };
+  const composer = { locator: () => composerForm };
+  const selectModelAndEffort = (ChatGptBrowserWorker.prototype as unknown as {
+    selectModelAndEffort(
+      page: unknown,
+      modelId: string,
+      reasoning: string,
+      capabilities: { localToolsEnabled: boolean; solAvailable: boolean; proAvailable: boolean },
+      captureDiagnostic: (checkpoint: string) => Promise<void>,
+    ): Promise<{ displayLabel: string; uiEffortIndex: number }>;
+  }).selectModelAndEffort;
+
+  const mode = await selectModelAndEffort.call({
+    activeComposer: async () => composer,
+  }, page, "gpt-5.6-sol", "max", {
+    localToolsEnabled: true,
+    solAvailable: true,
+    proAvailable: true,
+  }, async checkpoint => { checkpoints.push(checkpoint); });
+
+  expect(mode).toMatchObject({ displayLabel: "Pro", uiEffortIndex: 4 });
+  expect(tierClicks).toBe(0);
+  expect(pressed).toEqual(["Escape"]);
+  expect(checkpoints).toEqual([
+    "effort-control-ready",
+    "effort-menu-open-requested",
+    "effort-slider-visible",
+    "effort-selected",
+  ]);
+});
+
+test("slider overflow treats a closed effort menu as a committed tier switch", async () => {
+  const neverVisible = new Promise<void>(() => {});
+  let menuOpen = true;
+  let tierClicks = 0;
+  const tierRow = {
+    filter() { return this; },
+    first() { return this; },
+    waitFor: async () => {},
+    isVisible: async () => menuOpen,
+    getAttribute: async (attribute: string) => {
+      if (attribute === "data-disabled") return null;
+      if (attribute === "aria-checked") return "false";
+      return null;
+    },
+    click: async () => {
+      tierClicks += 1;
+      menuOpen = false;
+    },
+  };
+  const effortMenu = {
+    last() { return this; },
+    isVisible: async () => menuOpen,
+    locator: (selector: string) => {
+      if (selector.includes('aria-label="Pro"')) return tierRow;
+      return {
+        nth: () => ({ waitFor: async () => await neverVisible }),
+        count: async () => 3,
+      };
+    },
+  };
+  const effortSlider = {
+    filter() { return this; },
+    last() { return this; },
+    waitFor: async () => "slider",
+    getAttribute: async (attribute: string) => ({
+      "aria-valuemin": "0",
+      "aria-valuemax": "3",
+      "aria-valuenow": "0",
+    })[attribute as "aria-valuemin"] ?? null,
+  };
+  const pressed: string[] = [];
+  const checkpoints: string[] = [];
+  const page = {
+    keyboard: { press: async (key: string) => { pressed.push(key); } },
+    locator: (selector: string) => {
+      if (selector.includes('[role="menu"]') || selector.includes("composer-intelligence-picker-content")) return effortMenu;
+      if (selector.includes("data-model-reasoning-effort-slider")) return effortSlider;
+      return {
+        filter() { return this; },
+        last() { return this; },
+        waitFor: async () => await neverVisible,
+        isVisible: async () => false,
+      };
+    },
+  };
+  const composerForm = {
+    locator: () => ({
+      last() { return this; },
+      waitFor: async () => {},
+      getAttribute: async () => "true",
+    }),
+  };
+  const composer = { locator: () => composerForm };
+  const selectModelAndEffort = (ChatGptBrowserWorker.prototype as unknown as {
+    selectModelAndEffort(
+      page: unknown,
+      modelId: string,
+      reasoning: string,
+      capabilities: { localToolsEnabled: boolean; solAvailable: boolean; proAvailable: boolean },
+      captureDiagnostic: (checkpoint: string) => Promise<void>,
+    ): Promise<{ displayLabel: string; uiEffortIndex: number }>;
+  }).selectModelAndEffort;
+
+  const mode = await selectModelAndEffort.call({
+    activeComposer: async () => composer,
+  }, page, "gpt-5.6-sol", "max", {
+    localToolsEnabled: true,
+    solAvailable: true,
+    proAvailable: true,
+  }, async checkpoint => { checkpoints.push(checkpoint); });
+
+  expect(mode).toMatchObject({ displayLabel: "Pro", uiEffortIndex: 4 });
+  expect(tierClicks).toBe(1);
+  expect(pressed).toEqual([]);
+  expect(checkpoints).toEqual([
+    "effort-control-ready",
+    "effort-menu-open-requested",
+    "effort-slider-visible",
+    "effort-choice-activated",
+    "effort-selected",
+  ]);
+});
+
+test("slider overflow keeps the structural failure when no tier row matches", () => {
+  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
+  const selectionStart = workerSource.indexOf("private async selectModelAndEffort");
+  const selectionEnd = workerSource.indexOf("private async activeComposer", selectionStart);
+  const selectionSource = workerSource.slice(selectionStart, selectionEnd);
+  const overflowBranch = selectionSource.indexOf("targetValue > sliderState.max");
+  const tierFallback = selectionSource.indexOf('aria-label="${mode.displayLabel}"', overflowBranch);
+  const overflowFailure = selectionSource.indexOf("does not expose item index", tierFallback);
+  expect(overflowBranch).toBeGreaterThan(-1);
+  expect(tierFallback).toBeGreaterThan(overflowBranch);
+  expect(overflowFailure).toBeGreaterThan(tierFallback);
+  expect(selectionSource).toContain('getAttribute("aria-disabled")');
+  expect(selectionSource).toContain('getAttribute("data-disabled")');
+  expect(selectionSource).toContain("CHATGPT_EFFORT_TIER_ROW_TIMEOUT_MS");
+  expect(selectionSource).toContain("CHATGPT_EFFORT_TIER_ACTIVATION_TIMEOUT_MS");
+  expect(selectionSource).toContain("ChatGPT web UI currently has the ${mode.displayLabel} option disabled");
+});
+
 test("Luna-only browser turns verify selector absence instead of opening an effort menu", async () => {
   const checkpoints: string[] = [];
   const hiddenDialog = {

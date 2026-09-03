@@ -133,6 +133,8 @@ const CHATGPT_SMOKE_EXPECTED = "CODEX WEB GPT READY";
  */
 export const CHATGPT_UI_SETTLE_MS = 250;
 export const CHATGPT_SEND_ENABLE_GRACE_MS = 5_000;
+const CHATGPT_EFFORT_TIER_ROW_TIMEOUT_MS = 5_000;
+const CHATGPT_EFFORT_TIER_ACTIVATION_TIMEOUT_MS = 10_000;
 
 const CHATGPT_DOM_REVISION_ATTRIBUTES = [
   "aria-hidden",
@@ -2268,11 +2270,55 @@ export class ChatGptBrowserWorker {
       }
       const targetValue = sliderState.min + uiEffortIndex;
       if (targetValue > sliderState.max) {
-        throw new ChatGptWebAdapterError(
-          `ChatGPT effort slider does not expose item index ${uiEffortIndex}`
-          + ` (min=${sliderState.min}; max=${sliderState.max})`,
-          { status: 502, errorType: "server_error", code: "upstream_server_error", retryable: false },
-        );
+        // ChatGPT's redesigned picker renders tiers beyond the slider range (e.g. Pro)
+        // as model radio rows inside the same menu instead of slider positions.
+        const tierChoice = effortMenu
+          .locator(`${CHATGPT_EFFORT_ITEM_SELECTOR}[aria-label="${mode.displayLabel}"]`)
+          .filter({ visible: true })
+          .first();
+        await tierChoice.waitFor({ state: "visible", timeout: CHATGPT_EFFORT_TIER_ROW_TIMEOUT_MS }).catch(() => undefined);
+        if (!await tierChoice.isVisible().catch(() => false)) {
+          throw new ChatGptWebAdapterError(
+            `ChatGPT effort slider does not expose item index ${uiEffortIndex}`
+            + ` (min=${sliderState.min}; max=${sliderState.max})`,
+            { status: 502, errorType: "server_error", code: "upstream_server_error", retryable: false },
+          );
+        }
+        await throwIfChatGptRateLimitDialog(page);
+        const [tierDisabled, tierDataDisabled] = await Promise.all([
+          tierChoice.getAttribute("aria-disabled").catch(() => null),
+          tierChoice.getAttribute("data-disabled").catch(() => null),
+        ]);
+        if (tierDisabled === "true" || tierDataDisabled !== null) {
+          throw new ChatGptWebAdapterError(
+            `ChatGPT web UI currently has the ${mode.displayLabel} option disabled`
+            + " (quota exhausted or account gating); retry later or select an exposed tier",
+            { status: 502, errorType: "server_error", code: "upstream_server_error", retryable: false },
+          );
+        }
+        if (await tierChoice.getAttribute("aria-checked").catch(() => null) !== "true") {
+          await tierChoice.click();
+          await captureDiagnostic?.("effort-choice-activated");
+          const activationDeadline = Date.now() + CHATGPT_EFFORT_TIER_ACTIVATION_TIMEOUT_MS;
+          while (Date.now() < activationDeadline) {
+            if (await tierChoice.getAttribute("aria-checked").catch(() => null) === "true") break;
+            // The menu closes once a model tier switch is committed; that is success.
+            if (!await effortMenu.isVisible().catch(() => false)) break;
+            await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
+          }
+          if (
+            await tierChoice.isVisible().catch(() => false)
+            && await tierChoice.getAttribute("aria-checked").catch(() => null) !== "true"
+          ) {
+            throw new ChatGptWebAdapterError(
+              `ChatGPT ${mode.displayLabel} tier item did not activate`,
+              { status: 502, errorType: "server_error", code: "upstream_server_error", retryable: true },
+            );
+          }
+        }
+        await captureDiagnostic?.("effort-selected");
+        if (await effortMenu.isVisible().catch(() => false)) await page.keyboard.press("Escape");
+        return mode;
       }
       const sliderControl = effortSlider.locator("xpath=ancestor::*[@role='menuitem'][1]");
       while (sliderState.value !== targetValue) {
