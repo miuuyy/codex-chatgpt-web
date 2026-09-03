@@ -6,11 +6,13 @@ import type { BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptRetainedConversationUnavailableError } from "../src/adapters/chatgpt-web/adapter-error";
 import {
+  DEFAULT_COMPACTION_HANDOFF_TIMEOUT_MS,
   MAX_COMPACTION_HANDOFF_TIMEOUT_MS,
   cancelAllStructuredCompactions,
   cancelStructuredCompactionTrace,
   existingStructuredCompactionRun,
   requestRetainedCompactionHandoff,
+  resolveCompactionHandoffTimeoutMs,
   runStructuredCompactionOnce,
   settleActiveCompactionSource,
   settleActiveZeroRiskCompactionSource,
@@ -45,6 +47,15 @@ import {
   structuredCompactionHandoffInstruction,
 } from "../src/adapters/chatgpt-web/native-compaction-control";
 import type { AdapterEvent, CodexParsedRequest, CodexProviderConfig } from "../src/types";
+
+test("Pro compaction gets a 50-minute handoff budget without widening other efforts", () => {
+  expect(DEFAULT_COMPACTION_HANDOFF_TIMEOUT_MS).toBe(5 * 60_000);
+  expect(MAX_COMPACTION_HANDOFF_TIMEOUT_MS).toBe(50 * 60_000);
+  expect(resolveCompactionHandoffTimeoutMs(false)).toBe(DEFAULT_COMPACTION_HANDOFF_TIMEOUT_MS);
+  expect(resolveCompactionHandoffTimeoutMs(true)).toBe(MAX_COMPACTION_HANDOFF_TIMEOUT_MS);
+  expect(resolveCompactionHandoffTimeoutMs(true, 60 * 60_000)).toBe(MAX_COMPACTION_HANDOFF_TIMEOUT_MS);
+  expect(resolveCompactionHandoffTimeoutMs(true, 2 * 60_000)).toBe(2 * 60_000);
+});
 
 /**
  * These fixtures hand the turn broker a Unix socket under their temp root. macOS puts TMPDIR at
@@ -287,7 +298,7 @@ test("active compaction drains an MCP call already queued without an outer Codex
 });
 
 test("a completed retained agent returns an exact checkpoint and its browser is physically retired", async () => {
-  expect(MAX_COMPACTION_HANDOFF_TIMEOUT_MS).toBe(5 * 60_000);
+  expect(MAX_COMPACTION_HANDOFF_TIMEOUT_MS).toBe(50 * 60_000);
   const sourceRequest = request(false);
   const conversationKey = chatGptConversationKey(sourceRequest, "provider")!;
   const source = new ChatGptTurnSession({

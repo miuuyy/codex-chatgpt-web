@@ -1,6 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import { resolve } from "node:path";
-import { isChatGptWebZeroRiskBackendModel } from "../../chatgpt-web-models";
+import {
+  CHATGPT_WEB_ZERO_RISK_PRO_BACKEND_MODEL,
+  isChatGptWebZeroRiskBackendModel,
+} from "../../chatgpt-web-models";
 import { defaultBrokerEndpoint, expandUserPath, resolveBrokerEndpoint } from "../../config";
 import {
   cancelLauncherManualTurn,
@@ -39,8 +42,8 @@ import { ChatGptExternalTurnProgress } from "./turn-progress";
 import {
   canonicalizeCompactionHandoff,
   existingStructuredCompactionRun,
-  MAX_COMPACTION_HANDOFF_TIMEOUT_MS,
   requestRetainedCompactionHandoff,
+  resolveCompactionHandoffTimeoutMs,
   runStructuredCompactionOnce,
   settleActiveCompactionSource,
   settleActiveZeroRiskCompactionSource,
@@ -829,9 +832,11 @@ export function createChatGptWebAdapter(
                   ],
                 },
                 async operatorSignal => {
-                  const handoffTimeoutMs = Math.min(
-                    timeoutMs ?? MAX_COMPACTION_HANDOFF_TIMEOUT_MS,
-                    MAX_COMPACTION_HANDOFF_TIMEOUT_MS,
+                  const proCompaction = parsed.modelId === CHATGPT_WEB_ZERO_RISK_PRO_BACKEND_MODEL
+                    || ("effort" in mode && mode.effort === "max");
+                  const handoffTimeoutMs = resolveCompactionHandoffTimeoutMs(
+                    proCompaction,
+                    timeoutMs,
                   );
                   const handoffDeadline = new AbortController();
                   const handoffTimeoutError = new ChatGptWebAdapterError(

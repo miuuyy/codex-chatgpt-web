@@ -127,7 +127,18 @@ function currentToolResults(
   return results;
 }
 
-export const MAX_COMPACTION_HANDOFF_TIMEOUT_MS = 5 * 60_000;
+export const DEFAULT_COMPACTION_HANDOFF_TIMEOUT_MS = 5 * 60_000;
+export const MAX_COMPACTION_HANDOFF_TIMEOUT_MS = 50 * 60_000;
+
+export function resolveCompactionHandoffTimeoutMs(
+  proCompaction: boolean,
+  configuredTimeoutMs?: number,
+): number {
+  const modelTimeoutMs = proCompaction
+    ? MAX_COMPACTION_HANDOFF_TIMEOUT_MS
+    : DEFAULT_COMPACTION_HANDOFF_TIMEOUT_MS;
+  return Math.min(configuredTimeoutMs ?? modelTimeoutMs, modelTimeoutMs);
+}
 
 function boundedCompactionTimeout(timeoutMs: number): number {
   return Math.min(timeoutMs, MAX_COMPACTION_HANDOFF_TIMEOUT_MS);
