@@ -251,6 +251,12 @@ function createTray(logger, language) {
   }
 }
 
+function applyDockIconVisibility(hidden) {
+  if (process.platform !== "darwin" || !app.dock) return;
+  if (hidden && tray) app.dock.hide();
+  else void app.dock.show();
+}
+
 function showMainWindow() {
   // A Windows login launch may still be materializing the packaged runtime when the user opens
   // the desktop shortcut. Electron delivers `second-instance` immediately, before `createWindow`
@@ -820,9 +826,13 @@ function registerIpc({ logger, stateStore }) {
     return { state, credentialsRequired: false, targetMode: mode };
   });
   handle("launcher:set-preference", (_event, key, value) => {
-    const ordinary = key === "keepRunningOnClose" || key === "showBrowserDuringTurns";
+    const ordinary = key === "keepRunningOnClose"
+      || key === "hideDockIcon"
+      || key === "showBrowserDuringTurns";
     if (!ordinary) throw new Error("Unknown preference");
-    return stateStore.update({ [key]: value === true });
+    const state = stateStore.update({ [key]: value === true });
+    if (key === "hideDockIcon") applyDockIconVisibility(state.hideDockIcon);
+    return state;
   });
   handle("launcher:sidebar-state", (_event, value) => stateStore.update(validateSidebarState(value)));
   handle("launcher:logs", (_event, limit) => logger.recent(limit));
@@ -1036,6 +1046,7 @@ async function start() {
   });
   registerIpc({ logger, stateStore });
   const trayAvailable = createTray(logger, stateStore.read().language);
+  applyDockIconVisibility(stateStore.read().hideDockIcon);
   if (startHidden && !trayAvailable) mainWindow.once("ready-to-show", () => showMainWindow());
   const launcherSmokeTest = process.argv.includes("--launcher-smoke-test");
   let startupAuthenticationRefresh = Promise.resolve();

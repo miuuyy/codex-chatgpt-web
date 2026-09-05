@@ -11,6 +11,7 @@ export interface LauncherState {
   xOpened: boolean;
   autoStart: boolean;
   keepRunningOnClose: boolean;
+  hideDockIcon: boolean;
   showBrowserDuringTurns: boolean;
   browserInteractionMode: BrowserInteractionMode;
   experimentalBiggerContext: boolean;
@@ -162,7 +163,7 @@ export interface LauncherApi {
     targetMode: BrowserInteractionMode;
   }>;
   setPreference(
-    key: "keepRunningOnClose" | "showBrowserDuringTurns",
+    key: "keepRunningOnClose" | "hideDockIcon" | "showBrowserDuringTurns",
     value: boolean,
   ): Promise<LauncherState>;
   setSidebarState(state: { open: boolean; width: number }): Promise<LauncherState>;

@@ -42,6 +42,22 @@ test("closing the launcher follows the persisted background-runtime preference",
   assert.match(appSource, /setPreference\("keepRunningOnClose", checked\)/);
 });
 
+test("macOS Dock visibility follows its persisted preference while the tray remains available", () => {
+  assert.match(
+    electronMain,
+    /function applyDockIconVisibility\(hidden\)[\s\S]*?process\.platform !== "darwin"[\s\S]*?hidden && tray[\s\S]*?app\.dock\.hide\(\)[\s\S]*?app\.dock\.show\(\)/,
+  );
+  assert.match(electronMain, /applyDockIconVisibility\(stateStore\.read\(\)\.hideDockIcon\)/);
+  assert.match(
+    electronMain,
+    /key === "hideDockIcon"[\s\S]*?applyDockIconVisibility\(state\.hideDockIcon\)/,
+  );
+  assert.match(
+    appSource,
+    /snapshot\.platform === "darwin"[\s\S]*?setPreference\("hideDockIcon", checked\)/,
+  );
+});
+
 test("a foreground launch request survives hidden startup until the launcher window is ready", () => {
   const showMainWindow = electronMain.slice(
     electronMain.indexOf("function showMainWindow()"),
