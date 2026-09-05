@@ -3,6 +3,7 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
+  MANAGED_INTERRUPT_HOOK_END,
   codexInterruptHookCommand,
   codexInterruptHookHash,
   installCodexInterruptHook,
@@ -93,4 +94,27 @@ test("refuses to remove a modified or duplicated managed hook", () => {
   expect(() => restoreCodexInterruptHook(reordered, installed.installed)).toThrow("order changed after setup");
   expect(() => installCodexInterruptHook(installed.text, "/Users/test/.codex/config.toml", { runtimeCommand: ["/opt/runtime"] }))
     .toThrow("already contains");
+});
+
+test("preserves Codex-owned tables appended before the managed hook end marker", () => {
+  const original = 'model = "gpt-5.6-sol"\n';
+  const installed = installCodexInterruptHook(
+    original,
+    "/Users/test/.codex/config.toml",
+    { runtimeCommand: ["/opt/runtime"] },
+  );
+  const codexOwnedTable = [
+    "[tui.model_availability_nux]",
+    "gpt-6-astra = 1",
+    "",
+  ].join("\n");
+  const updatedByCodex = installed.text.replace(
+    MANAGED_INTERRUPT_HOOK_END,
+    `${codexOwnedTable}${MANAGED_INTERRUPT_HOOK_END}`,
+  );
+
+  verifyCodexInterruptHook(updatedByCodex, installed.installed);
+  expect(restoreCodexInterruptHook(updatedByCodex, installed.installed)).toBe(
+    `${original}\n${codexOwnedTable}`,
+  );
 });
