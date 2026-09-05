@@ -351,3 +351,38 @@ test("packaged runtime replaces stale files when a release is refreshed under th
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("packaged runtime repairs beside a Windows-locked same-version runtime", {
+  skip: process.platform !== "win32",
+}, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-runtime-locked-refresh-"));
+  const resourcesPath = runtimeFixture(root, "0.2.0");
+  const coreHome = path.join(root, "core-home");
+  const app = { isPackaged: true, getVersion: () => "0.2.0" };
+  const originalRename = fs.renameSync;
+  try {
+    const installed = ensurePackagedRuntime({ app, coreHome, resourcesPath });
+    const source = path.join(resourcesPath, "runtime");
+    fs.writeFileSync(path.join(source, "app", "cli.js"), "new cli");
+    writeRuntimeManifest(source);
+
+    fs.renameSync = (from, to) => {
+      if (from === installed && to.includes(".previous-")) {
+        const error = new Error("runtime is in use");
+        error.code = "EPERM";
+        throw error;
+      }
+      return originalRename(from, to);
+    };
+
+    const repaired = ensurePackagedRuntime({ app, coreHome, resourcesPath });
+    assert.notEqual(repaired, installed);
+    assert.match(repaired, /\.bundle-[a-f0-9]{16}$/);
+    assert.equal(fs.readFileSync(path.join(installed, "app", "cli.js"), "utf8"), "cli");
+    assert.equal(fs.readFileSync(path.join(repaired, "app", "cli.js"), "utf8"), "new cli");
+    assert.equal(ensurePackagedRuntime({ app, coreHome, resourcesPath }), repaired);
+  } finally {
+    fs.renameSync = originalRename;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
