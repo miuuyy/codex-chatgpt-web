@@ -11,6 +11,7 @@ import {
   compileChatGptWebPrompt,
   type ChatGptWebMultipartPartCount,
 } from "./prompt";
+import { resolveChatGptWebBiggerContextMaxParts } from "../../chatgpt-web-models";
 import { extractChatGptTurnIdentity } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import type { BrokerToolRequest } from "./turn-broker";
@@ -55,7 +56,8 @@ export function estimateChatGptWebInputTokens(
 /**
  * Use the existing model/account compaction threshold as the size of one context part. Normal
  * turns stay on the original one-message transport until they actually need the experiment;
- * compaction itself always receives all three parts so it can summarize the expanded window.
+ * compaction itself always receives the full configured part count so it can summarize the
+ * expanded window.
  */
 export function resolveBiggerContextMultipartParts(
   parsed: CodexParsedRequest,
@@ -75,18 +77,26 @@ export function resolveBiggerContextMultipartParts(
     capabilities,
   ).autoCompactTokenLimit;
   const inputTokens = estimateChatGptWebInputTokens(parsed, capabilities);
-  return biggerContextPartCount(inputTokens, onePartLimit, parsed._compactionRequest === true);
+  return biggerContextPartCount(
+    inputTokens,
+    onePartLimit,
+    parsed._compactionRequest === true,
+    resolveChatGptWebBiggerContextMaxParts(capabilities),
+  );
 }
 
 export function biggerContextPartCount(
   inputTokens: number,
   onePartLimit: number,
   compaction: boolean,
+  maxParts: ChatGptWebMultipartPartCount = CHATGPT_BIGGER_CONTEXT_PARTS,
 ): ChatGptWebMultipartPartCount | undefined {
-  if (compaction) return CHATGPT_BIGGER_CONTEXT_PARTS;
+  if (compaction) return maxParts;
   if (inputTokens < onePartLimit) return undefined;
-  if (inputTokens < onePartLimit * 2) return 2;
-  return CHATGPT_BIGGER_CONTEXT_PARTS;
+  // One part carries up to onePartLimit tokens; size the split with one extra part of headroom so
+  // a part filled to exactly the limit never becomes the final commit message.
+  const needed = Math.floor(inputTokens / onePartLimit) + 1;
+  return Math.min(maxParts, Math.max(2, needed));
 }
 
 function roundEvidenceText(evidence: ChatGptWebRoundEvidence): string {

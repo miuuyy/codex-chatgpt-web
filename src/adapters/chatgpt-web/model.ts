@@ -10,6 +10,8 @@ export interface ChatGptWebCapabilities {
   localToolsEnabled: boolean;
   solAvailable: boolean;
   proAvailable: boolean;
+  /** Configured Bigger Context split ceiling; defaults to the historical three parts. */
+  experimentalBiggerContextParts?: number;
 }
 
 export interface ChatGptWebModelMode {

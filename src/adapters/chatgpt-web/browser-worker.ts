@@ -38,6 +38,7 @@ import {
   formatChatGptWebMultipartCommit,
   formatChatGptWebMultipartStage,
   type CompiledChatGptWebPrompt,
+  type ChatGptWebMultipartPartCount,
   type ChatGptWebPromptImage,
   type ChatGptWebMultipartStage,
 } from "./prompt";
@@ -866,7 +867,7 @@ export function assertChatGptWebMultipartInputWithinLimits(
   effort: ChatGptWebModelMode["effort"],
   capabilities: ChatGptWebCapabilities,
   maxMessageChars: number,
-  partCount: 2 | 3,
+  partCount: ChatGptWebMultipartPartCount,
   transport?: {
     stagingEffort: ChatGptWebModelMode["effort"];
     maxStageMessageTokens: number;
@@ -931,7 +932,7 @@ export function assertChatGptWebMultipartInputWithinLimits(
   }
   const experimentalContextWindow = baseContextWindow * partCount;
   if (estimatedInputTokens < experimentalContextWindow) return;
-  const partLabel = partCount === 2 ? "two-part" : "three-part";
+  const partLabel = `${partCount}-part`;
   throw new ChatGptWebAdapterError(
     `This Bigger Context transaction is estimated at ${estimatedInputTokens.toLocaleString("en-US")} input tokens, which exceeds its experimental ${experimentalContextWindow.toLocaleString("en-US")}-token ${partLabel} ceiling. Run /compact, then retry.`,
     { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },

@@ -1,6 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import { resolve } from "node:path";
-import { isChatGptWebZeroRiskBackendModel } from "../../chatgpt-web-models";
+import {
+  assertChatGptWebBiggerContextPartCount,
+  isChatGptWebZeroRiskBackendModel,
+} from "../../chatgpt-web-models";
 import { defaultBrokerEndpoint, expandUserPath, resolveBrokerEndpoint } from "../../config";
 import {
   cancelLauncherManualTurn,
@@ -352,10 +355,17 @@ export function createChatGptWebAdapter(
   if (experimentalBiggerContext !== undefined && typeof experimentalBiggerContext !== "boolean") {
     throw new Error("ChatGPT Bigger Context preference must be a boolean");
   }
+  const experimentalBiggerContextParts = provider.chatgptWeb?.experimentalBiggerContextParts;
+  if (experimentalBiggerContextParts !== undefined) {
+    assertChatGptWebBiggerContextPartCount(experimentalBiggerContextParts);
+  }
   const configuredCapabilities: ChatGptWebCapabilities = {
     localToolsEnabled: provider.chatgptWeb?.localToolsEnabled === true,
     solAvailable: provider.chatgptWeb?.solAvailable !== false,
     proAvailable: provider.chatgptWeb?.proAvailable === true,
+    ...(experimentalBiggerContextParts !== undefined
+      ? { experimentalBiggerContextParts }
+      : {}),
   };
   const manualInteraction = provider.chatgptWeb?.browserInteractionMode === "manual";
   const executionNamespace = chatGptWebExecutionNamespace(provider);

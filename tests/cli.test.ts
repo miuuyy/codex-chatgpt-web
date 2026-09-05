@@ -564,3 +564,36 @@ test("authorized launcher uninstall does not re-probe an already stopped full ru
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("setup rejects an out-of-range Bigger Context parts ceiling before runtime work", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-parts-"));
+  try {
+    const env = {
+      ...process.env,
+      CODEX_HOME: join(root, "codex"),
+      CODEX_CHATGPT_WEB_HOME: join(root, "app"),
+    };
+    for (const value of ["1", "9", "2.5", "many"]) {
+      const result = await runCli([
+        "setup",
+        "--browser-only",
+        "--bigger-context",
+        "--bigger-context-parts",
+        value,
+        "--acknowledge-unofficial",
+      ], env);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("--bigger-context-parts must be an integer from 2 to 8");
+    }
+    const missing = await runCli([
+      "setup",
+      "--browser-only",
+      "--bigger-context-parts",
+      "--acknowledge-unofficial",
+    ], env);
+    expect(missing.exitCode).toBe(1);
+    expect(missing.stderr).toContain("--bigger-context-parts requires a value");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

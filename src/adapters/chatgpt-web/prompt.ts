@@ -1,5 +1,17 @@
 import { createHash } from "node:crypto";
 import { isChatGptWebZeroRiskBackendModel } from "../../chatgpt-web-models";
+import {
+  assertChatGptWebBiggerContextPartCount,
+  CHATGPT_BIGGER_CONTEXT_MAX_PARTS,
+  CHATGPT_BIGGER_CONTEXT_MIN_PARTS,
+  CHATGPT_BIGGER_CONTEXT_PARTS,
+} from "../../chatgpt-web-models";
+
+export {
+  CHATGPT_BIGGER_CONTEXT_MAX_PARTS,
+  CHATGPT_BIGGER_CONTEXT_MIN_PARTS,
+  CHATGPT_BIGGER_CONTEXT_PARTS,
+} from "../../chatgpt-web-models";
 import type { CodexAssistantContentPart, CodexContentPart, CodexMessage, CodexParsedRequest } from "../../types";
 import { isOnePixelPngDataUrl, isReadableCompactionSummaryText } from "../../responses/compaction";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
@@ -34,11 +46,13 @@ export interface CompileChatGptWebPromptOptions {
   manualControl?: true;
 }
 
-export const CHATGPT_BIGGER_CONTEXT_PARTS = 3 as const;
-export type ChatGptWebMultipartPartCount = 2 | typeof CHATGPT_BIGGER_CONTEXT_PARTS;
-export type ChatGptWebMultipartParts =
-  | readonly [string, string]
-  | readonly [string, string, string];
+/** An integer part count inside [MIN_PARTS, MAX_PARTS]. */
+export type ChatGptWebMultipartPartCount = number;
+export type ChatGptWebMultipartParts = readonly string[];
+
+export function assertChatGptWebMultipartPartCount(value: number): ChatGptWebMultipartPartCount {
+  return assertChatGptWebBiggerContextPartCount(value);
+}
 
 export interface ChatGptWebMultipartPrompt {
   parts: ChatGptWebMultipartParts;
@@ -66,11 +80,11 @@ export function formatChatGptWebMultipartStage(
   totalParts: ChatGptWebMultipartPartCount = CHATGPT_BIGGER_CONTEXT_PARTS,
 ): ChatGptWebMultipartStage {
   assertMultipartTransactionId(transactionId);
+  assertChatGptWebMultipartPartCount(totalParts);
   if (
     !Number.isInteger(partIndex)
     || partIndex < 1
     || partIndex > totalParts
-    || (totalParts !== 2 && totalParts !== CHATGPT_BIGGER_CONTEXT_PARTS)
   ) {
     throw new Error("ChatGPT multipart stage index is invalid");
   }
@@ -106,9 +120,7 @@ export function formatChatGptWebMultipartCommit(
 ): string {
   assertMultipartTransactionId(transactionId);
   const totalParts = multipart.parts.length;
-  if (totalParts !== 2 && totalParts !== CHATGPT_BIGGER_CONTEXT_PARTS) {
-    throw new Error("ChatGPT multipart commit requires two or three staged parts");
-  }
+  assertChatGptWebMultipartPartCount(totalParts);
   const manifest = multipart.parts.map((payload, index) => (
     `${index + 1}/${totalParts}:${createHash("sha256").update(payload).digest("hex")}`
   )).join(" ");
@@ -380,14 +392,12 @@ function partitionMultipartContext(
   }
 
   if (offset !== records.length) throw new Error("ChatGPT multipart context partition lost records");
-  const payloads = groups.map((group, index) => withoutRetiredTurnHandles(JSON.stringify({
+  return groups.map((group, index) => withoutRetiredTurnHandles(JSON.stringify({
     version: 1,
     part_index: index + 1,
     total_parts: totalParts,
     records: group,
   })));
-  if (totalParts === 2) return [payloads[0]!, payloads[1]!];
-  return [payloads[0]!, payloads[1]!, payloads[2]!];
 }
 
 export function chatGptReadOnlyContextWarning(
@@ -432,8 +442,8 @@ export function compileChatGptWebPrompt(
       throw new Error("ChatGPT Zero Risk does not support rolling or multipart browser transport");
     }
   }
-  if (multipartParts !== undefined && multipartParts !== 2 && multipartParts !== CHATGPT_BIGGER_CONTEXT_PARTS) {
-    throw new Error("Bigger Context requires two or three multipart stages");
+  if (multipartParts !== undefined) {
+    assertChatGptWebMultipartPartCount(multipartParts);
   }
   if (multipartEnabled && parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID) {
     throw new Error("Bigger Context is unavailable for Luna because its accumulated browser transcript still shares one 28,000-token transport budget");

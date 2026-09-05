@@ -1632,6 +1632,17 @@ function SettingsSurface({
       setBusy(false);
     }
   };
+  const setBiggerContextParts = async (parts: number) => {
+    setBusy(true);
+    setError(null);
+    try {
+      updateState(await api!.setBiggerContextParts(parts));
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
   const setInteractionMode = async (mode: BrowserInteractionMode) => {
     setBusy(true);
     setError(null);
@@ -1702,13 +1713,31 @@ function SettingsSurface({
             : copy.biggerContextBody}
           label={copy.biggerContext}
         >
-          <Switch
-            checked={snapshot.state.experimentalBiggerContext}
-            disabled={busy
-              || snapshot.state.browserInteractionMode === "manual"
-              || snapshot.state.coreSetupComplete !== true}
-            onChange={(checked) => void setBiggerContext(checked)}
-          />
+          <div className="setting-row-controls">
+            <label className="bigger-context-parts">
+              <span>{copy.biggerContextParts}</span>
+              <select
+                aria-label={copy.biggerContextParts}
+                disabled={busy
+                  || !snapshot.state.experimentalBiggerContext
+                  || snapshot.state.browserInteractionMode === "manual"
+                  || snapshot.state.coreSetupComplete !== true}
+                onChange={(event) => void setBiggerContextParts(Number(event.target.value))}
+                value={snapshot.state.experimentalBiggerContextParts}
+              >
+                {[2, 3, 4, 5, 6, 7, 8].map(parts => (
+                  <option key={parts} value={parts}>{parts}</option>
+                ))}
+              </select>
+            </label>
+            <Switch
+              checked={snapshot.state.experimentalBiggerContext}
+              disabled={busy
+                || snapshot.state.browserInteractionMode === "manual"
+                || snapshot.state.coreSetupComplete !== true}
+              onChange={(checked) => void setBiggerContext(checked)}
+            />
+          </div>
         </SettingRow>
         <SettingRow body={copy.chooseLanguageHint} label={copy.language}>
           <LanguageMenu copy={copy} language={language} onChange={(next) => void updateLanguage(next)} />

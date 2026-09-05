@@ -1915,6 +1915,22 @@ code {
   padding: 12px 0;
 }
 
+.setting-row-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.bigger-context-parts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bigger-context-parts select {
+  min-width: 56px;
+}
+
 .language-menu {
   position: relative;
   z-index: 1;

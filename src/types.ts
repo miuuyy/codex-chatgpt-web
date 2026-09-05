@@ -301,7 +301,9 @@ export interface CodexProviderConfig {
     proAvailable?: boolean;
     /** Authorize per-call "Allow once" confirmation clicks for this connector. */
     autoApproveToolCalls?: boolean;
-    /** DEV-only experimental transport: adapt one context across one, two, or three ChatGPT messages. */
+    /** DEV-only experimental transport: adapt one context across up to N ChatGPT messages. */
     experimentalBiggerContext?: boolean;
+    /** Bigger Context split ceiling (2-8 messages). Defaults to CHATGPT_BIGGER_CONTEXT_PARTS. */
+    experimentalBiggerContextParts?: number;
   };
 }

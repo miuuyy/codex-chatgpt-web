@@ -6,6 +6,7 @@ import { existsSync, rmSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { stdin, stdout } from "node:process";
 import { captureSystemBrowserLoginToFile, checkBrowserEngine, loginToChatGpt } from "./browser-login";
+import { assertChatGptWebBiggerContextPartCount } from "./chatgpt-web-models";
 import { CHATGPT_CONNECTOR_NAME, defaultConfig, getConfigDir, getConfigPath, loadConfig, loadConfigForSetup } from "./config";
 import {
   inspectLauncherBrowserHost,
@@ -78,7 +79,8 @@ Setup options:
   --restart-service            Explicitly restart this project's daemon after an update
   --login                      Refresh the stored ChatGPT login even if one exists
   --auto-approve-tool-calls    Opt in to per-call browser clicks on "Allow once" prompts
-  --bigger-context             Enable experimental adaptive 1/2/3-message context
+  --bigger-context             Enable experimental adaptive multi-message context
+  --bigger-context-parts N     Bigger Context split ceiling, 2-8 messages (default 3)
   --standard-context           Disable experimental multi-message context
   --acknowledge-unofficial     Accept the one-time unofficial-browser-automation notice
 
@@ -306,6 +308,15 @@ async function setupCommand(args: string[]): Promise<void> {
     throw new Error("Choose at most one context mode: --bigger-context or --standard-context");
   }
   if (biggerContext || standardContext) options.experimentalBiggerContext = biggerContext;
+  const biggerContextParts = takeOption(args, "--bigger-context-parts");
+  if (biggerContextParts !== undefined) {
+    const parts = Number(biggerContextParts);
+    try {
+      options.experimentalBiggerContextParts = assertChatGptWebBiggerContextPartCount(parts);
+    } catch {
+      throw new Error("--bigger-context-parts must be an integer from 2 to 8");
+    }
+  }
   const zeroRiskPro = takeFlag(args, "--zero-risk-pro");
   const zeroRiskDefault = takeFlag(args, "--zero-risk-default");
   if (zeroRiskPro && zeroRiskDefault) {

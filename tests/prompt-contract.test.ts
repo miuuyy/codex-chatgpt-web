@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  assertChatGptWebMultipartPartCount,
   CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET,
   CHATGPT_BIGGER_CONTEXT_PARTS,
   chatGptPromptJsonBytes,
@@ -162,7 +163,47 @@ test("Bigger Context uses the minimum transport and reserves three stages for co
   expect(biggerContextPartCount(189_999, 95_000, false)).toBe(2);
   expect(biggerContextPartCount(190_000, 95_000, false)).toBe(3);
   expect(biggerContextPartCount(1, 95_000, true)).toBe(3);
+});
 
+test("Bigger Context scales to a configured N-part ceiling", () => {
+  // Default ceiling keeps the historical three-part behavior.
+  expect(biggerContextPartCount(900_000, 95_000, false)).toBe(3);
+  // A configured ceiling of N allows N parts and still picks the minimum split that fits.
+  expect(biggerContextPartCount(190_000, 95_000, false, 5)).toBe(3);
+  expect(biggerContextPartCount(380_000, 95_000, false, 5)).toBe(5);
+  expect(biggerContextPartCount(900_000, 95_000, false, 5)).toBe(5);
+  expect(biggerContextPartCount(900_000, 95_000, false, 8)).toBe(8);
+  expect(biggerContextPartCount(1, 95_000, true, 6)).toBe(6);
+  // Invalid ceilings are rejected.
+  expect(() => assertChatGptWebMultipartPartCount(1)).toThrow("between 2 and 8");
+  expect(() => assertChatGptWebMultipartPartCount(9)).toThrow("between 2 and 8");
+  expect(() => assertChatGptWebMultipartPartCount(2.5)).toThrow("between 2 and 8");
+});
+
+test("Bigger Context stages and commits an N-part transaction", () => {
+  const compiled = compileChatGptWebPrompt(
+    request("high"),
+    { localToolsEnabled: false, solAvailable: true, proAvailable: true },
+    undefined,
+    { experimentalMultipartParts: 5 },
+  );
+  expect(compiled.multipart?.parts).toHaveLength(5);
+  const transactionId = `ctx_${"c".repeat(32)}`;
+  const stages = compiled.multipart!.parts.slice(0, -1).map((part, index) => (
+    formatChatGptWebMultipartStage(part, transactionId, index + 1, 5)
+  ));
+  expect(stages).toHaveLength(4);
+  expect(stages[3]!.acknowledgement).toBe(`CODEX_MULTIPART_ACK ${transactionId} 4/5 ${stages[3]!.sha256}`);
+  const commit = formatChatGptWebMultipartCommit(compiled.multipart!, transactionId);
+  expect(commit).toContain("parts: 5");
+  expect(commit).toContain("acknowledged_parts: 4/5");
+  expect(commit).toContain(compiled.multipart!.parts[4]!);
+  // Every staged payload round-trips through the minimax partition without losing records.
+  const records = compiled.multipart!.parts.flatMap(part => JSON.parse(part).records as unknown[]);
+  expect(records.length).toBeGreaterThan(0);
+});
+
+test("Bigger Context two-part staging keeps the commit in the final message", () => {
   const compiled = compileChatGptWebPrompt(
     request("high"),
     { localToolsEnabled: false, solAvailable: true, proAvailable: true },

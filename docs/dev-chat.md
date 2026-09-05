@@ -92,9 +92,9 @@ The DEV CLI reads the same setting from its isolated runtime configuration on ea
 
 When enabled, a normal turn stays on the original single-message path while its estimated input
 is below the selected mode's existing auto-compaction threshold. At the first threshold it uses two
-messages; at twice that threshold it uses three messages. The final context part also commits the
+messages, and larger inputs scale up to the configured part ceiling (2-8 messages, default 3). The final context part also commits the
 transaction and starts the task, so there is no extra request. The existing DEV compaction threshold
-remains three times the selected mode's base limit.
+scales to the same configured multiple of the selected mode's base limit.
 
 Each stage contains complete semantic records, never a raw JSON string cut in the middle. The model
 must return an exact transaction-bound SHA-256 acknowledgement before the next part is sent.
@@ -113,7 +113,7 @@ and waits for its physical launcher settlement before closing the old surface; t
 starts a fresh Temporary Chat. This does not depend on ChatGPT rendering assistant text or a Copy
 action after the control-only response. If the retained private chat was already closed, the bridge
 starts one read-only fallback chat from the canonical Codex history instead. Browser-only mode
-has no retained MCP boundary and keeps the three-message compaction path so its summarizer receives
+has no retained MCP boundary and keeps the multi-part compaction path so its summarizer receives
 the complete expanded history.
 
 Any missing or malformed acknowledgement fails the whole transaction. No later part or final
@@ -121,8 +121,8 @@ commit is sent, and a retry starts again from part one in a fresh Temporary Chat
 and auto-compaction ceilings are reported as 3× while the switch is active, but every individual
 stage must still fit the selected ChatGPT mode's measured one-message boundary.
 
-Small turns add no requests. Two-part turns add two staging requests and acknowledgements; three-part
-turns add three. Browser-only compaction also uses three stages. Large turns are therefore slower and may increase the probability of
+Small turns add no requests. A two-part turn adds two staging requests and acknowledgements; an N-part
+turn adds N. Browser-only compaction also uses the configured part count. Large turns are therefore slower and may increase the probability of
 rate limits or a temporary account cooldown. The experiment is intentionally unavailable for Luna:
 Luna's later requests still include the accumulated transcript inside the same measured
 28,000-token browser transport budget.

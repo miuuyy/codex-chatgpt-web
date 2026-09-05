@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep, win32 } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  assertChatGptWebBiggerContextPartCount,
   CHATGPT_WEB_ZERO_RISK_BACKEND_MODEL,
   CHATGPT_WEB_ZERO_RISK_PRO_BACKEND_MODEL,
 } from "./chatgpt-web-models";
@@ -120,6 +121,8 @@ export interface AppConfig {
   solAvailable: boolean;
   proAvailable: boolean;
   experimentalBiggerContext: boolean;
+  /** Bigger Context split ceiling; unset keeps the default of CHATGPT_BIGGER_CONTEXT_PARTS. */
+  experimentalBiggerContextParts?: number;
   /** Explicitly install the additional Pro-sized model row while Zero Risk is active. */
   zeroRiskProEnabled: boolean;
   /** Optional adapter-silence budget for the Responses watchdog. */
@@ -520,6 +523,13 @@ function parseConfig(value: unknown, path: string): AppConfig {
     && typeof parsed.experimentalBiggerContext !== "boolean") {
     throw new Error(`Invalid experimentalBiggerContext in ${path}`);
   }
+  if (parsed.experimentalBiggerContextParts !== undefined) {
+    try {
+      assertChatGptWebBiggerContextPartCount(parsed.experimentalBiggerContextParts as number);
+    } catch {
+      throw new Error(`Invalid experimentalBiggerContextParts in ${path}`);
+    }
+  }
   if (parsed.zeroRiskProEnabled !== undefined && typeof parsed.zeroRiskProEnabled !== "boolean") {
     throw new Error(`Invalid zeroRiskProEnabled in ${path}`);
   }
@@ -601,6 +611,9 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       solAvailable: manual ? false : config.solAvailable,
       proAvailable: manual ? false : config.proAvailable,
       experimentalBiggerContext: manual ? false : config.experimentalBiggerContext,
+      ...(config.experimentalBiggerContextParts !== undefined
+        ? { experimentalBiggerContextParts: config.experimentalBiggerContextParts }
+        : {}),
       ...(config.stallTimeoutSec !== undefined ? { stallTimeoutSec: config.stallTimeoutSec } : {}),
       autoApproveToolCalls: manual ? false : config.autoApproveToolCalls,
     },

@@ -1080,6 +1080,57 @@ class RuntimeHost {
     return { ...result, mode, enabled: enabled === true };
   }
 
+  async setBiggerContextParts(parts) {
+    if (!Number.isInteger(parts) || parts < 2 || parts > 8) {
+      throw new Error("Bigger Context parts must be an integer from 2 to 8");
+    }
+    const current = this.runtimeConfigSnapshot();
+    if (!current.configured) {
+      throw new Error("Initialize the runtime before changing Bigger Context");
+    }
+    const mode = current.mode;
+    const partsArgs = ["--bigger-context-parts", String(parts)];
+    if (this.launcherProfile === "development") {
+      const args = [
+        "dev",
+        "setup",
+        mode === "full" ? "--full" : "--browser-only",
+        "--browser-host-descriptor",
+        this.browserDescriptorPath,
+        ...this.browserInteractionArgs(),
+        "--acknowledge-unofficial",
+        ...partsArgs,
+      ];
+      if (current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
+      if (mode === "full") args.push("--app-name", this.setupConnectorName());
+      const result = await this.runDevSetup("bigger-context-parts", args, {
+        message: "Updating Bigger Context parts",
+        successMessage: "Bigger Context parts updated",
+        timeoutMs: CORE_SETUP_TIMEOUT_MS,
+      });
+      return { ...result, mode, parts };
+    }
+    const args = [
+      "setup",
+      mode === "full" ? "--full" : "--browser-only",
+      "--browser-host-descriptor",
+      this.browserDescriptorPath,
+      ...this.browserInteractionArgs(),
+      "--replace-codex-route",
+      "--acknowledge-unofficial",
+      "--restart-service",
+      ...partsArgs,
+    ];
+    if (current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
+    if (mode === "full") args.push("--app-name", this.setupConnectorName());
+    const result = await this.runSetup("bigger-context-parts", args, {
+      message: "Updating Bigger Context parts",
+      successMessage: "Bigger Context parts updated; restart Codex",
+      timeoutMs: CORE_SETUP_TIMEOUT_MS,
+    });
+    return { ...result, mode, parts };
+  }
+
   async setZeroRiskPro(enabled) {
     const current = this.runtimeConfigSnapshot();
     if (!current.configured) {

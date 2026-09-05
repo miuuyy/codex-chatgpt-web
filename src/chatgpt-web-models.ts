@@ -67,7 +67,31 @@ export const CHATGPT_WEB_PRO_MODEL_COMPOSER_CHAR_LIMIT = 1_635_000;
  * history out of later browser requests without asking Codex to compact its canonical history.
  */
 export const CHATGPT_WEB_LUNA_CONTEXT_WINDOW = 1_050_000;
+/** Default Bigger Context split; also the historical fixed multiplier. */
 export const CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER = 3;
+
+/** Smallest Bigger Context split: anything below stays on the one-message inline transport. */
+export const CHATGPT_BIGGER_CONTEXT_MIN_PARTS = 2 as const;
+/** Default Bigger Context split, applied when no explicit part count is configured. */
+export const CHATGPT_BIGGER_CONTEXT_PARTS = 3 as const;
+/**
+ * Largest supported Bigger Context split. Every part is one extra stored round trip inside the
+ * same Temporary Chat and must individually fit the composer, so the ceiling stays conservative.
+ */
+export const CHATGPT_BIGGER_CONTEXT_MAX_PARTS = 8 as const;
+
+export function assertChatGptWebBiggerContextPartCount(value: number): number {
+  if (
+    !Number.isInteger(value)
+    || value < CHATGPT_BIGGER_CONTEXT_MIN_PARTS
+    || value > CHATGPT_BIGGER_CONTEXT_MAX_PARTS
+  ) {
+    throw new Error(
+      `Bigger Context requires between ${CHATGPT_BIGGER_CONTEXT_MIN_PARTS} and ${CHATGPT_BIGGER_CONTEXT_MAX_PARTS} multipart stages`,
+    );
+  }
+  return value;
+}
 
 export interface ChatGptWebContextLimits {
   contextWindow: number;
@@ -150,10 +174,24 @@ export function resolveChatGptWebContextLimits(
     throw new Error(`ChatGPT Plus context limit is not defined for unavailable effort: ${effort}`);
   }
   if (!capabilities.experimentalBiggerContext) return limits;
+  const multiplier = resolveChatGptWebBiggerContextMaxParts(capabilities);
   return contextLimits(
-    limits.contextWindow * CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER,
-    limits.autoCompactTokenLimit * CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER,
+    limits.contextWindow * multiplier,
+    limits.autoCompactTokenLimit * multiplier,
   );
+}
+
+/**
+ * Effective Bigger Context split ceiling for an account. Defaults to the historical three parts;
+ * an explicitly configured count is validated against the supported [MIN_PARTS, MAX_PARTS] range.
+ */
+export function resolveChatGptWebBiggerContextMaxParts(
+  capabilities: Pick<ChatGptWebAccountCapabilities, "experimentalBiggerContextParts">,
+): number {
+  if (capabilities.experimentalBiggerContextParts === undefined) {
+    return CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER;
+  }
+  return assertChatGptWebBiggerContextPartCount(capabilities.experimentalBiggerContextParts);
 }
 
 /** Resolve limits of one visible ChatGPT composer message, independently of model context. */
@@ -218,6 +256,8 @@ export interface ChatGptWebAccountCapabilities {
   solAvailable: boolean;
   proAvailable: boolean;
   experimentalBiggerContext?: boolean;
+  /** Configured Bigger Context split ceiling; defaults to CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER. */
+  experimentalBiggerContextParts?: number;
   browserInteractionMode?: "automatic" | "manual";
   zeroRiskProEnabled?: boolean;
 }
