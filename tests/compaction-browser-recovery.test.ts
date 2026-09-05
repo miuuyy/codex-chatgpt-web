@@ -16,9 +16,14 @@ test.each([[true, false, true], [false, false, true], [true, true, true], [true,
   const sendBudgets: number[] = [];
   let stage = "";
   let released = false;
-  const page = { evaluate: async () => ({}), isClosed: () => false };
+  const page = {
+    evaluate: async () => ({}),
+    isClosed: () => false,
+    waitForFunction: async () => true,
+  };
   const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
     config: { appName: "Codex Native2", browserDiagnosticsPath: diagnostics, ...(owned ? { browserHostDescriptorPath: "owned-descriptor" } : {}) },
+    refreshLauncherViewport: async () => {},
     runStage: async (_trace: string, name: string, timeout: number, action: (signal: AbortSignal) => Promise<unknown>) => {
       stage = name;
       if (name === "send" || name.endsWith("_send")) sendBudgets.push(timeout);
@@ -75,7 +80,7 @@ test.each([[true, false, true], [false, false, true], [true, true, true], [true,
     );
     expect(actions).toEqual([
       ...(multipart ? [
-        "effort:low",
+        "effort:medium",
         "attach:plain", "send", "observe", "ack",
         "attach:plain", "send", "observe", "ack",
       ] : []),

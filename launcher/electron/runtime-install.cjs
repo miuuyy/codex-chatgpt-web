@@ -183,6 +183,14 @@ function validateRuntimeBundle(runtimeRoot, identity) {
   return inspectRuntimeBundle(runtimeRoot, identity).runtimeRoot;
 }
 
+function isWindowsRuntimeLock(error) {
+  return process.platform === "win32" && ["EBUSY", "EPERM", "EACCES"].includes(error?.code);
+}
+
+function sideBySideRuntimeDestination(destination, bundleId) {
+  return `${destination}.bundle-${bundleId.slice(0, 16)}`;
+}
+
 async function waitForPackagedRuntimeSource({
   app,
   resourcesPath,
@@ -230,12 +238,20 @@ function ensurePackagedRuntime({ app, coreHome, resourcesPath }) {
     versionsRoot,
     `${identity.version}-${identity.platform}-${identity.arch}`,
   );
+  const sideBySideDestination = sideBySideRuntimeDestination(destination, expectedIdentity.bundleId);
   if (fs.existsSync(destination)) {
     try {
       return validateRuntimeBundle(destination, expectedIdentity);
     } catch {
       // A terminated installer or external cleanup can leave a version directory present but
       // incomplete. Rebuild the launcher-owned bundle transactionally from the signed package.
+    }
+  }
+  if (fs.existsSync(sideBySideDestination)) {
+    try {
+      return validateRuntimeBundle(sideBySideDestination, expectedIdentity);
+    } catch {
+      // A prior interrupted side-by-side repair is replaced below.
     }
   }
 
@@ -252,8 +268,28 @@ function ensurePackagedRuntime({ app, coreHome, resourcesPath }) {
     });
     validateRuntimeBundle(temporary, expectedIdentity);
     if (fs.existsSync(destination)) {
-      renameAtomicFile(destination, previous);
-      previousMoved = true;
+      try {
+        renameAtomicFile(destination, previous);
+        previousMoved = true;
+      } catch (error) {
+        if (!isWindowsRuntimeLock(error)) throw error;
+
+        // Bun keeps its executable and imported JavaScript files open on Windows. A stale
+        // launcher-owned broker or worker can therefore make an in-place same-version repair
+        // impossible even though the signed replacement bundle is already valid. Install the
+        // new bundle beside the locked one; RuntimeSupervisor will recover the stale owner after
+        // startup and all new commands will use this content-addressed directory.
+        if (fs.existsSync(sideBySideDestination)) {
+          try {
+            return validateRuntimeBundle(sideBySideDestination, expectedIdentity);
+          } catch {
+            fs.rmSync(sideBySideDestination, { recursive: true, force: true });
+          }
+        }
+        renameAtomicFile(temporary, sideBySideDestination);
+        try { fs.chmodSync(sideBySideDestination, 0o700); } catch {}
+        return validateRuntimeBundle(sideBySideDestination, expectedIdentity);
+      }
     }
     try {
       renameAtomicFile(temporary, destination);

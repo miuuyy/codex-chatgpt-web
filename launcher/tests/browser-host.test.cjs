@@ -16,6 +16,7 @@ const {
   allowedAuthUrl,
   BrowserHost,
   IDLE_BROWSER_URL,
+  isAuthenticatedChatGptSessionRefresh,
   isChatGptCloudflareChallengeResponse,
   isTemporaryChatUrl,
   loadCommittedBrowserSurface,
@@ -24,6 +25,14 @@ const {
   navigationErrorForLog,
   navigationOriginForLog,
 } = require("../electron/browser-host.cjs");
+
+test("an authenticated turn may follow only ChatGPT's same-origin session refresh", () => {
+  assert.equal(isAuthenticatedChatGptSessionRefresh("https://chatgpt.com/auth/session", true), true);
+  assert.equal(isAuthenticatedChatGptSessionRefresh("https://chatgpt.com/auth/login", true), true);
+  assert.equal(isAuthenticatedChatGptSessionRefresh("https://chatgpt.com/auth/login", false), false);
+  assert.equal(isAuthenticatedChatGptSessionRefresh("https://auth.openai.com/authorize", true), false);
+  assert.equal(isAuthenticatedChatGptSessionRefresh("https://accounts.google.com/o/oauth2/v2/auth", true), false);
+});
 
 test("manual prompt handoff keeps ordinary turns at thirty seconds and compaction at two minutes", () => {
   assert.equal(MANUAL_SUBMIT_TIMEOUT_MS, 30_000);
@@ -393,6 +402,7 @@ test("session inspection delegates navigation and capability detection to the sh
     temporary: true,
     url: "https://chatgpt.com/?temporary-chat=true",
     solAvailable: true,
+    extraHighAvailable: true,
     proAvailable: true,
   });
   assert.equal(calls.length, 2);

@@ -21,7 +21,16 @@ export const CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR = '[data-model-reasoning-e
 export const CHATGPT_EFFORT_SLIDER_SELECTOR = '[data-model-reasoning-effort-slider] [role="slider"]';
 export const CHATGPT_EFFORT_SLIDER_MAX_OPTIONS = 5;
 export const CHATGPT_STOP_BUTTON_SELECTOR = '[data-testid="stop-button"]';
-export const CHATGPT_COMPLETION_ACTION_SELECTOR = 'button[data-testid="copy-turn-action-button"]';
+export const CHATGPT_COMPLETION_ACTION_SELECTOR = [
+  'button[data-testid="copy-turn-action-button"]',
+  // ChatGPT's September 2026 action row removed the copy button's data-testid while
+  // retaining its accessible name. The browser worker still scopes this selector to a
+  // visible button that follows (and is not contained by) the final Markdown root, so
+  // code-block copy buttons inside the answer cannot be mistaken for turn completion.
+  'button[aria-label="Copy"]',
+  'button[aria-label="复制"]',
+  'button[aria-label="複製"]',
+].join(", ");
 export const CHATGPT_ASSISTANT_TURN_SELECTOR = [
   '[data-testid^="conversation-turn-"][data-turn="assistant"]',
   '[data-testid^="conversation-turn-"][data-message-author-role="assistant"]',
@@ -199,7 +208,7 @@ export async function detectChatGptAccountCapabilities(
     if (composerReady && formReady && documentReady) {
       absenceSince ??= Date.now();
       if (Date.now() - absenceSince >= stableAbsenceMs) {
-        return { solAvailable: false, proAvailable: false };
+        return { solAvailable: false, extraHighAvailable: false, proAvailable: false };
       }
     } else {
       absenceSince = undefined;
@@ -231,7 +240,12 @@ export async function detectChatGptAccountCapabilities(
         { cause: new Error("ChatGPT effort slider exposed an invalid ARIA range") },
       );
     }
-    return { solAvailable: true, proAvailable: state.max - state.min + 1 >= 5 };
+    const stepCount = state.max - state.min + 1;
+    return {
+      solAvailable: true,
+      extraHighAvailable: stepCount >= 4,
+      proAvailable: stepCount >= 5,
+    };
   } finally {
     await page.keyboard.press("Escape").catch(() => {});
   }

@@ -138,6 +138,30 @@ function allowedAuthUrl(value) {
   return AUTH_PROVIDER_HOSTS.has(parsed.hostname);
 }
 
+function isAuthenticatedChatGptSessionRefresh(value, authenticated) {
+  if (!authenticated) return false;
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  return parsed.origin === CHATGPT_ORIGIN
+    && (parsed.pathname === "/auth" || parsed.pathname.startsWith("/auth/"));
+}
+
+function authenticationNavigationForLog(value) {
+  try {
+    const parsed = new URL(value);
+    return {
+      origin: parsed.origin,
+      ...(parsed.origin === CHATGPT_ORIGIN ? { pathname: parsed.pathname } : {}),
+    };
+  } catch {
+    return { origin: "invalid-url" };
+  }
+}
+
 function navigationOriginForLog(value) {
   try {
     const parsed = new URL(value);
@@ -761,9 +785,21 @@ class BrowserHost {
     });
     const blockAuthenticationNavigation = (event, url) => {
       if (!allowedAuthUrl(url)) return;
+      if (isAuthenticatedChatGptSessionRefresh(url, this.state.authenticated)) {
+        this.logger.info("browser.turn_session_refresh_allowed", {
+          tabId: tab.id,
+          traceId: tab.traceId,
+          ...authenticationNavigationForLog(url),
+        });
+        return;
+      }
       event.preventDefault();
       tab.message = "ChatGPT requires a fresh sign-in; finish this turn, then sign in from Setup";
-      this.logger.warn("browser.turn_authentication_blocked", { tabId: tab.id, traceId: tab.traceId });
+      this.logger.warn("browser.turn_authentication_blocked", {
+        tabId: tab.id,
+        traceId: tab.traceId,
+        ...authenticationNavigationForLog(url),
+      });
       this.publishState?.(this.snapshot());
     };
     contents.on("will-navigate", blockAuthenticationNavigation);
@@ -2788,7 +2824,12 @@ class BrowserHost {
       && (typeof inspected.solAvailable !== "boolean" || typeof inspected.proAvailable !== "boolean")) {
       throw new Error("Browser helper returned incomplete ChatGPT capability evidence");
     }
-    if (detectCapabilities && inspected.proAvailable && !inspected.solAvailable) {
+    if (detectCapabilities && typeof inspected.extraHighAvailable !== "boolean") {
+      inspected.extraHighAvailable = inspected.proAvailable === true;
+    }
+    if (detectCapabilities
+      && ((inspected.extraHighAvailable && !inspected.solAvailable)
+        || (inspected.proAvailable && !inspected.extraHighAvailable))) {
       throw new Error("Browser helper returned contradictory ChatGPT capability evidence");
     }
     if (startedIdle) await this.returnToIdle();
@@ -2887,6 +2928,7 @@ class BrowserHost {
 
 module.exports = {
   allowedAuthUrl,
+  isAuthenticatedChatGptSessionRefresh,
   BrowserHost,
   BrowserTurnCancelledError,
   CHATGPT_VIEWPORT_CSS,

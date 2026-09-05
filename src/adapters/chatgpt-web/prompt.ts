@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { isChatGptWebZeroRiskBackendModel } from "../../chatgpt-web-models";
+import {
+  isChatGptWebZeroRiskBackendModel,
+  resolveChatGptWebContextLimits,
+  resolveChatGptWebTransportLimits,
+  type ChatGptWebAdapterEffort,
+  type ChatGptWebBackendModel,
+} from "../../chatgpt-web-models";
+import { estimateTokens } from "../../lib/token-estimate";
 import type { CodexAssistantContentPart, CodexContentPart, CodexMessage, CodexParsedRequest } from "../../types";
 import { isOnePixelPngDataUrl, isReadableCompactionSummaryText } from "../../responses/compaction";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
@@ -52,6 +59,7 @@ export interface ChatGptWebMultipartStage {
 }
 
 const MULTIPART_TRANSACTION_ID = /^ctx_[a-f0-9]{32}$/;
+const COMPACTION_PREFLIGHT_TRANSACTION_ID = `ctx_${"0".repeat(32)}`;
 
 function assertMultipartTransactionId(transactionId: string): void {
   if (!MULTIPART_TRANSACTION_ID.test(transactionId)) {
@@ -390,6 +398,54 @@ function partitionMultipartContext(
   return [payloads[0]!, payloads[1]!, payloads[2]!];
 }
 
+function chatGptWebMessageFits(
+  text: string,
+  modelId: ChatGptWebBackendModel,
+  effort: ChatGptWebAdapterEffort,
+  capabilities: ChatGptWebCapabilities,
+): boolean {
+  const context = resolveChatGptWebContextLimits(modelId, effort, capabilities);
+  const transport = resolveChatGptWebTransportLimits(modelId, effort, capabilities);
+  const tokenLimit = transport.browserMessageTokenLimit ?? context.autoCompactTokenLimit;
+  return estimateTokens(text, modelId) <= tokenLimit
+    && (transport.browserComposerCharLimit === undefined
+      || text.length <= transport.browserComposerCharLimit);
+}
+
+/**
+ * A compaction turn must be transportable before its browser tab is opened. Browser preflight can
+ * choose any account-visible staging effort, while the final commit must fit the user's requested
+ * effort. Checking both here lets native-style oldest-first trimming repair a large checkpoint
+ * instead of publishing a turn token for a transaction that can only fail.
+ */
+function multipartCompactionFits(
+  compiled: CompiledChatGptWebPrompt,
+  modelId: ChatGptWebBackendModel,
+  requestedEffort: ChatGptWebAdapterEffort,
+  capabilities: ChatGptWebCapabilities,
+): boolean {
+  const multipart = compiled.multipart;
+  if (!multipart) return true;
+  const totalParts = multipart.parts.length as ChatGptWebMultipartPartCount;
+  const stagingEffort: ChatGptWebAdapterEffort = requestedEffort === "max" && capabilities.proAvailable
+    ? "max"
+    : "medium";
+  const stages = multipart.parts.slice(0, -1).map((payload, index) => (
+    formatChatGptWebMultipartStage(
+      payload,
+      COMPACTION_PREFLIGHT_TRANSACTION_ID,
+      index + 1,
+      totalParts,
+    ).text
+  ));
+  const finalCommit = formatChatGptWebMultipartCommit(
+    multipart,
+    COMPACTION_PREFLIGHT_TRANSACTION_ID,
+  );
+  return stages.every(stage => chatGptWebMessageFits(stage, modelId, stagingEffort, capabilities))
+    && chatGptWebMessageFits(finalCommit, modelId, requestedEffort, capabilities);
+}
+
 export function chatGptReadOnlyContextWarning(
   parsed: CodexParsedRequest,
   capabilities: ChatGptWebCapabilities,
@@ -421,6 +477,10 @@ export function compileChatGptWebPrompt(
   const mode = manualControl
     ? { localTools: true, effort: "low" as const, displayLabel: "Zero Risk" as const }
     : resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
+  // Non-manual prompt compilation has already rejected every model outside the two browser
+  // backends. Manual mode cannot enter multipart transport, so this narrowed identity is safe for
+  // the compaction preflight below.
+  const backendModelId = parsed.modelId as ChatGptWebBackendModel;
   const captureLunaCheckpoint = options?.captureLunaCheckpoint === true;
   const multipartParts = options?.experimentalMultipartParts;
   const multipartEnabled = multipartParts !== undefined;
@@ -624,12 +684,26 @@ export function compileChatGptWebPrompt(
   let compiled = build(sourceMessages);
   if (!parsed._compactionRequest) return compiled;
 
-  // The 110k edge budget was measured for the old single-message compaction envelope. Bigger
-  // Context stages are governed by the same model-specific per-message token and composer limits
-  // as ordinary multipart turns in browser-worker. Applying the legacy byte cap here silently
-  // discarded context that the staged transport can carry; preserve it and let browser preflight
-  // fail explicitly if any atomic record is genuinely too large for one stage.
-  if (compiled.multipart) return compiled;
+  // Bigger Context still has a hard per-message boundary. Trim oldest semantic history until every
+  // inert stage and the final commit fit an account-visible effort. This is intentionally separate
+  // from the legacy 110k JSON-byte budget: multipart preserves everything that actually fits, but
+  // it no longer sends an oversized atomic stage to fail after the capability has been published.
+  if (compiled.multipart) {
+    while (
+      !multipartCompactionFits(compiled, backendModelId, mode.effort, capabilities)
+      && sourceMessages.length > 1
+    ) {
+      sourceMessages = sourceMessages.slice(1);
+      compiled = build(sourceMessages);
+    }
+    if (!multipartCompactionFits(compiled, backendModelId, mode.effort, capabilities)) {
+      throw new Error(
+        "ChatGPT Web Bigger Context compaction still exceeds the browser message boundary after all older history was trimmed; the system context and final compaction instruction cannot fit one safe transaction",
+      );
+    }
+    const trimmedCompactionMessages = initialMessageCount - sourceMessages.length;
+    return trimmedCompactionMessages > 0 ? { ...compiled, trimmedCompactionMessages } : compiled;
+  }
 
   const exceedsCompactionBudget = (): boolean => (
     chatGptPromptJsonBytes(compiled.text) > CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET

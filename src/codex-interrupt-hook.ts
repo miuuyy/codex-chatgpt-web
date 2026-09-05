@@ -69,6 +69,59 @@ function managedMarkerCount(text: string): number {
   return text.split(MANAGED_INTERRUPT_HOOK_START).length - 1;
 }
 
+function managedEndMarkerCount(text: string): number {
+  return text.split(MANAGED_INTERRUPT_HOOK_END).length - 1;
+}
+
+function managedHookOwnedPrefix(
+  installed: InstalledCodexInterruptHook,
+  ending: "\n" | "\r\n" | "\r",
+): string {
+  return [
+    MANAGED_INTERRUPT_HOOK_START,
+    "[[hooks.Interrupt]]",
+    "",
+    "[[hooks.Interrupt.hooks]]",
+    'type = "command"',
+    `command = ${JSON.stringify(installed.command)}`,
+    "timeout = 3",
+    "",
+    `[hooks.state.${JSON.stringify(installed.stateKey)}]`,
+    `trusted_hash = ${JSON.stringify(installed.trustedHash)}`,
+  ].join(ending);
+}
+
+function locateCodexInterruptHook(
+  text: string,
+  installed: InstalledCodexInterruptHook,
+): { start: number; ownedEnd: number; endMarkerStart: number; endMarkerEnd: number } {
+  if (managedMarkerCount(text) !== 1 || managedEndMarkerCount(text) !== 1) {
+    throw new Error("Codex interrupt lifecycle hook markers changed after setup; refusing to overwrite them");
+  }
+  const start = text.indexOf(MANAGED_INTERRUPT_HOOK_START);
+  const ownedPrefix = managedHookOwnedPrefix(installed, lineEnding(text));
+  if (start < 0 || !text.startsWith(ownedPrefix, start)) {
+    throw new Error("Codex interrupt lifecycle hook changed after setup; refusing to overwrite it");
+  }
+  if (interruptGroupCount(text.slice(0, start)) !== installed.groupIndex) {
+    throw new Error("Codex interrupt lifecycle hook order changed after setup; refusing to overwrite it");
+  }
+  const ownedEnd = start + ownedPrefix.length;
+  const endMarkerStart = text.indexOf(MANAGED_INTERRUPT_HOOK_END, ownedEnd);
+  if (endMarkerStart < ownedEnd) {
+    throw new Error("Codex interrupt lifecycle hook markers changed after setup; refusing to overwrite them");
+  }
+  if (codexInterruptHookHash(installed.command) !== installed.trustedHash) {
+    throw new Error("Codex interrupt lifecycle hook journal hash is invalid");
+  }
+  return {
+    start,
+    ownedEnd,
+    endMarkerStart,
+    endMarkerEnd: endMarkerStart + MANAGED_INTERRUPT_HOOK_END.length,
+  };
+}
+
 function canonicalConfigPath(configPath: string): string {
   const absolute = resolve(configPath);
   try {
@@ -131,24 +184,34 @@ export function installCodexInterruptHookCommand(
 }
 
 export function verifyCodexInterruptHook(text: string, installed: InstalledCodexInterruptHook): void {
-  const first = text.indexOf(installed.fragment);
-  if (first < 0 || text.indexOf(installed.fragment, first + installed.fragment.length) >= 0) {
-    throw new Error("Codex interrupt lifecycle hook changed after setup; refusing to overwrite it");
-  }
-  if (interruptGroupCount(text.slice(0, first)) !== installed.groupIndex) {
-    throw new Error("Codex interrupt lifecycle hook order changed after setup; refusing to overwrite it");
-  }
-  if (managedMarkerCount(text) !== 1 || !text.includes(MANAGED_INTERRUPT_HOOK_END)) {
-    throw new Error("Codex interrupt lifecycle hook markers changed after setup; refusing to overwrite them");
-  }
-  if (codexInterruptHookHash(installed.command) !== installed.trustedHash) {
-    throw new Error("Codex interrupt lifecycle hook journal hash is invalid");
-  }
+  locateCodexInterruptHook(text, installed);
 }
 
 export function restoreCodexInterruptHook(text: string, installed: InstalledCodexInterruptHook): string {
-  verifyCodexInterruptHook(text, installed);
-  return text.replace(installed.fragment, "");
+  const exact = text.indexOf(installed.fragment);
+  if (exact >= 0 && text.indexOf(installed.fragment, exact + installed.fragment.length) < 0) {
+    verifyCodexInterruptHook(text, installed);
+    return text.replace(installed.fragment, "");
+  }
+
+  const located = locateCodexInterruptHook(text, installed);
+  const fragmentStart = installed.fragment.indexOf(MANAGED_INTERRUPT_HOOK_START);
+  const fragmentEnd = installed.fragment.indexOf(MANAGED_INTERRUPT_HOOK_END, fragmentStart);
+  if (fragmentStart < 0 || fragmentEnd < fragmentStart) {
+    throw new Error("Codex interrupt lifecycle hook journal fragment is invalid");
+  }
+  const recordedLeading = installed.fragment.slice(0, fragmentStart);
+  const recordedTrailing = installed.fragment.slice(fragmentEnd + MANAGED_INTERRUPT_HOOK_END.length);
+  const removalStart = recordedLeading
+    && text.slice(Math.max(0, located.start - recordedLeading.length), located.start) === recordedLeading
+    ? located.start - recordedLeading.length
+    : located.start;
+  const removalEnd = recordedTrailing
+    && text.slice(located.endMarkerEnd, located.endMarkerEnd + recordedTrailing.length) === recordedTrailing
+    ? located.endMarkerEnd + recordedTrailing.length
+    : located.endMarkerEnd;
+  const appendedCodexConfig = text.slice(located.ownedEnd, located.endMarkerStart);
+  return `${text.slice(0, removalStart)}${appendedCodexConfig}${text.slice(removalEnd)}`;
 }
 
 export function verifyCodexInterruptHookRestored(text: string): void {

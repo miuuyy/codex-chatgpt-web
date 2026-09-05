@@ -865,12 +865,21 @@ export class TurnBroker implements TurnBrokerOwner {
   }
 
   private writeSocketResponse(socket: Socket, response: BrokerResponse): void {
-    const line = `${JSON.stringify(response)}\n`;
+    let line = `${JSON.stringify(response)}\n`;
+    let requiresForcedClose = response.error !== undefined;
     if (line.length > MAX_BROKER_LINE_CHARS) {
-      socket.end(`${JSON.stringify({ id: response.id, error: "turn broker response exceeds size limit" } satisfies BrokerResponse)}\n`);
-      return;
+      line = `${JSON.stringify({ id: response.id, error: "turn broker response exceeds size limit" } satisfies BrokerResponse)}\n`;
+      requiresForcedClose = true;
     }
-    socket.end(line);
+    // Bun on Windows can leave a rejected long-held named pipe half-open after end(), even though
+    // the complete error response was flushed. Successful calls retain the normal close barrier;
+    // rejected calls get a bounded fallback so cancellation cannot leave both processes occupied.
+    const forcedClose = requiresForcedClose ? setTimeout(() => socket.destroy(), 100) : undefined;
+    forcedClose?.unref();
+    socket.end(line, () => {
+      if (forcedClose) clearTimeout(forcedClose);
+      socket.destroy();
+    });
   }
 
   private validateRequest(request: BrokerRequest): void {
@@ -1257,6 +1266,12 @@ export async function callTurnBroker<T>(
     // The server owns response termination. Waiting for the pipe/socket to close before resolving
     // prevents callers from retiring the broker while Bun still has a named-pipe write in flight.
     socket.once("close", finishResponse);
+    // On Windows, Bun can deliver the complete named-pipe response and its EOF without following
+    // with a physical close while our writable side remains open. Close our half after that EOF so
+    // the existing close barrier can settle instead of leaving a revoked MCP invocation hanging.
+    socket.once("end", () => {
+      if (!settled && response) socket.destroy();
+    });
     socket.once("connect", () => socket.write(`${JSON.stringify({ id, ...wireRequest })}\n`));
     socket.on("data", chunk => {
       if (settled || response) return;

@@ -900,6 +900,52 @@ describe("ChatGPT outer-native harness v4", () => {
     sessions.clear();
   });
 
+  test("mid-turn steering retires the superseded revision instead of deadlocking on its tool result", async () => {
+    const sessions = new ChatGptTurnSessions();
+    let settlePhysical!: () => void;
+    const physicalSettlement = new Promise<void>(resolve => { settlePhysical = resolve; });
+    let cancellations = 0;
+    sessions.getOrCreate("old-revision", () => ({
+      mode: "tools",
+      token: new Promise<string>(() => {}),
+      externalProgress: new ChatGptExternalTurnProgress(),
+      browser: new Promise<string>(() => {}),
+      physicalSettlement,
+      trace: new ChatGptTraceFeed(),
+      text: new ChatGptTextFeed(),
+      cancel: () => {
+        cancellations += 1;
+        settlePhysical();
+      },
+    }), "old-trace", "shared-thread", "turn-steered");
+
+    let replacements = 0;
+    const replacement = await sessions.getOrCreateAfterOwnerRetirement(
+      "new-revision",
+      "shared-thread",
+      () => {
+        replacements += 1;
+        return {
+          mode: "read-only" as const,
+          browser: Promise.resolve("replacement"),
+          physicalSettlement: Promise.resolve(),
+          trace: new ChatGptTraceFeed(),
+          text: new ChatGptTextFeed(),
+          cancel: () => {},
+        };
+      },
+      "new-trace",
+      undefined,
+      "turn-steered",
+    );
+
+    expect(replacement.traceId).toBe("new-trace");
+    expect(sessions.find("old-revision")).toBeUndefined();
+    expect(replacements).toBe(1);
+    expect(cancellations).toBe(1);
+    sessions.clear();
+  });
+
   test("retires only the exact active native turn that Codex marked aborted", () => {
     const sessions = new ChatGptTurnSessions();
     const cancelled: string[] = [];
@@ -1554,7 +1600,7 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(response.usage.total_tokens).toBe(usage.totalTokens!);
   });
 
-  test("accepts completion only from the response-scoped final answer action", () => {
+  test("accepts a stopped non-empty response without requiring the final answer action", () => {
     const state = {
       responsePresent: true,
       running: false,
@@ -1563,25 +1609,31 @@ describe("ChatGPT outer-native harness v4", () => {
     };
     expect(chatGptTurnIsComplete(state)).toBe(true);
     expect(chatGptTurnIsComplete({ ...state, responsePresent: false })).toBe(false);
-    expect(chatGptTurnIsComplete({ ...state, completionActionVisible: false })).toBe(false);
+    expect(chatGptTurnIsComplete({ ...state, completionActionVisible: false })).toBe(true);
+    expect(chatGptTurnIsComplete({ ...state, running: true })).toBe(false);
+    expect(chatGptTurnIsComplete({ ...state, currentText: "" })).toBe(false);
   });
 
-  test("requires completed-turn evidence to remain unchanged before accepting it", () => {
+  test("accepts the final answer action immediately and otherwise requires stable stopped output", () => {
     const state = {
       responsePresent: true,
       running: false,
       currentText: "final answer",
       completionActionVisible: true,
     };
+    const actionTracker = new ChatGptCompletionTracker(2_000);
+    expect(actionTracker.update(state, 1_000)).toBe(true);
+
     const tracker = new ChatGptCompletionTracker(2_000);
-    expect(tracker.update(state, 1_000)).toBe(false);
-    expect(tracker.update(state, 2_999)).toBe(false);
-    expect(tracker.update(state, 3_000)).toBe(true);
-    expect(tracker.update({ ...state, currentText: "final answer updated" }, 3_100)).toBe(false);
-    expect(tracker.update({ ...state, currentHtml: "<p>final answer</p>" }, 4_000)).toBe(false);
-    expect(tracker.update({ ...state, currentHtml: "<p>final answer</p><p>hydrated</p>" }, 6_000)).toBe(false);
-    expect(tracker.update({ ...state, currentHtml: "<p>final answer</p><p>hydrated</p>" }, 8_000)).toBe(true);
-    expect(tracker.update({ ...state, running: true }, 8_100)).toBe(false);
+    const withoutAction = { ...state, completionActionVisible: false };
+    expect(tracker.update(withoutAction, 1_000)).toBe(false);
+    expect(tracker.update(withoutAction, 2_999)).toBe(false);
+    expect(tracker.update(withoutAction, 3_000)).toBe(true);
+    expect(tracker.update({ ...withoutAction, currentText: "final answer updated" }, 3_100)).toBe(false);
+    expect(tracker.update({ ...withoutAction, currentHtml: "<p>final answer</p>" }, 4_000)).toBe(false);
+    expect(tracker.update({ ...withoutAction, currentHtml: "<p>final answer</p><p>hydrated</p>" }, 6_000)).toBe(false);
+    expect(tracker.update({ ...withoutAction, currentHtml: "<p>final answer</p><p>hydrated</p>" }, 8_000)).toBe(true);
+    expect(tracker.update({ ...withoutAction, running: true }, 8_100)).toBe(false);
   });
 
   test("preserves GFM formatting while streaming only completed stable DOM blocks", () => {

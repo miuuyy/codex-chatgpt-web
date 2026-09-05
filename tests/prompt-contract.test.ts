@@ -10,6 +10,7 @@ import {
 } from "../src/adapters/chatgpt-web/prompt";
 import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { biggerContextPartCount } from "../src/adapters/chatgpt-web/usage";
+import { estimateTokens } from "../src/lib/token-estimate";
 import type { CodexParsedRequest } from "../src/types";
 
 function request(reasoning: "low" | "medium" | "high" | "xhigh" | "max"): CodexParsedRequest {
@@ -282,6 +283,39 @@ test("Bigger Context compaction preserves history above the retired inline byte 
   for (let index = 1; index <= 6; index += 1) {
     expect(staged).toContain(`multipart-history-${index}-`);
   }
+});
+
+test("Business Bigger Context trims an oldest record that would exceed one Extra High stage", () => {
+  const compact = request("xhigh");
+  compact._compactionRequest = true;
+  compact.context.systemPrompt = [];
+  const denseHistory = Array.from(
+    { length: 100_000 },
+    (_unused, index) => String.fromCharCode(0x4e00 + (index % 20_000)),
+  ).join("");
+  compact.context.messages = [
+    { role: "user", content: `oversized-oldest-${denseHistory}`, timestamp: 1 },
+    { role: "user", content: "preserve-latest-checkpoint", timestamp: 2 },
+  ];
+
+  const multipart = compileChatGptWebPrompt(
+    compact,
+    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: false },
+    undefined,
+    { experimentalMultipartParts: CHATGPT_BIGGER_CONTEXT_PARTS },
+  );
+
+  expect(multipart.trimmedCompactionMessages).toBe(1);
+  expect(multipart.multipart?.parts.join("\n")).not.toContain("oversized-oldest");
+  expect(multipart.multipart?.parts.join("\n")).toContain("preserve-latest-checkpoint");
+  const transactionId = `ctx_${"1".repeat(32)}`;
+  const browserMessages = [
+    ...multipart.multipart!.parts.slice(0, -1).map((payload, index) => (
+      formatChatGptWebMultipartStage(payload, transactionId, index + 1).text
+    )),
+    formatChatGptWebMultipartCommit(multipart.multipart!, transactionId),
+  ];
+  expect(Math.max(...browserMessages.map(message => estimateTokens(message)))).toBeLessThanOrEqual(80_000);
 });
 
 test("Bigger Context minimizes the largest ordered stage instead of overfilling a middle part", () => {

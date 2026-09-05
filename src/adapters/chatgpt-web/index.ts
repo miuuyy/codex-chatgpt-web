@@ -355,6 +355,8 @@ export function createChatGptWebAdapter(
   const configuredCapabilities: ChatGptWebCapabilities = {
     localToolsEnabled: provider.chatgptWeb?.localToolsEnabled === true,
     solAvailable: provider.chatgptWeb?.solAvailable !== false,
+    extraHighAvailable: provider.chatgptWeb?.proAvailable === true
+      || provider.chatgptWeb?.extraHighAvailable === true,
     proAvailable: provider.chatgptWeb?.proAvailable === true,
   };
   const manualInteraction = provider.chatgptWeb?.browserInteractionMode === "manual";
@@ -718,11 +720,6 @@ export function createChatGptWebAdapter(
         traceId,
       );
       activeToken = turnToken;
-      observeCapabilityRetirement(turnToken, externalProgress);
-      if (!tokenSettled) {
-        tokenSettled = true;
-        token.resolve(turnToken);
-      }
       try {
         const compiled = compileChatGptWebPrompt(
           input,
@@ -730,11 +727,25 @@ export function createChatGptWebAdapter(
           turnToken,
           compileOptionsFor(input),
         );
+        // The response observer must not receive a capability until the exact browser prompt has
+        // compiled successfully. Otherwise a preparation failure revokes the just-published token
+        // and the observer races into updateEnvironment(), masking the causal error as
+        // "turn token is invalid or expired".
+        observeCapabilityRetirement(turnToken, externalProgress);
+        if (!tokenSettled) {
+          tokenSettled = true;
+          token.resolve(turnToken);
+        }
         return { ...compiled, release: () => {} };
       } catch (error) {
         await broker.revoke(turnToken);
         activeToken = undefined;
-        throw error;
+        const normalized = error instanceof Error ? error : new Error(String(error));
+        if (!tokenSettled) {
+          tokenSettled = true;
+          token.reject(normalized);
+        }
+        throw normalized;
       }
     };
     const browserTurn = cancellableBrowserTurn(trackBrowserOwner(finalizeCheckpoint(worker.run({

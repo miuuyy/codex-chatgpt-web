@@ -16,6 +16,7 @@ export interface BrowserLoginResult {
   storageStatePath: string;
   accountSurfaceUrl: string;
   solAvailable: boolean;
+  extraHighAvailable: boolean;
   proAvailable: boolean;
 }
 
@@ -43,6 +44,7 @@ interface LoginVerificationMarker {
   authenticated: true;
   verifiedAt: string;
   solAvailable?: boolean;
+  extraHighAvailable?: boolean;
   proAvailable?: boolean;
 }
 
@@ -181,7 +183,11 @@ export async function inspectBrowserLoginCapabilities(config: AppConfig): Promis
   if (!browserLoginStateExists(config)) throw new Error("ChatGPT login state is missing or unverified");
   const inspected = await inspectStoredState(config, config.storageStatePath);
   writeVerificationMarker(config.storageStatePath, inspected);
-  return { solAvailable: inspected.solAvailable, proAvailable: inspected.proAvailable };
+  return {
+    solAvailable: inspected.solAvailable,
+    extraHighAvailable: inspected.extraHighAvailable ?? inspected.proAvailable,
+    proAvailable: inspected.proAvailable,
+  };
 }
 
 export function storedBrowserLoginCapabilities(
@@ -192,6 +198,11 @@ export function storedBrowserLoginCapabilities(
     const marker = JSON.parse(readFileSync(loginVerificationMarkerPath(config.storageStatePath), "utf8")) as Partial<LoginVerificationMarker>;
     return {
       ...(typeof marker.solAvailable === "boolean" ? { solAvailable: marker.solAvailable } : {}),
+      ...(typeof marker.extraHighAvailable === "boolean"
+        ? { extraHighAvailable: marker.extraHighAvailable }
+        : typeof marker.proAvailable === "boolean"
+          ? { extraHighAvailable: marker.proAvailable }
+          : {}),
       ...(typeof marker.proAvailable === "boolean" ? { proAvailable: marker.proAvailable } : {}),
     };
   } catch {
@@ -426,6 +437,7 @@ export async function loginToChatGpt(
       storageStatePath: config.storageStatePath,
       accountSurfaceUrl: page.url(),
       solAvailable: inspected.solAvailable,
+      extraHighAvailable: inspected.extraHighAvailable ?? inspected.proAvailable,
       proAvailable: inspected.proAvailable,
     };
   } finally {

@@ -540,7 +540,19 @@ export class ChatGptTurnSessions {
         ownedKey !== key && session.ownerKey === ownerKey && !session.isPhysicallySettled()
       ));
       if (activeOwner) {
-        const [, ownedSession] = activeOwner;
+        const [ownedKey, ownedSession] = activeOwner;
+        if (nativeTurnId !== undefined && ownedSession.nativeTurnId === nativeTurnId) {
+          // Mid-turn steering keeps Codex's native turn id but changes the user revision (and
+          // therefore the execution key). Waiting for the old browser owner here deadlocks when
+          // this very request also carries the result of its outstanding tool call: the old owner
+          // waits for that result while the new revision waits for the old owner. Retire the
+          // superseded revision first so its pending MCP call receives cancellation and the new
+          // instruction can start on a clean browser surface.
+          this.entries.delete(ownedKey);
+          this.forgetConversationHead(ownedSession);
+          await awaitWithAbort(this.beginRetirement(ownedKey, ownedSession), signal);
+          continue;
+        }
         // A different native message for the same thread is sequential work, not permission to
         // kill the response already using that retained conversation. Wait for its complete
         // browser/launcher settlement; explicit tab close and lifecycle cancellation remain the
