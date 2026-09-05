@@ -769,6 +769,13 @@ export async function throwIfChatGptTerminalErrorAlert(scope: ChatGptTextScope):
   );
 }
 
+export function chatGptToolConfirmationMatcher(appName: string): RegExp {
+  const escapedAppName = appName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(
+    `(?:Allow ChatGPT to use|允许\\s*ChatGPT\\s*使用|允許\\s*ChatGPT\\s*使用)\\s*${escapedAppName}[?？]`,
+  );
+}
+
 export async function resolveChatGptToolConfirmation(
   page: Page,
   appName: string,
@@ -778,17 +785,18 @@ export async function resolveChatGptToolConfirmation(
   onVisible?: () => Promise<void>,
 ): Promise<boolean> {
   const dialog = page.locator('[role="dialog"], [data-testid="tool-approval-card"]')
-    .filter({ hasText: `Allow ChatGPT to use ${appName}?` })
+    .filter({ hasText: chatGptToolConfirmationMatcher(appName) })
     .last();
   if (!await dialog.isVisible().catch(() => false)) return false;
   await onVisible?.();
 
   if (autoApprove) {
     // ChatGPT exposes either "Allow once" or the shorter "Allow" for the
-    // current one-shot approval. Keep the matcher anchored so persistent
-    // actions such as "Always allow" cannot match.
+    // current one-shot approval, including localized variants ("允许一次" / "允许",
+    // "允許一次" / "允許"). Keep the matcher anchored so persistent actions
+    // such as "Always allow" or "Allow low-risk actions" cannot match.
     const allowCurrentAction = dialog
-      .getByRole("button", { name: /^Allow(?: once)?$/ })
+      .getByRole("button", { name: /^\s*(?:Allow(?: once)?|允许(?:一次)?|允許(?:一次)?)\s*$/ })
       .last();
     await allowCurrentAction.waitFor({ state: "visible", timeout: 10_000 });
     await allowCurrentAction.press("Enter");
@@ -803,7 +811,9 @@ export async function resolveChatGptToolConfirmation(
   }
 
   if (!await dialog.isVisible().catch(() => false)) return true;
-  const deny = dialog.getByRole("button", { name: "Deny", exact: true }).last();
+  const deny = dialog
+    .getByRole("button", { name: /^\s*(?:Deny|Decline|拒绝|拒絕)\s*$/ })
+    .last();
   await deny.waitFor({ state: "visible", timeout: 5_000 });
   await deny.press("Enter");
   await dialog.waitFor({ state: "hidden", timeout: 10_000 });

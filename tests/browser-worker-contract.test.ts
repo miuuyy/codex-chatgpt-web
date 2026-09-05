@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Page } from "playwright-core";
-import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, CHATGPT_STOPPED_THINKING_GRACE_MS, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptStoppedThinkingTracker, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptConnectorAttachmentMode, chatGptEffortSelectionRequired, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, CHATGPT_STOPPED_THINKING_GRACE_MS, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptStoppedThinkingTracker, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptConnectorAttachmentMode, chatGptEffortSelectionRequired, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, chatGptToolConfirmationMatcher, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
 import { ensureChatGptPersonalizedConnectorAccess } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
@@ -2481,7 +2481,9 @@ test("unrelated ChatGPT alerts are not terminal", async () => {
 function toolConfirmationPage(options: {
   disappearAfterReads?: number;
   surface?: "dialog" | "card";
-  allowLabel?: "Allow once" | "Allow";
+  allowLabel?: string;
+  denyLabel?: string;
+  title?: string;
 } = {}): {
   page: Page;
   pressed: string[];
@@ -2489,7 +2491,7 @@ function toolConfirmationPage(options: {
   let reads = 0;
   let visible = true;
   const pressed: string[] = [];
-  const availableButtons = [options.allowLabel ?? "Allow once", "Deny"] as const;
+  const availableButtons = [options.allowLabel ?? "Allow once", options.denyLabel ?? "Deny"] as const;
   const button = (name: string | RegExp) => {
     const actualName = availableButtons.find(candidate => (
       typeof name === "string" ? candidate === name : name.test(candidate)
@@ -2506,9 +2508,14 @@ function toolConfirmationPage(options: {
       },
     };
   };
+  const expectedTitle = options.title ?? "Allow ChatGPT to use Codex Native?";
   const dialog = {
-    filter: ({ hasText }: { hasText: string }) => {
-      expect(hasText).toBe("Allow ChatGPT to use Codex Native?");
+    filter: ({ hasText }: { hasText: string | RegExp }) => {
+      if (typeof hasText === "string") {
+        expect(hasText).toBe(expectedTitle);
+      } else {
+        expect(hasText.test(expectedTitle)).toBeTrue();
+      }
       return dialog;
     },
     last: () => dialog,
@@ -2574,6 +2581,49 @@ test("auto-approval recognizes the observed non-dialog approval card", async () 
 
   expect(await resolveChatGptToolConfirmation(fixture.page, "Codex Native", true)).toBeTrue();
   expect(fixture.pressed).toEqual(["Allow once:Enter"]);
+});
+
+test("connector auto-approval accepts Simplified and Traditional Chinese actions", async () => {
+  const zhCnFixture = toolConfirmationPage({
+    title: "允许 ChatGPT 使用 Codex Native？",
+    allowLabel: "允许一次",
+  });
+  expect(await resolveChatGptToolConfirmation(zhCnFixture.page, "Codex Native", true)).toBeTrue();
+  expect(zhCnFixture.pressed).toEqual(["允许一次:Enter"]);
+
+  const zhTwFixture = toolConfirmationPage({
+    title: "允許 ChatGPT 使用 Codex Native？",
+    allowLabel: "允許一次",
+  });
+  expect(await resolveChatGptToolConfirmation(zhTwFixture.page, "Codex Native", true)).toBeTrue();
+  expect(zhTwFixture.pressed).toEqual(["允許一次:Enter"]);
+});
+
+test("an unanswered localized connector approval is denied with localized Deny action", async () => {
+  const zhCnFixture = toolConfirmationPage({
+    title: "允许 ChatGPT 使用 Codex Native？",
+    denyLabel: "拒绝",
+  });
+  expect(await resolveChatGptToolConfirmation(zhCnFixture.page, "Codex Native", false, undefined, 2)).toBeTrue();
+  expect(zhCnFixture.pressed).toEqual(["拒绝:Enter"]);
+
+  const zhTwFixture = toolConfirmationPage({
+    title: "允許 ChatGPT 使用 Codex Native？",
+    denyLabel: "拒絕",
+  });
+  expect(await resolveChatGptToolConfirmation(zhTwFixture.page, "Codex Native", false, undefined, 2)).toBeTrue();
+  expect(zhTwFixture.pressed).toEqual(["拒絕:Enter"]);
+});
+
+test("chatGptToolConfirmationMatcher matches English and Chinese confirmation card titles", () => {
+  const matcher = chatGptToolConfirmationMatcher("Codex Native");
+  expect(matcher.test("Allow ChatGPT to use Codex Native?")).toBeTrue();
+  expect(matcher.test("允许 ChatGPT 使用 Codex Native？")).toBeTrue();
+  expect(matcher.test("允许ChatGPT使用Codex Native？")).toBeTrue();
+  expect(matcher.test("允許 ChatGPT 使用 Codex Native？")).toBeTrue();
+  expect(matcher.test("允許ChatGPT使用Codex Native？")).toBeTrue();
+  expect(matcher.test("Allow ChatGPT to use Another App?")).toBeFalse();
+  expect(matcher.test("允许 ChatGPT 使用 Another App？")).toBeFalse();
 });
 
 test("browser preflight separates model context from one-message transport limits", () => {
