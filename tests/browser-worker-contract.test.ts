@@ -364,6 +364,31 @@ test("launcher page acquisition proves a nonzero operational viewport before DOM
   expect(workerSource).toContain("innerWidth >= width && innerHeight >= height");
 });
 
+test("launcher effort selection refreshes the hidden viewport after navigation and before both effort pickers", () => {
+  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
+  const refreshHelper = workerSource.indexOf("private async refreshLauncherViewport(");
+  const refreshRequest = workerSource.indexOf("refreshViewport: true", refreshHelper);
+  const firstStage = workerSource.indexOf('"effort_selection", browserStageTimeouts.effortSelection');
+  const firstRefresh = workerSource.indexOf("await this.refreshLauncherViewport(turn.traceId);", firstStage);
+  const firstViewport = workerSource.indexOf("await waitForOperationalChatGptViewport(page, signal);", firstRefresh);
+  const firstPicker = workerSource.indexOf("return this.selectModelAndEffort(", firstViewport);
+  const finalStage = workerSource.indexOf('"final_part_effort_selection",', firstPicker);
+  const finalRefresh = workerSource.indexOf("await this.refreshLauncherViewport(turn.traceId);", finalStage);
+  const finalViewport = workerSource.indexOf("await waitForOperationalChatGptViewport(page, signal);", finalRefresh);
+  const finalPicker = workerSource.indexOf("return this.selectModelAndEffort(", finalViewport);
+
+  expect(refreshHelper).toBeGreaterThan(-1);
+  expect(refreshRequest).toBeGreaterThan(refreshHelper);
+  expect(firstStage).toBeGreaterThan(-1);
+  expect(firstRefresh).toBeGreaterThan(firstStage);
+  expect(firstViewport).toBeGreaterThan(firstRefresh);
+  expect(firstPicker).toBeGreaterThan(firstViewport);
+  expect(finalStage).toBeGreaterThan(firstPicker);
+  expect(finalRefresh).toBeGreaterThan(finalStage);
+  expect(finalViewport).toBeGreaterThan(finalRefresh);
+  expect(finalPicker).toBeGreaterThan(finalViewport);
+});
+
 test("Luna turns without a retained conversation never send connector identity alone", () => {
   const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
   const runExclusive = workerSource.slice(workerSource.indexOf("  private async runExclusive("));
@@ -2778,22 +2803,33 @@ test("Bigger Context preflight expands only the total context ceiling and keeps 
 
 test("Bigger Context stages use the lowest account mode that can carry the stage", () => {
   const plus = { localToolsEnabled: false, solAvailable: true, proAvailable: false };
+  const business = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: false };
   const pro = { localToolsEnabled: false, solAvailable: true, proAvailable: true };
-  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 30_000, 200_000).effort).toBe("low");
-  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 30_000, 300_000).effort).toBe("medium");
-  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 80_000, 300_000).effort).toBe("medium");
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, "low", 30_000, 200_000).effort).toBe("low");
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, "medium", 30_000, 300_000).effort).toBe("medium");
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, "high", 80_000, 300_000).effort).toBe("medium");
   expect(() => resolveChatGptWebMultipartStagingMode(
     "gpt-5.6-sol",
     plus,
+    "high",
     80_001,
     300_000,
   )).toThrow("No ChatGPT effort");
-  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 100_000, 500_000).effort).toBe("low");
-  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 100_000, 600_000).effort).toBe("medium");
-  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 104_000, 1_200_000).effort).toBe("max");
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", business, "xhigh", 80_000, 300_000).effort).toBe("medium");
+  expect(() => resolveChatGptWebMultipartStagingMode(
+    "gpt-5.6-sol",
+    business,
+    "xhigh",
+    80_001,
+    300_000,
+  )).toThrow("No ChatGPT effort");
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, "medium", 100_000, 500_000).effort).toBe("medium");
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, "medium", 100_000, 600_000).effort).toBe("medium");
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, "max", 104_000, 1_200_000).effort).toBe("max");
   expect(() => resolveChatGptWebMultipartStagingMode(
     "gpt-5.6-luna",
     { localToolsEnabled: false, solAvailable: false, proAvailable: false },
+    "low",
     10_000,
     20_000,
   )).toThrow("Luna-only");
@@ -3075,7 +3111,7 @@ test("browser DOM health fails closed on a vanished or empty ChatGPT response", 
   };
   expect(missingCompletionAction.update(completedWithoutMarker, 1_000)).toBeUndefined();
   expect(missingCompletionAction.update(completedWithoutMarker, 1_749)).toBeUndefined();
-  expect(missingCompletionAction.update(completedWithoutMarker, 1_750)).toContain("DOM may have changed");
+  expect(missingCompletionAction.update(completedWithoutMarker, 1_750)).toBeUndefined();
 });
 
 test("stalled-turn diagnostics record DOM metrics without response or overlay content", () => {
@@ -3091,11 +3127,15 @@ test("stalled-turn diagnostics record DOM metrics without response or overlay co
   expect(diagnosticSource).not.toMatch(/\bariaLabel:\s*candidate\.getAttribute/);
 });
 
-test("browser completion requires ChatGPT's response-scoped copy action", () => {
+test("browser completion treats ChatGPT's response-scoped copy action as optional strong evidence", () => {
   const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
   const sessionSource = readFileSync(new URL("../src/chatgpt-session.ts", import.meta.url), "utf8");
   expect(sessionSource).toContain('button[data-testid="copy-turn-action-button"]');
+  expect(sessionSource).toContain('button[aria-label="Copy"]');
+  expect(sessionSource).toContain('button[aria-label="复制"]');
+  expect(sessionSource).toContain('button[aria-label="複製"]');
   expect(workerSource).toContain("CHATGPT_COMPLETION_ACTION_SELECTOR");
+  expect(workerSource).toContain("fall back to a bounded text+HTML stability");
   expect(workerSource).not.toContain('root.querySelectorAll<HTMLElement>("button")');
 });
 
@@ -3185,9 +3225,9 @@ test("turn cancellation heuristics defer to proven MCP progress in both wait loo
   expect((worker.match(/domHealthTracker\.clearMissingResponse\(\)/g) ?? []).length).toBe(2);
 });
 
-test("proven MCP progress vetoes every terminal DOM conclusion, not just a missing response", () => {
-  // Tool activity remains authoritative when the response DOM is present but its completion action
-  // has not appeared yet.
+test("proven MCP progress vetoes terminal DOM conclusions while missing actions remain non-terminal", () => {
+  // Tool activity remains authoritative when the response DOM is present. A missing completed-turn
+  // action is no longer itself an error because ChatGPT can virtualize that shared action row.
   const stalled = new ChatGptTurnDomHealthTracker(1_000, 500, 750);
   const answeredWithoutCompletionAction = {
     responsePresent: true,
@@ -3202,7 +3242,7 @@ test("proven MCP progress vetoes every terminal DOM conclusion, not just a missi
   // Once the model genuinely stops, the window starts fresh rather than charging the live stretch.
   expect(stalled.update(answeredWithoutCompletionAction, 10_100)).toBeUndefined();
   expect(stalled.update(answeredWithoutCompletionAction, 10_849)).toBeUndefined();
-  expect(stalled.update(answeredWithoutCompletionAction, 10_850)).toContain("did not expose its completed-turn action");
+  expect(stalled.update(answeredWithoutCompletionAction, 10_850)).toBeUndefined();
 
   const empty = new ChatGptTurnDomHealthTracker(1_000, 500, 750);
   const completedEmpty = {

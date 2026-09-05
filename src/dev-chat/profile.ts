@@ -133,7 +133,9 @@ export function installedLauncherCandidates({
     );
   } else if (platform === "win32") {
     const registeredLocation = windowsInstallLocation?.trim()
-      || (process.platform === "win32" ? registeredWindowsLauncherInstallLocation() : undefined);
+      || (process.platform === "win32" && environment === process.env
+        ? registeredWindowsLauncherInstallLocation()
+        : undefined);
     if (registeredLocation && win32.isAbsolute(registeredLocation)) {
       candidates.push(win32.join(registeredLocation, "Codex Web GPT.exe"));
     } else {

@@ -276,7 +276,7 @@ export async function inspectLauncherBrowserHost(
     expectedProfile?: LauncherBrowserHostProfile;
     timeoutMs?: number;
   } = {},
-): Promise<{ solAvailable?: boolean; proAvailable?: boolean; url: string }> {
+): Promise<{ solAvailable?: boolean; extraHighAvailable?: boolean; proAvailable?: boolean; url: string }> {
   const descriptor = readLauncherBrowserHostDescriptor(descriptorPath);
   if (options.expectedProfile && descriptor.profile !== options.expectedProfile) {
     throw new Error(
@@ -311,13 +311,19 @@ export async function inspectLauncherBrowserHost(
       && (typeof body.solAvailable !== "boolean" || typeof body.proAvailable !== "boolean")) {
       throw new Error("Launcher did not return complete ChatGPT account capability evidence");
     }
-    if (options.detectCapabilities && body.proAvailable === true && body.solAvailable !== true) {
+    const extraHighAvailable = options.detectCapabilities
+      ? (typeof body.extraHighAvailable === "boolean" ? body.extraHighAvailable : body.proAvailable === true)
+      : undefined;
+    if (options.detectCapabilities
+      && ((extraHighAvailable === true && body.solAvailable !== true)
+        || (body.proAvailable === true && extraHighAvailable !== true))) {
       throw new Error("Launcher returned contradictory ChatGPT account capability evidence");
     }
     return {
       url: body.url,
       ...(options.detectCapabilities ? {
         solAvailable: body.solAvailable as boolean,
+        extraHighAvailable: extraHighAvailable as boolean,
         proAvailable: body.proAvailable as boolean,
       } : {}),
     };

@@ -61,6 +61,23 @@ describe("fixed ChatGPT Web model routes", () => {
       .toThrow("Pro is not available for this account");
   });
 
+  test("exposes Extra High independently when a four-step Business picker has no Pro row", () => {
+    const business = {
+      solAvailable: true,
+      extraHighAvailable: true,
+      proAvailable: false,
+    };
+    expect(availableChatGptWebModelRoutes(business).map(route => route.slug)).toEqual([
+      "chatgpt-web/light",
+      "chatgpt-web/medium",
+      "chatgpt-web/high",
+      "chatgpt-web/extra-high",
+    ]);
+    expect(requireChatGptWebModelRoute("chatgpt-web/extra-high", business).adapterEffort).toBe("xhigh");
+    expect(() => requireChatGptWebModelRoute("chatgpt-web/pro", business))
+      .toThrow("Pro is not available for this account");
+  });
+
   test("exposes Luna and Think when the authenticated account has no Sol selector", () => {
     const free = { solAvailable: false, proAvailable: false };
     expect(availableChatGptWebModelRoutes(free)).toEqual(CHATGPT_WEB_LUNA_MODEL_ROUTES);

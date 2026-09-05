@@ -251,6 +251,13 @@ function validateConfig(config, descriptorPath, platform = process.platform, lau
       throw new Error(`Runtime configuration has an invalid ${key}`);
     }
   }
+  if (config.extraHighAvailable === undefined) {
+    // Released configs before the capability split used proAvailable as the single extended-mode
+    // bit. Preserve that meaning until setup performs a fresh browser capability inspection.
+    config.extraHighAvailable = config.proAvailable === true;
+  } else if (typeof config.extraHighAvailable !== "boolean") {
+    throw new Error("Runtime configuration has an invalid extraHighAvailable");
+  }
   if (config.experimentalBiggerContext !== undefined
     && typeof config.experimentalBiggerContext !== "boolean") {
     throw new Error("Runtime configuration has an invalid experimentalBiggerContext");
@@ -261,6 +268,12 @@ function validateConfig(config, descriptorPath, platform = process.platform, lau
   }
   if (config.proAvailable && !config.solAvailable) {
     throw new Error("Runtime configuration cannot enable Pro without Sol");
+  }
+  if (config.extraHighAvailable && !config.solAvailable) {
+    throw new Error("Runtime configuration cannot enable Extra High without Sol");
+  }
+  if (config.proAvailable && !config.extraHighAvailable) {
+    throw new Error("Runtime configuration cannot enable Pro without Extra High");
   }
   if (!Array.isArray(config.runtimeCommand)
     || config.runtimeCommand.length === 0

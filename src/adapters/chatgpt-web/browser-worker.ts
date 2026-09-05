@@ -942,6 +942,7 @@ export function assertChatGptWebMultipartInputWithinLimits(
 export function resolveChatGptWebMultipartStagingMode(
   modelId: string,
   capabilities: ChatGptWebCapabilities,
+  requestedEffort: ChatGptWebModelMode["effort"],
   maxStageMessageTokens: number,
   maxStageChars: number,
 ): ChatGptWebModelMode {
@@ -955,15 +956,19 @@ export function resolveChatGptWebMultipartStagingMode(
     throw new Error(`ChatGPT Bigger Context staging mode is not defined for model: ${modelId}`);
   }
   const efforts: readonly ChatGptWebModelMode["effort"][] = capabilities.proAvailable
-    ? ["low", "medium", "max"]
-    : ["low", "medium"];
+    ? ["medium", "max"]
+    : capabilities.extraHighAvailable
+      ? ["medium", "xhigh"]
+      : ["low", "medium"];
+  const requestedContextWindow = resolveChatGptWebContextLimits(
+    modelId,
+    requestedEffort,
+    capabilities,
+  ).contextWindow;
   for (const effort of efforts) {
     const mode = resolveChatGptWebModelMode(modelId, effort, capabilities);
-    const contextLimits = resolveChatGptWebContextLimits(
-      modelId,
-      effort,
-      { ...capabilities, experimentalBiggerContext: false },
-    );
+    const contextLimits = resolveChatGptWebContextLimits(modelId, effort, capabilities);
+    if (contextLimits.contextWindow < requestedContextWindow) continue;
     const limits = resolveChatGptWebTransportLimits(modelId, effort, capabilities);
     // Bigger Context multiplies the accumulated transaction ceiling, not the capacity of one
     // message. Plus does not expose a separate measured message-token boundary, so its ordinary
@@ -1228,10 +1233,13 @@ export function chatGptTurnIsComplete(state: {
   currentHtml?: string;
   completionActionVisible: boolean;
 }): boolean {
+  // The action row is useful positive evidence, but it is not a protocol boundary. ChatGPT has
+  // changed/virtualized that row independently of the assistant response DOM, including across
+  // multiple tabs at once. A stopped generator with a non-empty response becomes a completion
+  // candidate; ChatGptCompletionTracker then requires either the action row or a stable DOM window.
   return state.responsePresent
     && !state.running
-    && state.currentText.length > 0
-    && state.completionActionVisible;
+    && state.currentText.length > 0;
 }
 
 export type ChatGptSubmissionEvidence = "user_turn" | "assistant_turn" | "generation_running" | "mcp_tool_call";
@@ -1331,6 +1339,7 @@ export function chatGptReboundTurnIdentity(
 export class ChatGptCompletionTracker {
   private candidate?: { signature: string; since: number };
   private lastToolBatchRevision = 0;
+  private sawExternalToolCallsInFlight = false;
   private postToolAnswerBaselineText?: string;
   private missingPostToolAnswerSince?: number;
 
@@ -1368,6 +1377,7 @@ export class ChatGptCompletionTracker {
     // currently looks like. Completing here would return a truncated answer and retire the turn
     // while its own tool calls were still in flight.
     if (state.externalToolCallsInFlight) {
+      this.sawExternalToolCallsInFlight = true;
       this.candidate = undefined;
       this.missingPostToolAnswerSince = undefined;
       return false;
@@ -1389,6 +1399,15 @@ export class ChatGptCompletionTracker {
       this.candidate = undefined;
       return false;
     }
+    // A response-scoped completed-turn action is still the strongest UI signal and may commit
+    // immediately. When the action row is absent, fall back to a bounded text+HTML stability
+    // window. Outstanding Codex tool calls were rejected above, so this cannot truncate a tool loop.
+    if (state.completionActionVisible
+      && this.lastToolBatchRevision === 0
+      && !this.sawExternalToolCallsInFlight) {
+      this.candidate = undefined;
+      return true;
+    }
     if (this.candidate?.signature !== signature) {
       this.candidate = { signature, since: now };
       return false;
@@ -1401,12 +1420,13 @@ export class ChatGptTurnDomHealthTracker {
   private sawResponse = false;
   private missingResponseSince?: number;
   private emptyCompletionSince?: number;
-  private missingCompletionAction?: { text: string; since: number };
 
   constructor(
     private readonly missingResponseMs = CHATGPT_RESPONSE_DOM_GRACE_MS,
     private readonly emptyCompletionMs = CHATGPT_EMPTY_RESPONSE_GRACE_MS,
-    private readonly missingCompletionActionMs = CHATGPT_COMPLETION_ACTION_GRACE_MS,
+    // Retained as a third constructor parameter for compatibility with older tests/callers. A
+    // missing action row is no longer a DOM-health failure; completion uses stability instead.
+    _legacyMissingCompletionActionMs = CHATGPT_COMPLETION_ACTION_GRACE_MS,
   ) {}
 
   /**
@@ -1434,7 +1454,6 @@ export class ChatGptTurnDomHealthTracker {
       // no window may accrue while the model is provably working.
       this.missingResponseSince = undefined;
       this.emptyCompletionSince = undefined;
-      this.missingCompletionAction = undefined;
       return undefined;
     }
     if (state.responsePresent) {
@@ -1461,17 +1480,6 @@ export class ChatGptTurnDomHealthTracker {
       }
     }
 
-    const missingCompletionAction = state.responsePresent
-      && !state.running
-      && state.currentText.length > 0
-      && !state.completionActionVisible;
-    if (!missingCompletionAction) {
-      this.missingCompletionAction = undefined;
-    } else if (this.missingCompletionAction?.text !== state.currentText) {
-      this.missingCompletionAction = { text: state.currentText, since: now };
-    } else if (now - this.missingCompletionAction.since >= this.missingCompletionActionMs) {
-      return "ChatGPT stopped generating but did not expose its completed-turn action; the ChatGPT DOM may have changed";
-    }
     return undefined;
   }
 }
@@ -2105,6 +2113,7 @@ export class ChatGptBrowserWorker {
     temporary: true;
     url: string;
     solAvailable?: boolean;
+    extraHighAvailable?: boolean;
     proAvailable?: boolean;
   }> {
     return this.enqueueMaintenance("session inspection", () => this.inspectSessionExclusive(detectCapabilities));
@@ -3558,6 +3567,7 @@ export class ChatGptBrowserWorker {
     temporary: true;
     url: string;
     solAvailable?: boolean;
+    extraHighAvailable?: boolean;
     proAvailable?: boolean;
   }> {
     const page = await this.ensurePage();
@@ -4142,6 +4152,16 @@ export class ChatGptBrowserWorker {
     }
   }
 
+  private async refreshLauncherViewport(traceId: string): Promise<void> {
+    if (!this.config.browserHostDescriptorPath) return;
+    await notifyLauncherTurn(this.config.browserHostDescriptorPath, {
+      phase: "heartbeat",
+      traceId,
+      helperPid: process.pid,
+      refreshViewport: true,
+    });
+  }
+
   private async runBrowserTurn(
     turn: BrowserTurn,
     launcherSurfaceId?: string,
@@ -4202,6 +4222,7 @@ export class ChatGptBrowserWorker {
         ? resolveChatGptWebMultipartStagingMode(
           turn.modelId,
           browserCapabilities,
+          requestedMode.effort,
           maxStageMessageTokens!,
           maxStageChars!,
         )
@@ -4294,12 +4315,7 @@ export class ChatGptBrowserWorker {
                   : turn.abortSignal
                     ? AbortSignal.any([stageSignal, turn.abortSignal])
                     : stageSignal;
-                await notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
-                  phase: "heartbeat",
-                  traceId: turn.traceId,
-                  helperPid: process.pid,
-                  refreshViewport: true,
-                });
+                await this.refreshLauncherViewport(turn.traceId);
                 const rebound = await connectLauncherBrowserHost(
                   this.config.browserHostDescriptorPath!,
                   browserStageTimeouts.browserPage,
@@ -4391,15 +4407,26 @@ export class ChatGptBrowserWorker {
         requestedMode.effort,
         stagingMode.effort,
       )) {
-        mode = await this.runStage(turn.traceId, "effort_selection", browserStageTimeouts.effortSelection, () => (
-          this.selectModelAndEffort(
+        mode = await this.runStage(turn.traceId, "effort_selection", browserStageTimeouts.effortSelection, async (stageSignal) => {
+          const signal = turn.abortSignal
+            ? AbortSignal.any([stageSignal, turn.abortSignal])
+            : stageSignal;
+          // Temporary Chat navigation can recreate the renderer after the initial launcher-page
+          // viewport check. Electron may then collapse the hidden WebContentsView back to 0x0 even
+          // though the page and model control remain present in the DOM. Reapply the launcher's
+          // background viewport contract immediately before the first coordinate-bearing UI action.
+          if (launcherSurfaceId && this.config.browserHostDescriptorPath) {
+            await this.refreshLauncherViewport(turn.traceId);
+          }
+          await waitForOperationalChatGptViewport(page, signal);
+          return this.selectModelAndEffort(
             page,
             turn.modelId,
             stagingMode.effort,
             browserCapabilities,
             checkpoint => diagnostics.capture(page, checkpoint),
-          )
-        ));
+          );
+        });
       }
       await diagnostics.capture(page, "effort-selection-complete");
 
@@ -4493,13 +4520,24 @@ export class ChatGptBrowserWorker {
             turn.traceId,
             "final_part_effort_selection",
             browserStageTimeouts.effortSelection,
-            () => this.selectModelAndEffort(
-              page,
-              turn.modelId,
-              requestedMode.effort,
-              browserCapabilities,
-              checkpoint => diagnostics.capture(page, `final-part-${checkpoint}`),
-            ),
+            async (stageSignal) => {
+              const signal = turn.abortSignal
+                ? AbortSignal.any([stageSignal, turn.abortSignal])
+                : stageSignal;
+              // Multipart acknowledgement can also leave a hidden launcher renderer with a stale
+              // 0x0 viewport. Refresh before restoring the user's final effort level as well.
+              if (launcherSurfaceId && this.config.browserHostDescriptorPath) {
+                await this.refreshLauncherViewport(turn.traceId);
+              }
+              await waitForOperationalChatGptViewport(page, signal);
+              return this.selectModelAndEffort(
+                page,
+                turn.modelId,
+                requestedMode.effort,
+                browserCapabilities,
+                checkpoint => diagnostics.capture(page, `final-part-${checkpoint}`),
+              );
+            },
           );
           await diagnostics.capture(page, "final-part-effort-selected");
         }
@@ -4795,6 +4833,14 @@ export class ChatGptBrowserWorker {
           });
           if (!completionReady) completionFenceRevision = undefined;
           if (completionReady) {
+            if (!snapshot.completionActionVisible) {
+              // The stability fallback is now itself final-completion evidence. Flush any mutable
+              // final commentary/status block exactly as the legacy action row used to do.
+              for (const trace of visibleTrace.observe(snapshot.traceBlocks, true)) {
+                if (trace.kind === "commentary") turn.onCommentary?.(trace.text, trace.continuation === true);
+                else turn.onReasoningSummary?.(trace.text, trace.continuation === true);
+              }
+            }
             if (turn.completionFence) {
               if (completionFenceRevision === undefined) {
                 const revision = await turn.completionFence.begin();

@@ -156,7 +156,7 @@ test("a complete authenticated composer with no effort selector is Luna-only", a
   await expect(detectChatGptAccountCapabilities(page as never, {
     selectorTimeoutMs: 100,
     stableAbsenceMs: 0,
-  })).resolves.toEqual({ solAvailable: false, proAvailable: false });
+  })).resolves.toEqual({ solAvailable: false, extraHighAvailable: false, proAvailable: false });
 });
 
 test("a transient effort control does not turn a Luna-only account into Sol", async () => {
@@ -186,7 +186,7 @@ test("a transient effort control does not turn a Luna-only account into Sol", as
   await expect(detectChatGptAccountCapabilities(page as never, {
     selectorTimeoutMs: 100,
     stableAbsenceMs: 0,
-  })).resolves.toEqual({ solAvailable: false, proAvailable: false });
+  })).resolves.toEqual({ solAvailable: false, extraHighAvailable: false, proAvailable: false });
   expect(visibilityReads).toBe(2);
 });
 
@@ -239,7 +239,11 @@ function reasoningPicker(options: { max?: string; delay?: number; missing?: bool
 
 test.each([0, 50])("capabilities wait for the visible container and read its hidden semantic input (delay=%s)", async delay => {
   const fixture = reasoningPicker({ delay });
-  await expect(detectChatGptAccountCapabilities(fixture.page as never)).resolves.toEqual({ solAvailable: true, proAvailable: true });
+  await expect(detectChatGptAccountCapabilities(fixture.page as never)).resolves.toEqual({
+    solAvailable: true,
+    extraHighAvailable: true,
+    proAvailable: true,
+  });
 });
 
 test("an absent effort slider cannot turn three model rows into a saved non-Pro capability", async () => {
@@ -248,8 +252,20 @@ test("an absent effort slider cannot turn three model rows into a saved non-Pro 
 });
 
 test("the authoritative three-step range is non-Pro; a malformed range fails closed", async () => {
-  await expect(detectChatGptAccountCapabilities(reasoningPicker({ max: "2" }).page as never)).resolves.toEqual({ solAvailable: true, proAvailable: false });
+  await expect(detectChatGptAccountCapabilities(reasoningPicker({ max: "2" }).page as never)).resolves.toEqual({
+    solAvailable: true,
+    extraHighAvailable: false,
+    proAvailable: false,
+  });
   await expect(detectChatGptAccountCapabilities(reasoningPicker({ max: "bad" }).page as never)).rejects.toThrow("model controls are unavailable");
+});
+
+test("the authoritative four-step range enables Extra High without enabling Pro", async () => {
+  await expect(detectChatGptAccountCapabilities(reasoningPicker({ max: "3" }).page as never)).resolves.toEqual({
+    solAvailable: true,
+    extraHighAvailable: true,
+    proAvailable: false,
+  });
 });
 
 test("Pro selection changes the hidden slider through its visible owner, never through model rows", async () => {

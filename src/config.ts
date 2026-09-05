@@ -118,6 +118,8 @@ export interface AppConfig {
   brokerSocketPath: string;
   headed: boolean;
   solAvailable: boolean;
+  /** Separate from Pro: current Business UI may expose Extra High without exposing Pro. */
+  extraHighAvailable?: boolean;
   proAvailable: boolean;
   experimentalBiggerContext: boolean;
   /** Explicitly install the additional Pro-sized model row while Zero Risk is active. */
@@ -240,6 +242,7 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     brokerSocketPath: defaultBrokerEndpoint(home),
     headed: true,
     solAvailable: true,
+    extraHighAvailable: false,
     proAvailable: false,
     experimentalBiggerContext: false,
     zeroRiskProEnabled: false,
@@ -513,6 +516,9 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (parsed.proAvailable !== undefined && typeof parsed.proAvailable !== "boolean") {
     throw new Error(`Invalid proAvailable in ${path}`);
   }
+  if (parsed.extraHighAvailable !== undefined && typeof parsed.extraHighAvailable !== "boolean") {
+    throw new Error(`Invalid extraHighAvailable in ${path}`);
+  }
   if (parsed.solAvailable !== undefined && typeof parsed.solAvailable !== "boolean") {
     throw new Error(`Invalid solAvailable in ${path}`);
   }
@@ -529,6 +535,11 @@ function parseConfig(value: unknown, path: string): AppConfig {
   }
   const solAvailable = parsed.solAvailable !== false;
   const proAvailable = parsed.proAvailable === true;
+  // Persisted 4.x/early-5.x configs predate the separate Extra High capability. Their Pro bit
+  // historically meant "the account exposes the extended picker", so inherit it on load.
+  const extraHighAvailable = parsed.extraHighAvailable === undefined
+    ? proAvailable
+    : parsed.extraHighAvailable === true;
   const experimentalBiggerContext = parsed.experimentalBiggerContext === true;
   const zeroRiskProEnabled = parsed.zeroRiskProEnabled === true;
   if (browserInteractionMode === "manual" && experimentalBiggerContext) {
@@ -536,6 +547,12 @@ function parseConfig(value: unknown, path: string): AppConfig {
   }
   if (proAvailable && !solAvailable) {
     throw new Error(`Invalid ChatGPT account capabilities in ${path}: Pro requires Sol`);
+  }
+  if (extraHighAvailable && !solAvailable) {
+    throw new Error(`Invalid ChatGPT account capabilities in ${path}: Extra High requires Sol`);
+  }
+  if (proAvailable && !extraHighAvailable) {
+    throw new Error(`Invalid ChatGPT account capabilities in ${path}: Pro requires Extra High`);
   }
   return {
     ...parsed,
@@ -545,6 +562,7 @@ function parseConfig(value: unknown, path: string): AppConfig {
     browserInteractionMode,
     subagentProtocol,
     solAvailable,
+    extraHighAvailable,
     proAvailable,
     experimentalBiggerContext,
     zeroRiskProEnabled,
@@ -559,6 +577,7 @@ export function saveConfig(config: AppConfig): void {
 
 export function providerConfig(config: AppConfig): CodexProviderConfig {
   const manual = config.browserInteractionMode === "manual";
+  const extraHighAvailable = config.proAvailable || config.extraHighAvailable === true;
   const model = manual
     ? CHATGPT_WEB_ZERO_RISK_BACKEND_MODEL
     : config.solAvailable ? "gpt-5.6-sol" : "gpt-5.6-luna";
@@ -571,7 +590,13 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
   const efforts = manual
     ? ["low"]
     : config.solAvailable
-    ? ["low", "medium", "high", "xhigh", ...(config.proAvailable ? ["max"] : [])]
+    ? [
+      "low",
+      "medium",
+      "high",
+      ...(extraHighAvailable ? ["xhigh"] : []),
+      ...(config.proAvailable ? ["max"] : []),
+    ]
     : ["low", "medium"];
   return {
     adapter: "chatgpt-web",
@@ -599,6 +624,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       headed: config.headed,
       localToolsEnabled: config.mode === "full",
       solAvailable: manual ? false : config.solAvailable,
+      extraHighAvailable: manual ? false : extraHighAvailable,
       proAvailable: manual ? false : config.proAvailable,
       experimentalBiggerContext: manual ? false : config.experimentalBiggerContext,
       ...(config.stallTimeoutSec !== undefined ? { stallTimeoutSec: config.stallTimeoutSec } : {}),
