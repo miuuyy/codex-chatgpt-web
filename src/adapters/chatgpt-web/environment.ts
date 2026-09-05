@@ -92,6 +92,13 @@ function itemTurnId(value: unknown): string | undefined {
   return typeof turnId === "string" ? turnId : undefined;
 }
 
+function isSelectedSkillInstruction(value: Record<string, unknown>): boolean {
+  const metadata = record(value.internal_chat_message_metadata_passthrough);
+  const kinds = metadata?.content_item_kinds;
+  return Array.isArray(kinds)
+    && kinds.some(kind => kind === "skills.selected_skill_instructions");
+}
+
 function rawMessageText(value: Record<string, unknown>): string {
   if (typeof value.content === "string") return value.content;
   if (!Array.isArray(value.content)) return "";
@@ -483,18 +490,18 @@ function rawEnvironmentText(parsed: CodexParsedRequest): string | undefined {
   const current = canonicalMetadataEnvironmentBeforeUser(input, activeUserIndex, clientTurnMetadata(parsed));
   if (current) return current;
 
-  // A skill invocation appends another server-owned user item after the real instruction. Recover
-  // the earlier current-turn environment/prompt pair only through canonical metadata, and bind all
-  // declared roots to metadata workspaces so user-authored XML cannot widen filesystem authority.
   const metadata = clientTurnMetadata(parsed);
-  let crossedAssistantOutput = false;
-  for (let index = activeUserIndex - 1; index > 0; index -= 1) {
-    crossedAssistantOutput ||= hasAssistantOutputBetween(input, index, index + 1);
-    // Replayed untagged history is not a same-turn skill invocation. Only explicit current-turn
-    // provenance may cross an assistant response; otherwise resolve from the native rollout.
-    if (crossedAssistantOutput && itemTurnId(input[index]) !== turnId) continue;
-    const sameTurn = canonicalMetadataEnvironmentBeforeUser(input, index, metadata, true);
-    if (sameTurn) return sameTurn;
+
+  const activeUser = activeUserIndex >= 0 ? record(input[activeUserIndex]) : undefined;
+  if (activeUser && isSelectedSkillInstruction(activeUser)) {
+    // Codex appends selected skill instructions as a server-owned user item. Resolve the
+    // environment from the earlier same-turn environment/prompt pair, authenticated by native
+    // turn metadata and canonical workspace/sandbox metadata. A literal <skill> tag without the
+    // provenance marker stays an ordinary user instruction and cannot trigger this recovery path.
+    for (let index = activeUserIndex - 1; index > 0; index -= 1) {
+      const sameTurn = canonicalMetadataEnvironmentBeforeUser(input, index, metadata, true);
+      if (sameTurn) return sameTurn;
+    }
   }
 
   // An attempted current update takes precedence over all older authority, even when its native
@@ -517,7 +524,6 @@ function rawEnvironmentText(parsed: CodexParsedRequest): string | undefined {
   const currentThreadId = typeof metadata?.thread_id === "string" && metadata.thread_id.trim()
     ? metadata.thread_id
     : undefined;
-  const activeUser = record(input[activeUserIndex]);
   const activeUserOwned = activeUser?.type === "message"
     && activeUser.role === "user"
     && typeof activeUser.id === "string"
