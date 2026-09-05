@@ -91,6 +91,23 @@ export type UpdateState =
   | { status: "available" | "downloading" | "installing"; version: string }
   | { status: "error"; message: string };
 
+export interface WebUsageWindow {
+  completed: number;
+  failed: number;
+  rateLimited: number;
+}
+
+export interface WebUsageReport {
+  generatedAt: string;
+  last24h: WebUsageWindow;
+  last7d: WebUsageWindow;
+  lastRateLimitAt: string | null;
+  lastFailureAt: string | null;
+  lastFailureError: string | null;
+  scannedTurns: number;
+  truncated: boolean;
+}
+
 export interface LauncherSnapshot {
   profile: LauncherProfile;
   profilePaths: {
@@ -155,6 +172,7 @@ export interface LauncherApi {
   setMcpStep(step: number): Promise<LauncherState>;
   setAutostart(enabled: boolean): Promise<{ state: LauncherState; supported: boolean; enabled: boolean }>;
   setBiggerContext(enabled: boolean): Promise<LauncherState>;
+  webUsage(): Promise<WebUsageReport>;
   setZeroRiskPro(enabled: boolean): Promise<LauncherState>;
   setBrowserInteractionMode(mode: BrowserInteractionMode): Promise<{
     state: LauncherState;

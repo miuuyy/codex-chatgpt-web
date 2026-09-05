@@ -1915,6 +1915,35 @@ code {
   padding: 12px 0;
 }
 
+.web-usage-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--color-border-light);
+}
+
+.web-usage-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.web-usage-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.web-usage-grid strong {
+  font-size: 20px;
+}
+
+.web-usage-grid span,
+.web-usage-panel small {
+  opacity: 0.7;
+}
+
 .language-menu {
   position: relative;
   z-index: 1;

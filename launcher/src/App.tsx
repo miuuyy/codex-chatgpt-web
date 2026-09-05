@@ -21,6 +21,7 @@ import type {
   LogRecord,
   OperationState,
   Surface,
+  WebUsageReport,
 } from "./types";
 
 const api = window.codexWebLauncher;
@@ -1721,6 +1722,8 @@ function SettingsSurface({
         </NoticeRow>
       ) : null}
 
+      <SectionHeading label={copy.webUsage} spaced />
+      <WebUsagePanel copy={copy} />
       <SectionHeading label={copy.diagnostics} spaced />
       <button className="diagnostic-row" disabled={busy} onClick={() => void runDoctor()} type="button">
         <Icon name="activity" />
@@ -2011,6 +2014,57 @@ function TutorialVideo({ copy, label, src }: { copy: Copy; label: string; src: s
         document.body,
       ) : null}
     </>
+  );
+}
+
+function WebUsagePanel({ copy }: { copy: Copy }) {
+  const [report, setReport] = useState<WebUsageReport | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      if (!api) return;
+      api.webUsage()
+        .then((next) => {
+          if (cancelled) return;
+          setReport(next);
+          setFailed(false);
+        })
+        .catch(() => {
+          if (!cancelled) setFailed(true);
+        });
+    };
+    load();
+    const timer = setInterval(load, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+  const formatTime = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : copy.webUsageNever);
+  return (
+    <div className="web-usage-panel">
+      <div className="web-usage-grid">
+        <div>
+          <strong>{report ? report.last24h.completed + report.last24h.failed : "-"}</strong>
+          <span>{copy.webUsageLast24h}</span>
+        </div>
+        <div>
+          <strong>{report ? report.last7d.completed + report.last7d.failed : "-"}</strong>
+          <span>{copy.webUsageLast7d}</span>
+        </div>
+        <div>
+          <strong>{report && report.last7d.rateLimited > 0 ? copy.webUsageLimited : copy.webUsageNormal}</strong>
+          <span>{copy.webUsageStatus}</span>
+        </div>
+      </div>
+      <p>
+        {failed || !report
+          ? copy.webUsageUnavailable
+          : `${copy.webUsageLastRateLimit}: ${formatTime(report.lastRateLimitAt)}`}
+      </p>
+      <small>{copy.webUsageNote}</small>
+    </div>
   );
 }
 

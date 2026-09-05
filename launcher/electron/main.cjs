@@ -35,6 +35,7 @@ const {
   nextSessionRefreshReminderAt,
   validateSidebarState,
 } = require("./state.cjs");
+const { scanWebUsage } = require("./usage-scan.cjs");
 const {
   MIN_WINDOW_BOUNDS,
   readWindowState,
@@ -826,6 +827,7 @@ function registerIpc({ logger, stateStore }) {
   });
   handle("launcher:sidebar-state", (_event, value) => stateStore.update(validateSidebarState(value)));
   handle("launcher:logs", (_event, limit) => logger.recent(limit));
+  handle("launcher:web-usage", () => scanWebUsage(CORE_HOME));
   handle("launcher:export-logs", async () => {
     const date = new Date().toISOString().slice(0, 10);
     const copy = nativeCopyFor(stateStore.read().language);
