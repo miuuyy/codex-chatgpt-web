@@ -356,11 +356,11 @@ test("Zero Risk keeps image handoff manual and says so in the paste instruction"
       { headers: new Headers() },
       event => events.push(event),
     );
-    expect(manualPrompt).toContain('"type":"image_attachment"');
-    expect(manualPrompt).toContain("image the user manually attached to this ChatGPT message");
+    expect(manualPrompt).not.toContain('"type":"image_attachment"');
+    expect(manualPrompt).toContain("Images from the replayed Codex context are intentionally omitted");
     expect(events.some(event => event.type === "text_delta"
       && event.phase === "commentary"
-      && event.text.includes("add any images yourself because Zero Risk cannot transfer them"))).toBeTrue();
+      && event.text.includes("Images from the Codex context are intentionally omitted"))).toBeTrue();
     expect(events.filter((event): event is Extract<AdapterEvent, { type: "text_delta" }> => (
       event.type === "text_delta" && event.phase === "final_answer"
     )).map(event => event.text).join(""))

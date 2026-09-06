@@ -1366,7 +1366,7 @@ export class ChatGptCompletionTracker {
 
   constructor(
     private readonly stableMs = CHATGPT_COMPLETION_SETTLE_MS,
-    private readonly missingPostToolAnswerMs = CHATGPT_COMPLETION_ACTION_GRACE_MS,
+    private readonly postToolCompletionGraceMs = CHATGPT_COMPLETION_ACTION_GRACE_MS,
   ) {}
 
   needsToolBatchObservation(revision: number): boolean {
@@ -1393,7 +1393,8 @@ export class ChatGptCompletionTracker {
     },
     now = Date.now(),
   ): boolean {
-    const signature = `${state.currentText}\0${state.currentHtml ?? state.currentText}`;
+    const signature = `${state.currentText}\0${state.currentHtml ?? state.currentText}`
+      + `\0${state.completionActionVisible ? "completion-action" : "no-completion-action"}`;
     // An outstanding tool call proves the model has more to say, whatever the rendered message
     // currently looks like. Completing here would return a truncated answer and retire the turn
     // while its own tool calls were still in flight.
@@ -1410,7 +1411,7 @@ export class ChatGptCompletionTracker {
         return false;
       }
       this.missingPostToolAnswerSince ??= now;
-      if (now - this.missingPostToolAnswerSince >= this.missingPostToolAnswerMs) {
+      if (now - this.missingPostToolAnswerSince >= this.postToolCompletionGraceMs) {
         throw new Error("ChatGPT completed without producing a final answer after its last Codex tool call");
       }
       return false;
@@ -1420,20 +1421,28 @@ export class ChatGptCompletionTracker {
       this.candidate = undefined;
       return false;
     }
-    // A response-scoped completed-turn action is still the strongest UI signal and may commit
-    // immediately. When the action row is absent, fall back to a bounded text+HTML stability
-    // window. Outstanding Codex tool calls were rejected above, so this cannot truncate a tool loop.
-    if (state.completionActionVisible
-      && this.lastToolBatchRevision === 0
-      && !this.sawExternalToolCallsInFlight) {
+    const sawToolActivity = this.lastToolBatchRevision > 0 || this.sawExternalToolCallsInFlight;
+    // A response-scoped completed-turn action is the strongest UI signal. A turn that never used
+    // Codex tools can commit immediately on it. After tool activity, keep the ordinary short settle
+    // window so a transient action-row render cannot race the final tool-result projection.
+    if (state.completionActionVisible && !sawToolActivity) {
       this.candidate = undefined;
       return true;
     }
+
     if (this.candidate?.signature !== signature) {
       this.candidate = { signature, since: now };
       return false;
     }
-    return now - this.candidate.since >= this.stableMs;
+    // Current ChatGPT builds sometimes virtualize the completed-turn action row, so retain a
+    // fallback instead of requiring Copy forever. For turns that never used Codex tools, the short
+    // DOM-stability window remains sufficient. After tool activity, however, the same short window
+    // with no action row is indistinguishable from an inter-tool idle gap; only release that weaker
+    // state after the much longer action grace. A visible action row returns to the short settle.
+    const settleMs = sawToolActivity && !state.completionActionVisible
+      ? this.postToolCompletionGraceMs
+      : this.stableMs;
+    return now - this.candidate.since >= settleMs;
   }
 }
 

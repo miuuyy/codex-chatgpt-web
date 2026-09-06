@@ -155,8 +155,12 @@ export function withoutRetiredTurnHandles(contextJson: string): string {
   return contextJson.replace(RETIRED_TURN_HANDLE, (_handle, kind: string) => `[retired ${kind} handle]`);
 }
 
-/** ChatGPT accepts at most this many attachments on one message. */
-export const CHATGPT_MAX_INPUT_IMAGES = 10;
+/**
+ * The Web bridge intentionally forwards no context images. Replayed screenshots are noisy in
+ * long tasks and make every browser turn larger; visual work should remain on the native Codex
+ * side instead of being silently re-uploaded to ChatGPT Web.
+ */
+export const CHATGPT_MAX_INPUT_IMAGES = 0;
 
 /**
  * ChatGPT's current `/backend-api/f/conversation` edge rejects large inline JSON bodies before a
@@ -173,8 +177,7 @@ export function chatGptPromptJsonBytes(text: string): number {
   return Buffer.byteLength(JSON.stringify(text), "utf8");
 }
 
-const DROPPED_IMAGE_NOTE =
-  `[older image not attached: ChatGPT accepts at most ${CHATGPT_MAX_INPUT_IMAGES} per message]`;
+const DROPPED_IMAGE_NOTE = "[image omitted by ChatGPT Web bridge]";
 
 /**
  * A fresh compaction epoch receives the complete canonical context, so every still-relevant image
@@ -525,11 +528,7 @@ export function compileChatGptWebPrompt(
     multipartEnabled
       ? "Read and reconstruct every acknowledged staged JSON record before acting."
       : "Read the complete inline JSON task context before acting.",
-    manualControl
-      ? "Each image_attachment in the context refers, in order, to an image the user manually attached to this ChatGPT message. If its corresponding image is absent, say that it was not provided instead of guessing."
-      : multipartEnabled
-        ? "Each image_attachment in the staged context refers to the correspondingly named image attached to this commit message; inspect it directly."
-        : "Each image_attachment in the context refers to the correspondingly named image attached to this ChatGPT message; inspect it directly.",
+    "Images from the replayed Codex context are intentionally omitted by this Web bridge. Do not infer their contents; if the active task depends on an omitted image, say that the image content is unavailable through this bridge.",
     "If a ChatGPT-native capability renders a rich card, widget, chart, or other non-text result, also provide the relevant result as ordinary Markdown in the final answer. A private ChatGPT UI widget never replaces the Markdown answer returned to Codex.",
     "Never copy a ChatGPT widget's HTML, CSS, class names, or DOM markup into the answer unless the user explicitly requested that source markup.",
     "Do not mention this transport contract, context packaging, or capability routing in the user-facing answer unless the user explicitly asks how the bridge works.",

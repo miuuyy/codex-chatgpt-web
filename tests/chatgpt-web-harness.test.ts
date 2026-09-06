@@ -1387,7 +1387,7 @@ describe("ChatGPT outer-native harness v4", () => {
     sessions.clear();
   });
 
-  test("keeps inline images out of the context JSON and prepares native browser attachments", () => {
+  test("omits inline images from the Web context and prepares no browser attachments", () => {
     const imageUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAE0lEQVR4nGP4z8DwHwwZGP6DAQBJyAn3FGMynQAAAABJRU5ErkJggg==";
     const request = parsed();
     request.context.messages[0]!.content = [
@@ -1396,7 +1396,8 @@ describe("ChatGPT outer-native harness v4", () => {
     ];
     const compiled = compileChatGptWebPrompt(request, toolCapabilities, "turn_123456789012345678901234");
     expect(compiled.text).not.toContain(imageUrl);
-    expect(compiled.text).toContain('"attachment_ref":"codex-input-image-1"');
+    expect(compiled.text).not.toContain('"attachment_ref":"codex-input-image-1"');
+    expect(compiled.text).toContain("image omitted by ChatGPT Web bridge");
     expect(compiled.text).toContain('"version":3');
     expect(compiled.text).toContain("use the attached Codex Native tools directly according to their declared descriptions and schemas");
     expect(compiled.text).toContain("Use actual Codex Native results as evidence");
@@ -1404,10 +1405,8 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(compiled.text.match(/turn_123456789012345678901234/g)).toHaveLength(1);
     expect(compiled.text).not.toContain("codex_bind_turn");
     expect(compiled.text).not.toContain("binding_id");
-    const files = chatGptImageFilePayloads(compiled.images);
-    expect(files[0]?.name).toBe("codex-input-image-1.png");
-    expect(files[0]?.mimeType).toBe("image/png");
-    expect(files[0]?.buffer.length).toBeGreaterThan(0);
+    expect(compiled.images).toEqual([]);
+    expect(chatGptImageFilePayloads(compiled.images)).toEqual([]);
   });
 
   test("keeps only the newest complete Codex model-switch contract", () => {
@@ -1434,7 +1433,7 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(serialized).toContain("current request");
   });
 
-  test("keeps a large context inline and uploads only its referenced images", () => {
+  test("keeps a large context inline without uploading referenced images", () => {
     const imageUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAE0lEQVR4nGP4z8DwHwwZGP6DAQBJyAn3FGMynQAAAABJRU5ErkJggg==";
     const request = parsed();
     request.context.systemPrompt = ["d".repeat(70_000)];
@@ -1447,8 +1446,7 @@ describe("ChatGPT outer-native harness v4", () => {
 
     expect(compiled.text).toContain("d".repeat(70_000));
     expect(compiled.text).toContain("<codex_context_json>");
-    expect(files.map(file => file.name)).toEqual(["codex-input-image-1.png"]);
-    expect(files[0]!.mimeType).toBe("image/png");
+    expect(files).toEqual([]);
   });
 
   test("keeps browser-only Pro context complete without creating a local-tool capability", () => {
@@ -1479,8 +1477,9 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(compiled.text).toContain("web search, browsing, research");
     expect(compiled.text).toContain("prepared workspace evidence");
     expect(compiled.text).toContain('"system":["system-rule","repo-rule"]');
-    expect(compiled.text).toContain('"attachment_ref":"codex-input-image-1"');
-    expect(compiled.images).toHaveLength(1);
+    expect(compiled.text).not.toContain('"attachment_ref":"codex-input-image-1"');
+    expect(compiled.text).toContain("image content is unavailable through this bridge");
+    expect(compiled.images).toHaveLength(0);
     expect(compiled.text).not.toContain("codex_bind_turn");
     expect(compiled.text).not.toContain("turn_token");
     expect(compiled.text).not.toContain("Use the attached Codex Native plugin");
@@ -1515,7 +1514,7 @@ describe("ChatGPT outer-native harness v4", () => {
       { type: "image", imageUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAE0lEQVR4nGP4z8DwHwwZGP6DAQBJyAn3FGMynQAAAABJRU5ErkJggg==", detail: "high" },
     ];
     const imageUsage = estimateChatGptWebUsage(imageRequest, { answer: "done" }, toolCapabilities);
-    expect(imageUsage.inputTokens).toBeGreaterThanOrEqual(textUsage.inputTokens + 3_500);
+    expect(imageUsage.inputTokens - textUsage.inputTokens).toBeLessThan(1_000);
   });
 
   test("keeps the ChatGPT rate-limit dialog distinct from model capacity and UI failures", () => {
@@ -1939,7 +1938,7 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(() => chatGptImageFilePayloads([{
       ref: "codex-input-image-1",
       imageUrl: "https://example.com/image.png",
-    }])).toThrow("inline base64 data URL");
+    }])).toThrow("at most 0 input images per Codex turn");
   });
 
   test("holds an MCP invocation until the outer Codex result arrives", async () => {

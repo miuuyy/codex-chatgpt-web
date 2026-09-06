@@ -426,7 +426,7 @@ test("assigns prior assistant output to the model and never attributes Codex con
   expect(compiled.text).toContain("do not attribute, quote, summarize, or otherwise mention them");
 });
 
-test("a long task keeps the newest images and drops the overflow instead of failing", () => {
+test("a long task omits every replayed image instead of uploading screenshots", () => {
   const image = (marker: string) => ({
     type: "image" as const,
     imageUrl: `data:image/png;base64,${marker}`,
@@ -452,15 +452,14 @@ test("a long task keeps the newest images and drops the overflow instead of fail
     "turn_12345678901234567890123456789012",
   );
 
-  expect(compiled.images.map(entry => entry.imageUrl)).toEqual(
-    markers.slice(-10).map(marker => `data:image/png;base64,${marker}`),
-  );
-  expect(compiled.text).toContain("older image not attached");
+  expect(compiled.images).toEqual([]);
+  expect(compiled.text.match(/image omitted by ChatGPT Web bridge/g)).toHaveLength(markers.length);
+  expect(compiled.text).not.toContain("image_attachment");
   expect(compiled.text).toContain("step 1");
   expect(compiled.text).toContain("step 13");
 });
 
-test("Web compaction attaches the newest ten images as files and never embeds their base64 in prompt text", () => {
+test("Web compaction omits every image and never embeds screenshot data in prompt text", () => {
   const imagePayloads = Array.from({ length: 13 }, (_unused, index) =>
     Buffer.from(`compaction-image-${index + 1}`).toString("base64"));
   const parsed: CodexParsedRequest = {
@@ -486,13 +485,11 @@ test("Web compaction attaches the newest ten images as files and never embeds th
     { localToolsEnabled: false, solAvailable: true, proAvailable: true },
   );
 
-  expect(compiled.images.map(image => image.imageUrl)).toEqual(
-    imagePayloads.slice(-10).map(payload => `data:image/png;base64,${payload}`),
-  );
+  expect(compiled.images).toEqual([]);
   expect(compiled.text).not.toContain("data:image");
   for (const payload of imagePayloads) expect(compiled.text).not.toContain(payload);
-  expect(compiled.text.match(/"type":"image_attachment"/g)).toHaveLength(10);
-  expect(compiled.text.match(/older image not attached/g)).toHaveLength(3);
+  expect(compiled.text).not.toContain('"type":"image_attachment"');
+  expect(compiled.text.match(/image omitted by ChatGPT Web bridge/g)).toHaveLength(imagePayloads.length);
 });
 
 test("persisted one-pixel image sentinels are not attached to ChatGPT", () => {
@@ -516,9 +513,9 @@ test("persisted one-pixel image sentinels are not attached to ChatGPT", () => {
 
   const compiled = compileChatGptWebPrompt(parsed, { localToolsEnabled: false, solAvailable: true, proAvailable: true });
 
-  expect(compiled.images.map(image => image.imageUrl)).toEqual(["data:image/png;base64,real-image"]);
-  expect(compiled.text.match(/"type":"image_attachment"/g)).toHaveLength(1);
-  expect(compiled.text).not.toContain("older image not attached");
+  expect(compiled.images).toEqual([]);
+  expect(compiled.text).not.toContain('"type":"image_attachment"');
+  expect(compiled.text).toContain("image omitted by ChatGPT Web bridge");
 });
 
 test("the replayed context never carries a finished turn's broker handles", () => {

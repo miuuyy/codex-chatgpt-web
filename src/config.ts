@@ -605,7 +605,9 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
     liveModels: false,
     defaultModel: model,
     contextWindow: config.contextWindow,
-    modelInputModalities: Object.fromEntries(models.map(model => [model, manual ? ["text"] : ["text", "image"]])),
+    // The ChatGPT Web bridge is deliberately text-only. Context screenshots are omitted before
+    // transport so the Web model cannot accumulate stale or irrelevant image attachments.
+    modelInputModalities: Object.fromEntries(models.map(model => [model, ["text"]])),
     modelReasoningEfforts: Object.fromEntries(models.map(modelId => [modelId, efforts])),
     modelDefaultReasoningEfforts: Object.fromEntries(
       models.map(modelId => [modelId, manual ? "low" : config.solAvailable ? "high" : "low"]),

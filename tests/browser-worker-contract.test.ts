@@ -1971,7 +1971,7 @@ test("retained tool turns insert into the connector-bound composer without selec
   expect(calls).toEqual(["fill", "focus", "insert", "assert"]);
 });
 
-test("image attachment readiness uses exact file tiles and not localized remove-button text", async () => {
+test("image attachment readiness is disabled for the text-only Web bridge", async () => {
   const imageUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
   const calls: Array<[string, string?]> = [];
   const send = {
@@ -2024,16 +2024,10 @@ test("image attachment readiness uses exact file tiles and not localized remove-
     attachFiles(page: unknown, prompt: unknown): Promise<void>;
   }).attachFiles;
 
-  await attachFiles.call({ activeComposer: async () => composer }, page, {
+  await expect(attachFiles.call({ activeComposer: async () => composer }, page, {
     images: [{ ref: "codex-input-image-1", imageUrl }],
-  });
-
-  expect(calls).toEqual([
-    ["inputReady"],
-    ["setFiles", "codex-input-image-1.png"],
-    ["fileTile", "codex-input-image-1.png"],
-    ["sendEnabled"],
-  ]);
+  })).rejects.toThrow("at most 0 input images per Codex turn");
+  expect(calls).toEqual([]);
 });
 
 test("effort slider ARIA state fails closed on malformed and unsupported ranges", () => {
@@ -3149,7 +3143,7 @@ test("browser completion treats ChatGPT's response-scoped copy action as optiona
   expect(sessionSource).toContain('button[aria-label="复制"]');
   expect(sessionSource).toContain('button[aria-label="複製"]');
   expect(workerSource).toContain("CHATGPT_COMPLETION_ACTION_SELECTOR");
-  expect(workerSource).toContain("fall back to a bounded text+HTML stability");
+  expect(workerSource).toContain("fallback instead of requiring Copy forever");
   expect(workerSource).not.toContain('root.querySelectorAll<HTMLElement>("button")');
 });
 
@@ -3471,6 +3465,46 @@ test("proven MCP progress vetoes completion, not only the health verdicts", () =
   expect(tracker.update(finishedLooking, 5_100)).toBeFalse();
   expect(tracker.update(finishedLooking, 5_599)).toBeFalse();
   expect(tracker.update(finishedLooking, 5_600)).toBeTrue();
+});
+
+test("a post-tool idle gap cannot terminate a turn before the next tool call", () => {
+  const tracker = new ChatGptCompletionTracker(500, 5_000);
+  const beforeFirstTool = {
+    responsePresent: true,
+    running: false,
+    currentText: "I will inspect the first thing.",
+    currentHtml: "<p>I will inspect the first thing.</p>",
+    completionActionVisible: false,
+  };
+
+  expect(tracker.observeToolBatch(1, beforeFirstTool.currentText)).toBeTrue();
+  expect(tracker.update({ ...beforeFirstTool, externalToolCallsInFlight: true }, 1_000)).toBeFalse();
+
+  // ChatGPT often drops the Stop button between Codex tool calls. It may also add a small amount
+  // of prose before deciding to call the next tool. That is an inter-tool idle gap, not a final
+  // assistant answer, even if the DOM is completely static for the ordinary settle window.
+  const betweenTools = {
+    ...beforeFirstTool,
+    currentText: "I inspected the first thing; now I will check the next one.",
+    currentHtml: "<p>I inspected the first thing; now I will check the next one.</p>",
+  };
+  expect(tracker.update({ ...betweenTools, externalToolCallsInFlight: false }, 2_000)).toBeFalse();
+  expect(tracker.update({ ...betweenTools, externalToolCallsInFlight: false }, 2_500)).toBeFalse();
+
+  // A second tool call can arrive after that quiet gap and must remain part of the same turn.
+  expect(tracker.observeToolBatch(2, betweenTools.currentText)).toBeTrue();
+  expect(tracker.update({ ...betweenTools, externalToolCallsInFlight: true }, 3_000)).toBeFalse();
+
+  // The response-scoped completed-turn action is terminal evidence after the last tool result.
+  const finalAnswer = {
+    ...betweenTools,
+    currentText: "All checks are complete. Here is the final answer.",
+    currentHtml: "<p>All checks are complete. Here is the final answer.</p>",
+    completionActionVisible: true,
+  };
+  expect(tracker.update({ ...finalAnswer, externalToolCallsInFlight: false }, 4_000)).toBeFalse();
+  expect(tracker.update({ ...finalAnswer, externalToolCallsInFlight: false }, 4_499)).toBeFalse();
+  expect(tracker.update({ ...finalAnswer, externalToolCallsInFlight: false }, 4_500)).toBeTrue();
 });
 
 test("Full mode has no fixed post-tool final-answer deadline", () => {
