@@ -291,6 +291,14 @@ class BrowserControlServer {
         this.logger.info("browser.turn_started", { traceId: body.traceId });
         writeJson(response, 200, { ok: true, ...lease });
         return;
+      } else if (request.url === "/v1/turn/heavy-acquire") {
+        const granted = await host.acquireHeavyPhase(body.traceId, body.helperPid);
+        writeJson(response, 200, { ok: true, ...granted });
+        return;
+      } else if (request.url === "/v1/turn/heavy-release") {
+        const released = host.releaseHeavyPhase(body.traceId);
+        writeJson(response, 200, { ok: true, ...released });
+        return;
       } else if (request.url === "/v1/turn/heartbeat") {
         host.heartbeatTurn(body.traceId, body.helperPid, body.refreshViewport === true);
         this.logger.debug?.("browser.turn_heartbeat", { traceId: body.traceId });

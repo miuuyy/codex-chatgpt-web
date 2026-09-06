@@ -1084,6 +1084,27 @@ export async function connectAfterClosingBrowserConnection<T>(
   return connect();
 }
 
+const CHATGPT_HEAVY_STAGES = new Set([
+  "browser_page",
+  "temporary_chat_preparation",
+  "effort_selection",
+  "prompt_attachment",
+  "file_attachment",
+  "send",
+]);
+
+/**
+ * Stages that drive the ChatGPT document: navigation, composer preparation, prompt attachment and
+ * submission. Two turns doing these at once in one renderer pool starve each other until a DOM
+ * probe times out. Waiting for a ChatGPT response is deliberately absent - that is where concurrent
+ * turns spend most of their time, and holding the lock there would remove all parallelism.
+ */
+function isHeavyChatGptStage(stage: string): boolean {
+  return CHATGPT_HEAVY_STAGES.has(stage)
+    || /^response_page_rebind_d+$/.test(stage)
+    || /^multipart_stage_d+_(attachment|send)$/.test(stage);
+}
+
 export const CHATGPT_MIN_OPERATIONAL_VIEWPORT = Object.freeze({ width: 320, height: 240 });
 
 async function waitForOperationalChatGptViewport(page: Page, signal?: AbortSignal): Promise<void> {
@@ -2146,6 +2167,17 @@ export class ChatGptBrowserWorker {
     suspensionClock: Pick<ChatGptSuspensionClock, "suspendedMs"> = chatGptSuspensionClock,
     awaitAbortedActionSettlement = false,
   ): Promise<T> {
+    // The contract tests invoke this with a synthetic `this`, so nothing here may assume config.
+    const heavyDescriptorPath = this.config?.browserHost === "launcher" && isHeavyChatGptStage(stage)
+      ? this.config.browserHostDescriptorPath
+      : undefined;
+    if (heavyDescriptorPath) {
+      await notifyLauncherTurn(heavyDescriptorPath, {
+        phase: "heavy-acquire",
+        traceId,
+        helperPid: process.pid,
+      });
+    }
     chatGptSuspensionClock.start();
     const startedAt = performance.now();
     const suspendedAtStart = suspensionClock.suspendedMs();
@@ -2190,6 +2222,14 @@ export class ChatGptBrowserWorker {
       throw surfacedError;
     } finally {
       if (timer) clearTimeout(timer);
+      if (heavyDescriptorPath) {
+        // Releasing must never mask the stage's own outcome; the launcher also releases on turn end.
+        await notifyLauncherTurn(heavyDescriptorPath, {
+          phase: "heavy-release",
+          traceId,
+          helperPid: process.pid,
+        }).catch(() => {});
+      }
     }
   }
 

@@ -358,12 +358,25 @@ export type LauncherTurnActivity =
       message?: string;
       retain?: boolean;
       connectorBound?: boolean;
+    }
+  | {
+      /** Take the single-owner lock that keeps concurrent turns off the renderer at the same time. */
+      phase: "heavy-acquire";
+      traceId: string;
+      helperPid: number;
+    }
+  | {
+      phase: "heavy-release";
+      traceId: string;
+      helperPid: number;
     };
 
 export const LAUNCHER_TURN_START_TIMEOUT_MS = 5_000;
 export const LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS = 10_000;
 export const LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS = 5_000;
 export const LAUNCHER_TURN_END_TIMEOUT_MS = 15_000;
+/** Longer than the launcher's own heavy-phase wait, so its explicit error surfaces before this aborts. */
+export const LAUNCHER_HEAVY_PHASE_TIMEOUT_MS = 200_000;
 
 export interface LauncherManualTurnOwner {
   traceId: string;
@@ -594,7 +607,11 @@ export async function notifyLauncherTurn(
     ? LAUNCHER_TURN_END_TIMEOUT_MS
     : activity.phase === "heartbeat"
       ? LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS
-      : LAUNCHER_TURN_START_TIMEOUT_MS,
+      : activity.phase === "heavy-acquire"
+        ? LAUNCHER_HEAVY_PHASE_TIMEOUT_MS
+        : activity.phase === "heavy-release"
+          ? LAUNCHER_TURN_END_TIMEOUT_MS
+          : LAUNCHER_TURN_START_TIMEOUT_MS,
 ): Promise<{
   surfaceId?: string;
   reused?: boolean;

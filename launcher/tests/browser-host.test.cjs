@@ -3012,3 +3012,56 @@ test("manual turns have no live-session TTL but are revoked when their owner pro
     status: "failed",
   });
 });
+
+function heavyPhaseFixture() {
+  return Object.assign(Object.create(BrowserHost.prototype), {
+    heavyPhase: { holder: null, queue: [] },
+    logger: { info() {}, warn() {} },
+  });
+}
+
+test("only one turn holds the heavy browser phase and the next one waits for it", async () => {
+  const fixture = heavyPhaseFixture();
+
+  assert.deepEqual(
+    await BrowserHost.prototype.acquireHeavyPhase.call(fixture, "trace_a", process.pid),
+    { acquired: true },
+  );
+
+  let secondGranted = false;
+  const second = BrowserHost.prototype.acquireHeavyPhase
+    .call(fixture, "trace_b", process.pid)
+    .then((value) => { secondGranted = true; return value; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(secondGranted, false, "the second turn must not enter while the first holds the lock");
+  assert.equal(fixture.heavyPhase.queue.length, 1);
+
+  BrowserHost.prototype.releaseHeavyPhase.call(fixture, "trace_a");
+  assert.deepEqual(await second, { acquired: true });
+  assert.equal(fixture.heavyPhase.holder.traceId, "trace_b");
+});
+
+test("a turn re-entering the heavy phase does not deadlock on itself", async () => {
+  const fixture = heavyPhaseFixture();
+  await BrowserHost.prototype.acquireHeavyPhase.call(fixture, "trace_a", process.pid);
+  assert.deepEqual(
+    await BrowserHost.prototype.acquireHeavyPhase.call(fixture, "trace_a", process.pid),
+    { acquired: true, reentrant: true },
+  );
+  assert.equal(fixture.heavyPhase.holder.depth, 2);
+
+  BrowserHost.prototype.releaseHeavyPhase.call(fixture, "trace_a");
+  assert.equal(fixture.heavyPhase.holder.traceId, "trace_a");
+  BrowserHost.prototype.releaseHeavyPhase.call(fixture, "trace_a");
+  assert.equal(fixture.heavyPhase.holder, null);
+});
+
+test("a heavy phase held by a dead helper is reclaimed for the queue", async () => {
+  const fixture = heavyPhaseFixture();
+  fixture.heavyPhase.holder = { traceId: "trace_dead", helperPid: 1073741824, depth: 1 };
+  assert.deepEqual(
+    await BrowserHost.prototype.acquireHeavyPhase.call(fixture, "trace_live", process.pid),
+    { acquired: true },
+  );
+  assert.equal(fixture.heavyPhase.holder.traceId, "trace_live");
+});
