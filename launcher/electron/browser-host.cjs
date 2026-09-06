@@ -30,6 +30,9 @@ const IDLE_BROWSER_URL = "data:text/html;charset=utf-8,%3C!doctype%20html%3E%3Ch
 const PRIMARY_VIEW_BOOTSTRAP_TIMEOUT_MS = 10_000;
 const MAX_BROWSER_VIEW_DIMENSION = 16_384;
 const MAX_BROWSER_TABS = 5;
+// A steering turn waits for the tab it is taking over. The wait is bounded so a turn that never
+// ends cannot strand its waiters indefinitely, and the timeout says what it was waiting on.
+const TURN_HANDOFF_WAIT_TIMEOUT_MS = 180_000;
 const MAX_CANCELLED_TURN_TRACES = 256;
 const MANUAL_SUBMIT_TIMEOUT_MS = 30_000;
 const MANUAL_COMPACTION_SUBMIT_TIMEOUT_MS = 120_000;
@@ -1493,6 +1496,7 @@ class BrowserHost {
     const handoffs = this.automaticTurnHandoffs?.get(tab.id) || [];
     this.automaticTurnHandoffs?.delete(tab.id);
     for (const handoff of handoffs) {
+      if (handoff.timer) clearTimeout(handoff.timer);
       handoff.reject(new Error("The ChatGPT browser conversation closed before the steering turn could take over"));
     }
     this.turnTabs.delete(tab.id);
@@ -2238,7 +2242,25 @@ class BrowserHost {
         resolveHandoff = resolve;
         rejectHandoff = reject;
       });
-      queue.push({ traceId, helperPid, reveal, promise, resolve: resolveHandoff, reject: rejectHandoff });
+      const entry = { traceId, helperPid, reveal, promise, resolve: resolveHandoff, reject: rejectHandoff };
+      entry.timer = setTimeout(() => {
+        const pending = this.automaticTurnHandoffs?.get(runningConversation.id);
+        const index = pending ? pending.indexOf(entry) : -1;
+        if (index < 0) return;
+        pending.splice(index, 1);
+        if (pending.length === 0) this.automaticTurnHandoffs.delete(runningConversation.id);
+        this.logger.info("browser.tab_handoff_timeout", {
+          tabId: runningConversation.id,
+          traceId,
+          previousTraceId: runningConversation.traceId,
+        });
+        entry.reject(new Error(
+          "Waited " + Math.round(TURN_HANDOFF_WAIT_TIMEOUT_MS / 1000) + "s for ChatGPT browser turn "
+          + runningConversation.traceId + " to release its conversation tab, and it did not finish",
+        ));
+      }, TURN_HANDOFF_WAIT_TIMEOUT_MS);
+      entry.timer.unref?.();
+      queue.push(entry);
       this.automaticTurnHandoffs.set(runningConversation.id, queue);
       this.logger.info("browser.tab_handoff_queued", {
         tabId: runningConversation.id,
@@ -2337,10 +2359,13 @@ class BrowserHost {
       this.logger.info("browser.tab_completed", { tabId: tab.id, traceId });
     }
     const handoffQueue = this.automaticTurnHandoffs?.get(tab.id);
-    if (handoffQueue?.length && (status === "aborted" || status === "completed")) {
+    // endTurn only ever receives a terminal status, so every one of them must move the queue on.
+    // A turn that ends in "failed" used to drop its waiters; the log showed exactly that happening.
+    if (handoffQueue?.length && (status === "aborted" || status === "completed" || status === "failed")) {
       let handoff;
       while (handoffQueue.length > 0 && !handoff) {
         const candidate = handoffQueue.shift();
+        if (candidate?.timer) clearTimeout(candidate.timer);
         if (candidate && processRunning(candidate.helperPid)) handoff = candidate;
         else candidate?.reject(new Error("The waiting steering helper exited before browser takeover"));
       }
@@ -2366,6 +2391,7 @@ class BrowserHost {
           previousTraceId: traceId,
           handoff: true,
         });
+        if (handoff.timer) clearTimeout(handoff.timer);
         handoff.resolve({
           surfaceId: tab.surfaceId,
           tabId: tab.id,

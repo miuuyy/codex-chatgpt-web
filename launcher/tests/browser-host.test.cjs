@@ -3140,3 +3140,75 @@ test("manual turns have no live-session TTL but are revoked when their owner pro
     status: "failed",
   });
 });
+
+test("a turn that ends in failure still hands its tab to the waiting steering turn", async () => {
+  const conversationKey = "f".repeat(64);
+  const tab = {
+    id: "tab-failed-handoff",
+    surfaceId: "surface-failed-handoff",
+    traceId: "trace_previous",
+    conversationKey,
+    connectorIdentity: "Codex Native2",
+    connectorBound: true,
+    interactionMode: "automatic",
+    helperPid: process.pid,
+    status: "running",
+    loading: true,
+    message: "ChatGPT is working",
+    bootstrapReady: true,
+    view: {
+      webContents: {
+        isDestroyed: () => false,
+        setBackgroundThrottling: () => {},
+      },
+    },
+  };
+  let created = 0;
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    manualOperation: null,
+    turnTabs: new Map([[tab.id, tab]]),
+    userCancelledTurnOwners: new Map(),
+    closedTurnOwners: new Map(),
+    selectedTabId: "home",
+    createTurnTab: () => {
+      created += 1;
+      return { id: "unexpected", surfaceId: "unexpected" };
+    },
+    syncPowerSaveBlocker() {},
+    syncViewVisibility() {},
+    snapshot: () => ({ tabs: [] }),
+    publishState() {},
+    writeDescriptor() {},
+    logger: { info() {}, warn() {} },
+  });
+
+  const nextLease = BrowserHost.prototype.beginTurn.call(
+    fixture,
+    "trace_next",
+    false,
+    process.pid,
+    conversationKey,
+    "Codex Native2",
+  );
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(created, 0);
+
+  await BrowserHost.prototype.endTurn.call(
+    fixture,
+    "trace_previous",
+    process.pid,
+    "failed",
+    false,
+    "superseded",
+  );
+
+  assert.deepEqual(await nextLease, {
+    surfaceId: "surface-failed-handoff",
+    tabId: "tab-failed-handoff",
+    reused: true,
+    connectorBound: true,
+  });
+  assert.equal(tab.traceId, "trace_next");
+  assert.equal(tab.status, "running");
+  assert.equal(created, 0);
+});
