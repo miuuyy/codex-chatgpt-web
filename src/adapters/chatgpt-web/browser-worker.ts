@@ -121,6 +121,7 @@ export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
 export const CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS = 60_000;
 export const MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS = 3;
 const CHATGPT_CONNECTOR_MENTION_QUERY = "@codex";
+const CHATGPT_THINK_SLASH_QUERY = "/think";
 const CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS = 10_000;
 const CHATGPT_SMOKE_TEXT = "Reply with exactly: CODEX WEB GPT READY";
 const CHATGPT_SMOKE_EXPECTED = "CODEX WEB GPT READY";
@@ -2277,7 +2278,11 @@ export class ChatGptBrowserWorker {
           "ChatGPT Luna was selected from a Luna-only capability probe, but the account now exposes a model selector; rerun setup",
         );
       }
-      await setChatGptThinkMode(composerForm, mode.thinkEnabled, captureDiagnostic);
+      // Tool-capable Think turns enable Think with the slash command after the connector
+      // is selected, so the composer stays exactly like plain Luna here.
+      if (!(mode.thinkEnabled && mode.localTools)) {
+        await setChatGptThinkMode(composerForm, mode.thinkEnabled, captureDiagnostic);
+      }
       return mode;
     }
     const currentEffort = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).last();
@@ -3156,6 +3161,106 @@ export class ChatGptBrowserWorker {
     }
   }
 
+  // Think is enabled with the slash command after the connector pill is selected:
+  // "@Codex Native2 /think <prompt>". Mirrors the connector mention flow.
+  private async selectThinkSlash(
+    page: Page,
+    captureDiagnostic?: (checkpoint: string) => Promise<void>,
+    abortSignal?: AbortSignal,
+  ): Promise<Locator> {
+    const capture = async (checkpoint: string): Promise<void> => {
+      throwIfPromptAttachmentAborted(abortSignal);
+      await withBrowserTurnAbort(captureDiagnostic?.(checkpoint) ?? Promise.resolve(), abortSignal);
+      throwIfPromptAttachmentAborted(abortSignal);
+    };
+    try {
+      const menuRows = page.locator('.__menu-item[tabindex="0"]');
+      const visibleRows = menuRows.filter({ visible: true });
+      // Type once: the connector pill is already selected, so retyping would duplicate the query.
+      let composer = await this.activeComposer(page, 30_000, abortSignal);
+      await composer.focus({ signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
+      await withBrowserTurnAbort(settleChatGptUi(), abortSignal);
+      await composer.pressSequentially(CHATGPT_THINK_SLASH_QUERY, {
+        delay: 25,
+        signal: abortSignal,
+        timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
+      });
+      await capture("think-slash-triggered");
+      // The slash menu exposes a single option. Wait for it without matching any label.
+      const thinkMenuWaitMs = 2_500 * MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS;
+      try {
+        await withBrowserTurnAbort(
+          withChatGptBrowserObservationTimeout((async () => {
+            const deadline = Date.now() + thinkMenuWaitMs;
+            for (;;) {
+              throwIfPromptAttachmentAborted(abortSignal);
+              if (await visibleRows.count() === 1) return;
+              if (Date.now() >= deadline) throw new Error("Think slash option not visible yet");
+              await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
+            }
+          })()),
+          abortSignal,
+        );
+        await capture("think-slash-menu-visible");
+      } catch (error) {
+        if (abortSignal?.aborted) throw error;
+        throw chatGptConnectorUnavailableError(
+          await this.thinkSlashFailure(menuRows, abortSignal),
+        );
+      }
+      const thinkRow = visibleRows.first();
+      const rowHighlighted = async () => await thinkRow.getAttribute("data-highlighted", {
+        signal: abortSignal,
+        timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
+      }) !== null;
+      if (!await rowHighlighted()) {
+        const visibleRowCount = await withBrowserTurnAbort(
+          withChatGptBrowserObservationTimeout(menuRows.filter({ visible: true }).count()),
+          abortSignal,
+        );
+        composer = await this.activeComposer(page, 30_000, abortSignal);
+        for (let step = 0; step < visibleRowCount && !await rowHighlighted(); step += 1) {
+          await composer.press("ArrowDown", {
+            signal: abortSignal,
+            timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
+          });
+        }
+      }
+      if (!await rowHighlighted()) {
+        throw new Error("ChatGPT Think slash menu could not highlight its single option");
+      }
+      composer = await this.activeComposer(page, 30_000, abortSignal);
+      await composer.press("Enter", {
+        signal: abortSignal,
+        timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
+      });
+      await capture("think-slash-choice-activated");
+      // Selecting the slash command replaces the composer subtree. Resolve it again.
+      const selectedComposer = await this.activeComposer(page, 30_000, abortSignal);
+      await capture("think-slash-selected");
+      return selectedComposer;
+    } catch (error) {
+      try {
+        await this.clearChatGptComposerState(page);
+      } catch (cleanupError) {
+        throw new ChatGptPersistentBrowserStateError(
+          [error, cleanupError],
+          "ChatGPT Think slash selection failed and its composer state could not be cleared",
+        );
+      }
+      throw error;
+    }
+  }
+
+  private async thinkSlashFailure(menuRows: Locator, abortSignal?: AbortSignal): Promise<string> {
+    const titles = await this.connectorMentionRowTitles(menuRows, abortSignal);
+    if (titles.length === 0) {
+      return "ChatGPT Think slash menu did not open after the slash trigger attempt";
+    }
+    return "ChatGPT Think slash menu did not expose exactly one option after the slash trigger attempt"
+      + `; visible rows: ${titles.map(title => JSON.stringify(title)).join(", ")}`;
+  }
+
   private async attachPrompt(
     page: Page,
     prompt: string,
@@ -3165,6 +3270,7 @@ export class ChatGptBrowserWorker {
     catalogRefreshAvailable = false,
     connectorAttemptBudget?: ChatGptConnectorAttemptBudget,
     reuseConnector = false,
+    requireThinkSlash = false,
   ): Promise<void> {
     throwIfPromptAttachmentAborted(abortSignal);
     const connectorMode = chatGptConnectorAttachmentMode(localTools, reuseConnector);
@@ -3192,8 +3298,13 @@ export class ChatGptBrowserWorker {
       // selectConnector owns and rolls back every mutation until it returns. From this point the
       // attachment owns the selected pill and prompt text as one transaction.
       composerMutationStarted = true;
-      await selectedComposer.focus({ signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
-      await selectedComposer.press(CHATGPT_COMPOSER_DOCUMENT_END_KEY, {
+      let promptComposer = selectedComposer;
+      if (requireThinkSlash) {
+        // Strict order: connector pill first, then the Think slash command, then the prompt text.
+        promptComposer = await this.selectThinkSlash(page, captureDiagnostic, abortSignal);
+      }
+      await promptComposer.focus({ signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
+      await promptComposer.press(CHATGPT_COMPOSER_DOCUMENT_END_KEY, {
         signal: abortSignal,
         timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
       });
@@ -3467,6 +3578,7 @@ export class ChatGptBrowserWorker {
     catalogRefreshAvailable = false,
     connectorAttemptBudget?: ChatGptConnectorAttemptBudget,
     reuseConnector = false,
+    requireThinkSlash = false,
   ): Promise<void> {
     let retryAvailable = compaction;
     for (;;) {
@@ -3480,6 +3592,7 @@ export class ChatGptBrowserWorker {
           catalogRefreshAvailable,
           connectorAttemptBudget,
           reuseConnector,
+          requireThinkSlash,
         );
         return;
       } catch (error) {
@@ -4525,6 +4638,7 @@ export class ChatGptBrowserWorker {
                 catalogRefreshAvailable,
                 connectorAttemptBudget,
                 reuseConversation,
+                mode.thinkEnabled && mode.localTools,
               );
             },
             chatGptSuspensionClock,
