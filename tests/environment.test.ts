@@ -769,6 +769,35 @@ describe("trusted Codex task environment continuity", () => {
     return { codexHome, request, rolloutPath };
   }
 
+  test("an archived rollout is refused as a record without failing the turn", () => {
+    // Codex archives its own sessions and its state index keeps pointing at the moved file, so an
+    // ordinary thread can offer a rollout that no longer sits under sessions/. On this machine 95
+    // of 149 rollouts were already archived, and every turn of a live conversation died with
+    // "Codex rollout path escapes the sessions directory" rather than falling back to the
+    // authority the same thread had already established.
+    const { codexHome, request, rolloutPath } = resumedRootFixture();
+    const store = new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome);
+    const trusted = store.resolve(request);
+    expect(trusted.cwd).toBe(root);
+
+    const archived = join(codexHome, "archived_sessions", "rollout-archived.jsonl");
+    mkdirSync(dirname(archived), { recursive: true });
+    writeFileSync(archived, [
+      JSON.stringify({ type: "session_meta", payload: { id: rolloutThreadId, source: "vscode" } }),
+      JSON.stringify(childTurnContext()),
+    ].join("\n") + "\n");
+    const databasePath = join(codexHome, "state_5.sqlite");
+    createRolloutState(databasePath, archived);
+    const database = new Database(databasePath);
+    database.exec("DELETE FROM thread_spawn_edges");
+    database.query("UPDATE threads SET agent_path = NULL WHERE id = ?").run(rolloutThreadId);
+    database.close();
+
+    // The archived record is never read, and the turn keeps the environment this thread proved.
+    expect(store.resolve(request)).toEqual(trusted);
+    expect(rolloutPath.includes("sessions")).toBeTrue();
+  });
+
   test("recovers an ordinary resumed task from its exact current rollout with an empty bridge cache", () => {
     const { codexHome, request } = resumedRootFixture();
     request.context.tools = [{ name: "current_tool", description: "current", parameters: { type: "object" } }];

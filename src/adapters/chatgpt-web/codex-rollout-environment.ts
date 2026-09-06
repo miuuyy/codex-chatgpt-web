@@ -578,8 +578,24 @@ export function resolveCurrentCodexRolloutEnvironment(options: {
   }
 
   const matching: ChatGptTurnEnvironment[] = [];
+  let unusableCandidates = 0;
+  let unusableReason: Error | undefined;
   for (const candidate of candidates) {
-    const rolloutPath = validateRolloutPath(codexHome, candidate, lineage.threadId);
+    let rolloutPath: string;
+    try {
+      rolloutPath = validateRolloutPath(codexHome, candidate, lineage.threadId);
+    } catch (error) {
+      // Codex archives its own sessions and its state index keeps pointing at the moved file, so
+      // an ordinary thread can offer a rollout that no longer sits under sessions/. Such a record
+      // proves nothing, which is not the same as the turn being unauthorised: the caller still
+      // holds the authority this thread established earlier. Refuse the record, not the turn.
+      unusableCandidates += 1;
+      unusableReason ??= error instanceof Error ? error : new Error(String(error));
+      console.warn(
+        `[chatgpt-web] ignoring an unusable Codex rollout candidate: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      continue;
+    }
     const fd = openSync(rolloutPath, "r");
     try {
       const size = fstatSync(fd).size;
@@ -601,6 +617,12 @@ export function resolveCurrentCodexRolloutEnvironment(options: {
     }
   }
   if (matching.length === 0) {
+    // Every candidate was refused on its path alone, so nothing here was ever read. A subagent
+    // still needs a proven rollout; an ordinary thread falls back to its established authority.
+    if (unusableCandidates === candidates.length && !("parentThreadId" in lineage)) return undefined;
+    // Nothing usable was found and there is no established authority to fall back on, so the
+    // caller still needs to know why the record was refused rather than a generic absence.
+    if (unusableReason && unusableCandidates === candidates.length) throw unusableReason;
     throw new Error("Codex has no canonical rollout for the requested current turn");
   }
   if (matching.length > 1) {
