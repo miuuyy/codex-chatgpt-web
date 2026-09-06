@@ -15,7 +15,9 @@ const {
 const {
   allowedAuthUrl,
   BrowserHost,
+  HEAVY_PHASE_WAIT_TIMEOUT_MS,
   IDLE_BROWSER_URL,
+  MAX_BROWSER_TABS,
   isChatGptCloudflareChallengeResponse,
   isTemporaryChatUrl,
   loadCommittedBrowserSurface,
@@ -3064,4 +3066,76 @@ test("a heavy phase held by a dead helper is reclaimed for the queue", async () 
     { acquired: true },
   );
   assert.equal(fixture.heavyPhase.holder.traceId, "trace_live");
+});
+
+test("five concurrent turns take the heavy phase one at a time and in arrival order", async () => {
+  // Five simultaneous chats is the goal the lock exists for; the earlier coverage stopped at two,
+  // which cannot show that the queue stays fair rather than starving whoever arrived first.
+  const fixture = heavyPhaseFixture();
+  const granted = [];
+
+  assert.deepEqual(
+    await BrowserHost.prototype.acquireHeavyPhase.call(fixture, "trace_1", process.pid),
+    { acquired: true },
+  );
+  granted.push("trace_1");
+
+  const waiters = ["trace_2", "trace_3", "trace_4", "trace_5"].map(traceId => (
+    BrowserHost.prototype.acquireHeavyPhase
+      .call(fixture, traceId, process.pid)
+      .then((value) => { granted.push(traceId); return value; })
+  ));
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(fixture.heavyPhase.queue.length, 4, "four turns must wait rather than open a second heavy phase");
+  assert.equal(fixture.heavyPhase.holder.traceId, "trace_1");
+  assert.deepEqual(granted, ["trace_1"], "no waiter may enter while the first turn holds the lock");
+
+  for (const holder of ["trace_1", "trace_2", "trace_3", "trace_4"]) {
+    BrowserHost.prototype.releaseHeavyPhase.call(fixture, holder);
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.deepEqual(await Promise.all(waiters), [
+    { acquired: true },
+    { acquired: true },
+    { acquired: true },
+    { acquired: true },
+  ]);
+  assert.deepEqual(granted, ["trace_1", "trace_2", "trace_3", "trace_4", "trace_5"]);
+
+  BrowserHost.prototype.releaseHeavyPhase.call(fixture, "trace_5");
+  assert.equal(fixture.heavyPhase.holder, null);
+  assert.equal(fixture.heavyPhase.queue.length, 0);
+});
+
+test("a waiter whose helper died is skipped without holding up the turns behind it", async () => {
+  const fixture = heavyPhaseFixture();
+  await BrowserHost.prototype.acquireHeavyPhase.call(fixture, "trace_holder", process.pid);
+
+  // 2^30 is far above any live pid on this machine, so processRunning reports it as gone.
+  const dead = BrowserHost.prototype.acquireHeavyPhase.call(fixture, "trace_dead", 1073741824);
+  const live = BrowserHost.prototype.acquireHeavyPhase.call(fixture, "trace_live", process.pid);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fixture.heavyPhase.queue.length, 2);
+
+  BrowserHost.prototype.releaseHeavyPhase.call(fixture, "trace_holder");
+  await assert.rejects(dead, /waiting helper exited/);
+  assert.deepEqual(await live, { acquired: true });
+  assert.equal(fixture.heavyPhase.holder.traceId, "trace_live");
+});
+
+test("the heavy phase wait covers a full field of tabs, not just one holder ahead", () => {
+  // A holder cannot exceed its own stage budget, and the longest heavy stage (a Bigger Context
+  // part submission) is allowed 180s. With five tabs, four of those can legally be ahead of the
+  // last arrival, so a flat 180s failed the fifth chat while every turn ahead of it behaved.
+  const longestHeavyStageBudgetMs = 180_000;
+  assert.equal(
+    HEAVY_PHASE_WAIT_TIMEOUT_MS,
+    (MAX_BROWSER_TABS - 1) * longestHeavyStageBudgetMs,
+    "the wait must be derived from the tab limit so raising one raises the other",
+  );
+  assert.ok(
+    HEAVY_PHASE_WAIT_TIMEOUT_MS >= longestHeavyStageBudgetMs * 2,
+    "a bound that covers only one holder ahead cannot support concurrent chats",
+  );
 });

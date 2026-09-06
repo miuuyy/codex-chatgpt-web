@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   LAUNCHER_BROWSER_HOST_KIND,
+  LAUNCHER_HEAVY_PHASE_TIMEOUT_MS,
   LAUNCHER_BROWSER_IDLE_URL,
   LauncherManualTurnTimedOutError,
   LauncherRetainedConversationUnavailableError,
@@ -567,4 +568,13 @@ test("manual Sent wait preserves typed timeout and cancellation signals", async 
       await new Promise<void>(resolveClose => server.close(() => resolveClose()));
     }
   }
+});
+
+test("the helper outwaits the launcher's heavy-phase bound so its message survives", () => {
+  // The launcher bounds a heavy-phase wait at (MAX_BROWSER_TABS - 1) x the longest heavy stage,
+  // which is 4 x 180s for five tabs (see HEAVY_PHASE_WAIT_TIMEOUT_MS in browser-host.cjs). If this
+  // fetch aborted first, the helper would report a transport failure instead of the launcher's
+  // explicit error naming the turn it was waiting on.
+  const launcherHeavyPhaseBoundMs = (5 - 1) * 180_000;
+  expect(LAUNCHER_HEAVY_PHASE_TIMEOUT_MS).toBeGreaterThan(launcherHeavyPhaseBoundMs);
 });

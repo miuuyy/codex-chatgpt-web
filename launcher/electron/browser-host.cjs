@@ -33,7 +33,15 @@ const MAX_BROWSER_TABS = 5;
 // Concurrent turns each own a ChatGPT document in one Electron renderer pool. Two turns doing
 // heavy DOM work at the same time starve each other until a DOM probe times out, so the heavy
 // phases take a single-owner lock while waiting for a ChatGPT response stays free.
-const HEAVY_PHASE_WAIT_TIMEOUT_MS = 180_000;
+//
+// The wait has to cover every turn that can legitimately be ahead of this one. A holder cannot
+// exceed its own stage budget, and the longest heavy stage (a Bigger Context part submission)
+// is allowed 180s, so a full field of tabs can legally put MAX_BROWSER_TABS - 1 of those in
+// front of the last arrival. A flat 180s covered exactly one of them and failed the fifth chat
+// with a lock timeout while every turn ahead of it was behaving correctly. A dead holder is not
+// what this bounds - reclaimAbandonedHeavyPhase frees those immediately.
+const LONGEST_HEAVY_STAGE_BUDGET_MS = 180_000;
+const HEAVY_PHASE_WAIT_TIMEOUT_MS = (MAX_BROWSER_TABS - 1) * LONGEST_HEAVY_STAGE_BUDGET_MS;
 const MAX_CANCELLED_TURN_TRACES = 256;
 const MANUAL_SUBMIT_TIMEOUT_MS = 30_000;
 const MANUAL_COMPACTION_SUBMIT_TIMEOUT_MS = 120_000;
@@ -2978,7 +2986,9 @@ module.exports = {
   BrowserHost,
   BrowserTurnCancelledError,
   CHATGPT_VIEWPORT_CSS,
+  HEAVY_PHASE_WAIT_TIMEOUT_MS,
   IDLE_BROWSER_URL,
+  MAX_BROWSER_TABS,
   isChatGptCloudflareChallengeResponse,
   isTemporaryChatUrl,
   loadCommittedBrowserSurface,

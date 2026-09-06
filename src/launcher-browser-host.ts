@@ -375,8 +375,14 @@ export const LAUNCHER_TURN_START_TIMEOUT_MS = 5_000;
 export const LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS = 10_000;
 export const LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS = 5_000;
 export const LAUNCHER_TURN_END_TIMEOUT_MS = 15_000;
-/** Longer than the launcher's own heavy-phase wait, so its explicit error surfaces before this aborts. */
-export const LAUNCHER_HEAVY_PHASE_TIMEOUT_MS = 200_000;
+/**
+ * Longer than the launcher's own heavy-phase wait, so its explicit error surfaces before this
+ * aborts. The launcher bounds that wait at (MAX_BROWSER_TABS - 1) x the longest heavy stage,
+ * which is 720s for five tabs; anything shorter here would abort the request while the launcher
+ * still considers the turn a legitimate waiter, and the helper would report a transport failure
+ * instead of the launcher's message naming what it was waiting on.
+ */
+export const LAUNCHER_HEAVY_PHASE_TIMEOUT_MS = 750_000;
 
 export interface LauncherManualTurnOwner {
   traceId: string;
