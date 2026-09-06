@@ -133,7 +133,11 @@ export function installedLauncherCandidates({
     );
   } else if (platform === "win32") {
     const registeredLocation = windowsInstallLocation?.trim()
-      || (process.platform === "win32" ? registeredWindowsLauncherInstallLocation() : undefined);
+      // Only consult the real machine when the caller did not inject an environment.
+      // A synthetic environment must stay pure so platform candidates are reproducible off-host.
+      || (environment === process.env && process.platform === "win32"
+        ? registeredWindowsLauncherInstallLocation()
+        : undefined);
     if (registeredLocation && win32.isAbsolute(registeredLocation)) {
       candidates.push(win32.join(registeredLocation, "Codex Web GPT.exe"));
     } else {
