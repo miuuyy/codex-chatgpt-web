@@ -2698,6 +2698,44 @@ test("a retained manual chat copies only its incremental resume prompt", () => {
   clearTimeout(fixture.turnTabs.get(second.tabId).manualDeadlineTimer);
 });
 
+test("navigating a retained manual chat invalidates it before the next resume", () => {
+  const { fixture, clipboardWrites } = manualTurnFixture();
+  const conversationKey = "a".repeat(64);
+  const first = fixture.beginManualTurn(
+    "manual_trace_initial_navigation",
+    process.pid,
+    "full initial context",
+    conversationKey,
+  );
+  fixture.confirmManualSent(first.tabId);
+  fixture.markManualTurnStarted("manual_trace_initial_navigation", process.pid);
+  fixture.endManualTurn("manual_trace_initial_navigation", process.pid, "completed", true);
+
+  const retained = fixture.turnTabs.get(first.tabId);
+  const contents = new EventEmitter();
+  contents.setWindowOpenHandler = () => {};
+  contents.getURL = () => "https://chatgpt.com/?temporary-chat=true";
+  retained.view = { webContents: contents };
+  fixture.bindManualTurnContents(retained);
+
+  contents.emit("did-start-navigation", {}, "https://chatgpt.com/", false, true);
+
+  const second = fixture.beginManualTurn(
+    "manual_trace_after_navigation",
+    process.pid,
+    "full history after the retained chat was closed",
+    conversationKey,
+    "only the new request",
+  );
+  assert.notEqual(second.tabId, first.tabId);
+  assert.equal(second.reused, false);
+  assert.deepEqual(clipboardWrites, [
+    "full initial context",
+    "full history after the retained chat was closed",
+  ]);
+  for (const tab of fixture.turnTabs.values()) clearTimeout(tab.manualDeadlineTimer);
+});
+
 test("manual start rejects a different prompt after Sent instead of replaying a trace", () => {
   const { fixture, clipboardWrites } = manualTurnFixture();
   const lease = fixture.beginManualTurn("manual_trace_mismatch", process.pid, "original prompt");

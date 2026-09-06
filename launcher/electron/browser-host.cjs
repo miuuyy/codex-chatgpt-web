@@ -869,6 +869,15 @@ class BrowserHost {
 
   bindManualTurnContents(tab) {
     const contents = tab.view.webContents;
+    const invalidateRetainedConversation = () => {
+      if (tab.status !== "ready" || !tab.conversationKey) return;
+      this.logger.info("browser.manual_retained_conversation_invalidated", {
+        tabId: tab.id,
+        traceId: tab.traceId,
+      });
+      tab.conversationKey = null;
+      tab.manualConversationReused = false;
+    };
     contents.setWindowOpenHandler(({ url }) => {
       let parsed;
       try { parsed = new URL(url); } catch { return { action: "deny" }; }
@@ -884,6 +893,7 @@ class BrowserHost {
     });
     contents.on("did-start-navigation", (_event, url, _inPlace, mainFrame) => {
       if (!mainFrame) return;
+      invalidateRetainedConversation();
       tab.url = url;
       tab.loading = true;
       this.publishState?.(this.snapshot());
@@ -906,7 +916,10 @@ class BrowserHost {
       this.publishState?.(this.snapshot());
     });
     contents.on("did-navigate-in-page", (_event, url, mainFrame) => {
-      if (mainFrame) tab.url = url;
+      if (mainFrame) {
+        invalidateRetainedConversation();
+        tab.url = url;
+      }
       this.publishState?.(this.snapshot());
     });
     contents.on("did-fail-load", (_event, errorCode, errorDescription, url, mainFrame) => {
