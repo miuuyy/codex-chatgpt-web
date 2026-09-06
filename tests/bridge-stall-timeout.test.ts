@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { bridgeToResponsesSSE } from "../src/bridge";
+import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { DEFAULT_STALL_TIMEOUT_SEC, MAX_STALL_TIMEOUT_SEC, resolveStallTimeoutSec } from "../src/stall-timeout";
 import type { AdapterEvent } from "../src/types";
 
@@ -74,4 +75,25 @@ test("the stall budget is configurable and falls back to the shipped default", (
   expect(resolveStallTimeoutSec(0)).toBe(1);
   expect(resolveStallTimeoutSec(Number.MAX_VALUE)).toBe(MAX_STALL_TIMEOUT_SEC);
   expect(resolveStallTimeoutSec(MAX_STALL_TIMEOUT_SEC + 1)).toBe(MAX_STALL_TIMEOUT_SEC);
+});
+
+test("Stopped thinking preserves its non-retryable upstream taxonomy in response.failed", async () => {
+  async function* stoppedThinking(): AsyncGenerator<AdapterEvent> {
+    const error = chatGptStoppedThinkingError();
+    yield {
+      type: "error",
+      message: error.message,
+      status: error.status,
+      errorType: error.errorType,
+      code: error.code,
+      retryable: error.retryable,
+    };
+  }
+
+  const body = await new Response(bridged(stoppedThinking(), 30, 10)).text();
+
+  expect(body).toContain("event: response.failed");
+  expect(body).toContain('"type":"server_error"');
+  expect(body).toContain('"code":"chatgpt_stopped_thinking"');
+  expect(body).toContain('"retryable":false');
 });

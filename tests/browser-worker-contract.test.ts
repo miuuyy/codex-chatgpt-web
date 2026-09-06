@@ -3017,7 +3017,7 @@ test("visible DOM trace emits one complete commentary paragraph before the next 
   expect(tracker.observe([...completed], false, 1_450)).toEqual([]);
 });
 
-test("persistent Stopped thinking is a terminal cancelled turn", () => {
+test("persistent Stopped thinking is an explicit upstream interruption, not a client cancellation", () => {
   expect(CHATGPT_STOPPED_THINKING_GRACE_MS).toBe(5_000);
   const tracker = new ChatGptStoppedThinkingTracker();
   expect(tracker.update(true, 1_000)).toBeFalse();
@@ -3026,9 +3026,9 @@ test("persistent Stopped thinking is a terminal cancelled turn", () => {
   expect(tracker.update(true, 10_000)).toBeFalse();
   expect(tracker.update(true, 15_000)).toBeTrue();
   expect(chatGptStoppedThinkingError()).toMatchObject({
-    status: 499,
-    errorType: "client_closed_request",
-    code: "client_cancelled",
+    status: 502,
+    errorType: "server_error",
+    code: "chatgpt_stopped_thinking",
     retryable: false,
   });
 });
