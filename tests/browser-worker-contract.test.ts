@@ -759,6 +759,52 @@ test("an accepted turn rebinds the missing assistant observation and acknowledge
   }
 });
 
+test("aborting after submission acceptance stops generation before assistant binding", async () => {
+  type Baseline = { initialResponseTurnIdentities: string[]; domCache: Record<string, unknown> };
+  const controller = new AbortController();
+  let stopPresses = 0;
+  const stop = {
+    filter() { return this; },
+    last() { return this; },
+    isVisible: async () => true,
+    press: async (key: string) => {
+      expect(key).toBe("Enter");
+      stopPresses += 1;
+    },
+  };
+  const page = {
+    isClosed: () => false,
+    locator: (selector: string) => selector === '[data-testid="stop-button"]'
+      ? stop
+      : { filter() { return this; }, last() { return this; }, isVisible: async () => false },
+  } as unknown as Page;
+  const worker = ChatGptBrowserWorker.forProvider({
+    adapter: "chatgpt-web",
+    baseUrl: `browser://accepted-abort-${Date.now()}-${Math.random()}`,
+    chatgptWeb: { localToolsEnabled: true, solAvailable: true, proAvailable: true },
+  }) as unknown as {
+    waitForNewAssistantTurn(
+      page: Page,
+      baseline: Baseline,
+      deadline: number | undefined,
+      signal?: AbortSignal,
+    ): Promise<unknown>;
+    submissionDomState(): Promise<never>;
+  };
+  worker.submissionDomState = async () => {
+    controller.abort();
+    throw new DOMException("ChatGPT prompt attachment aborted", "AbortError");
+  };
+
+  await expect(worker.waitForNewAssistantTurn(
+    page,
+    { initialResponseTurnIdentities: [], domCache: {} },
+    undefined,
+    controller.signal,
+  )).rejects.toMatchObject({ name: "AbortError", message: "ChatGPT web turn aborted" });
+  expect(stopPresses).toBe(1);
+});
+
 test("missing-assistant expiry checks fresh DOM after a delayed wake while preserving the turn deadline", async () => {
   type Baseline = { initialResponseTurnIdentities: string[]; domCache: Record<string, unknown> };
   type State = { userIdentities: string[]; responseIdentities: string[] };
