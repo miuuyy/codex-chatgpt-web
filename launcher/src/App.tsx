@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { copyFor, type Copy } from "./i18n";
+import { copyFor, localizeRuntimeMessage, type Copy } from "./i18n";
 import { Icon, type IconName } from "./icons";
 import type {
   BrowserInteractionMode,
@@ -1517,7 +1517,7 @@ function McpSurface({
             >
               {busy
                 ? operation?.name === "mcp-verification" && operation.status === "running"
-                  ? operation.message
+                  ? localizeRuntimeMessage(copy, operation.message)
                   : copy.running
                 : verified ? copy.done : copy.verifyRuntime}
             </PrimaryButton>
@@ -2142,7 +2142,7 @@ function DoctorSummary({ copy, report }: { copy: Copy; report: DoctorReport }) {
         {visibleChecks.map((check) => (
           <p key={check.id}>
             <StateDot state={check.status === "ok" ? "ready" : check.status === "warning" ? "busy" : "error"} />
-            <span>{check.message}</span>
+            <span>{localizeRuntimeMessage(copy, check.message, check.id)}</span>
           </p>
         ))}
       </div>
