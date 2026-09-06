@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Page } from "playwright-core";
-import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, CHATGPT_STOPPED_THINKING_GRACE_MS, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptStoppedThinkingTracker, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptConnectorAttachmentMode, chatGptEffortSelectionRequired, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, CHATGPT_STOPPED_THINKING_GRACE_MS, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptStoppedThinkingTracker, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptConnectorAttachmentMode, chatGptConversationTurnIdentity, chatGptEffortSelectionRequired, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
 import { ensureChatGptPersonalizedConnectorAccess } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
@@ -25,10 +25,21 @@ function personalizedTemporaryChatRole(
 }
 
 test("conversation turn identity survives ChatGPT DOM virtualization", () => {
+  const initial = [
+    chatGptConversationTurnIdentity("user-a", "conversation-turn-1"),
+    chatGptConversationTurnIdentity("assistant-a", "conversation-turn-2"),
+    chatGptConversationTurnIdentity("user-b", "conversation-turn-3"),
+  ];
+  const renumbered = [
+    chatGptConversationTurnIdentity("user-a", "conversation-turn-21"),
+    chatGptConversationTurnIdentity("assistant-a", "conversation-turn-22"),
+    chatGptConversationTurnIdentity("user-b", "conversation-turn-23"),
+  ];
+  expect(chatGptNewTurnIdentity(initial, renumbered)).toBeUndefined();
   expect(chatGptNewTurnIdentity(
-    ["conversation-turn-1", "conversation-turn-2", "conversation-turn-3"],
-    ["conversation-turn-2", "conversation-turn-3", "conversation-turn-4"],
-  )).toBe("conversation-turn-4");
+    initial,
+    [...renumbered, chatGptConversationTurnIdentity("assistant-b", "conversation-turn-24")],
+  )).toBe("assistant-b");
   expect(chatGptNewTurnIdentity(
     ["conversation-turn-1"],
     ["conversation-turn-1"],
@@ -37,14 +48,17 @@ test("conversation turn identity survives ChatGPT DOM virtualization", () => {
     ["conversation-turn-1"],
     ["conversation-turn-1", "conversation-turn-2", "conversation-turn-3"],
   )).toThrow("2 new conversation turns");
+  expect(chatGptConversationTurnIdentity(null, "conversation-turn-9")).toBe("conversation-turn-9");
+  expect(() => chatGptConversationTurnIdentity(null, "other-node")).toThrow("no stable data-turn-id");
 });
 
 test("assistant tracking rebinds only one proven replacement after React detaches its node", () => {
+  const stableAssistant = chatGptConversationTurnIdentity("request-WEB:stable-assistant", "conversation-turn-2");
   expect(chatGptReboundTurnIdentity(
-    ["conversation-turn-1"],
-    "conversation-turn-2",
-    ["conversation-turn-1", "conversation-turn-2"],
-  )).toBe("conversation-turn-2");
+    ["user-a"],
+    stableAssistant,
+    ["user-a", chatGptConversationTurnIdentity("request-WEB:stable-assistant", "conversation-turn-200")],
+  )).toBe(stableAssistant);
   expect(chatGptReboundTurnIdentity(
     ["conversation-turn-1"],
     "conversation-turn-2",
@@ -736,7 +750,7 @@ test("an accepted turn rebinds the missing assistant observation and acknowledge
   const makePage = (name: string) => ({
     name,
     isClosed: () => false,
-    locator: (selector: string) => selector.startsWith("[data-testid=")
+    locator: (selector: string) => selector.includes("[data-turn-id=") || selector.includes("[data-testid=")
       ? assistantLocator
       : hiddenLocator,
   }) as unknown as Page;

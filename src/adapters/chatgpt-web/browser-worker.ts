@@ -145,6 +145,7 @@ const CHATGPT_DOM_REVISION_ATTRIBUTES = [
   "data-streaming-response-status",
   "data-testid",
   "data-turn",
+  "data-turn-id",
   "disabled",
   "hidden",
   "inert",
@@ -1325,6 +1326,26 @@ export function chatGptNewTurnIdentity(
     throw new Error(`ChatGPT exposed ${added.length} new conversation turns for one submitted message`);
   }
   return added[0];
+}
+
+export function chatGptConversationTurnIdentity(
+  turnId: string | null | undefined,
+  testId: string | null | undefined,
+): string {
+  const stableTurnId = turnId?.trim();
+  if (stableTurnId) return stableTurnId;
+  const positionalTestId = testId?.trim();
+  if (positionalTestId?.startsWith("conversation-turn-")) return positionalTestId;
+  throw new Error("ChatGPT conversation turn has no stable data-turn-id or fallback data-testid identity");
+}
+
+function chatGptTurnLocator(page: Page, identity: string): Locator {
+  // `conversation-turn-N` is only a positional label and can be renumbered when ChatGPT
+  // virtualizes history or navigates temporary chat into /c/<id>. Prefer the immutable
+  // data-turn-id logical identity, while retaining data-testid as a compatibility fallback.
+  return page.locator(
+    `[data-turn-id=${JSON.stringify(identity)}], [data-testid=${JSON.stringify(identity)}]`,
+  );
 }
 
 export function chatGptReboundTurnIdentity(
@@ -2600,15 +2621,17 @@ export class ChatGptBrowserWorker {
       const observerKey = `${observerState.id}:${observerState.revision}`;
       if (options.knownKey === observerKey) return { key: observerKey };
       const identities = (selector: string): string[] => {
-        const values = [...document.querySelectorAll(selector)].map(element => element.getAttribute("data-testid"));
-        if (values.some(value => typeof value !== "string" || !value.startsWith("conversation-turn-"))) {
-          throw new Error("ChatGPT conversation turn has no stable data-testid identity");
-        }
-        const typed = values as string[];
-        if (new Set(typed).size !== typed.length) {
+        const values = [...document.querySelectorAll(selector)].map(element => {
+          const turnId = element.getAttribute("data-turn-id")?.trim();
+          if (turnId) return turnId;
+          const testId = element.getAttribute("data-testid")?.trim();
+          if (testId?.startsWith("conversation-turn-")) return testId;
+          throw new Error("ChatGPT conversation turn has no stable data-turn-id or fallback data-testid identity");
+        });
+        if (new Set(values).size !== values.length) {
           throw new Error("ChatGPT exposed duplicate conversation turn identities");
         }
-        return typed;
+        return values;
       };
       const visible = (element: Element): boolean => {
         const candidate = element as HTMLElement;
@@ -2677,7 +2700,7 @@ export class ChatGptBrowserWorker {
       state.responseIdentities,
     );
     if (!identity) return "";
-    const locator = page.locator(`[data-testid=${JSON.stringify(identity)}]`);
+    const locator = chatGptTurnLocator(page, identity);
     return (await this.responseDomSnapshot(locator, {})).visibleText;
   }
 
@@ -2783,7 +2806,7 @@ export class ChatGptBrowserWorker {
         && completionTracker?.needsToolBatchObservation(progress.lastToolBatchRevision)) {
         const boundaryText = identity
           ? (await this.responseDomSnapshot(
-            observationPage.locator(`[data-testid=${JSON.stringify(identity)}]`),
+            chatGptTurnLocator(observationPage, identity),
             {},
           )).visibleText
           : "";
@@ -2792,7 +2815,7 @@ export class ChatGptBrowserWorker {
       }
       if (identity) return {
         identity,
-        locator: observationPage.locator(`[data-testid=${JSON.stringify(identity)}]`),
+        locator: chatGptTurnLocator(observationPage, identity),
         acceptedUserTurnIdentities: state.userIdentities,
       };
       await this.waitForTurnDomOrExternalProgress(
@@ -2830,7 +2853,7 @@ export class ChatGptBrowserWorker {
     if (!identity || identity === binding.identity) return binding;
     return {
       identity,
-      locator: page.locator(`[data-testid=${JSON.stringify(identity)}]`),
+      locator: chatGptTurnLocator(page, identity),
       acceptedUserTurnIdentities: state.userIdentities,
     };
   }
@@ -4751,7 +4774,7 @@ export class ChatGptBrowserWorker {
             };
             responseTurn = {
               ...responseTurn,
-              locator: page.locator(`[data-testid=${JSON.stringify(responseTurn.identity)}]`),
+              locator: chatGptTurnLocator(page, responseTurn.identity),
             };
             responseDomCache.key = undefined;
             responseDomCache.snapshot = undefined;
