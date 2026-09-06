@@ -1099,10 +1099,10 @@ const CHATGPT_HEAVY_STAGES = new Set([
  * probe times out. Waiting for a ChatGPT response is deliberately absent - that is where concurrent
  * turns spend most of their time, and holding the lock there would remove all parallelism.
  */
-function isHeavyChatGptStage(stage: string): boolean {
+export function isHeavyChatGptStage(stage: string): boolean {
   return CHATGPT_HEAVY_STAGES.has(stage)
-    || /^response_page_rebind_d+$/.test(stage)
-    || /^multipart_stage_d+_(attachment|send)$/.test(stage);
+    || /^response_page_rebind_\d+$/.test(stage)
+    || /^multipart_stage_\d+_(attachment|send)$/.test(stage);
 }
 
 export const CHATGPT_MIN_OPERATIONAL_VIEWPORT = Object.freeze({ width: 320, height: 240 });
