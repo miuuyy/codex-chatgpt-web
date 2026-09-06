@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { compileChatGptWebPromptWithinPageCapacity } from "../src/adapters/chatgpt-web/capacity";
 import { compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
 import {
   activeCompactionToolResultInstruction,
@@ -65,6 +66,21 @@ test("Zero Risk prompt fails closed without Full harness or an exact manual bind
     manualControl: true,
     experimentalMultipartParts: 2,
   })).toThrow("does not support rolling or multipart browser transport");
+});
+
+test("Zero Risk reports page capacity explicitly instead of attempting multipart transport", () => {
+  const oversized = request();
+  oversized.context.messages = [{
+    role: "user",
+    content: `manual-capacity-${"x".repeat(12_000)}`,
+    timestamp: 1,
+  }];
+  expect(() => compileChatGptWebPromptWithinPageCapacity(
+    oversized,
+    capabilities,
+    requestId,
+    { manualControl: true, maxMessageChars: 5_000 },
+  )).toThrow(/Zero Risk cannot split.*5,000|5,000.*Zero Risk cannot split/);
 });
 
 test("active Zero Risk compaction returns its checkpoint through the bound completion control", () => {

@@ -17,7 +17,7 @@ export interface ChatGptWebPromptImage {
 export interface CompiledChatGptWebPrompt {
   text: string;
   images: ChatGptWebPromptImage[];
-  /** DEV-only transactional context transport. Production prompts remain inline. */
+  /** Transactional context transport used when one browser message would exceed page capacity. */
   multipart?: ChatGptWebMultipartPrompt;
   /** Oldest history items removed by native-style compaction fit recovery; absent on normal turns. */
   trimmedCompactionMessages?: number;
@@ -25,7 +25,11 @@ export interface CompiledChatGptWebPrompt {
 
 export interface CompileChatGptWebPromptOptions {
   captureLunaCheckpoint?: boolean;
+  multipartParts?: ChatGptWebMultipartPartCount;
+  /** @deprecated Use multipartParts. Kept for direct callers during the transport migration. */
   experimentalMultipartParts?: ChatGptWebMultipartPartCount;
+  /** Measure/transport canonical compaction history before the retired inline byte-fit fallback. */
+  preserveCompactionHistory?: boolean;
   /**
    * Manual Zero Risk transport keeps ChatGPT model/effort selection and prompt submission under the
    * user's control. The browser bridge may open the owned tab and copy this prompt, but it never
@@ -422,7 +426,12 @@ export function compileChatGptWebPrompt(
     ? { localTools: true, effort: "low" as const, displayLabel: "Zero Risk" as const }
     : resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
   const captureLunaCheckpoint = options?.captureLunaCheckpoint === true;
-  const multipartParts = options?.experimentalMultipartParts;
+  if (options?.multipartParts !== undefined
+    && options.experimentalMultipartParts !== undefined
+    && options.multipartParts !== options.experimentalMultipartParts) {
+    throw new Error("ChatGPT multipart part-count options disagree");
+  }
+  const multipartParts = options?.multipartParts ?? options?.experimentalMultipartParts;
   const multipartEnabled = multipartParts !== undefined;
   if (manualControl) {
     if (!capabilities.localToolsEnabled) {
@@ -433,7 +442,7 @@ export function compileChatGptWebPrompt(
     }
   }
   if (multipartParts !== undefined && multipartParts !== 2 && multipartParts !== CHATGPT_BIGGER_CONTEXT_PARTS) {
-    throw new Error("Bigger Context requires two or three multipart stages");
+    throw new Error("ChatGPT multipart transport requires two or three stages");
   }
   if (multipartEnabled && parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID) {
     throw new Error("Bigger Context is unavailable for Luna because its accumulated browser transcript still shares one 28,000-token transport budget");
@@ -629,7 +638,7 @@ export function compileChatGptWebPrompt(
   // as ordinary multipart turns in browser-worker. Applying the legacy byte cap here silently
   // discarded context that the staged transport can carry; preserve it and let browser preflight
   // fail explicitly if any atomic record is genuinely too large for one stage.
-  if (compiled.multipart) return compiled;
+  if (compiled.multipart || options?.preserveCompactionHistory === true) return compiled;
 
   const exceedsCompactionBudget = (): boolean => (
     chatGptPromptJsonBytes(compiled.text) > CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET

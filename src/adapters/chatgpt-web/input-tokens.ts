@@ -12,6 +12,13 @@ const CHATGPT_IMAGE_RESERVE_TOKENS = 4_096;
 const CHATGPT_ORIGINAL_IMAGE_RESERVE_TOKENS = 8_192;
 
 /**
+ * Empirical ChatGPT page/composer capacity guard. This is deliberately independent of the model
+ * context window: browser responsiveness was observed to fail at larger message sizes, and the
+ * exact threshold can vary by machine/browser build. Override it only with local evidence.
+ */
+export const DEFAULT_CHATGPT_WEB_MAX_MESSAGE_CHARS = 80_000;
+
+/**
  * The Free/Luna product accepted measured browser inputs at 25,400 and 28,547 estimated tokens,
  * but rejected the same shape at 32,283 before producing a response. This is a ChatGPT browser
  * transport boundary, not Luna's model context window, and applies to normal and checkpoint turns.

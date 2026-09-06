@@ -120,6 +120,8 @@ export interface AppConfig {
   solAvailable: boolean;
   proAvailable: boolean;
   experimentalBiggerContext: boolean;
+  /** Optional empirical ChatGPT page/composer character ceiling. */
+  chatGptWebMaxMessageChars?: number;
   /** Explicitly install the additional Pro-sized model row while Zero Risk is active. */
   zeroRiskProEnabled: boolean;
   /** Optional adapter-silence budget for the Responses watchdog. */
@@ -520,6 +522,10 @@ function parseConfig(value: unknown, path: string): AppConfig {
     && typeof parsed.experimentalBiggerContext !== "boolean") {
     throw new Error(`Invalid experimentalBiggerContext in ${path}`);
   }
+  if (parsed.chatGptWebMaxMessageChars !== undefined
+    && (!Number.isSafeInteger(parsed.chatGptWebMaxMessageChars) || parsed.chatGptWebMaxMessageChars <= 0)) {
+    throw new Error(`Invalid chatGptWebMaxMessageChars in ${path}`);
+  }
   if (parsed.zeroRiskProEnabled !== undefined && typeof parsed.zeroRiskProEnabled !== "boolean") {
     throw new Error(`Invalid zeroRiskProEnabled in ${path}`);
   }
@@ -601,6 +607,9 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       solAvailable: manual ? false : config.solAvailable,
       proAvailable: manual ? false : config.proAvailable,
       experimentalBiggerContext: manual ? false : config.experimentalBiggerContext,
+      ...(config.chatGptWebMaxMessageChars !== undefined
+        ? { maxMessageChars: config.chatGptWebMaxMessageChars }
+        : {}),
       ...(config.stallTimeoutSec !== undefined ? { stallTimeoutSec: config.stallTimeoutSec } : {}),
       autoApproveToolCalls: manual ? false : config.autoApproveToolCalls,
     },

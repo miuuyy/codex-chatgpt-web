@@ -274,6 +274,144 @@ function toolResult(value: Record<string, unknown>): BrokerToolResult {
   };
 }
 
+test("browser page capacity keeps a prompt inline when it fits", async () => {
+  const socketPath = brokerTestEndpoint(`cgw-page-capacity-inline-${process.pid}-${Date.now()}`);
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://page-capacity-inline-${Date.now()}`,
+    chatgptWeb: {
+      brokerSocketPath: socketPath,
+      localToolsEnabled: false,
+      solAvailable: true,
+      proAvailable: true,
+      experimentalBiggerContext: false,
+      maxMessageChars: 20_000,
+    } as CodexProviderConfig["chatgptWeb"],
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    const prepared = await turn.prepare();
+    try {
+      expect(prepared.multipart).toBeUndefined();
+      const answer = "inline capacity accepted";
+      turn.onTextDelta(answer);
+      return answer;
+    } finally {
+      prepared.release();
+    }
+  };
+  try {
+    const events: AdapterEvent[] = [];
+    await createChatGptWebAdapter(provider).runTurn!(
+      rawWireRequest(environmentXml),
+      { headers: new Headers() },
+      event => events.push(event),
+    );
+    expect(events.at(-1)).toMatchObject({ type: "done" });
+  } finally {
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    await TurnBroker.forSocket(socketPath).close();
+  }
+});
+
+test("browser page capacity uses multipart even when Bigger Context is disabled", async () => {
+  const socketPath = brokerTestEndpoint(`cgw-page-capacity-multipart-${process.pid}-${Date.now()}`);
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://page-capacity-multipart-${Date.now()}`,
+    chatgptWeb: {
+      brokerSocketPath: socketPath,
+      localToolsEnabled: false,
+      solAvailable: true,
+      proAvailable: true,
+      experimentalBiggerContext: false,
+      maxMessageChars: 9_000,
+    } as CodexProviderConfig["chatgptWeb"],
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    const prepared = await turn.prepare();
+    try {
+      expect(prepared.multipart).toBeDefined();
+      const answer = "multipart capacity accepted";
+      turn.onTextDelta(answer);
+      return answer;
+    } finally {
+      prepared.release();
+    }
+  };
+  try {
+    const request = rawWireRequest(environmentXml);
+    request.context.messages = Array.from({ length: 12 }, (_, index) => ({
+      role: "user" as const,
+      content: `capacity-message-${index}-${"x".repeat(850)}`,
+      timestamp: index + 1,
+    }));
+    const events: AdapterEvent[] = [];
+    await createChatGptWebAdapter(provider).runTurn!(
+      request,
+      { headers: new Headers() },
+      event => events.push(event),
+    );
+    expect(events.at(-1)).toMatchObject({ type: "done" });
+  } finally {
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    await TurnBroker.forSocket(socketPath).close();
+  }
+});
+
+test("browser page capacity fails before send when even multipart cannot fit", async () => {
+  const socketPath = brokerTestEndpoint(`cgw-page-capacity-error-${process.pid}-${Date.now()}`);
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://page-capacity-error-${Date.now()}`,
+    chatgptWeb: {
+      brokerSocketPath: socketPath,
+      localToolsEnabled: false,
+      solAvailable: true,
+      proAvailable: true,
+      experimentalBiggerContext: false,
+      maxMessageChars: 5_000,
+    } as CodexProviderConfig["chatgptWeb"],
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  let browserPrepared = false;
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    await turn.prepare();
+    browserPrepared = true;
+    return "unexpected";
+  };
+  try {
+    const request = rawWireRequest(environmentXml);
+    request.context.messages = [{
+      role: "user",
+      content: `one-atomic-message-${"z".repeat(18_000)}`,
+      timestamp: 1,
+    }];
+    const events: AdapterEvent[] = [];
+    await createChatGptWebAdapter(provider).runTurn!(
+      request,
+      { headers: new Headers() },
+      event => events.push(event),
+    );
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      status: 413,
+      code: "browser_message_too_large",
+      retryable: false,
+    });
+    expect((events.at(-1) as Extract<AdapterEvent, { type: "error" }>).message)
+      .toMatch(/\d{1,3},\d{3}.*5,000|5,000.*\d{1,3},\d{3}/);
+    expect(browserPrepared).toBeFalse();
+  } finally {
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    await TurnBroker.forSocket(socketPath).close();
+  }
+});
+
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (value && typeof value === "object") {

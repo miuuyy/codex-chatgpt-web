@@ -22,14 +22,18 @@ import type { ProviderAdapter } from "../base";
 import { parseDataUrl } from "../image";
 import { ChatGptWebAdapterError } from "./adapter-error";
 import { ChatGptBrowserWorker } from "./browser-worker";
+import {
+  compileChatGptWebPromptWithinPageCapacity,
+  DEFAULT_CHATGPT_WEB_MAX_MESSAGE_CHARS,
+} from "./capacity";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
-import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt";
+import { chatGptReadOnlyContextWarning } from "./prompt";
 import { createChatGptStructuredOutputValidator } from "./output-validation";
 import { chatGptWebTurnRetryPolicy } from "./retry-policy";
 import { TurnBroker, type BrokerToolRequest, type BrokerToolResult, type TurnBrokerOwner } from "./turn-broker";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptCompactionSourceExecutionKey, chatGptInstructionLineage, chatGptThreadOwnershipKey, chatGptTurnExecutionKey, chatGptTurnRetryKey, chatGptTurnRoundKey, chatGptTurnSessions, type ChatGptBrowserOutcome, type ChatGptTraceEvent, type ChatGptTurnRuntime, type ChatGptTurnSession } from "./turn-execution";
-import { estimateChatGptWebUsage, resolveBiggerContextMultipartParts } from "./usage";
+import { estimateChatGptWebUsage } from "./usage";
 import { ChatGptThreadEnvironmentStore } from "./thread-environment";
 import {
   ChatGptLunaCheckpointStore,
@@ -352,6 +356,10 @@ export function createChatGptWebAdapter(
   if (experimentalBiggerContext !== undefined && typeof experimentalBiggerContext !== "boolean") {
     throw new Error("ChatGPT Bigger Context preference must be a boolean");
   }
+  const maxMessageChars = provider.chatgptWeb?.maxMessageChars ?? DEFAULT_CHATGPT_WEB_MAX_MESSAGE_CHARS;
+  if (!Number.isSafeInteger(maxMessageChars) || maxMessageChars <= 0) {
+    throw new Error("ChatGPT browser maxMessageChars must be a positive safe integer");
+  }
   const configuredCapabilities: ChatGptWebCapabilities = {
     localToolsEnabled: provider.chatgptWeb?.localToolsEnabled === true,
     solAvailable: provider.chatgptWeb?.solAvailable !== false,
@@ -427,18 +435,20 @@ export function createChatGptWebAdapter(
         await releaseLauncherRetainedConversation(retainedLauncherDescriptor, conversationKey);
       }
       : undefined;
-    const compileOptionsFor = (input: CodexParsedRequest) => {
-      if (manualRequest) return {};
-      const experimentalMultipartParts = experimentalBiggerContext
-        ? resolveBiggerContextMultipartParts(input, turnCapabilities)
-        : undefined;
-      return {
+    const compileForCapacity = (
+      input: CodexParsedRequest,
+      turnToken?: string,
+      manualControl = false,
+    ) => compileChatGptWebPromptWithinPageCapacity(
+      input,
+      turnCapabilities,
+      turnToken,
+      {
         captureLunaCheckpoint,
-        ...(experimentalMultipartParts !== undefined
-          ? { experimentalMultipartParts }
-          : {}),
-      };
-    };
+        maxMessageChars,
+        ...(manualControl ? { manualControl: true as const } : {}),
+      },
+    );
     if (captureLunaCheckpoint) {
       console.info(
         `[chatgpt-web] Luna rolling checkpoint applied=${checkpointInput.applied}${checkpointInput.reason ? ` reason=${checkpointInput.reason}` : ""}`,
@@ -527,19 +537,9 @@ export function createChatGptWebAdapter(
         try {
           activeToken = await broker.registerSafe(environment, surfaceNonce, undefined, traceId);
           observeCapabilityRetirement(activeToken, externalProgress);
-          const compiled = compileChatGptWebPrompt(
-            checkpointInput.parsed,
-            turnCapabilities,
-            activeToken,
-            { manualControl: true },
-          );
+          const compiled = compileForCapacity(checkpointInput.parsed, activeToken, true);
           const resumeCompiled = resumeInput
-            ? compileChatGptWebPrompt(
-              resumeInput,
-              turnCapabilities,
-              activeToken,
-              { manualControl: true },
-            )
+            ? compileForCapacity(resumeInput, activeToken, true)
             : undefined;
           for (const candidate of [compiled, resumeCompiled]) {
             if (!candidate) continue;
@@ -675,12 +675,7 @@ export function createChatGptWebAdapter(
         reasoning: parsed.options.reasoning,
         capabilities: turnCapabilities,
         prepare: async () => ({
-          ...compileChatGptWebPrompt(
-            checkpointInput.parsed,
-            turnCapabilities,
-            undefined,
-            compileOptionsFor(checkpointInput.parsed),
-          ),
+          ...compileForCapacity(checkpointInput.parsed),
           release: () => {},
         }),
         abortSignal: browserAbort.signal,
@@ -719,12 +714,7 @@ export function createChatGptWebAdapter(
       );
       activeToken = turnToken;
       try {
-        const compiled = compileChatGptWebPrompt(
-          input,
-          turnCapabilities,
-          turnToken,
-          compileOptionsFor(input),
-        );
+        const compiled = compileForCapacity(input, turnToken);
         // Publish only after preparation succeeds: otherwise its failure revokes the token
         // before the response observer uses it and masks the cause as an expired capability.
         observeCapabilityRetirement(turnToken, externalProgress);
