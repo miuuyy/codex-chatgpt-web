@@ -500,3 +500,51 @@ test("browser control server rejects malformed retained-conversation contracts",
     await server.close();
   }
 });
+
+test("browser control server routes every heavy-phase lock call the helper can post", async () => {
+  // The heavy-phase branches are dispatched far below the request guard. When the guard did not
+  // list them, every automatic turn died on its first heavy stage with HTTP 404: not_found, so
+  // this exercises the real HTTP surface rather than the host methods directly.
+  const calls = [];
+  const host = {
+    browserInteractionMode: () => "automatic",
+    acquireHeavyPhase: (...args) => {
+      calls.push(["heavy-acquire", ...args]);
+      return { acquired: true };
+    },
+    releaseHeavyPhase: (...args) => {
+      calls.push(["heavy-release", ...args]);
+      return { released: true };
+    },
+  };
+  const server = await new BrowserControlServer({
+    logger: { info: () => {}, warn: () => {}, debug: () => {} },
+    getBrowserHost: () => host,
+    getPreferences: () => ({ showBrowserDuringTurns: false }),
+  }).start();
+  const descriptor = server.descriptor();
+  const post = (phase) => fetch(`${descriptor.endpoint}/v1/turn/${phase}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${descriptor.token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ phase, traceId: "abcdef123456", helperPid: process.pid }),
+  });
+  try {
+    const acquire = await post("heavy-acquire");
+    assert.equal(acquire.status, 200);
+    assert.deepEqual(await acquire.json(), { ok: true, acquired: true });
+
+    const release = await post("heavy-release");
+    assert.equal(release.status, 200);
+    assert.deepEqual(await release.json(), { ok: true, released: true });
+
+    assert.deepEqual(calls, [
+      ["heavy-acquire", "abcdef123456", process.pid],
+      ["heavy-release", "abcdef123456"],
+    ]);
+  } finally {
+    await server.close();
+  }
+});

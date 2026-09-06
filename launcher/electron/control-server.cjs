@@ -93,8 +93,13 @@ class BrowserControlServer {
       writeJson(response, 401, { error: "unauthorized" });
       return;
     }
+    // Every automatic turn phase the helper can post must be listed here. A phase handled below
+    // but missing from this guard is unreachable: the request is rejected as not_found before it
+    // ever reaches its branch, which took the whole bridge down when the heavy-phase lock shipped.
     const isTurn = request.url === "/v1/turn/start"
       || request.url === "/v1/turn/heartbeat"
+      || request.url === "/v1/turn/heavy-acquire"
+      || request.url === "/v1/turn/heavy-release"
       || request.url === "/v1/turn/end";
     const isTurnRelease = request.url === "/v1/turn/release";
     const isSessionInspect = request.url === "/v1/session/inspect";
