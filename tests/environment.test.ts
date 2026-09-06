@@ -659,6 +659,13 @@ describe("trusted Codex task environment continuity", () => {
     metadata.subagent_kind = "other";
     (child._rawBody as { client_metadata: Record<string, string> }).client_metadata["x-codex-turn-metadata"] = JSON.stringify(metadata);
     expect(() => store.resolve(child)).toThrow("missing cwd");
+
+    for (const agent_name of [null, undefined]) {
+      (child._rawBody as { client_metadata: Record<string, string> }).client_metadata["x-codex-turn-metadata"] = JSON.stringify({
+        ...metadata, subagent_kind: "thread_spawn", agent_name,
+      });
+      expect(() => store.resolve(child)).toThrow("missing cwd");
+    }
   });
 
   const rolloutThreadId = "01a06c66-4232-7ae1-9108-69b5f70e0671";
@@ -883,7 +890,7 @@ describe("trusted Codex task environment continuity", () => {
       .toThrow("does not authenticate");
   });
 
-  test("recovers a V1 native child whose agent path is null and agent name is /root", () => {
+  test.each([null, undefined])("recovers a V1 native child with session agent_path=%s and agent name /root", agentPath => {
     const codexHome = mkdtempSync(join(tmpdir(), "codex-chatgpt-null-agent-path-"));
     temporaryRoots.push(codexHome);
     const rolloutPath = join(codexHome, "sessions", "2026", "09", "06",
@@ -891,7 +898,7 @@ describe("trusted Codex task environment continuity", () => {
     mkdirSync(dirname(rolloutPath), { recursive: true });
     const session = childSessionMeta();
     const payload = session.payload as Record<string, unknown>;
-    payload.agent_path = null;
+    payload.agent_path = agentPath;
     const spawn = ((payload.source as Record<string, unknown>).subagent as Record<string, unknown>)
       .thread_spawn as Record<string, unknown>;
     spawn.agent_path = null;

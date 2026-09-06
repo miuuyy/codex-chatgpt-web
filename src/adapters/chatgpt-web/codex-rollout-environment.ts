@@ -50,8 +50,9 @@ function contains(root: string, path: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
-function matchesAgentPath(value: unknown, expected?: string): boolean {
-  return expected === undefined ? value == null : value === expected;
+function matchesAgentPath(value: unknown, expected: string): boolean {
+  // V1 reports /root without an assigned path; rollout metadata can omit the field.
+  return expected === "/root" ? value == null : value === expected;
 }
 
 function canonicalRolloutName(name: string, threadId: string): boolean {
