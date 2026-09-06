@@ -10,8 +10,10 @@ import {
   extractChatGptTurnIdentity,
   extractChatGptThreadSpawnLineage,
   extractChatGptRootThreadMetadata,
+  currentChatGptEnvironmentDeclaresCwd,
+  currentChatGptEnvironmentWorkspaceRoots,
   hasCurrentChatGptEnvironmentContext,
-  hasRawChatGptEnvironmentContext,
+  hasRawChatGptEnvironmentContextDeclaringCwd,
   isChatGptCompactionContinuation,
   MissingTrustedCodexEnvironmentError,
   type ChatGptSandboxPolicy,
@@ -116,6 +118,22 @@ function authority(environment: ChatGptTurnEnvironment, updatedAt: number): Stor
   };
 }
 
+/**
+ * An ambient environment diff still lists the workspace roots. They must stay inside the
+ * authority this store already holds: a cached cwd may survive a diff, but it may never
+ * silently authorise filesystem reach the trusted turn never granted.
+ */
+function assertDeclaredRootsWithinAuthority(declared: string[], trusted: string[]): void {
+  if (declared.length === 0) return;
+  const known = new Set(trusted.map(pathIdentity));
+  const widened = declared.filter(root => !isAbsolute(root) || !known.has(pathIdentity(resolve(root))));
+  if (widened.length > 0) {
+    throw new Error(
+      "ChatGPT web environment update declares workspace roots outside the trusted thread authority",
+    );
+  }
+}
+
 function sameAuthority(left: ChatGptTurnEnvironment, right: ChatGptTurnEnvironment): boolean {
   const samePaths = (a: string[], b: string[]): boolean => {
     const expected = new Set(b.map(pathIdentity));
@@ -154,8 +172,16 @@ export class ChatGptThreadEnvironmentStore {
     } catch (error) {
       if (!(error instanceof MissingTrustedCodexEnvironmentError) || !identity.threadId) throw error;
       const hasCurrentContext = hasCurrentChatGptEnvironmentContext(parsed);
-      if (hasCurrentContext && !isChatGptCompactionContinuation(parsed)) throw error;
-      const currentClaim = hasCurrentContext ? extractChatGptContinuationEnvironmentClaim(parsed) : undefined;
+      // An envelope that states no cwd is an ambient diff, not a redeclaration of authority:
+      // Codex sends one when only the date or timezone changes, which happens to every running
+      // turn at local midnight. Treating that as a current claim suppressed the fallback below
+      // and failed live turns outright while this store already held the right cwd.
+      const currentContextClaimsCwd = hasCurrentContext && currentChatGptEnvironmentDeclaresCwd(parsed);
+      if (currentContextClaimsCwd && !isChatGptCompactionContinuation(parsed)) throw error;
+      // A cwd-less diff makes no environment claim, so there is nothing here to reconcile.
+      const currentClaim = currentContextClaimsCwd
+        ? extractChatGptContinuationEnvironmentClaim(parsed)
+        : undefined;
       const lineage = extractChatGptThreadSpawnLineage(parsed);
       const rolloutIdentity = lineage ?? extractChatGptRootThreadMetadata(parsed);
       // Automatic compaction has a current turn_context; standalone compaction has only its
@@ -181,8 +207,12 @@ export class ChatGptThreadEnvironmentStore {
       }
       // Only a current native rollout can supersede an unrecognized historical envelope. Without
       // that proof, do not turn arbitrary history or an invalid update into cached authority.
-      if (hasRawChatGptEnvironmentContext(parsed)) throw error;
+      if (hasRawChatGptEnvironmentContextDeclaringCwd(parsed)) throw error;
       const sameThread = this.get(identity.threadId);
+      if (sameThread) assertDeclaredRootsWithinAuthority(
+        currentChatGptEnvironmentWorkspaceRoots(parsed),
+        sameThread.roots,
+      );
       if (sameThread) return {
         cwd: sameThread.cwd,
         roots: sameThread.roots,

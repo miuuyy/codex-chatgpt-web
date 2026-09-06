@@ -111,12 +111,25 @@ export function hasRawChatGptEnvironmentContext(parsed: CodexParsedRequest): boo
   });
 }
 
+const ENVELOPE_PATTERN = /<\/?environment_context\b/i;
+const CWD_TAG_PATTERN = /<\/?cwd\b/i;
+const WORKSPACE_ROOTS_PATTERN = /<workspace_roots>[\s\S]*?<\/workspace_roots>/gi;
+const ROOT_PATTERN = /<root>([^<]+)<\/root>/gi;
 /** Historical XML is not a current environment update, including in old untagged rollouts. */
-export function hasCurrentChatGptEnvironmentContext(parsed: CodexParsedRequest): boolean {
-  const turnId = extractChatGptTurnIdentity(parsed).turnId;
-  if (!turnId) return hasRawChatGptEnvironmentContext(parsed);
+export function currentChatGptEnvironmentContextTexts(parsed: CodexParsedRequest): string[] {
   const body = record(parsed._rawBody);
   const input = Array.isArray(body?.input) ? body.input : [];
+  const envelopeText = (value: unknown): string | undefined => {
+    const item = record(value);
+    if (item?.type !== "message") return undefined;
+    const text = rawMessageText(item);
+    return ENVELOPE_PATTERN.test(text) ? text : undefined;
+  };
+  const turnId = extractChatGptTurnIdentity(parsed).turnId;
+  if (!turnId) {
+    return input.map(envelopeText).filter((text): text is string => text !== undefined);
+  }
+  const texts: string[] = [];
   let laterAssistantOutput = false;
   for (let index = input.length - 1; index >= 0; index -= 1) {
     const item = record(input[index]);
@@ -125,11 +138,54 @@ export function hasCurrentChatGptEnvironmentContext(parsed: CodexParsedRequest):
       || item.type === "function_call" || item.type === "reasoning" || item.type === "compaction") {
       laterAssistantOutput = true;
     }
-    if (item.type !== "message" || !/<\/?environment_context\b/i.test(rawMessageText(item))) continue;
+    const text = envelopeText(item);
+    if (text === undefined) continue;
     const owner = itemTurnId(item);
-    if (owner === turnId || (owner === undefined && !laterAssistantOutput)) return true;
+    if (owner === turnId || (owner === undefined && !laterAssistantOutput)) texts.push(text);
   }
-  return false;
+  return texts;
+}
+
+export function hasCurrentChatGptEnvironmentContext(parsed: CodexParsedRequest): boolean {
+  return currentChatGptEnvironmentContextTexts(parsed).length > 0;
+}
+
+function declaresCwd(text: string): boolean {
+  return CWD_TAG_PATTERN.test(text);
+}
+
+/**
+ * Codex sends a cwd-less environment envelope when only ambient facts change - the local date
+ * rolling over at midnight is the common one. Such a diff states no working directory of its own,
+ * so it must not be read as an attempt to redeclare filesystem authority.
+ */
+export function currentChatGptEnvironmentDeclaresCwd(parsed: CodexParsedRequest): boolean {
+  return currentChatGptEnvironmentContextTexts(parsed).some(declaresCwd);
+}
+
+/** True when any raw envelope, current or historical, tried to state a working directory. */
+export function hasRawChatGptEnvironmentContextDeclaringCwd(parsed: CodexParsedRequest): boolean {
+  const body = record(parsed._rawBody);
+  const input = Array.isArray(body?.input) ? body.input : [];
+  return input.some(value => {
+    const item = record(value);
+    if (item?.type !== "message") return false;
+    const text = rawMessageText(item);
+    return ENVELOPE_PATTERN.test(text) && declaresCwd(text);
+  });
+}
+
+/** Workspace roots declared by the current envelopes, so a diff can be checked against cached authority. */
+export function currentChatGptEnvironmentWorkspaceRoots(parsed: CodexParsedRequest): string[] {
+  const roots: string[] = [];
+  for (const text of currentChatGptEnvironmentContextTexts(parsed)) {
+    for (const section of text.matchAll(WORKSPACE_ROOTS_PATTERN)) {
+      for (const match of section[0].matchAll(ROOT_PATTERN)) {
+        roots.push(decodeXmlText((match[1] ?? "").trim()));
+      }
+    }
+  }
+  return roots;
 }
 
 function contextualUserMessage(value: Record<string, unknown>): boolean {
