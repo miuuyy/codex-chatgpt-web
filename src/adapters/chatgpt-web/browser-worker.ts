@@ -1088,6 +1088,8 @@ const CHATGPT_HEAVY_STAGES = new Set([
   "browser_page",
   "temporary_chat_preparation",
   "effort_selection",
+  "final_part_effort_selection",
+  "connector_catalog_refresh",
   "prompt_attachment",
   "file_attachment",
   "send",
