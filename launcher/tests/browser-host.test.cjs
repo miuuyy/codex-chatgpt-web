@@ -2092,6 +2092,134 @@ test("a later provider round reuses only its exact connector-bound conversation"
   assert.deepEqual(events, ["visible", "published", "descriptor", "browser.tab_reused"]);
 });
 
+test("a steering turn waits for the running automatic conversation and reuses its tab", async () => {
+  const throttling = [];
+  const conversationKey = "s".repeat(64);
+  const tab = {
+    id: "tab-steering",
+    surfaceId: "surface-steering",
+    traceId: "trace_previous",
+    conversationKey,
+    connectorIdentity: "Codex Native2",
+    connectorBound: true,
+    interactionMode: "automatic",
+    helperPid: process.pid,
+    status: "running",
+    loading: true,
+    message: "ChatGPT is working",
+    bootstrapReady: true,
+    view: {
+      webContents: {
+        isDestroyed: () => false,
+        setBackgroundThrottling: (enabled) => throttling.push(enabled),
+      },
+    },
+  };
+  let created = 0;
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    manualOperation: null,
+    turnTabs: new Map([[tab.id, tab]]),
+    userCancelledTurnOwners: new Map(),
+    closedTurnOwners: new Map(),
+    selectedTabId: "home",
+    createTurnTab: () => {
+      created += 1;
+      return { id: "unexpected", surfaceId: "unexpected" };
+    },
+    syncPowerSaveBlocker() {},
+    syncViewVisibility() {},
+    snapshot: () => ({ tabs: [] }),
+    publishState() {},
+    writeDescriptor() {},
+    logger: { info() {}, warn() {} },
+  });
+
+  const nextLease = BrowserHost.prototype.beginTurn.call(
+    fixture,
+    "trace_next",
+    false,
+    process.pid,
+    conversationKey,
+    "Codex Native2",
+  );
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(created, 0);
+  assert.equal(tab.traceId, "trace_previous");
+  assert.equal(tab.helperPid, process.pid);
+
+  assert.deepEqual(
+    await BrowserHost.prototype.endTurn.call(
+      fixture,
+      "trace_previous",
+      process.pid,
+      "aborted",
+      false,
+      "superseded",
+    ),
+    { cancelledByUser: false },
+  );
+
+  assert.deepEqual(await nextLease, {
+    surfaceId: "surface-steering",
+    tabId: "tab-steering",
+    reused: true,
+    connectorBound: true,
+  });
+  assert.equal(fixture.turnTabs.get(tab.id), tab);
+  assert.equal(tab.traceId, "trace_next");
+  assert.equal(tab.helperPid, process.pid);
+  assert.equal(tab.status, "running");
+  assert.equal(tab.loading, true);
+  assert.equal(created, 0);
+  assert.deepEqual(throttling, [true, false]);
+});
+
+test("a running automatic conversation is not handed to a different conversation key", async () => {
+  const retained = {
+    id: "running-other-conversation",
+    traceId: "trace_old",
+    helperPid: 111,
+    status: "running",
+    conversationKey: "x".repeat(64),
+    connectorIdentity: "Codex Native2",
+    connectorBound: true,
+    interactionMode: "automatic",
+  };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    manualOperation: null,
+    turnTabs: new Map([[retained.id, retained]]),
+    userCancelledTurnOwners: new Map(),
+    createTurnTab: (...args) => {
+      assert.deepEqual(args, ["trace_next", 222, "y".repeat(64), "Codex Native2"]);
+      return { id: "fresh", surfaceId: "surface-fresh" };
+    },
+    syncViewVisibility() {},
+    publishState() {},
+    snapshot: () => ({ tabs: [] }),
+    logger: { info() {} },
+  });
+
+  assert.deepEqual(
+    await BrowserHost.prototype.beginTurn.call(
+      fixture,
+      "trace_next",
+      false,
+      222,
+      "y".repeat(64),
+      "Codex Native2",
+    ),
+    {
+      surfaceId: "surface-fresh",
+      tabId: "fresh",
+      reused: false,
+      connectorBound: false,
+    },
+  );
+  assert.equal(retained.traceId, "trace_old");
+  assert.equal(retained.status, "running");
+});
+
 test("a retained conversation is not reused for a different connector identity", async () => {
   const conversationKey = "b".repeat(64);
   const retained = {

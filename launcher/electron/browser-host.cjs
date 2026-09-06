@@ -352,6 +352,7 @@ class BrowserHost {
     this.visible = false;
     this.surfaceActive = true;
     this.turnTabs = new Map();
+    this.automaticTurnHandoffs = new Map();
     this.closedTurnOwners = new Map();
     this.userCancelledTurnOwners = new Map();
     this.manualTerminalSignals = new Map();
@@ -1489,6 +1490,11 @@ class BrowserHost {
 
   removeTurnTab(tab, abortRunning) {
     if (!this.turnTabs.has(tab.id)) return;
+    const handoffs = this.automaticTurnHandoffs?.get(tab.id) || [];
+    this.automaticTurnHandoffs?.delete(tab.id);
+    for (const handoff of handoffs) {
+      handoff.reject(new Error("The ChatGPT browser conversation closed before the steering turn could take over"));
+    }
     this.turnTabs.delete(tab.id);
     if (tab.interactionMode === "manual") {
       if (tab.manualDeadlineTimer) clearTimeout(tab.manualDeadlineTimer);
@@ -2201,19 +2207,46 @@ class BrowserHost {
       || sameTrace.connectorIdentity !== connectorIdentity)) {
       throw new Error(`ChatGPT browser turn ${traceId} conversation metadata does not match its owned tab`);
     }
-    const retainedMatches = conversationKey ? [...this.turnTabs.values()].filter((tab) => (
+    const conversationMatches = conversationKey ? [...this.turnTabs.values()].filter((tab) => (
       tab.interactionMode === "automatic"
-      && tab.status === "ready"
       && tab.conversationKey === conversationKey
       && tab.connectorIdentity === connectorIdentity
-      && (!connectorIdentity || tab.connectorBound === true)
     )) : [];
+    if (conversationMatches.length > 1) {
+      throw new Error(`ChatGPT conversation ${conversationKey} owns multiple browser tabs`);
+    }
+    const runningConversation = conversationMatches.find((tab) => tab.status === "running");
+    const retainedMatches = conversationMatches.filter((tab) => (
+      tab.status === "ready"
+      && (!connectorIdentity || tab.connectorBound === true)
+    ));
     if (retainedMatches.length > 1) {
       throw new Error(`ChatGPT retained conversation ${conversationKey} owns multiple browser tabs`);
     }
     const exactRetained = retainedMatches[0];
     if (sameTrace?.status === "ready" && sameTrace !== exactRetained) {
       throw new Error(`ChatGPT browser turn ${traceId} is retained under different conversation metadata`);
+    }
+    if (runningConversation && runningConversation !== sameTrace) {
+      this.automaticTurnHandoffs ??= new Map();
+      const queue = this.automaticTurnHandoffs.get(runningConversation.id) || [];
+      const duplicate = queue.find(handoff => handoff.traceId === traceId && handoff.helperPid === helperPid);
+      if (duplicate) return duplicate.promise;
+      let resolveHandoff;
+      let rejectHandoff;
+      const promise = new Promise((resolve, reject) => {
+        resolveHandoff = resolve;
+        rejectHandoff = reject;
+      });
+      queue.push({ traceId, helperPid, reveal, promise, resolve: resolveHandoff, reject: rejectHandoff });
+      this.automaticTurnHandoffs.set(runningConversation.id, queue);
+      this.logger.info("browser.tab_handoff_queued", {
+        tabId: runningConversation.id,
+        traceId,
+        previousTraceId: runningConversation.traceId,
+        waiters: queue.length,
+      });
+      return promise;
     }
     const existing = sameTrace?.status === "running" ? sameTrace : exactRetained;
     if (existing) {
@@ -2302,6 +2335,45 @@ class BrowserHost {
     if (!tab.view.webContents.isDestroyed()) tab.view.webContents.setBackgroundThrottling(true);
     if (status === "completed") {
       this.logger.info("browser.tab_completed", { tabId: tab.id, traceId });
+    }
+    const handoffQueue = this.automaticTurnHandoffs?.get(tab.id);
+    if (handoffQueue?.length && (status === "aborted" || status === "completed")) {
+      let handoff;
+      while (handoffQueue.length > 0 && !handoff) {
+        const candidate = handoffQueue.shift();
+        if (candidate && processRunning(candidate.helperPid)) handoff = candidate;
+        else candidate?.reject(new Error("The waiting steering helper exited before browser takeover"));
+      }
+      if (handoffQueue.length === 0) this.automaticTurnHandoffs.delete(tab.id);
+      if (handoff) {
+        tab.helperPid = handoff.helperPid;
+        tab.traceId = handoff.traceId;
+        tab.status = "running";
+        tab.loading = true;
+        tab.message = "ChatGPT is working";
+        tab.bootstrapReady = true;
+        tab.bootstrapDeadlineAt = null;
+        tab.lastHeartbeatAt = Date.now();
+        if (!tab.view.webContents.isDestroyed()) tab.view.webContents.setBackgroundThrottling(false);
+        this.selectedTabId = tab.id;
+        if (handoff.reveal) this.show();
+        else this.syncViewVisibility();
+        this.publishState?.(this.snapshot());
+        this.writeDescriptor();
+        this.logger.info("browser.tab_reused", {
+          tabId: tab.id,
+          traceId: handoff.traceId,
+          previousTraceId: traceId,
+          handoff: true,
+        });
+        handoff.resolve({
+          surfaceId: tab.surfaceId,
+          tabId: tab.id,
+          reused: true,
+          connectorBound: tab.connectorBound === true,
+        });
+        return { cancelledByUser };
+      }
     }
     if (status === "completed"
       && retain

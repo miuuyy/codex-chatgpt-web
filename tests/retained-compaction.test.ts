@@ -67,6 +67,7 @@ function request(compaction = false): CodexParsedRequest {
         { role: "user", content: "Original task", timestamp: 1 },
         { role: "assistant", content: [{ type: "text", text: "Work completed" }], timestamp: 2 },
         { role: "user", content: "Continue with the next step", timestamp: 3 },
+        { role: "user", content: "Also keep the same browser conversation", timestamp: 4 },
       ],
     },
     options: { reasoning: "high" },
@@ -135,6 +136,7 @@ test("one browser conversation spans native turns and rotates only at compaction
   expect(chatGptConversationKey(otherThread, "provider")).not.toBe(chatGptConversationKey(before, "provider"));
   expect(retainedConversationResumeRequest(before)?.context.messages).toEqual([
     { role: "user", content: "Continue with the next step", timestamp: 3 },
+    { role: "user", content: "Also keep the same browser conversation", timestamp: 4 },
   ]);
 
   const v1Compact = structuredClone(before);
