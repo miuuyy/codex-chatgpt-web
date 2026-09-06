@@ -50,6 +50,10 @@ function contains(root: string, path: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+function matchesAgentPath(value: unknown, expected?: string): boolean {
+  return expected === undefined ? value == null : value === expected;
+}
+
 function canonicalRolloutName(name: string, threadId: string): boolean {
   const escapedThreadId = threadId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(
@@ -102,7 +106,8 @@ function indexedRollout(
     if (!row) return { kind: "absent" };
     const child = "parentThreadId" in identity;
     const matchesOwner = child
-      ? row.agent_path === identity.agentName && row.parent_thread_id === identity.parentThreadId && row.status === "open"
+      ? matchesAgentPath(row.agent_path, identity.agentName)
+        && row.parent_thread_id === identity.parentThreadId && row.status === "open"
       : row.parent_thread_id == null && (row.agent_path == null || row.agent_path === "/root");
     if (typeof row.rollout_path !== "string" || !matchesOwner) {
       throw new Error(`Codex state does not authenticate the requested ${child ? "subagent" : "root thread"} rollout`);
@@ -249,10 +254,10 @@ function validateSessionMeta(
   if (item.type !== "session_meta"
     || payload?.id !== lineage.threadId
     || payload.parent_thread_id !== lineage.parentThreadId
-    || payload.agent_path !== lineage.agentName
+    || !matchesAgentPath(payload.agent_path, lineage.agentName)
     || payload.thread_source !== "subagent"
     || spawn?.parent_thread_id !== lineage.parentThreadId
-    || spawn.agent_path !== lineage.agentName) {
+    || !matchesAgentPath(spawn.agent_path, lineage.agentName)) {
     throw new Error("Codex rollout session metadata does not authenticate the requested subagent");
   }
 }

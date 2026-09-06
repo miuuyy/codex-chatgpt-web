@@ -883,6 +883,48 @@ describe("trusted Codex task environment continuity", () => {
       .toThrow("does not authenticate");
   });
 
+  test("recovers a V1 native child whose agent path is null and agent name is /root", () => {
+    const codexHome = mkdtempSync(join(tmpdir(), "codex-chatgpt-null-agent-path-"));
+    temporaryRoots.push(codexHome);
+    const rolloutPath = join(codexHome, "sessions", "2026", "09", "06",
+      `rollout-2026-09-06T13-55-13-${rolloutThreadId}.jsonl`);
+    mkdirSync(dirname(rolloutPath), { recursive: true });
+    const session = childSessionMeta();
+    const payload = session.payload as Record<string, unknown>;
+    payload.agent_path = null;
+    const spawn = ((payload.source as Record<string, unknown>).subagent as Record<string, unknown>)
+      .thread_spawn as Record<string, unknown>;
+    spawn.agent_path = null;
+    writeFileSync(rolloutPath, [JSON.stringify(session), JSON.stringify(childTurnContext())].join("\n") + "\n");
+    createRolloutState(join(codexHome, "state_5.sqlite"), rolloutPath);
+    const database = new Database(join(codexHome, "state_5.sqlite"));
+    database.query("UPDATE threads SET agent_path = NULL WHERE id = ?").run(rolloutThreadId);
+    database.close();
+
+    const request = environmentlessChild();
+    const body = request._rawBody as { client_metadata: Record<string, string> };
+    const metadata = JSON.parse(body.client_metadata["x-codex-turn-metadata"]!);
+    metadata.agent_name = "/root";
+    body.client_metadata["x-codex-turn-metadata"] = JSON.stringify(metadata);
+
+    expect(new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request).cwd).toBe(root);
+
+    const databaseWithWrongOwner = new Database(join(codexHome, "state_5.sqlite"));
+    databaseWithWrongOwner.query("UPDATE threads SET agent_path = ? WHERE id = ?")
+      .run(rolloutAgent, rolloutThreadId);
+    databaseWithWrongOwner.close();
+    expect(() => new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request))
+      .toThrow("does not authenticate");
+
+    const databaseWithNullOwner = new Database(join(codexHome, "state_5.sqlite"));
+    databaseWithNullOwner.query("UPDATE threads SET agent_path = NULL WHERE id = ?").run(rolloutThreadId);
+    databaseWithNullOwner.close();
+    spawn.agent_path = rolloutAgent;
+    writeFileSync(rolloutPath, [JSON.stringify(session), JSON.stringify(childTurnContext())].join("\n") + "\n");
+    expect(() => new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request))
+      .toThrow("session metadata");
+  });
+
   test("compaction authenticates the latest native turn as current or source, never an arbitrary ancestor", () => {
     const { codexHome, request, rolloutPath } = resumedRootFixture();
     request._compactionRequest = true;

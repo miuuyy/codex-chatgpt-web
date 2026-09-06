@@ -29,7 +29,7 @@ export interface ChatGptTurnIdentity {
 export interface ChatGptThreadSpawnLineage {
   threadId: string;
   parentThreadId: string;
-  agentName: string;
+  agentName?: string;
   sandboxType: ChatGptSandboxPolicy["type"];
   workspaceRoots: string[];
 }
@@ -705,7 +705,7 @@ export function extractCodexTurnIdentityFromBody(value: unknown): ChatGptTurnIde
 /**
  * Return the canonical parent link carried by a native Codex thread-spawn request.
  * This is deliberately stricter than generic metadata parsing: only a real child turn with an
- * agent path, explicit turn purpose, sandbox policy, and absolute workspace evidence can inherit
+ * optional native agent path, explicit turn purpose, sandbox policy, and absolute workspace evidence can inherit
  * filesystem authority from a previously verified parent thread.
  */
 export function extractChatGptThreadSpawnLineage(
@@ -715,8 +715,16 @@ export function extractChatGptThreadSpawnLineage(
   if (!metadata || !isEnvironmentRequest(metadata, parsed) || metadata.subagent_kind !== "thread_spawn") return undefined;
   const threadId = typeof metadata.thread_id === "string" ? metadata.thread_id.trim() : "";
   const parentThreadId = typeof metadata.parent_thread_id === "string" ? metadata.parent_thread_id.trim() : "";
-  const agentName = typeof metadata.agent_name === "string" ? metadata.agent_name.trim() : "";
-  if (!threadId || !parentThreadId || threadId === parentThreadId || !/^\/root\/.+/.test(agentName)) return undefined;
+  let agentName: string | undefined;
+  if (metadata.agent_name != null) {
+    if (typeof metadata.agent_name !== "string") return undefined;
+    const candidate = metadata.agent_name.trim();
+    if (candidate !== "/root") {
+      if (!/^\/root\/.+/.test(candidate)) return undefined;
+      agentName = candidate;
+    }
+  }
+  if (!threadId || !parentThreadId || threadId === parentThreadId) return undefined;
 
   const sandboxType = sandboxTypeFromMetadata(canonicalSandboxMetadata(metadata));
   if (!sandboxType || sandboxType === "platform") return undefined;
@@ -724,7 +732,7 @@ export function extractChatGptThreadSpawnLineage(
   const workspacePaths = workspaces ? Object.keys(workspaces) : [];
   if (workspacePaths.some(path => !isAbsolute(path))) return undefined;
   const workspaceRoots = [...new Set(workspacePaths.map(path => resolve(path)))];
-  return { threadId, parentThreadId, agentName, sandboxType, workspaceRoots };
+  return { threadId, parentThreadId, ...(agentName ? { agentName } : {}), sandboxType, workspaceRoots };
 }
 
 /** Root tasks have no spawn edge; their canonical session and current turn must prove authority. */
