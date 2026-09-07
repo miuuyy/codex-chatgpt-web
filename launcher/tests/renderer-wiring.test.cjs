@@ -9,6 +9,7 @@ const stylesSource = fs.readFileSync(path.join(launcherRoot, "src", "styles.css"
 const electronMain = fs.readFileSync(path.join(launcherRoot, "electron", "main.cjs"), "utf8");
 const browserHostSource = fs.readFileSync(path.join(launcherRoot, "electron", "browser-host.cjs"), "utf8");
 const preloadSource = fs.readFileSync(path.join(launcherRoot, "electron", "preload.cjs"), "utf8");
+const autostartSource = fs.readFileSync(path.join(launcherRoot, "electron", "autostart.cjs"), "utf8");
 
 test("embedded ChatGPT is measured only after its animated surface mounts", () => {
   assert.match(appSource, /const \[browserSlot, setBrowserSlot\] = useState<HTMLDivElement \| null>\(null\)/);
@@ -40,6 +41,59 @@ test("closing the launcher follows the persisted background-runtime preference",
     /if \(stateStore\.read\(\)\.keepRunningOnClose && tray\) window\.hide\(\);\s*else void requestQuit\(\);/,
   );
   assert.match(appSource, /setPreference\("keepRunningOnClose", checked\)/);
+});
+
+test("the Dock icon is hidden only behind a live menu bar entry and a confirmed transition", () => {
+  assert.match(electronMain, /hasTray: \(\) => Boolean\(tray\) && !tray\.isDestroyed\(\)/);
+  assert.match(electronMain, /dockVisibility = createDockVisibility\(\);/);
+  // The preference may only be written after macOS reports the requested state, so the switch can
+  // never advertise a Dock state the system refused.
+  assert.match(
+    electronMain,
+    /await dock\.request\(hidden\);\s*try \{\s*return stateStore\.update\(\{ hideDockIcon: hidden \}\);/,
+  );
+  // A failed write must not leave the Dock disagreeing with the saved preference.
+  assert.match(electronMain, /await dock\.request\(!hidden\)\.catch\(\(\) => \{\}\);/);
+  assert.match(electronMain, /dockVisibility\?\.dispose\(\)/);
+  assert.match(appSource, /setPreference\("hideDockIcon", hidden\)/);
+  // macOS-only, and inert while the native transition is still in flight.
+  assert.match(
+    appSource,
+    /snapshot\.platform === "darwin" \? \([\s\S]*?disabled=\{dockTransition\}[\s\S]*?setHideDockIcon\(checked\)/,
+  );
+});
+
+test("an invisible menu bar icon is treated as no menu bar icon at all", () => {
+  assert.match(electronMain, /nativeImage\.createFromPath\(TRAY_ICON_PATH\)/);
+  assert.doesNotMatch(electronMain, /createFromDataURL/);
+  assert.match(
+    electronMain,
+    /if \(image\.isEmpty\(\)\) throw new Error\("The menu bar icon image could not be decoded"\)/,
+  );
+});
+
+test("a hidden start is not revealed by restoring a maximized or full-screen window", () => {
+  // NativeWindowMac::Maximize shows a hidden window, so the restore has to wait for a real
+  // presentation rather than running at ready-to-show.
+  const readyHandler = electronMain.slice(
+    electronMain.indexOf('window.once("ready-to-show"'),
+    electronMain.indexOf("trackWindowState(window", electronMain.indexOf('window.once("ready-to-show"')),
+  );
+  assert.match(readyHandler, /restoreWindowDesktopMode = \(\) => \{[\s\S]*?window\.maximize\(\)/);
+  // Exactly one restore site, and it is the deferred closure rather than a direct call.
+  assert.equal(readyHandler.match(/window\.maximize\(\)/g)?.length, 1);
+  assert.equal(readyHandler.match(/window\.setFullScreen\(true\)/g)?.length, 1);
+  assert.match(electronMain, /mainWindowShowRequested = false;\s*restoreWindowDesktopMode\?\.\(\);/);
+});
+
+test("a macOS login launch starts hidden even though it cannot carry the launch argument", () => {
+  assert.match(
+    electronMain,
+    /process\.argv\.includes\("--hidden"\) \|\| wasOpenedAtLogin\(app\)/,
+  );
+  assert.match(autostartSource, /wasOpenedAtLogin\(app\)[\s\S]*?getLoginItemSettings\(\)\.wasOpenedAtLogin === true/);
+  // `args` is Windows-only and `openAsHidden` is inert on the launcher's minimum macOS version.
+  assert.doesNotMatch(autostartSource, /openAsHidden:/);
 });
 
 test("a foreground launch request survives hidden startup until the launcher window is ready", () => {

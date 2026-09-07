@@ -55,6 +55,8 @@
       "dist/**",
       "electron/**",
       "assets/icon.png",
+      "assets/trayTemplate.png",
+      "assets/trayTemplate@2x.png",
       "assets/linux-appimage-runner.sh",
       "package.json"
     ],

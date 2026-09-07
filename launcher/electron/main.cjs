@@ -17,7 +17,8 @@ const {
 } = require("electron");
 const { BrowserHost, navigationErrorForLog } = require("./browser-host.cjs");
 const { BrowserControlServer } = require("./control-server.cjs");
-const { getAutostart, setAutostart } = require("./autostart.cjs");
+const { getAutostart, setAutostart, wasOpenedAtLogin } = require("./autostart.cjs");
+const { createDockVisibilityController } = require("./dock-visibility.cjs");
 const {
   createLogger,
   exportSanitizedLogs,
@@ -58,6 +59,7 @@ const KEYS_URL = "https://platform.openai.com/settings/organization/api-keys";
 const ALLOWED_EXTERNAL_URLS = new Set([GITHUB_URL, X_URL, CONNECTORS_URL, TUNNELS_URL, KEYS_URL]);
 const PACKAGED_RENDERER_URL = pathToFileURL(path.join(__dirname, "..", "dist", "index.html")).href;
 const APP_ICON_PATH = path.join(__dirname, "..", "assets", "icon.png");
+const TRAY_ICON_PATH = path.join(__dirname, "..", "assets", "trayTemplate.png");
 
 process.env.CODEX_CHATGPT_WEB_HOME = CORE_HOME;
 process.env.CODEX_HOME = LAUNCHER_PROFILE.codexHome;
@@ -77,11 +79,13 @@ installProcessDiagnosticGuards({
 let mainWindow = null;
 let mainWindowReadyToShow = false;
 let mainWindowShowRequested = false;
+let restoreWindowDesktopMode = null;
 let browserHost = null;
 let runtimeHost = null;
 let browserControl = null;
 let runtimeSupervisor = null;
 let tray = null;
+let dockVisibility = null;
 let quitting = false;
 let shutdownInProgress = false;
 let exitCommitted = false;
@@ -184,8 +188,9 @@ function trayImage() {
   if (process.platform !== "darwin") {
     return nativeImage.createFromPath(APP_ICON_PATH).resize({ width: 18, height: 18 });
   }
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18"><path d="M4.1 3.4h6.4l3.4 3.4v7.8H7.5l-3.4-3.4V3.4Z" fill="none" stroke="white" stroke-width="1.5" stroke-linejoin="round"/><path d="m7 7 2-2 2 2M7 11l2 2 2-2" fill="none" stroke="white" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-  const image = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`);
+  // nativeImage decodes PNG and JPEG only, so the menu bar glyph has to be a real raster asset;
+  // an SVG data URL silently yields an empty image and an invisible status item.
+  const image = nativeImage.createFromPath(TRAY_ICON_PATH);
   image.setTemplateImage(true);
   return image;
 }
@@ -239,7 +244,11 @@ function updateTrayMenu(language) {
 
 function createTray(logger, language) {
   try {
-    tray = new Tray(trayImage());
+    const image = trayImage();
+    // An empty image produces a status item the user cannot see, which is indistinguishable from
+    // having no way back once the Dock icon is hidden.
+    if (image.isEmpty()) throw new Error("The menu bar icon image could not be decoded");
+    tray = new Tray(image);
     tray.setToolTip(LAUNCHER_PROFILE.displayName);
     updateTrayMenu(language);
     tray.on("click", () => showMainWindow());
@@ -251,6 +260,21 @@ function createTray(logger, language) {
   }
 }
 
+// The Dock icon is only ever hidden while a live menu bar entry can reopen the launcher, so the
+// controller probes the tray on every transition rather than trusting a startup snapshot.
+function createDockVisibility() {
+  if (process.platform !== "darwin" || !app.dock) return null;
+  return createDockVisibilityController({
+    dock: app.dock,
+    hasTray: () => Boolean(tray) && !tray.isDestroyed(),
+  });
+}
+
+function requireDockVisibility() {
+  if (!dockVisibility) throw new Error("Hiding the Dock icon is only available on macOS");
+  return dockVisibility;
+}
+
 function showMainWindow() {
   // A Windows login launch may still be materializing the packaged runtime when the user opens
   // the desktop shortcut. Electron delivers `second-instance` immediately, before `createWindow`
@@ -259,6 +283,7 @@ function showMainWindow() {
   mainWindowShowRequested = true;
   if (!mainWindowReadyToShow || !mainWindow || mainWindow.isDestroyed()) return;
   mainWindowShowRequested = false;
+  restoreWindowDesktopMode?.();
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
@@ -371,11 +396,19 @@ function createWindow({ logger, stateStore, windowStatePath, startHidden }) {
   }
   window.once("ready-to-show", () => {
     if (!state.onboardingComplete && !Number.isFinite(windowState.bounds.x)) window.center();
-    if (windowState.maximized) window.maximize();
-    if (windowState.fullscreen) window.setFullScreen(true);
+    // Restoring a maximized or full-screen window makes macOS present it, so a hidden start has to
+    // hold the restore back until the window is actually being shown.
+    restoreWindowDesktopMode = () => {
+      restoreWindowDesktopMode = null;
+      if (windowState.maximized) window.maximize();
+      if (windowState.fullscreen) window.setFullScreen(true);
+    };
     if (mainWindow === window) mainWindowReadyToShow = true;
     if (mainWindowShowRequested) showMainWindow();
-    else if (!startHidden) window.show();
+    else if (!startHidden) {
+      restoreWindowDesktopMode();
+      window.show();
+    }
   });
   trackWindowState(window, windowStatePath, (error) => {
     logger.warn("launcher.window_state_write_failed", {
@@ -819,7 +852,21 @@ function registerIpc({ logger, stateStore }) {
     if (!IS_DEV_PROFILE && result.configured) startCatalogVerificationMonitor({ logger, stateStore });
     return { state, credentialsRequired: false, targetMode: mode };
   });
-  handle("launcher:set-preference", (_event, key, value) => {
+  handle("launcher:set-preference", async (_event, key, value) => {
+    if (key === "hideDockIcon") {
+      const hidden = value === true;
+      // Persist only once macOS has actually applied the change, so the switch can never claim a
+      // Dock state the system refused.
+      const dock = requireDockVisibility();
+      await dock.request(hidden);
+      try {
+        return stateStore.update({ hideDockIcon: hidden });
+      } catch (error) {
+        // The preference did not survive, so put the Dock back where the saved state says it is.
+        await dock.request(!hidden).catch(() => {});
+        throw error;
+      }
+    }
     const ordinary = key === "keepRunningOnClose" || key === "showBrowserDuringTurns";
     if (!ordinary) throw new Error("Unknown preference");
     return stateStore.update({ [key]: value === true });
@@ -882,6 +929,9 @@ async function requestQuit() {
     browserHost?.destroy();
     await browserControl?.close();
     exitCommitted = true;
+    // Only once the exit is committed; an earlier quit failure keeps the launcher running and must
+    // leave the Dock preference usable.
+    dockVisibility?.dispose();
     app.quit();
     return { ok: true };
   } catch (error) {
@@ -960,7 +1010,8 @@ async function start() {
     filePath: path.join(app.getPath("logs"), "launcher.jsonl"),
     publish: (record) => send("launcher:log", record),
   });
-  const startHidden = process.argv.includes("--hidden") && stateStore.read().onboardingComplete;
+  const startHidden = (process.argv.includes("--hidden") || wasOpenedAtLogin(app))
+    && stateStore.read().onboardingComplete;
   nativeTheme.themeSource = "system";
   mainWindow = createWindow({
     logger,
@@ -1036,6 +1087,16 @@ async function start() {
   });
   registerIpc({ logger, stateStore });
   const trayAvailable = createTray(logger, stateStore.read().language);
+  dockVisibility = createDockVisibility();
+  if (dockVisibility && stateStore.read().hideDockIcon) {
+    // A refused hide keeps the preference so the user can retry once a menu bar entry exists; the
+    // Dock icon simply stays visible in the meantime.
+    void dockVisibility.request(true).catch((error) => {
+      logger.warn("launcher.dock_hide_failed", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
   if (startHidden && !trayAvailable) mainWindow.once("ready-to-show", () => showMainWindow());
   const launcherSmokeTest = process.argv.includes("--launcher-smoke-test");
   let startupAuthenticationRefresh = Promise.resolve();

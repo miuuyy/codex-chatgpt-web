@@ -34,6 +34,8 @@ test("launcher publishes native packages for all supported desktop operating sys
   assert.equal(manifest.build.win.icon, "assets/icon.ico");
   assert.deepEqual(manifest.build.linux.target, ["AppImage"]);
   assert.ok(manifest.build.files.includes("assets/icon.png"));
+  assert.ok(manifest.build.files.includes("assets/trayTemplate.png"));
+  assert.ok(manifest.build.files.includes("assets/trayTemplate@2x.png"));
   assert.ok(manifest.build.files.includes("assets/linux-appimage-runner.sh"));
   assert.ok(manifest.build.asarUnpack.includes("assets/linux-appimage-runner.sh"));
   assert.equal(manifest.build.afterPack, undefined);
@@ -246,4 +248,16 @@ test("Windows packages embed the checksummed Bun baseline runtime for CPUs witho
   assert.match(baseline, /SHASUMS256\.txt/);
   assert.match(baseline, /Get-FileHash[^\n]+SHA256/);
   assert.match(baseline, /CODEX_CHATGPT_WEB_EMBEDDED_BUN=/);
+});
+
+test("the menu bar icon ships as a raster asset Electron can actually decode", () => {
+  // nativeImage decodes PNG and JPEG only. An SVG produces an empty image, and an invisible status
+  // item is the one thing that must not happen while the Dock icon can be hidden.
+  const pngMagic = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  for (const name of ["trayTemplate.png", "trayTemplate@2x.png"]) {
+    const file = path.join(launcherRoot, "assets", name);
+    assert.ok(fs.existsSync(file), `${name} must exist`);
+    const contents = fs.readFileSync(file);
+    assert.ok(contents.subarray(0, 8).equals(pngMagic), `${name} must be a PNG`);
+  }
 });

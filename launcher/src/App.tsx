@@ -1591,9 +1591,22 @@ function SettingsSurface({
 }) {
   const [doctor, setDoctor] = useState<DoctorReport | null>(null);
   const [busy, setBusy] = useState(false);
+  const [dockTransition, setDockTransition] = useState(false);
   const [turnsCancelled, setTurnsCancelled] = useState(false);
   const [integrationRemoved, setIntegrationRemoved] = useState(false);
 
+  const setHideDockIcon = async (hidden: boolean) => {
+    // Hiding can wait out a native guard interval, so keep the switch inert until macOS answers
+    // rather than letting a second click race the first.
+    setDockTransition(true);
+    try {
+      updateState(await api!.setPreference("hideDockIcon", hidden));
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setDockTransition(false);
+    }
+  };
   const updateLanguage = async (next: Language) => {
     try {
       updateState(await api!.setLanguage(next));
@@ -1689,6 +1702,15 @@ function SettingsSurface({
               .catch((cause) => setError(messageOf(cause)))}
           />
         </SettingRow>
+        {snapshot.platform === "darwin" ? (
+          <SettingRow body={copy.hideDockIconBody} label={copy.hideDockIcon}>
+            <Switch
+              checked={snapshot.state.hideDockIcon}
+              disabled={dockTransition}
+              onChange={(checked) => void setHideDockIcon(checked)}
+            />
+          </SettingRow>
+        ) : null}
         <SettingRow body={copy.showDuringTurnsBody} label={copy.showDuringTurns}>
           <Switch
             checked={snapshot.state.showBrowserDuringTurns}

@@ -66,10 +66,18 @@ function setAutostart(app, enabled) {
       enabled: enabled ? linuxAutostartMatches(app) : false,
     }, enabled);
   }
-  if (process.platform === "darwin" || process.platform === "win32") {
+  if (process.platform === "darwin") {
+    // `args` is Windows-only and `openAsHidden` stopped working on macOS 13, which is the
+    // launcher's minimum version, so a macOS login item carries no hidden-start hint at all.
+    app.setLoginItemSettings({ openAtLogin: Boolean(enabled) });
+    return requireAutostartState({
+      supported: true,
+      enabled: app.getLoginItemSettings().openAtLogin === true,
+    }, enabled);
+  }
+  if (process.platform === "win32") {
     app.setLoginItemSettings({
       openAtLogin: Boolean(enabled),
-      openAsHidden: Boolean(enabled),
       args: ["--hidden"],
     });
     return requireAutostartState({
@@ -80,12 +88,22 @@ function setAutostart(app, enabled) {
   return { supported: false, enabled: false };
 }
 
+// macOS cannot deliver `--hidden` from a login item, so hidden startup has to read this instead of
+// argv. Windows and Linux keep using the launch argument.
+function wasOpenedAtLogin(app) {
+  if (!app.isPackaged || process.platform !== "darwin") return false;
+  return app.getLoginItemSettings().wasOpenedAtLogin === true;
+}
+
 function getAutostart(app) {
   if (!app.isPackaged) return { supported: false, enabled: false };
   if (process.platform === "linux") {
     return { supported: true, enabled: linuxAutostartMatches(app) };
   }
-  if (process.platform === "darwin" || process.platform === "win32") {
+  if (process.platform === "darwin") {
+    return { supported: true, enabled: app.getLoginItemSettings().openAtLogin === true };
+  }
+  if (process.platform === "win32") {
     return {
       supported: true,
       enabled: app.getLoginItemSettings({ args: ["--hidden"] }).openAtLogin === true,
@@ -102,4 +120,5 @@ module.exports = {
   linuxDesktopPath,
   requireAutostartState,
   setAutostart,
+  wasOpenedAtLogin,
 };
