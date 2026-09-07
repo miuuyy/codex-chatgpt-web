@@ -33,7 +33,7 @@ import { createChatGptStructuredOutputValidator } from "./output-validation";
 import { chatGptWebTurnRetryPolicy } from "./retry-policy";
 import { TurnBroker, type BrokerToolRequest, type BrokerToolResult, type TurnBrokerOwner } from "./turn-broker";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptCompactionSourceExecutionKey, chatGptInstructionLineage, chatGptThreadOwnershipKey, chatGptTurnExecutionKey, chatGptTurnRetryKey, chatGptTurnRoundKey, chatGptTurnSessions, type ChatGptBrowserOutcome, type ChatGptTraceEvent, type ChatGptTurnRuntime, type ChatGptTurnSession } from "./turn-execution";
-import { estimateChatGptWebUsage } from "./usage";
+import { estimateChatGptWebUsage, resolveBiggerContextMultipartParts } from "./usage";
 import { ChatGptThreadEnvironmentStore } from "./thread-environment";
 import {
   ChatGptLunaCheckpointStore,
@@ -439,16 +439,17 @@ export function createChatGptWebAdapter(
       input: CodexParsedRequest,
       turnToken?: string,
       manualControl = false,
-    ) => compileChatGptWebPromptWithinPageCapacity(
-      input,
-      turnCapabilities,
-      turnToken,
-      {
+    ) => {
+      const multipartParts = !manualControl && experimentalBiggerContext
+        ? resolveBiggerContextMultipartParts(input, turnCapabilities)
+        : undefined;
+      return compileChatGptWebPromptWithinPageCapacity(input, turnCapabilities, turnToken, {
         captureLunaCheckpoint,
         maxMessageChars,
         ...(manualControl ? { manualControl: true as const } : {}),
-      },
-    );
+        ...(multipartParts !== undefined ? { multipartParts } : {}),
+      });
+    };
     if (captureLunaCheckpoint) {
       console.info(
         `[chatgpt-web] Luna rolling checkpoint applied=${checkpointInput.applied}${checkpointInput.reason ? ` reason=${checkpointInput.reason}` : ""}`,

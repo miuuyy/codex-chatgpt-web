@@ -15,7 +15,7 @@ import {
 export { DEFAULT_CHATGPT_WEB_MAX_MESSAGE_CHARS } from "./input-tokens";
 
 export interface ChatGptWebCapacityCompileOptions
-  extends Omit<CompileChatGptWebPromptOptions, "multipartParts" | "experimentalMultipartParts" | "preserveCompactionHistory"> {
+  extends Omit<CompileChatGptWebPromptOptions, "preserveCompactionHistory"> {
   maxMessageChars?: number;
 }
 
@@ -70,7 +70,12 @@ export function compileChatGptWebPromptWithinPageCapacity(
   }
 
   let lastChars = inlineChars;
-  for (const multipartParts of [2, CHATGPT_BIGGER_CONTEXT_PARTS] as const) {
+  const requestedParts = options.multipartParts ?? options.experimentalMultipartParts;
+  const candidates = requestedParts === CHATGPT_BIGGER_CONTEXT_PARTS
+    ? [CHATGPT_BIGGER_CONTEXT_PARTS] as const
+    : [2, CHATGPT_BIGGER_CONTEXT_PARTS] as const;
+  for (const multipartParts of candidates) {
+    if (multipartParts === requestedParts) continue;
     const candidate = compileChatGptWebPrompt(parsed, capabilities, turnToken, {
       ...baseOptions,
       multipartParts,
