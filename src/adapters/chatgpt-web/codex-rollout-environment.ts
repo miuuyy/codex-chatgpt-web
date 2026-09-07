@@ -10,7 +10,7 @@ import {
   readdirSync,
   realpathSync,
 } from "node:fs";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, toNamespacedPath } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { expandUserPath } from "../../config";
 import { findTopLevelAssignment } from "../../codex-integration-document";
@@ -41,7 +41,7 @@ function record(value: unknown): Record<string, unknown> | undefined {
 }
 
 function pathIdentity(value: string): string {
-  const normalized = resolve(value);
+  const normalized = toNamespacedPath(resolve(value));
   return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 

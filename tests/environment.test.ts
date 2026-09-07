@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, toNamespacedPath } from "node:path";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "../src/adapters/chatgpt-web/environment";
 import { rememberCompactionContinuation } from "../src/adapters/chatgpt-web/compaction-continuation";
 import { encodeCompactionSummary, SUMMARY_PREFIX } from "../src/responses/compaction";
@@ -768,6 +768,18 @@ describe("trusted Codex task environment continuity", () => {
     });
     return { codexHome, request, rolloutPath };
   }
+
+  test.skipIf(process.platform !== "win32")("resolves a Windows namespaced rollout path from the index", () => {
+    const { codexHome, request, rolloutPath } = resumedRootFixture();
+    const databasePath = join(codexHome, "state_5.sqlite");
+    createRolloutState(databasePath, toNamespacedPath(rolloutPath));
+    const database = new Database(databasePath);
+    database.exec("DELETE FROM thread_spawn_edges");
+    database.query("UPDATE threads SET agent_path = NULL WHERE id = ?").run(rolloutThreadId);
+    database.close();
+
+    expect(new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request).cwd).toBe(root);
+  });
 
   test("recovers an ordinary resumed task from its exact current rollout with an empty bridge cache", () => {
     const { codexHome, request } = resumedRootFixture();
