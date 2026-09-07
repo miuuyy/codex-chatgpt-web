@@ -18,7 +18,7 @@ import {
 import { rememberCompactionContinuation } from "./adapters/chatgpt-web/compaction-continuation";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse } from "./bridge";
 import type { AppConfig } from "./config";
-import { providerConfig } from "./config";
+import { codexRouteMode, isExternalProviderMode, providerConfig } from "./config";
 import { AsyncEventQueue } from "./event-queue";
 import { readJsonRequestBody } from "./http-body";
 import { httpStatusFromTerminalError } from "./lib/errors";
@@ -382,7 +382,12 @@ export async function modelsRequest(
   try {
     upstream = await forwardNativeCodexRequest(req, "models", fetchUpstream);
   } catch (error) {
-    return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
+    if (!isExternalProviderMode(config)) {
+      return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
+    }
+    // Provider-only mode has no real Codex bearer: serve the Web routes locally.
+    const catalog = augmentNativeModelCatalog({ models: [] }, config, contextOverride?.());
+    return Response.json(catalog);
   }
   if (!upstream.ok) return upstream;
   let catalog: Record<string, unknown>;
@@ -456,6 +461,15 @@ export async function responseRequest(
     return formatErrorResponse(400, "invalid_request_error", error instanceof Error ? error.message : String(error));
   }
   if (typeof requestedModel === "string" && !isChatGptWebModelSlug(requestedModel)) {
+    if (isExternalProviderMode(config)) {
+      // Fail closed: provider-only mode never forwards non-Web turns to a native backend.
+      return formatErrorResponse(
+        400,
+        "invalid_request_error",
+        `Model \"${requestedModel}\" is not a ChatGPT Web model; this server is provider-only`
+          + " (codexRouteMode=external-provider) and cannot route it natively",
+      );
+    }
     try {
       return await forwardNativeCodexRequest(nativeRequest, "responses", undefined, raw);
     } catch (error) {
@@ -681,6 +695,15 @@ export async function compactRequest(
     return formatErrorResponse(400, "invalid_request_error", "Compaction request requires a model");
   }
   if (!isChatGptWebModelSlug(raw.model)) {
+    if (isExternalProviderMode(config)) {
+      // Fail closed: provider-only mode never forwards non-Web compaction to a native backend.
+      return formatErrorResponse(
+        400,
+        "invalid_request_error",
+        `Model \"${raw.model}\" is not a ChatGPT Web model; this server is provider-only`
+          + " (codexRouteMode=external-provider) and cannot route it natively",
+      );
+    }
     try {
       return await forwardNativeCodexRequest(nativeRequest, "responses/compact", undefined, raw);
     } catch (error) {
@@ -794,6 +817,7 @@ export function startServer(
           service: "codex-chatgpt-web",
           version: VERSION,
           mode: config.mode,
+          codex_route_mode: codexRouteMode(config),
           pid: process.pid,
           port: config.port,
           uptime: (Date.now() - startedAt) / 1_000,

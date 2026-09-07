@@ -98,12 +98,23 @@ export interface TunnelConfig {
   alias: string;
 }
 
+/**
+ * How the user's real Codex route (`openai_base_url` in `~/.codex/config.toml`) is owned:
+ * - "managed": this installation installs and reversibly owns the route (upstream default).
+ * - "external-provider": this installation NEVER touches the Codex config; an external router
+ *   (e.g. OpenCodex) permanently owns Codex routing and this runtime is only a selectable
+ *   Web-model provider. Route and subagent commands fail closed in this mode.
+ */
+export type CodexRouteMode = "managed" | "external-provider";
+
 export interface AppConfig {
   version: 3;
   purpose?: "dev-harness";
   releaseVersion: string;
   mode: RuntimeMode;
   subagentProtocol: SubagentProtocol;
+  /** Defaults to "managed"; see the CodexRouteMode docs for the provider-only contract. */
+  codexRouteMode?: CodexRouteMode;
   host: "127.0.0.1";
   port: number;
   contextWindow: number;
@@ -537,6 +548,11 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (proAvailable && !solAvailable) {
     throw new Error(`Invalid ChatGPT account capabilities in ${path}: Pro requires Sol`);
   }
+  if (parsed.codexRouteMode !== undefined
+    && parsed.codexRouteMode !== "managed"
+    && parsed.codexRouteMode !== "external-provider") {
+    throw new Error(`Invalid codexRouteMode in ${path}: must be "managed" or "external-provider"`);
+  }
   return {
     ...parsed,
     appName: expectedAppName,
@@ -555,6 +571,14 @@ export function saveConfig(config: AppConfig): void {
   const path = getConfigPath();
   const original = existsSync(path) ? readFileSync(path, "utf8") : "";
   atomicWriteFile(path, preserveUtf8Bom(`${JSON.stringify(config, null, 2)}\n`, original));
+}
+
+export function codexRouteMode(config: Pick<AppConfig, "codexRouteMode"> | undefined): CodexRouteMode {
+  return config?.codexRouteMode ?? "managed";
+}
+
+export function isExternalProviderMode(config: Pick<AppConfig, "codexRouteMode"> | undefined): boolean {
+  return codexRouteMode(config) === "external-provider";
 }
 
 export function providerConfig(config: AppConfig): CodexProviderConfig {

@@ -1256,3 +1256,50 @@ test("passkey sign-in is rejected outside macOS even if IPC is invoked directly"
   fixture.platform = "win32";
   assert.throws(() => fixture.passkeyChromeExecutable(), /supported only on macOS/);
 });
+
+test("bridge status treats provider-only mode as a clean never-owned route", async () => {
+  const calls = [];
+  const fixture = hostFor({ mode: "browser-only", browserHost: "launcher", codexRouteMode: "external-provider" });
+  fixture.host.run = async (_name, args) => {
+    calls.push(args.join(" "));
+    return { stdout: "", stderr: "" };
+  };
+  const result = await fixture.host.bridgeStatus();
+  assert.deepEqual(result, { installed: false, active: false, codexRouteMode: "external-provider", errors: [] });
+  assert.deepEqual(calls, []);
+});
+
+test("launcher never connects or restores a route when an external router owns Codex routing", async () => {
+  const calls = [];
+  const fixture = hostFor({ mode: "browser-only", browserHost: "launcher", codexRouteMode: "external-provider" });
+  fixture.host.run = async (_name, args) => {
+    calls.push(args.join(" "));
+    return { stdout: "", stderr: "" };
+  };
+  const connected = await fixture.host.connectBridgeRoute();
+  assert.equal(connected.codexRouteMode, "external-provider");
+  const restored = await fixture.host.restoreBridgeRoute("runtime-start-fail-safe");
+  assert.equal(restored.codexRouteMode, "external-provider");
+  assert.deepEqual(calls, []);
+});
+
+test("core setup preserves provider-only route ownership in its setup arguments", async () => {
+  const fixture = hostFor({ mode: "browser-only", browserHost: "launcher", codexRouteMode: "external-provider" });
+  await fixture.host.setupCore();
+  const args = fixture.invocation().args;
+  assert.equal(args.includes("--codex-route-mode"), true);
+  assert.equal(args[args.indexOf("--codex-route-mode") + 1], "external-provider");
+});
+
+test("runtime upgrade preserves provider-only route ownership", async () => {
+  const fixture = hostFor({
+    mode: "browser-only",
+    browserHost: "launcher",
+    codexRouteMode: "external-provider",
+    releaseVersion: "1.1.1",
+  });
+  assert.equal((await fixture.host.upgradeManagedRuntime()).updated, true);
+  const args = fixture.invocation().args;
+  assert.equal(args.includes("--codex-route-mode"), true);
+  assert.equal(args[args.indexOf("--codex-route-mode") + 1], "external-provider");
+});

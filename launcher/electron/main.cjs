@@ -1161,6 +1161,11 @@ async function start() {
     }
     const runtime = await runtimeSupervisor.startIfConfigured();
     if (runtime.status !== "ready") return runtime;
+    if (runtimeHost.runtimeConfigSnapshot().config?.codexRouteMode === "external-provider") {
+      // Provider-only mode: OpenCodex owns the Codex route. The listener and tunnel are up;
+      // never reconcile, connect, or restore the route automatically.
+      return { ...runtime, bridgeRouteChanged: false };
+    }
     const route = await runtimeHost.connectBridgeRoute();
     return { ...runtime, bridgeRouteChanged: route.changed === true };
   })().then(async (runtime) => {

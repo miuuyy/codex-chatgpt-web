@@ -74,6 +74,8 @@ Setup options:
   --tunnel-id ID               Existing OpenAI tunnel id (full mode)
   --runtime-key-file PATH      File containing a Tunnels Read+Use runtime key
   --replace-codex-route        Reversibly replace existing Responses or Voice route settings
+  --codex-route-mode MODE      managed (default) or external-provider: never touch the Codex
+                               config; an external router (e.g. OpenCodex) keeps Codex routing
   --subagent-protocol MODE     compatibility-v1 (default) or native (advanced)
   --restart-service            Explicitly restart this project's daemon after an update
   --login                      Refresh the stored ChatGPT login even if one exists
@@ -313,6 +315,13 @@ async function setupCommand(args: string[]): Promise<void> {
   }
   if (zeroRiskPro || zeroRiskDefault) options.zeroRiskProEnabled = zeroRiskPro;
   options.replaceCodexRoute = takeFlag(args, "--replace-codex-route");
+  const codexRouteMode = takeOption(args, "--codex-route-mode");
+  if (codexRouteMode !== undefined) {
+    if (codexRouteMode !== "managed" && codexRouteMode !== "external-provider") {
+      throw new Error("--codex-route-mode must be \"managed\" or \"external-provider\"");
+    }
+    options.codexRouteMode = codexRouteMode;
+  }
   options.restartService = takeFlag(args, "--restart-service");
   assertNoArgs(args);
 
@@ -377,6 +386,7 @@ async function routeCommand(args: string[]): Promise<void> {
         return {
           installed: status.installed,
           active: status.active,
+          codexRouteMode: status.codexRouteMode,
           ...(status.routeUrl ? { routeUrl: status.routeUrl } : {}),
           errors: status.errors,
         };

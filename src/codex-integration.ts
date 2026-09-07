@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AppConfig } from "./config";
-import { atomicWriteFile, getConfigPath, loadConfig, saveConfig } from "./config";
+import { atomicWriteFile, getConfigPath, isExternalProviderMode, loadConfig, saveConfig } from "./config";
 import { installCodexInterruptHook, installCodexInterruptHookCommand } from "./codex-interrupt-hook";
 import {
   CODEX_REALTIME_WEBRTC_CALL_BASE_URL,
@@ -127,6 +127,7 @@ export function setCodexSubagentProtocol(
   config: AppConfig,
   protocol: AppConfig["subagentProtocol"],
 ): CodexIntegrationJournal {
+  if (isExternalProviderMode(config)) throw new Error(EXTERNAL_PROVIDER_ROUTE_BLOCKED);
   const status = inspectCodexIntegration();
   if (!status.installed) throw new Error("Codex integration is not installed; run setup first");
   if (!status.active) {
@@ -165,10 +166,26 @@ export function setCodexSubagentProtocol(
   }
 }
 
+export const EXTERNAL_PROVIDER_ROUTE_BLOCKED =
+  "codexRouteMode is external-provider: this installation never owns the Codex route."
+  + " Route ownership belongs to the external router (for example OpenCodex)."
+  + " Refusing to modify the user's Codex configuration.";
+
+/**
+ * Fail closed when route ownership is external: provider-only installations never mutate the
+ * Codex config. A missing app configuration behaves like the default managed mode, matching
+ * `inspectCodexIntegration`.
+ */
+function assertRouteOwnershipAllowed(): void {
+  if (!existsSync(getConfigPath())) return;
+  if (isExternalProviderMode(loadConfig())) throw new Error(EXTERNAL_PROVIDER_ROUTE_BLOCKED);
+}
+
 export function preflightCodexIntegration(
   config: AppConfig,
   options: InstallCodexIntegrationOptions = {},
 ): void {
+  if (isExternalProviderMode(config)) throw new Error(EXTERNAL_PROVIDER_ROUTE_BLOCKED);
   const configPath = getCodexConfigPath();
   const configExists = existsSync(configPath);
   const currentText = configExists ? readFileSync(configPath, "utf8") : "";
@@ -224,10 +241,12 @@ export function preflightCodexIntegration(
     options.replaceExistingRoute === true,
   );
 }
+
 export function installCodexIntegration(
   config: AppConfig,
   options: InstallCodexIntegrationOptions = {},
 ): CodexIntegrationJournal {
+  if (isExternalProviderMode(config)) throw new Error(EXTERNAL_PROVIDER_ROUTE_BLOCKED);
   const configPath = getCodexConfigPath();
   mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
   const configExists = existsSync(configPath);
@@ -340,6 +359,7 @@ export function installCodexIntegration(
 }
 
 export function deactivateCodexIntegration(): SetCodexIntegrationActiveResult {
+  assertRouteOwnershipAllowed();
   const existing = readJournal();
   if (!existing) return { changed: false, active: false };
   if (existing.version === 2) {
@@ -369,6 +389,7 @@ export function deactivateCodexIntegration(): SetCodexIntegrationActiveResult {
 }
 
 export function activateCodexIntegration(): SetCodexIntegrationActiveResult {
+  assertRouteOwnershipAllowed();
   const existing = readJournal();
   if (!existing) throw new Error("Codex integration is not installed");
   if (existing.version === 2) {
@@ -484,6 +505,7 @@ export function uninstallCodexIntegration(): UninstallCodexIntegrationResult {
 export function inspectCodexIntegration(): {
   installed: boolean;
   active: boolean;
+  codexRouteMode: "managed" | "external-provider";
   configPath: string;
   routeUrl?: string;
   journal?: AnyCodexIntegrationJournal;
@@ -491,6 +513,12 @@ export function inspectCodexIntegration(): {
 } {
   const journal = readJournal();
   const errors: string[] = [];
+  let routeMode: "managed" | "external-provider" = "managed";
+  try {
+    routeMode = isExternalProviderMode(loadConfig()) ? "external-provider" : "managed";
+  } catch {
+    // Configuration may not exist yet; provider-only status is then simply not established.
+  }
   if (journal) {
     try {
       assertJournalTargetsConfig(journal, getCodexConfigPath());
@@ -516,6 +544,7 @@ export function inspectCodexIntegration(): {
   }
   return {
     installed: Boolean(journal),
+    codexRouteMode: routeMode,
     active: journal?.version === 4 || journal?.version === 5 || journal?.version === 6 || journal?.version === 7 || journal?.version === 8 || journal?.version === 9 || journal?.version === 10
       ? journal.active
       : Boolean(journal),

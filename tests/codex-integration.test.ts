@@ -24,6 +24,7 @@ import {
   MANAGED_MULTI_AGENT_LINE,
   MANAGED_MULTI_AGENT_V2_LINE,
   MANAGED_ROUTE_COMMENT,
+  getCodexConfigPath,
   managedAgentMaxDepthLine,
 } from "../src/codex-integration-shared";
 
@@ -908,4 +909,67 @@ describe("reversible native Codex route integration", () => {
     expect(readFileSync(configPath, "utf8")).not.toContain("multi_agent");
   });
 
+});
+
+describe("external-provider route mode never touches the Codex config", () => {
+  function providerConfig(mode: "browser-only" | "full") {
+    const config = defaultConfig(mode);
+    config.codexRouteMode = "external-provider";
+    return config;
+  }
+
+  test("preflight and install fail closed when an external router owns the route", () => {
+    const { codexHome } = fixture();
+    const configPath = join(codexHome, "config.toml");
+    const original = `model = "gpt-5.6-sol"\n`;
+    writeFileSync(configPath, original);
+
+    const config = providerConfig("browser-only");
+    expect(() => preflightCodexIntegration(config)).toThrow(/external-provider/);
+    expect(() => installCodexIntegration(config)).toThrow(/external-provider/);
+    // Provider-only setup must leave the user's Codex config byte-for-byte untouched.
+    expect(readFileSync(configPath, "utf8")).toBe(original);
+  });
+
+  test("subagent protocol mutation refuses to run in provider-only mode", () => {
+    const { codexHome } = fixture();
+    const configPath = join(codexHome, "config.toml");
+    const original = `model = "gpt-5.6-sol"\n`;
+    writeFileSync(configPath, original);
+
+    const config = providerConfig("browser-only");
+    expect(() => setCodexSubagentProtocol(config, "compatibility-v1")).toThrow(/external-provider/);
+    expect(readFileSync(configPath, "utf8")).toBe(original);
+  });
+
+  test("route connect/disconnect fail closed after the app config is provider-only", () => {
+    const { appHome } = fixture();
+    // A previously managed integration could exist; provider mode must never unwind or touch it.
+    saveConfig(providerConfig("browser-only"));
+
+    expect(() => activateCodexIntegration()).toThrow(/external-provider/);
+    expect(() => deactivateCodexIntegration()).toThrow(/external-provider/);
+  });
+
+  test("inspection reports provider-only ownership without requiring a journal", () => {
+    fixture();
+    saveConfig(providerConfig("browser-only"));
+
+    expect(inspectCodexIntegration()).toEqual({
+      installed: false,
+      active: false,
+      codexRouteMode: "external-provider",
+      configPath: getCodexConfigPath(),
+      errors: [],
+    });
+  });
+
+  test("inspection reports managed ownership by default", () => {
+    fixture();
+    saveConfig(compatibilityV1Config("browser-only"));
+
+    const status = inspectCodexIntegration();
+    expect(status.codexRouteMode).toBe("managed");
+    expect(status.installed).toBe(false);
+  });
 });

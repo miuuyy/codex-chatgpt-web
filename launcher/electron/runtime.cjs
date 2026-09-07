@@ -804,6 +804,16 @@ class RuntimeHost {
 
   async bridgeStatus(operationName = "bridge-status") {
     this.assertProductionProfile("Codex bridge status");
+    if (this.runtimeConfigSnapshot().config?.codexRouteMode === "external-provider") {
+      // Provider-only mode never owns the Codex route: report a clean uninstalled state instead
+      // of inspecting (or worse, restoring) a route that belongs to an external router.
+      return {
+        installed: false,
+        active: false,
+        codexRouteMode: "external-provider",
+        errors: [],
+      };
+    }
     const result = await this.run(operationName, ["route", "status"], {
       embedded: true,
       message: "Checking Codex bridge route",
@@ -850,6 +860,7 @@ class RuntimeHost {
     this.lifecycleOperation = name;
     try {
       const current = await this.bridgeStatus(name);
+      if (current.codexRouteMode === "external-provider") return current;
       if (!current.installed) throw new Error("Install the Codex integration before connecting the bridge route");
       if (current.active) return current;
       try {
@@ -979,11 +990,15 @@ class RuntimeHost {
     if (!existing.configured && interactionMode === "manual") {
       throw new Error("Zero Risk must be installed through MCP setup because tunnel credentials are required");
     }
+    const explicitRouteMode = existing.config?.codexRouteMode === "external-provider"
+      ? ["--codex-route-mode", "external-provider"]
+      : [];
     const args = [
       "setup",
       mode === "full" ? "--full" : "--browser-only",
       "--browser-host-descriptor",
       this.browserDescriptorPath,
+      ...explicitRouteMode,
       ...this.browserInteractionArgs({
         mode: interactionMode,
         refreshCapabilities: interactionMode === "automatic",
@@ -1147,11 +1162,15 @@ class RuntimeHost {
         && !tunnelProfileMigrationRequired)) {
       return { updated: false };
     }
+    const explicitRouteMode = existing.config?.codexRouteMode === "external-provider"
+      ? ["--codex-route-mode", "external-provider"]
+      : [];
     const args = [
       "setup",
       existing.mode === "full" ? "--full" : "--browser-only",
       "--browser-host-descriptor",
       this.browserDescriptorPath,
+      ...explicitRouteMode,
       // A release may repair capability detection. Reusing the previous result can
       // keep eligible models disabled even after the corrected probe is installed.
       ...this.browserInteractionArgs({ mode: interactionMode, refreshCapabilities: true }),

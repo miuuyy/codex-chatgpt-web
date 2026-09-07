@@ -149,7 +149,19 @@ export async function runDoctor(): Promise<DoctorReport> {
   }
 
   const codex = inspectCodexIntegration();
-  if (!codex.installed) {
+  if (codex.codexRouteMode === "external-provider") {
+    checks.push(codex.installed
+      ? {
+          id: "codex",
+          status: "warning",
+          message: "External-provider mode is active but a managed Codex route journal still exists; run `codex-chatgpt-web uninstall --yes`",
+        }
+      : {
+          id: "codex",
+          status: "ok",
+          message: "External-provider mode: the Codex route is owned externally and was not modified",
+        });
+  } else if (!codex.installed) {
     checks.push({ id: "codex", status: "error", message: "Codex model route is not installed" });
   } else if (codex.errors.length > 0) {
     checks.push({ id: "codex", status: "error", message: "Codex integration is inconsistent", detail: codex.errors.join("; ") });

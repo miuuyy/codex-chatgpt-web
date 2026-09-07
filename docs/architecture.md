@@ -172,7 +172,14 @@ ChatGPT endpoint so Voice session creation never falls through to the Responses-
 assignments are journaled and restored exactly on disconnect or uninstall; a conflicting existing
 Voice route requires explicit `--replace-codex-route` ownership. The daemon forwards the
 authenticated official model catalog and appends only the routed models owned by the
-`chatgpt-web/` namespace; no static catalog is installed. Subagent protocol selection is explicit,
+`chatgpt-web/` namespace; no static catalog is installed. An advanced
+`--codex-route-mode=external-provider` contract lets an external router (for example
+OpenCodex) permanently own the real Codex route. That installation never reads or writes the
+user's `~/.codex/config.toml`: setup, launcher bridge reconciliation, subagent protocol changes,
+and route connect/disconnect all fail closed instead. The local daemon serves only the routed
+ChatGPT Web models: non-Web native turns are rejected locally, and model discovery falls back
+to the web-owned rows when the built-in provider is unreachable. Returning to the default
+`managed` mode first unwinds an existing route journal so ownership can never split. Subagent protocol selection is explicit,
 and new installations default to Compatibility V1 because it is the only surface portable across
 native and routed Web backends:
 

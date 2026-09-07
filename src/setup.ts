@@ -2,12 +2,14 @@ import { existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { join } from "node:path";
-import type { AppConfig, BrowserInteractionMode, RuntimeMode, SubagentProtocol } from "./config";
+import type { AppConfig, BrowserInteractionMode, CodexRouteMode, RuntimeMode, SubagentProtocol } from "./config";
 import {
+  codexRouteMode,
   currentRuntimeCommand,
   defaultBrokerEndpoint,
   defaultConfig,
   getConfigPath,
+  isExternalProviderMode,
   loadConfigForSetup,
   resolveInteractionConnectorIdentities,
   resolveDevSetupConnectorName,
@@ -22,8 +24,10 @@ import {
 } from "./browser-login";
 import {
   installCodexIntegration,
+  inspectCodexIntegration,
   preflightCodexIntegration,
   readCodexSubagentProtocol,
+  uninstallCodexIntegration,
 } from "./codex-integration";
 import { inspectLauncherBrowserHost } from "./launcher-browser-host";
 import {
@@ -47,6 +51,12 @@ export interface SetupOptions {
   mode: RuntimeMode;
   browserInteractionMode?: BrowserInteractionMode;
   subagentProtocol?: SubagentProtocol;
+  /**
+   * How the real Codex route is owned. "external-provider" installs this runtime as a pure Web
+   * model provider: the Codex config is never read or modified, and an external router (e.g.
+   * OpenCodex) keeps permanent ownership of Codex routing. Defaults to "managed".
+   */
+  codexRouteMode?: CodexRouteMode;
   port?: number;
   chromeExecutablePath?: string;
   browserHostDescriptorPath?: string;
@@ -127,6 +137,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
   return JSON.stringify({
     mode: before.mode,
     subagentProtocol: before.subagentProtocol,
+    codexRouteMode: before.codexRouteMode,
     releaseVersion: before.releaseVersion,
     host: before.host,
     port: before.port,
@@ -154,6 +165,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
   }) !== JSON.stringify({
     mode: after.mode,
     subagentProtocol: after.subagentProtocol,
+    codexRouteMode: after.codexRouteMode,
     releaseVersion: after.releaseVersion,
     host: after.host,
     port: after.port,
@@ -246,6 +258,16 @@ function baseConfig(existing: AppConfig | undefined, options: SetupOptions): App
     config.browserInteractionMode,
     options.appName,
   ));
+  if (options.codexRouteMode !== undefined) {
+    if (options.codexRouteMode !== "managed" && options.codexRouteMode !== "external-provider") {
+      throw new Error('Invalid --codex-route-mode: must be "managed" or "external-provider"');
+    }
+    config.codexRouteMode = options.codexRouteMode;
+  } else if (existing && codexRouteMode(existing) !== codexRouteMode(config)) {
+    // Keep an established provider-only installation provider-only across re-runs. Managed
+    // setups only change when the request explicitly asks for the external-provider mode.
+    config.codexRouteMode = existing.codexRouteMode;
+  }
   if (options.subagentProtocol) config.subagentProtocol = options.subagentProtocol;
   config.releaseVersion = VERSION;
   config.runtimeCommand = currentRuntimeCommand();
@@ -458,16 +480,28 @@ export function preflightSetup(options: SetupOptions): void {
       throw new Error("Automatic and Zero Risk require different Tunnel IDs and separate ChatGPT connectors");
     }
   }
-  preflightCodexIntegration(config, {
-    replaceExistingRoute: options.replaceCodexRoute,
-  });
+  if (!isExternalProviderMode(config)) {
+    preflightCodexIntegration(config, {
+      replaceExistingRoute: options.replaceCodexRoute,
+    });
+  }
 }
 
 export async function setup(options: SetupOptions): Promise<SetupResult> {
   const { existing, config, launcherOwned } = prepareSetup(options);
-  preflightCodexIntegration(config, {
-    replaceExistingRoute: options.replaceCodexRoute,
-  });
+  const previousRouteMode = codexRouteMode(existing);
+  const requestedRouteMode = codexRouteMode(config);
+  if (previousRouteMode !== requestedRouteMode && existing) {
+    // Ownership of the real Codex route can only move while the integration is fully unwound, so
+    // switching between managed and external-provider ownership is a destructive migration that
+    // restores the user's prior Codex route before the new mode takes effect.
+    if (inspectCodexIntegration().installed) uninstallCodexIntegration();
+  }
+  if (!isExternalProviderMode(config)) {
+    preflightCodexIntegration(config, {
+      replaceExistingRoute: options.replaceCodexRoute,
+    });
+  }
   const refreshTunnelWorker = tunnelWorkerRuntimeChanged(existing, config);
   if (existing && options.restartService) config.controlToken = randomBytes(32).toString("base64url");
   const beforeService = getServiceStatus();
@@ -601,9 +635,13 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     launcherOwned && existing && existing.browserHost !== "launcher",
   );
   if (!migratingTerminalRuntime) removeLegacyRuntimeArtifacts(config);
-  installCodexIntegration(config, {
-    replaceExistingRoute: options.replaceCodexRoute,
-  });
+  // Provider-only installations never touch Codex routing. Switching to provider mode performs a
+  // destructive uninstall first (see the top of this function) and then installs nothing.
+  if (!isExternalProviderMode(config)) {
+    installCodexIntegration(config, {
+      replaceExistingRoute: options.replaceCodexRoute,
+    });
+  }
 
   return {
     mode: config.mode,
