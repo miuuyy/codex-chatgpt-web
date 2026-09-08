@@ -42,7 +42,13 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 function pathIdentity(value: string): string {
   const normalized = resolve(value);
-  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  if (process.platform !== "win32") return normalized;
+  const comparable = normalized.startsWith("\\\\?\\UNC\\")
+    ? `\\\\${normalized.slice(8)}`
+    : normalized.startsWith("\\\\?\\")
+      ? normalized.slice(4)
+      : normalized;
+  return comparable.toLowerCase();
 }
 
 function contains(root: string, path: string): boolean {

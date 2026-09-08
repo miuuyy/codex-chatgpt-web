@@ -134,7 +134,7 @@ export function hasCurrentChatGptEnvironmentContext(parsed: CodexParsedRequest):
 
 function contextualUserMessage(value: Record<string, unknown>): boolean {
   const text = rawMessageText(value).trim();
-  return /^<environment_context>[\s\S]*<\/environment_context>$/.test(text)
+  return /<environment_context>[\s\S]*?<\/environment_context>/.test(text)
     || /^<subagent_notification>[\s\S]*<\/subagent_notification>$/.test(text)
     || isReadableCompactionSummaryText(text)
     || text === OPAQUE_COMPACTION_NOTE;
@@ -249,7 +249,7 @@ export function extractChatGptContinuationEnvironmentClaim(parsed: CodexParsedRe
     if (item?.type !== "message" || item.role !== "user" || itemTurnId(item) !== turnId
       || typeof item.id !== "string" || !item.id) return [];
     const text = rawMessageText(item).trim();
-    return /^<environment_context>[\s\S]*<\/environment_context>$/.test(text) ? [text] : [];
+    return text.match(/<environment_context>[\s\S]*?<\/environment_context>/g) ?? [];
   });
   if (updates.length !== 1) throw new Error("Compaction continuation requires one current native environment claim");
   return parseChatGptEnvironmentText(parsed, updates[0]!);

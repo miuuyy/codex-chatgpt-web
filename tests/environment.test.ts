@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, toNamespacedPath } from "node:path";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "../src/adapters/chatgpt-web/environment";
 import { rememberCompactionContinuation } from "../src/adapters/chatgpt-web/compaction-continuation";
 import { encodeCompactionSummary, SUMMARY_PREFIX } from "../src/responses/compaction";
@@ -798,6 +798,11 @@ describe("trusted Codex task environment continuity", () => {
     body.input.push(current, checkpoint);
     const store = new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome);
     expect(store.resolve(request).cwd).toBe(root);
+    current.content[0]!.text = `project context before\n${environmentXml}\nproject context after`;
+    expect(store.resolve(request).cwd).toBe(root);
+    current.content[0]!.text = `${environmentXml}\n${environmentXml}`;
+    expect(() => store.resolve(request)).toThrow("Compaction continuation requires one current native environment claim");
+    current.content[0]!.text = environmentXml;
     for (const text of [
       environmentXml.replaceAll(root, resolve(root, "another-workspace")),
       environmentXml.replace('<permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile>',
@@ -881,6 +886,18 @@ describe("trusted Codex task environment continuity", () => {
     database.close();
     expect(() => new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request))
       .toThrow("does not authenticate");
+  });
+
+  test("root rollout lookup accepts a Windows namespaced path inside sessions", () => {
+    if (process.platform !== "win32") return;
+    const { codexHome, request, rolloutPath } = resumedRootFixture();
+    const databasePath = join(codexHome, "state_5.sqlite");
+    createRolloutState(databasePath, toNamespacedPath(rolloutPath));
+    const database = new Database(databasePath);
+    database.exec("DELETE FROM thread_spawn_edges");
+    database.query("UPDATE threads SET agent_path = NULL WHERE id = ?").run(rolloutThreadId);
+    database.close();
+    expect(new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request).cwd).toBe(root);
   });
 
   test("compaction authenticates the latest native turn as current or source, never an arbitrary ancestor", () => {
