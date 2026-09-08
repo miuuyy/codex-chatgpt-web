@@ -1,6 +1,15 @@
 import { expect, test } from "bun:test";
 import { ensureChatGptPersonalizedConnectorAccess } from "../src/adapters/chatgpt-web/browser-worker";
 
+function matchesName(name: string | RegExp, label: string): boolean {
+  return typeof name === "string" ? name === label : name.test(label);
+}
+
+const personalizationLabels = [
+  { personalized: "Personalized", unpersonalized: "Unpersonalized" },
+  { personalized: "个性化", unpersonalized: "非个性化" },
+];
+
 function visibleLocator(count: () => number, overrides: Record<string, unknown> = {}) {
   const locator = {
     filter: () => locator,
@@ -10,13 +19,13 @@ function visibleLocator(count: () => number, overrides: Record<string, unknown> 
   return locator;
 }
 
-for (const ariaHidden of [false, true]) test(`a visible Personalized control is a preflight no-op (aria-hidden=${ariaHidden})`, async () => {
+for (const labels of personalizationLabels) for (const ariaHidden of [false, true]) test(`a visible ${labels.personalized} control is a preflight no-op (aria-hidden=${ariaHidden})`, async () => {
   const diagnostics: string[] = [];
   const personalized = visibleLocator(() => 1);
   const unpersonalized = visibleLocator(() => 0);
   const page = {
-    getByRole: (_role: string, options: { name: string; includeHidden?: boolean }) => (
-      options.name === "Personalized" && (!ariaHidden || options.includeHidden) ? personalized : unpersonalized
+    getByRole: (_role: string, options: { name: string | RegExp; includeHidden?: boolean }) => (
+      matchesName(options.name, labels.personalized) && (!ariaHidden || options.includeHidden) ? personalized : unpersonalized
     ),
   } as any;
 
@@ -43,7 +52,7 @@ test("a missing personalization control fails closed before connector selection"
   expect(diagnostics).toEqual(["personalization-control-missing"]);
 });
 
-test("an Unpersonalized Temporary Chat is switched through its owned radio menu and re-proved", async () => {
+for (const labels of personalizationLabels) test(`an ${labels.unpersonalized} Temporary Chat is switched through its owned radio menu and re-proved`, async () => {
   let enabled = false;
   let menuOpen = false;
   const events: string[] = [];
@@ -85,16 +94,23 @@ test("an Unpersonalized Temporary Chat is switched through its owned radio menu 
       expect(selector).toBe('[role="menuitemradio"], [role="radio"]');
       return {
         filter: ({ hasText }: { hasText: RegExp }) => {
-          expect(hasText.test("PersonalizedThis chat can reference plugins")).toBeTrue();
+          expect(hasText.test(`${labels.personalized}This chat can reference plugins`)).toBeTrue();
+          expect(hasText.test(`${labels.unpersonalized}This chat ignores plugins`)).toBeFalse();
           return choice;
         },
       };
     },
   };
   const page = {
-    getByRole: (_role: string, options: { name: string }) => (
-      options.name === "Personalized" ? personalized : unpersonalized
-    ),
+    getByRole: (_role: string, options: { name: string | RegExp }) => {
+      if (matchesName(options.name, labels.personalized)) {
+        expect(matchesName(options.name, labels.unpersonalized)).toBeFalse();
+        expect(matchesName(options.name, `${labels.personalized} settings`)).toBeFalse();
+        return personalized;
+      }
+      if (matchesName(options.name, labels.unpersonalized)) return unpersonalized;
+      return visibleLocator(() => 0);
+    },
     locator: (selector: string) => {
       expect(selector).toBe('[id="personalization-menu"]');
       return menu;
@@ -544,8 +560,8 @@ test("the labeled Unpersonalized path never hides an unclosed menu", async () =>
     getAttribute: async () => "labeled-cleanup-menu",
   });
   const page = {
-    getByRole: (_role: string, options: { name: string }) => (
-      options.name === "Personalized" ? personalized : unpersonalized
+    getByRole: (_role: string, options: { name: string | RegExp }) => (
+      matchesName(options.name, "Personalized") ? personalized : unpersonalized
     ),
     locator: (selector: string) => {
       if (selector === "body") return {
