@@ -23,7 +23,9 @@ function personalizedTemporaryChatRole(
 ) {
   const locator = {
     filter: (_filter: { visible: boolean }) => ({
-      count: async () => options.name === "Personalized" ? 1 : 0,
+      count: async () => (typeof options.name === "string"
+        ? options.name === "Personalized"
+        : options.name.test("Personalized")) ? 1 : 0,
     }),
   };
   return locator;
@@ -313,8 +315,10 @@ test("a mutating stage timeout preserves a failed cleanup integrity error", asyn
     },
   };
   const page = {
-    getByRole: (_role: string, options: { name: string }) => (
-      options.name === "Personalized" ? personalized : unpersonalized
+    getByRole: (_role: string, options: { name: string | RegExp }) => (
+      (typeof options.name === "string"
+        ? options.name === "Personalized"
+        : options.name.test("Personalized")) ? personalized : unpersonalized
     ),
     locator: (selector: string) => selector === "body"
       ? { press: async () => { throw new Error("menu cleanup failed"); } }
