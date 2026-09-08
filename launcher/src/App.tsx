@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { copyFor, type Copy } from "./i18n";
+import { copyFor, localizeRuntimeMessage, type Copy } from "./i18n";
 import { Icon, type IconName } from "./icons";
 import type {
   BrowserInteractionMode,
@@ -681,6 +681,7 @@ function LauncherShell({
                 copy={copy}
                 devProfile={devProfile}
                 interactionMode={mcpTargetMode ?? snapshot.state.browserInteractionMode}
+                language={language}
                 onDone={() => {
                   setMcpTargetMode(null);
                   setSurface("browser");
@@ -1227,6 +1228,7 @@ function McpSurface({
   copy,
   devProfile,
   interactionMode,
+  language,
   onDone,
   operation,
   setError,
@@ -1236,6 +1238,7 @@ function McpSurface({
   copy: Copy;
   devProfile: boolean;
   interactionMode: BrowserInteractionMode;
+  language: Language;
   onDone: () => void;
   operation: OperationState | null;
   setError: (error: string | null) => void;
@@ -1480,7 +1483,7 @@ function McpSurface({
                     {copy.openConnectors}
                   </SecondaryButton>
                 </div>
-                {doctor ? <DoctorSummary copy={copy} report={doctor} /> : null}
+                {doctor ? <DoctorSummary copy={copy} language={language} report={doctor} /> : null}
               </div>
             ) : null}
           </motion.section>
@@ -1517,7 +1520,7 @@ function McpSurface({
             >
               {busy
                 ? operation?.name === "mcp-verification" && operation.status === "running"
-                  ? operation.message
+                  ? localizeRuntimeMessage(copy, operation.message, undefined, language)
                   : copy.running
                 : verified ? copy.done : copy.verifyRuntime}
             </PrimaryButton>
@@ -1748,7 +1751,7 @@ function SettingsSurface({
         </span>
         <Icon name="chevron" />
       </button> : null}
-      {doctor ? <DoctorSummary copy={copy} report={doctor} /> : null}
+      {doctor ? <DoctorSummary copy={copy} language={language} report={doctor} /> : null}
 
       <div className="about-row">
         <BrandMark small />
@@ -2128,7 +2131,7 @@ function FieldRow({ children, label }: { children: ReactNode; label: string }) {
   );
 }
 
-function DoctorSummary({ copy, report }: { copy: Copy; report: DoctorReport }) {
+function DoctorSummary({ copy, language, report }: { copy: Copy; language: Language; report: DoctorReport }) {
   const visibleChecks = report.ok
     ? report.checks.slice(-6)
     : report.checks.filter((check) => check.status !== "ok");
@@ -2142,7 +2145,9 @@ function DoctorSummary({ copy, report }: { copy: Copy; report: DoctorReport }) {
         {visibleChecks.map((check) => (
           <p key={check.id}>
             <StateDot state={check.status === "ok" ? "ready" : check.status === "warning" ? "busy" : "error"} />
-            <span>{check.message}</span>
+            <span>{check.status === "ok"
+              ? localizeRuntimeMessage(copy, check.message, check.id, language)
+              : check.message}</span>
           </p>
         ))}
       </div>

@@ -137,6 +137,13 @@ const en = {
   openConnectors: "Open ChatGPT Plugins",
   connectorName: "Connector name",
   verifyRuntime: "Verify runtime",
+  checkingChatGptConnector: "Checking ChatGPT connector",
+  doctorProxyHealthy: "Responses proxy is healthy on {endpoint}",
+  doctorTunnelBinaryInstalled: "Pinned openai/tunnel-client binary is installed",
+  doctorTunnelKeyStored: "Tunnel runtime key is stored privately",
+  doctorTunnelRuntimeOwned: "Launcher owns the tunnel runtime",
+  doctorTunnelRuntimeReady: "Tunnel runtime reports healthy and ready",
+  doctorConnectorAvailable: "ChatGPT connector \"{name}\" is available",
   activityTitle: "Runtime activity",
   activitySubtitle: "Local diagnostics. Export a privacy-safe copy before sharing; raw logs stay on this device.",
   recentActivity: "Recent events",
@@ -322,6 +329,13 @@ const zh: Record<keyof typeof en, string> = {
   openConnectors: "打开 ChatGPT Plugins",
   connectorName: "连接器名称",
   verifyRuntime: "验证运行时",
+  checkingChatGptConnector: "Checking ChatGPT connector",
+  doctorProxyHealthy: "Responses proxy is healthy on {endpoint}",
+  doctorTunnelBinaryInstalled: "Pinned openai/tunnel-client binary is installed",
+  doctorTunnelKeyStored: "Tunnel runtime key is stored privately",
+  doctorTunnelRuntimeOwned: "Launcher owns the tunnel runtime",
+  doctorTunnelRuntimeReady: "Tunnel runtime reports healthy and ready",
+  doctorConnectorAvailable: "ChatGPT connector \"{name}\" is available",
   activityTitle: "运行时活动",
   activitySubtitle: "本地诊断。分享前请导出隐私安全副本；原始日志仅保留在此设备上。",
   recentActivity: "最近事件",
@@ -507,6 +521,13 @@ const ja: Record<keyof typeof en, string> = {
   openConnectors: "ChatGPT Plugins を開く",
   connectorName: "コネクタ名",
   verifyRuntime: "ランタイムを検証",
+  checkingChatGptConnector: "ChatGPT コネクタを確認中",
+  doctorProxyHealthy: "Responses プロキシは {endpoint} で正常に動作しています",
+  doctorTunnelBinaryInstalled: "固定バージョンの openai/tunnel-client バイナリがインストールされています",
+  doctorTunnelKeyStored: "トンネルのランタイムキーは安全に保存されています",
+  doctorTunnelRuntimeOwned: "ランチャーがトンネルランタイムを管理しています",
+  doctorTunnelRuntimeReady: "トンネルランタイムは正常で、使用可能です",
+  doctorConnectorAvailable: "ChatGPT コネクタ「{name}」を利用できます",
   activityTitle: "ランタイムアクティビティ",
   activitySubtitle: "ローカル診断です。共有する前にプライバシー保護済みのコピーをエクスポートしてください。生のログはこのデバイスにのみ保存されます。",
   recentActivity: "最近のイベント",
@@ -561,4 +582,45 @@ export function copyFor(language: Language): Copy {
   if (language === "zh-CN") return zh as Copy;
   if (language === "ja") return ja as Copy;
   return en;
+}
+
+export function localizeRuntimeMessage(
+  copy: Copy,
+  message: string,
+  checkId: string | undefined,
+  language: Language,
+): string {
+  if (language !== "ja") return message;
+  if (checkId === undefined && message === "Checking ChatGPT connector") return copy.checkingChatGptConnector;
+
+  if (checkId === "proxy") {
+    const match = /^Responses proxy is healthy on (127\.0\.0\.1:\d+)$/.exec(message);
+    if (match) return copy.doctorProxyHealthy.replace("{endpoint}", () => match[1]);
+  }
+  if (checkId === "tunnel-binary" && message === "Pinned openai/tunnel-client binary is installed") {
+    return copy.doctorTunnelBinaryInstalled;
+  }
+  if (checkId === "tunnel-key" && message === "Tunnel runtime key is stored privately") {
+    return copy.doctorTunnelKeyStored;
+  }
+  if (checkId === "tunnel-service" && message === "Launcher owns the tunnel runtime") {
+    return copy.doctorTunnelRuntimeOwned;
+  }
+  if (checkId === "tunnel-runtime" && message === "Tunnel runtime reports healthy and ready") {
+    return copy.doctorTunnelRuntimeReady;
+  }
+  if (checkId === "connector") {
+    const match = /^ChatGPT connector (".*") is available$/s.exec(message);
+    if (match) {
+      try {
+        const connectorName = JSON.parse(match[1]);
+        if (typeof connectorName === "string") {
+          return copy.doctorConnectorAvailable.replace("{name}", () => connectorName);
+        }
+      } catch {
+        return message;
+      }
+    }
+  }
+  return message;
 }
