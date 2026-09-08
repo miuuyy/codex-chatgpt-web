@@ -27,9 +27,10 @@ const BRIDGE_TOOL_NAMES = new Set([
   "codex_turn_complete",
 ]);
 
-const GATEWAY_AGENT_WAIT_TOOL_NAMES = new Set([
+const AGENT_WAIT_TOOL_WIRE_NAMES = new Set([
   "multi_agent_v1__wait_agent",
   "multi_agent_v2__wait_agent",
+  "collaboration__wait_agent",
 ]);
 
 const turnTokenSchema = z.string().min(20).max(256);
@@ -135,12 +136,11 @@ function safeVisibleTools(environment: ChatGptTurnEnvironment, contract: ChatGpt
 }
 
 function isAgentWaitTool(tool: CodexTool): boolean {
-  return tool.name === "wait_agent"
-    && (tool.namespace === "multi_agent_v1" || tool.namespace === "multi_agent_v2");
+  return AGENT_WAIT_TOOL_WIRE_NAMES.has(wireName(tool));
 }
 
 function isGatewayAgentWaitTool(name: string): boolean {
-  return GATEWAY_AGENT_WAIT_TOOL_NAMES.has(name);
+  return AGENT_WAIT_TOOL_WIRE_NAMES.has(name);
 }
 
 function browserToolDescription(tool: CodexTool): string {
@@ -161,6 +161,7 @@ function browserToolParameters(tool: CodexTool): Record<string, unknown> {
   const timeout = properties.timeout_ms && typeof properties.timeout_ms === "object" && !Array.isArray(properties.timeout_ms)
     ? properties.timeout_ms as Record<string, unknown>
     : {};
+  const { default: _timeoutDefault, ...transportSafeTimeout } = timeout;
   const required = Array.isArray(parameters.required)
     ? parameters.required.filter((value): value is string => typeof value === "string")
     : [];
@@ -169,7 +170,7 @@ function browserToolParameters(tool: CodexTool): Record<string, unknown> {
     properties: {
       ...properties,
       timeout_ms: {
-        ...timeout,
+        ...transportSafeTimeout,
         type: "number",
         const: CHATGPT_WEB_AGENT_WAIT_POLL_MS,
         minimum: CHATGPT_WEB_AGENT_WAIT_POLL_MS,
@@ -373,7 +374,7 @@ function transportBoundRawExecProgram(input: string, blockedExecName: string): s
     input,
     "})((() => {",
     "  const source = tools;",
-    `  const waitNames = new Set(${JSON.stringify([...GATEWAY_AGENT_WAIT_TOOL_NAMES])});`,
+    `  const waitNames = new Set(${JSON.stringify([...AGENT_WAIT_TOOL_WIRE_NAMES])});`,
     `  const blockedExecName = ${JSON.stringify(blockedExecName)};`,
     `  const pollMs = ${CHATGPT_WEB_AGENT_WAIT_POLL_MS};`,
     "  const registryNames = new Set(Reflect.ownKeys(source));",

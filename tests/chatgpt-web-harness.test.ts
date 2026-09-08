@@ -2560,6 +2560,20 @@ describe("ChatGPT outer-native harness v4", () => {
           additionalProperties: false,
         },
       },
+      {
+        name: "wait_agent",
+        namespace: "collaboration",
+        description: "Wait for agents to reach a final status.",
+        parameters: {
+          type: "object",
+          properties: {
+            targets: { type: "array", items: { type: "string" } },
+            timeout_ms: { type: "number", minimum: 10_000, maximum: 180_000, default: 180_000 },
+          },
+          required: ["targets"],
+          additionalProperties: false,
+        },
+      },
     ];
     const token = await broker.register(gatewayOnlyEnvironment, 60_000);
     const transport = new StdioClientTransport({
@@ -2762,6 +2776,46 @@ describe("ChatGPT outer-native harness v4", () => {
       });
       expect((await rejectedRawGateway).isError).toBe(true);
 
+      const rejectedRawCollaborationWait = call("codex_tool_call", {
+        turn_token: token,
+        wire_name: "exec",
+        input: "await tools.collaboration__wait_agent({ targets: ['agent_test'], timeout_ms: 180000 });",
+      });
+      const [rejectedRawCollaborationRequest] = await broker.nextToolBatch(token);
+      expect(rejectedRawCollaborationRequest).toMatchObject({ wireName: "exec", freeform: true });
+      const rejectedRawCollaborationCalls: GatewayProgramCall[] = [];
+      await expect(executeGatewayProgram(
+        rejectedRawCollaborationRequest!.input!,
+        ["collaboration__wait_agent"],
+        rejectedRawCollaborationCalls,
+      )).rejects.toThrow("requires timeout_ms=10000");
+      expect(rejectedRawCollaborationCalls).toEqual([]);
+      broker.completeTool(token, rejectedRawCollaborationRequest!.callId, {
+        content: [{ type: "text", text: guardedError }],
+        isError: true,
+      });
+      expect((await rejectedRawCollaborationWait).isError).toBe(true);
+
+      const rawCollaborationWait = call("codex_tool_call", {
+        turn_token: token,
+        wire_name: "exec",
+        input: "const value = await tools.collaboration__wait_agent({ targets: ['agent_test'], timeout_ms: 10000 }); text(value);",
+      });
+      const [rawCollaborationRequest] = await broker.nextToolBatch(token);
+      expect(rawCollaborationRequest).toMatchObject({ wireName: "exec", freeform: true });
+      const rawCollaborationCalls: GatewayProgramCall[] = [];
+      const rawCollaborationContent = await executeGatewayProgram(
+        rawCollaborationRequest!.input!,
+        ["collaboration__wait_agent"],
+        rawCollaborationCalls,
+      );
+      expect(rawCollaborationCalls).toEqual([{
+        name: "collaboration__wait_agent",
+        input: { targets: ["agent_test"], timeout_ms: 10_000 },
+      }]);
+      broker.completeTool(token, rawCollaborationRequest!.callId, { content: rawCollaborationContent });
+      expect((await rawCollaborationWait).isError).not.toBe(true);
+
       const rawWeb = call("codex_tool_call", {
         turn_token: token,
         wire_name: "exec",
@@ -2887,7 +2941,7 @@ describe("ChatGPT outer-native harness v4", () => {
       expect((await waitPromise).structuredContent).toEqual({ output: "completed" });
 
       const agentInventory = await inventoryThroughGateway(
-        "wait_agent",
+        "multi_agent_v1__wait_agent",
         true,
         ["multi_agent_v1__wait_agent"],
       );
@@ -2925,6 +2979,47 @@ describe("ChatGPT outer-native harness v4", () => {
       });
       broker.completeTool(token, agentWaitRequest!.callId, toolResult({ statuses: {} }));
       expect((await agentWait).structuredContent).toEqual({ statuses: {} });
+
+      const collaborationInventory = await inventoryThroughGateway(
+        "collaboration__wait_agent",
+        true,
+        ["collaboration__wait_agent"],
+      );
+      expect(collaborationInventory.structuredContent).toMatchObject({
+        total: 1,
+        tools: [{
+          wire_name: "collaboration__wait_agent",
+          description: expect.stringContaining("exactly 10 seconds"),
+          parameters: {
+            properties: {
+              timeout_ms: { const: 10_000, minimum: 10_000, maximum: 10_000 },
+            },
+            required: ["targets", "timeout_ms"],
+          },
+        }],
+      });
+      expect(JSON.stringify(collaborationInventory.structuredContent)).not.toContain('"default"');
+
+      const rejectedCollaborationWait = await call("codex_tool_call", {
+        turn_token: token,
+        wire_name: "collaboration__wait_agent",
+        arguments: { targets: ["agent_test"], timeout_ms: 180_000 },
+      });
+      expect(rejectedCollaborationWait.isError).toBe(true);
+      expect(JSON.stringify(rejectedCollaborationWait.content)).toContain("requires timeout_ms=10000");
+
+      const collaborationWait = call("codex_tool_call", {
+        turn_token: token,
+        wire_name: "collaboration__wait_agent",
+        arguments: { targets: ["agent_test"], timeout_ms: 10_000 },
+      });
+      const [collaborationWaitRequest] = await broker.nextToolBatch(token);
+      expect(collaborationWaitRequest).toMatchObject({
+        wireName: "collaboration__wait_agent",
+        arguments: { targets: ["agent_test"], timeout_ms: 10_000 },
+      });
+      broker.completeTool(token, collaborationWaitRequest!.callId, toolResult({ statuses: {} }));
+      expect((await collaborationWait).structuredContent).toEqual({ statuses: {} });
 
       const rejectedNestedLongWait = await call("codex_tool_call", {
         turn_token: token,
