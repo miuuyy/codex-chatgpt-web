@@ -96,7 +96,8 @@ Video walkthroughs:
 - [Create an OpenAI tunnel and API key](launcher/src/assets/mcp-create-tunnel.mp4)
 - [Connect the local harness and attach the ChatGPT connector](launcher/src/assets/mcp-connect-connector.mp4)
 
-Browser-only mode needs no connector. Full harness mode requires all of the following:
+Browser-only mode needs no connector. For Zero Risk, see the [manual handoff guidance](#zero-risk-manual-handoff-fails)
+below. Full harness (With Automation) mode requires all of the following:
 
 - a newly created connector named exactly **Codex Native2**;
 - **Developer Mode** enabled in ChatGPT;
@@ -123,6 +124,26 @@ approval review**, disable that optional Codex review setting and restart Codex.
 sandbox and explicit approvals still apply; this only prevents an unavailable native model from
 being inserted as an extra reviewer after the Web tool call already completed.
 
+## Zero Risk manual handoff fails
+
+Zero Risk uses a separate OpenAI tunnel and the **Codex Zero Risk** connector. **Codex Native2** is
+for Full harness (With Automation). Check that the connector you select in ChatGPT matches the mode.
+
+The launcher prepares and copies the prompt, but does not read or change the ChatGPT page or send
+the prompt for you. Select the ChatGPT model, effort, and **Codex Zero Risk** connector yourself,
+paste and send the prepared prompt, then confirm **Sent** in the launcher.
+
+When reporting a failure, include both the exact Codex model-picker entry and the model and effort
+you manually selected in ChatGPT. Identify where the handoff stopped:
+
+- preparing or copying the prompt in the launcher;
+- manually pasting and sending it in ChatGPT;
+- confirming **Sent** in the launcher; or
+- subsequent MCP tool execution or completion back in Codex.
+
+Include the complete error and a fresh **Activity → Export safe log** export. Describe the stage
+without pasting the prepared prompt, credentials, Tunnel IDs, or raw browser state.
+
 ## `Reconnecting`, `stream disconnected`, or `ChatGPT failed`
 
 These are result boundaries, not one diagnosis. The bridge uses them when it cannot prove a complete
@@ -135,8 +156,9 @@ its bounded MCP deadline.
 - Retry once in a fresh Codex task. State whether the fresh task works and whether the failure is
   consistent.
 - Run **Settings → Run doctor** and export a safe log immediately after the failure.
-- Include the exact model, Browser-only or Full harness mode, whether tools ran, and whether the
-  ChatGPT page showed a final answer.
+- Include the exact model, integration mode (Browser-only, Full harness, or Zero Risk), whether
+  tools ran, and whether the ChatGPT page showed a final answer. For Zero Risk, include the manually
+  selected ChatGPT model and effort and the handoff stage described above.
 
 Do not assume that a generic 502 means the Tunnel is broken. Since v4.0.7, a native tool that
 outlives its turn binding is reported explicitly as `codex_tool_timeout` and retired rather than
@@ -226,7 +248,9 @@ safe log**. A useful report contains:
 - Codex Desktop and/or CLI version;
 - OS and architecture;
 - ChatGPT account tier;
-- Browser-only or Full harness mode and the exact selected model;
+- integration mode: Browser-only, Full harness (With Automation), or Zero Risk (manual handoff);
+- the exact Codex model-picker entry; for Zero Risk, also the manually selected ChatGPT model and
+  effort, and the handoff stage that failed;
 - exact reproduction steps and complete final error;
 - whether it reproduces in a fresh Codex task; and
 - a safe log captured immediately after that reproduction.
