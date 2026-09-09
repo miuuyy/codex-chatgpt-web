@@ -110,11 +110,17 @@ bun run app
 | 模式 | 模型 | 本地 Codex 工具 | 额外设置 |
 | --- | --- | --- | --- |
 | **仅浏览器** | Free/Go：Luna；Plus：Instant–High；Pro：增加 Extra High 和 Pro | 不可用；Codex 会显示警告 | 无 |
-| **完整 harness** | Free/Go：Luna；Plus：Instant–High；Pro：增加 Extra High 和 Pro | 每个列出的 effort 均支持，包括 Pro | OpenAI 隧道 + ChatGPT 连接器 |
+| **完整 harness（包含自动化）** | Free/Go：Luna；Plus：Instant–High；Pro：增加 Extra High 和 Pro | 每个列出的 effort 均支持，包括 Pro | OpenAI 隧道 + ChatGPT 连接器 |
+| **Zero Risk** | 手动选择 ChatGPT 模型和 effort；可选 Pro 级别的大上下文 | 支持；完整的当前回合 Codex harness 依然可用 | 独立的 OpenAI 隧道 + `Codex Zero Risk` 连接器；手动粘贴并发送 |
 
-模型选择器中的每一项都对应一个固定的 ChatGPT 模式。Codex 仍会显示内置的 Effort 和 Speed
-选项，但更改它们不会在后台静默切换所选的浏览器模型。在完整模式下，每一个可用 effort 都会
+每个自动选择器选项都对应一个固定的 ChatGPT 模式。Codex 仍会显示内置的 Effort 和 Speed
+选项，但更改它们不会在后台静默切换所选的浏览器模型。在自动完整模式下，每一个可用 effort 都会
 获得同一个与当前回合绑定的 MCP 能力；Pro 没有单独限制，也没有缩减后的工具契约。
+
+Zero Risk 保留了本地 Responses 桥接和完整的 Codex harness，但绝不读取或修改
+ChatGPT 页面，也不会替你自动发送提示词。启动器会准备好并复制提示词；由你自行选择模型、effort
+以及 `Codex Zero Risk` 连接器，然后手动粘贴并发送。这消除了与 ChatGPT 网页自动化直接相关的
+账号风险。
 
 ## 完整 harness
 
@@ -122,6 +128,8 @@ bun run app
 [OpenAI tunnel-client](https://github.com/openai/tunnel-client)
 将 ChatGPT 的工具调用连接回当前 Codex 任务。该隧道为出站连接：不会暴露公网 IP、开放入站端口，
 也不需要配置路由器端口转发。
+
+启动器的 **MCP** 页面提供了完整的配置引导。有关具体点击步骤，请参阅[故障排除与视频教程](TROUBLESHOOTING.md)。
 
 > **限制**
 >
