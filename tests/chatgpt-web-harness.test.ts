@@ -2603,6 +2603,24 @@ describe("ChatGPT outer-native harness v4", () => {
           properties: { timeout_ms: { type: "number", default: 180_000 } },
         },
       },
+      {
+        name: "read_thread",
+        namespace: "mcp__codex_app",
+        description: "Read recent status and turn summaries for one task.",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            threadId: { type: "string" },
+            cursor: { type: "string" },
+            hostId: { type: "string" },
+            turnLimit: { type: "number", maximum: 10 },
+            includeOutputs: { type: "boolean" },
+            maxOutputCharsPerItem: { type: "number" },
+          },
+          required: ["threadId"],
+        },
+      },
     ];
     const token = await broker.register(gatewayOnlyEnvironment, 60_000);
     const transport = new StdioClientTransport({
@@ -2620,6 +2638,7 @@ describe("ChatGPT outer-native harness v4", () => {
       expect(listed.tools.map(tool => tool.name).sort()).toEqual([
         "codex_apply_patch",
         "codex_exec",
+        "codex_read_thread",
         "codex_tool_call",
         "codex_tool_inventory",
         "codex_view_image",
@@ -2636,7 +2655,7 @@ describe("ChatGPT outer-native harness v4", () => {
       // ChatGPT caches the complete tools/list contract under a connector identity.
       // An intentional hash change therefore requires an explicit connector refresh or identity migration.
       expect(createHash("sha256").update(canonicalJson(publicConnectorAbi)).digest("hex"))
-        .toBe("5cb59b378c7d1939e260a2b4a60f58e22da31208fe09c2cc17a2cf31eb5ff3ad");
+        .toBe("1cb13b0e64755256391e91c109f35917bd6dbc9c48f8668ff803f91af4d6ecd8");
       for (const tool of listed.tools) {
         const properties = tool.inputSchema.properties as Record<string, unknown>;
         expect(properties.turn_token).toEqual({ type: "string", minLength: 20, maxLength: 256 });
@@ -2667,6 +2686,12 @@ describe("ChatGPT outer-native harness v4", () => {
         idempotentHint: true,
         openWorldHint: false,
       });
+      expect(listed.tools.find(tool => tool.name === "codex_read_thread")?.annotations).toMatchObject({
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      });
       expect(listed.tools.find(tool => tool.name === "codex_tool_inventory")?.annotations).toMatchObject({
         readOnlyHint: true,
         destructiveHint: false,
@@ -2679,6 +2704,47 @@ describe("ChatGPT outer-native harness v4", () => {
         idempotentHint: false,
         openWorldHint: true,
       });
+
+      const threadRead = call("codex_read_thread", {
+        turn_token: token,
+        threadId: "thread_test",
+        cursor: "cursor_test",
+        hostId: "local",
+        turnLimit: 10,
+        includeOutputs: false,
+        maxOutputCharsPerItem: 2_048,
+      });
+      const [threadReadRequest] = await broker.nextToolBatch(token);
+      expect(threadReadRequest).toMatchObject({
+        wireName: "mcp__codex_app__read_thread",
+        freeform: false,
+        arguments: {
+          threadId: "thread_test",
+          cursor: "cursor_test",
+          hostId: "local",
+          turnLimit: 10,
+          includeOutputs: false,
+          maxOutputCharsPerItem: 2_048,
+        },
+      });
+      broker.completeTool(token, threadReadRequest!.callId, toolResult({ title: "Referenced task" }));
+      expect((await threadRead).structuredContent).toEqual({ title: "Referenced task" });
+
+      const environmentWithoutThreadRead = {
+        ...gatewayOnlyEnvironment,
+        tools: gatewayOnlyEnvironment.tools.filter(tool => (
+          tool.namespace !== "mcp__codex_app" || tool.name !== "read_thread"
+        )),
+      };
+      const tokenWithoutThreadRead = await broker.register(environmentWithoutThreadRead, 60_000);
+      const missingThreadRead = await call("codex_read_thread", {
+        turn_token: tokenWithoutThreadRead,
+        threadId: "thread_test",
+      });
+      expect(missingThreadRead.isError).toBe(true);
+      expect(JSON.stringify(missingThreadRead.content)).toContain(
+        "The current outer Codex turn does not advertise read_thread",
+      );
 
       const firstExec = call("codex_exec", {
         turn_token: token,

@@ -22,6 +22,7 @@ const BRIDGE_TOOL_NAMES = new Set([
   "codex_write_stdin",
   "codex_apply_patch",
   "codex_view_image",
+  "codex_read_thread",
   "codex_tool_inventory",
   "codex_tool_call",
   "codex_turn_complete",
@@ -116,6 +117,10 @@ function wireName(tool: CodexTool): string {
 
 function exactTool(environment: ChatGptTurnEnvironment, name: string): CodexTool | undefined {
   return environment.tools.find(tool => !tool.namespace && tool.name === name);
+}
+
+function exactCodexAppTool(environment: ChatGptTurnEnvironment, name: string): CodexTool | undefined {
+  return environment.tools.find(tool => tool.namespace === "mcp__codex_app" && tool.name === name);
 }
 
 function gatewayToolNameIsValid(name: string): boolean {
@@ -741,6 +746,47 @@ export async function runChatGptMcpServer(options: {
         return tool
           ? invoke(claimed.bindingId, bound, tool, payload, extra.signal)
           : invokeNestedNative(claimed.bindingId, bound, "view_image", false, payload, extra.signal);
+      },
+    ),
+  );
+
+  server.registerTool(
+    "codex_read_thread",
+    {
+      title: "Read a referenced Codex task",
+      description: afterSafeStart(
+        contract,
+        "Invoke the outer Codex read_thread tool for a referenced task. This action is read-only and cannot continue, archive, or otherwise modify the task.",
+      ),
+      inputSchema: {
+        ...turnReferenceInput(contract),
+        threadId: z.string().min(1).max(256),
+        cursor: z.string().max(16_384).optional(),
+        hostId: z.string().max(256).optional(),
+        includeOutputs: z.boolean().optional(),
+        maxOutputCharsPerItem: z.number().int().min(1).max(1_000_000).optional(),
+        turnLimit: z.number().int().min(1).max(10).optional(),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (input, extra) => withClaimedTurn(
+      "codex_read_thread",
+      turnReference(contract, input),
+      extra,
+      async claimed => {
+        const { threadId, cursor, hostId, includeOutputs, maxOutputCharsPerItem, turnLimit } = input;
+        const tool = exactCodexAppTool(claimed.environment, "read_thread");
+        if (!tool) throw new Error("The current outer Codex turn does not advertise read_thread");
+        return invoke(claimed.bindingId, claimed.environment, tool, {
+          arguments: {
+            threadId,
+            ...(cursor !== undefined ? { cursor } : {}),
+            ...(hostId !== undefined ? { hostId } : {}),
+            ...(includeOutputs !== undefined ? { includeOutputs } : {}),
+            ...(maxOutputCharsPerItem !== undefined ? { maxOutputCharsPerItem } : {}),
+            ...(turnLimit !== undefined ? { turnLimit } : {}),
+          },
+        }, extra.signal);
       },
     ),
   );

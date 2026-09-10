@@ -266,6 +266,7 @@ describe("Zero Risk public MCP ABI", () => {
       { name: "codex_exec", namespace: ownNamespace, description: "Recursive bridge", parameters: { type: "object" } },
       { name: "codex_turn_complete", namespace: ownNamespace, description: "Recursive completion", parameters: { type: "object" } },
       { name: "shadow_tool", namespace: ownNamespace, description: "Same recursive namespace", parameters: { type: "object" } },
+      { name: "read_thread", namespace: "mcp__codex_app", description: "Read a Codex task", parameters: { type: "object" } },
       { name: "useful_tool", namespace: "mcp__useful", description: "Useful external tool", parameters: { type: "object" } },
     ]), nonceA, 60_000, "safe-stdio");
     const transport = new StdioClientTransport({
@@ -283,6 +284,7 @@ describe("Zero Risk public MCP ABI", () => {
       expect(listed.tools.map(tool => tool.name).sort()).toEqual([
         "codex_apply_patch",
         "codex_exec",
+        "codex_read_thread",
         "codex_tool_call",
         "codex_tool_inventory",
         "codex_turn_complete",
@@ -332,9 +334,10 @@ describe("Zero Risk public MCP ABI", () => {
       });
       const inventory = await inventoryAfterStart;
       expect(inventory.structuredContent).toMatchObject({
-        total: 2,
+        total: 3,
         tools: [
           { wire_name: "exec_command" },
+          { wire_name: "mcp__codex_app__read_thread" },
           { wire_name: "mcp__useful__useful_tool" },
         ],
       });
@@ -342,6 +345,30 @@ describe("Zero Risk public MCP ABI", () => {
       expect(JSON.stringify(inventory)).not.toContain("Top-level recursive bridge");
       expect(JSON.stringify(inventory)).not.toContain("Recursive freeform gateway");
       expect(JSON.stringify(inventory)).not.toContain(CODEX_COMPACTION_CONTROL_WIRE_NAME);
+
+      const threadRead = client.callTool({
+        name: "codex_read_thread",
+        arguments: {
+          request_id: requestId,
+          threadId: "thread_test",
+          hostId: "local",
+          turnLimit: 1,
+          includeOutputs: false,
+        },
+      });
+      const [threadReadRequest] = await broker.nextToolBatch(requestId);
+      expect(threadReadRequest).toMatchObject({
+        wireName: "mcp__codex_app__read_thread",
+        freeform: false,
+        arguments: {
+          threadId: "thread_test",
+          hostId: "local",
+          turnLimit: 1,
+          includeOutputs: false,
+        },
+      });
+      broker.completeTool(requestId, threadReadRequest!.callId, toolResult({ title: "Referenced task" }));
+      expect((await threadRead).structuredContent).toEqual({ title: "Referenced task" });
 
       const recursive = await client.callTool({
         name: "codex_tool_call",
