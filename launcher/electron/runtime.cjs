@@ -475,6 +475,7 @@ class RuntimeHost {
       path.join(coreHome, "codex", "integration-journal.json"),
       path.join(coreHome, "codex", "integration-journal.recovery.json"),
       path.join(this.codexHome, "config.toml"),
+      path.join(this.codexHome, "hooks.json"),
       path.join(this.codexHome, "models_cache.json"),
       path.join(coreHome, "secrets", "tunnel-runtime.key"),
       path.join(coreHome, "secrets", "tunnel-runtime-automatic.key"),
@@ -506,7 +507,8 @@ class RuntimeHost {
       }
     }
     return [...paths].map(filePath => captureRegularFile(filePath, {
-      followSymlink: filePath === path.join(this.codexHome, "config.toml"),
+      followSymlink: filePath === path.join(this.codexHome, "config.toml")
+        || filePath === path.join(this.codexHome, "hooks.json"),
     }));
   }
 

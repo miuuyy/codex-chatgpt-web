@@ -785,9 +785,13 @@ test("failed first-time setup removes its route before restoring the unconfigure
   const recoveryJournalPath = path.join(coreHome, "codex", "integration-journal.recovery.json");
   const configPath = path.join(root, "config.json");
   const codexConfigPath = path.join(codexHome, "config.toml");
+  const codexHooksPath = path.join(codexHome, "hooks.json");
+  const sharedHooksPath = path.join(root, "shared-hooks.json");
   const codexModelsCachePath = path.join(codexHome, "models_cache.json");
   fs.mkdirSync(codexHome, { recursive: true });
   fs.writeFileSync(codexConfigPath, "original codex config\n");
+  fs.writeFileSync(sharedHooksPath, "original codex hooks\n");
+  fs.symlinkSync(sharedHooksPath, codexHooksPath);
   fs.writeFileSync(codexModelsCachePath, "original codex models cache\n");
   let cleared = 0;
   let stops = 0;
@@ -820,6 +824,7 @@ test("failed first-time setup removes its route before restoring the unconfigure
     fs.writeFileSync(journalPath, "partial integration journal\n");
     fs.writeFileSync(recoveryJournalPath, "partial recovery journal\n");
     fs.writeFileSync(codexConfigPath, "partially changed codex config\n");
+    fs.writeFileSync(codexHooksPath, "partially changed codex hooks\n");
     fs.rmSync(codexModelsCachePath);
     throw new Error("synthetic setup failure");
   };
@@ -836,6 +841,9 @@ test("failed first-time setup removes its route before restoring the unconfigure
     assert.equal(fs.existsSync(journalPath), false);
     assert.equal(fs.existsSync(recoveryJournalPath), false);
     assert.equal(fs.readFileSync(codexConfigPath, "utf8"), "original codex config\n");
+    assert.equal(fs.readFileSync(codexHooksPath, "utf8"), "original codex hooks\n");
+    assert.equal(fs.lstatSync(codexHooksPath).isSymbolicLink(), true);
+    assert.equal(fs.readFileSync(sharedHooksPath, "utf8"), "original codex hooks\n");
     assert.equal(fs.readFileSync(codexModelsCachePath, "utf8"), "original codex models cache\n");
     assert.equal(stops, 2);
     assert.equal(cleared, 1);
