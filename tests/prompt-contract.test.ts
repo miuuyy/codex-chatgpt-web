@@ -7,6 +7,7 @@ import {
   compileChatGptWebPrompt,
   formatChatGptWebMultipartCommit,
   formatChatGptWebMultipartStage,
+  withoutRetiredTurnHandles,
 } from "../src/adapters/chatgpt-web/prompt";
 import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { biggerContextPartCount } from "../src/adapters/chatgpt-web/usage";
@@ -526,6 +527,25 @@ test("the replayed context never carries a finished turn's broker handles", () =
   expect(compiled.text).toContain("keep working");
   const envelope = compiled.text.split("<codex_context_json>")[1]!.split("</codex_context_json>")[0]!.trim();
   expect(() => JSON.parse(envelope) as unknown).not.toThrow();
+});
+
+test("every retired broker handle kind is scrubbed, and near-misses are preserved", () => {
+  const body = "0123456789abcdefghijklmnopqrstuv"; // 32 chars
+  for (const kind of ["turn", "binding", "call", "request", "control", "handoff"]) {
+    const scrubbed = withoutRetiredTurnHandles(JSON.stringify({ h: `${kind}_${body}` }));
+    expect(scrubbed).toBe(JSON.stringify({ h: `[retired ${kind} handle]` }));
+  }
+
+  // A handle that appears immediately after a JSON control escape is still scrubbed,
+  // because JSON.stringify renders control bytes as \n / \u001f and the trailing
+  // character would otherwise read as an identifier boundary.
+  expect(withoutRetiredTurnHandles(`"\\ncall_${body}"`)).toBe(`"\\n[retired call handle]"`);
+  expect(withoutRetiredTurnHandles(`"\\u001fcall_${body}"`)).toBe(`"\\u001f[retired call handle]"`);
+
+  // Near-misses must survive untouched: embedded prefix, short body, long body, wrong kind.
+  for (const keep of [`ncall_${body}`, `call_${body.slice(0, 31)}`, `call_${body}w`, `callx_${body}`]) {
+    expect(withoutRetiredTurnHandles(JSON.stringify({ h: keep }))).toContain(keep);
+  }
 });
 
 test("requires ChatGPT-native rich results to include a safe Markdown answer for Codex", () => {
