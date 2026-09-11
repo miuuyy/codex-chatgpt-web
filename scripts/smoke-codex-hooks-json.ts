@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import {
+  codexJsonInterruptHookStateKey,
+  installCodexInterruptHookTrust,
+  restoreCodexInterruptHookTrust,
+  verifyCodexInterruptHookTrust,
+} from "../src/codex-interrupt-hook";
 
 // Run with: bun run scripts/smoke-codex-hooks-json.ts [absolute-path-to-codex]
 // Discovery only: no thread, model request, bridge setup, or hook execution.
@@ -184,6 +190,46 @@ try {
   assert.equal(trusted.currentHash, untrusted.currentHash);
   console.log("PASS JSON + TOML trust state: trusted after restart, no mixed-source warning");
 
+  const sharedHooksPath = join(root, "shared-hooks.json");
+  rmSync(hooksPath);
+  writeFileSync(sharedHooksPath, json);
+  symlinkSync(sharedHooksPath, hooksPath);
+  writeFileSync(configPath, config);
+  const [symlinked] = await expectHooks(1);
+  assert.equal(symlinked.sourcePath, hooksPath);
+  assert.equal(symlinked.key, codexJsonInterruptHookStateKey(hooksPath, 0, 0));
+  await withClient(request => request("config/value/write", {
+    keyPath: "hooks.state",
+    value: { [symlinked.key]: { trusted_hash: symlinked.currentHash } },
+    mergeStrategy: "replace",
+    filePath: configPath,
+  }));
+  const [symlinkedTrusted] = await expectHooks(1);
+  assert.equal(symlinkedTrusted.trustStatus, "trusted");
+  console.log("PASS symlinked JSON: Codex trusts the hooks.json source path");
+
+  writeFileSync(configPath, config);
+  const trust = installCodexInterruptHookTrust(
+    config,
+    codexJsonInterruptHookStateKey(hooksPath, 0, 0),
+    symlinked.currentHash,
+  );
+  writeFileSync(configPath, trust.text);
+  await withClient(request => request("config/value/write", {
+    keyPath: "mcp_servers.astra_review.command",
+    value: "review",
+    mergeStrategy: "replace",
+    filePath: configPath,
+  }));
+  const nativeEditedTrust = readFileSync(configPath, "utf8");
+  verifyCodexInterruptHookTrust(nativeEditedTrust, trust.installed);
+  const restoredTrust = restoreCodexInterruptHookTrust(nativeEditedTrust, trust.installed);
+  assert.match(restoredTrust, /\[mcp_servers\.astra_review\]/);
+  assert.doesNotMatch(restoredTrust, /JSON interrupt hook trust/);
+  console.log("PASS native TOML writer: trust cleanup preserves an unrelated MCP table");
+
+  rmSync(hooksPath);
+  writeFileSync(hooksPath, json);
   writeFileSync(hooksPath, json.replace(command, `${command}-changed`));
   const [modified] = await expectHooks(1);
   assert.equal(modified.key, untrusted.key);

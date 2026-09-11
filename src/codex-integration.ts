@@ -5,7 +5,7 @@ import { getConfigPath, loadConfig, saveConfig } from "./config";
 import {
   codexInterruptHookCommand,
   codexInterruptHookHash,
-  codexInterruptHookStateKey,
+  codexJsonInterruptHookStateKey,
   installCodexInterruptHook,
   installCodexInterruptHookCommand,
   installCodexInterruptHookTrust,
@@ -109,7 +109,7 @@ function installConfiguredRoute(
     : codexInterruptHookCommand(config);
   if (hooksJson) {
     const hook = installCodexInterruptHookJson(hooksJson.text, command);
-    const stateKey = codexInterruptHookStateKey(hooksJson.path, hook.installed.groupIndex, hook.installed.hookIndex);
+    const stateKey = codexJsonInterruptHookStateKey(hooksJson.path, hook.installed.groupIndex, hook.installed.hookIndex);
     const trust = installCodexInterruptHookTrust(configured.text, stateKey, codexInterruptHookHash(command));
     return {
       ...configured,

@@ -90,6 +90,17 @@ export function codexInterruptHookStateKey(path: string, groupIndex: number, hoo
   return `${canonicalConfigPath(path)}:interrupt:${groupIndex}:${hookIndex}`;
 }
 
+export function codexJsonInterruptHookStateKey(path: string, groupIndex: number, hookIndex: number): string {
+  const absolute = resolve(path);
+  let sourcePath = absolute;
+  try {
+    sourcePath = join(realpathSync.native(dirname(absolute)), basename(absolute));
+  } catch {
+    // Codex uses the canonical hooks directory when it exists, but must also support first-time paths.
+  }
+  return `${sourcePath}:interrupt:${groupIndex}:${hookIndex}`;
+}
+
 export function installCodexInterruptHook(
   text: string,
   configPath: string,
@@ -174,22 +185,107 @@ export function installCodexInterruptHookTrust(
   return { text: `${text}${fragment}`, installed: { stateKey, trustedHash, fragment } };
 }
 
-function locateCodexInterruptHookTrust(text: string, installed: InstalledCodexInterruptHookTrust): { start: number; end: number } {
+function locateCodexInterruptHookTrust(text: string, installed: InstalledCodexInterruptHookTrust): {
+  ranges: Array<{ start: number; end: number }>;
+} {
   if (!installed.stateKey || !/^sha256:[a-f0-9]{64}$/.test(installed.trustedHash) || !installed.fragment) {
     throw new Error("Codex JSON interrupt hook trust journal entry is invalid");
   }
-  const marker = installed.fragment.indexOf(MANAGED_INTERRUPT_HOOK_TRUST_END);
-  if (marker < 0) {
-    throw new Error("Codex JSON interrupt hook trust journal fragment is invalid");
-  }
-  const pattern = new RegExp(hookTextPattern(installed.fragment), "g");
-  const match = pattern.exec(text);
-  if (!match || pattern.exec(text)
-    || text.split(MANAGED_INTERRUPT_HOOK_TRUST_START).length !== 2
-    || text.split(MANAGED_INTERRUPT_HOOK_TRUST_END).length !== 2) {
+  const ending = lineEnding(text);
+  const lineRanges = (line: string, allowComment = false): Array<{ start: number; end: number }> => {
+    const suffix = allowComment ? "[ \\t]*(?:#.*)?" : "";
+    const pattern = new RegExp(`(^|\\r\\n|\\n|\\r)${line.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}${suffix}(?=\\r\\n|\\n|\\r|$)`, "g");
+    return [...text.matchAll(pattern)].map(match => {
+      const start = match.index! + (match[1]?.length ?? 0);
+      const lineEnd = start + match[0].length - (match[1]?.length ?? 0);
+      return { start, end: text.startsWith(ending, lineEnd) ? lineEnd + ending.length : lineEnd };
+    });
+  };
+  const lineRange = (line: string): { start: number; end: number } | undefined => {
+    const matches = lineRanges(line);
+    return matches.length === 1 ? matches[0] : undefined;
+  };
+  const startMarker = lineRange(MANAGED_INTERRUPT_HOOK_TRUST_START);
+  const endMarker = lineRange(MANAGED_INTERRUPT_HOOK_TRUST_END);
+  if (!startMarker || !endMarker) {
     throw new Error("Codex JSON interrupt hook trust changed after setup; refusing to overwrite it");
   }
-  return { start: match.index, end: match.index + match[0].length };
+  let parsed: { hooks?: { state?: Record<string, unknown> } };
+  try {
+    parsed = Bun.TOML.parse(text) as { hooks?: { state?: Record<string, unknown> } };
+    if (JSON.stringify(canonicalJson(parsed.hooks?.state?.[installed.stateKey]))
+      !== JSON.stringify({ trusted_hash: installed.trustedHash })) {
+      throw new Error("Trust state changed");
+    }
+  } catch {
+    throw new Error("Codex JSON interrupt hook trust changed after setup; refusing to overwrite it");
+  }
+  const markerPreservesTomlValues = (marker: { start: number; end: number }): boolean => {
+    try {
+      const withoutMarker = text.slice(0, marker.start) + text.slice(marker.end);
+      return JSON.stringify(canonicalJson(Bun.TOML.parse(text)))
+        === JSON.stringify(canonicalJson(Bun.TOML.parse(withoutMarker)));
+    } catch {
+      return false;
+    }
+  };
+  if (!markerPreservesTomlValues(startMarker) || !markerPreservesTomlValues(endMarker)) {
+    throw new Error("Codex JSON interrupt hook trust changed after setup; refusing to overwrite it");
+  }
+  const stateHeaders = lineRanges(`[hooks.state.${JSON.stringify(installed.stateKey)}]`, true);
+  const trustedHashes = lineRanges(`trusted_hash = ${JSON.stringify(installed.trustedHash)}`, true);
+  const expected = structuredClone(parsed) as { hooks?: { state?: Record<string, unknown> } };
+  delete expected.hooks?.state?.[installed.stateKey];
+  const expectedValues = [expected];
+  if (expected.hooks?.state && Object.keys(expected.hooks.state).length === 0) {
+    const withoutState = structuredClone(expected) as { hooks?: { state?: Record<string, unknown> } };
+    delete withoutState.hooks?.state;
+    expectedValues.push(withoutState);
+    if (withoutState.hooks && Object.keys(withoutState.hooks).length === 0) {
+      const withoutHooks = structuredClone(withoutState);
+      delete withoutHooks.hooks;
+      expectedValues.push(withoutHooks);
+    }
+  }
+  const stateTable = stateHeaders.flatMap(header => trustedHashes
+    .filter(hash => hash.start === header.end)
+    .filter(hash => {
+      try {
+        const withoutTable = text.slice(0, header.start) + text.slice(hash.end);
+        const actual = JSON.stringify(canonicalJson(Bun.TOML.parse(withoutTable)));
+        return expectedValues.some(expectedValue => actual === JSON.stringify(canonicalJson(expectedValue)));
+      } catch {
+        return false;
+      }
+    })
+    .map(hash => ({ header, hash })));
+  if (stateTable.length !== 1) {
+    throw new Error("Codex JSON interrupt hook trust changed after setup; refusing to overwrite it");
+  }
+  const { header: stateHeader, hash: trustedHash } = stateTable[0]!;
+  const adjustedStart = startMarker.start >= ending.length * 2
+    && text.startsWith(ending, startMarker.start - ending.length)
+    && text.startsWith(ending, startMarker.start - ending.length * 2)
+    ? startMarker.start - ending.length
+    : startMarker.start;
+  const rawRanges = [
+    { start: adjustedStart, end: startMarker.end },
+    { start: stateHeader.start, end: trustedHash.end },
+    endMarker,
+  ].sort((left, right) => left.start - right.start);
+  const ranges = rawRanges.reduce<Array<{ start: number; end: number }>>((merged, range) => {
+    const previous = merged.at(-1);
+    if (!previous || range.start >= previous.end) {
+      merged.push({ ...range });
+      return merged;
+    }
+    if (range.start < previous.end - ending.length) {
+      throw new Error("Codex JSON interrupt hook trust changed after setup; refusing to overwrite it");
+    }
+    previous.end = Math.max(previous.end, range.end);
+    return merged;
+  }, []);
+  return { ranges };
 }
 
 export function verifyCodexInterruptHookTrust(text: string, installed: InstalledCodexInterruptHookTrust): void {
@@ -198,7 +294,8 @@ export function verifyCodexInterruptHookTrust(text: string, installed: Installed
 
 export function restoreCodexInterruptHookTrust(text: string, installed: InstalledCodexInterruptHookTrust): string {
   const owned = locateCodexInterruptHookTrust(text, installed);
-  return text.slice(0, owned.start) + text.slice(owned.end);
+  return owned.ranges.sort((left, right) => right.start - left.start)
+    .reduce((restored, range) => restored.slice(0, range.start) + restored.slice(range.end), text);
 }
 
 export function verifyCodexInterruptHookTrustRestored(text: string): void {

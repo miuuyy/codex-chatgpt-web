@@ -4,11 +4,16 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   MANAGED_INTERRUPT_HOOK_END,
+  MANAGED_INTERRUPT_HOOK_TRUST_START,
+  MANAGED_INTERRUPT_HOOK_TRUST_END,
   codexInterruptHookCommand,
   codexInterruptHookHash,
   installCodexInterruptHook,
+  installCodexInterruptHookTrust,
+  restoreCodexInterruptHookTrust,
   restoreCodexInterruptHook,
   verifyCodexInterruptHook,
+  verifyCodexInterruptHookTrust,
   verifyCodexInterruptHookRestored,
 } from "../src/codex-interrupt-hook";
 
@@ -46,6 +51,159 @@ test("trusts the canonical Codex config path before a new config file exists", (
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("preserves native tables moved inside JSON hook trust markers", () => {
+  const installed = installCodexInterruptHookTrust(
+    'model = "gpt-5.6-sol"\n',
+    "/Users/test/.codex/hooks.json:interrupt:0:0",
+    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  );
+  const updated = installed.text.replace(
+    MANAGED_INTERRUPT_HOOK_TRUST_END,
+    '[mcp_servers.astra_review]\ncommand = "review"\n\n' + MANAGED_INTERRUPT_HOOK_TRUST_END,
+  );
+  verifyCodexInterruptHookTrust(updated, installed.installed);
+  const restored = restoreCodexInterruptHookTrust(updated, installed.installed);
+  expect(restored).toContain('[mcp_servers.astra_review]');
+  expect(restored).not.toContain("hooks.state");
+  expect(restored).not.toContain("JSON interrupt hook trust");
+});
+
+test("preserves explicitly declared empty trust parent tables", () => {
+  const original = '[hooks]\n[hooks.state]\n';
+  const installed = installCodexInterruptHookTrust(
+    original,
+    "/Users/test/.codex/hooks.json:interrupt:0:0",
+    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  );
+  const restored = restoreCodexInterruptHookTrust(installed.text, installed.installed);
+  expect(Bun.TOML.parse(restored)).toEqual(Bun.TOML.parse(original));
+  expect(restored).toContain("[hooks]\n[hooks.state]");
+});
+
+test("restores empty trust parent tables from equivalent TOML spellings", () => {
+  for (const original of [
+    "[ hooks ]\n[ hooks.state ]\n",
+    '["hooks"]\n["hooks"."state"]\n',
+    'description = """\n[hooks]\n"""\n',
+  ]) {
+    const installed = installCodexInterruptHookTrust(
+      original,
+      "/Users/test/.codex/hooks.json:interrupt:0:0",
+      "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    );
+    expect(Bun.TOML.parse(restoreCodexInterruptHookTrust(installed.text, installed.installed)))
+      .toEqual(Bun.TOML.parse(original));
+  }
+});
+
+test("preserves a native table with a commented header inside trust markers", () => {
+  const installed = installCodexInterruptHookTrust(
+    'model = "gpt-5.6-sol"\n',
+    "/Users/test/.codex/hooks.json:interrupt:0:0",
+    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  );
+  const updated = installed.text.replace(
+    MANAGED_INTERRUPT_HOOK_TRUST_END,
+    '[mcp_servers.astra_review] # native setting\ncommand = "review"\n\n' + MANAGED_INTERRUPT_HOOK_TRUST_END,
+  );
+  const restored = restoreCodexInterruptHookTrust(updated, installed.installed);
+  expect(restored).toContain('[mcp_servers.astra_review] # native setting\ncommand = "review"');
+});
+
+test("removes a moved JSON trust end marker without duplicating native tables", () => {
+  const installed = installCodexInterruptHookTrust(
+    'model = "gpt-5.6-sol"\n',
+    "/Users/test/.codex/hooks.json:interrupt:0:0",
+    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  );
+  const moved = installed.text
+    .replace(MANAGED_INTERRUPT_HOOK_TRUST_END, "")
+    .replace(
+      MANAGED_INTERRUPT_HOOK_TRUST_START,
+      `${MANAGED_INTERRUPT_HOOK_TRUST_START}\n${MANAGED_INTERRUPT_HOOK_TRUST_END}`,
+    )
+    .replace(
+      'trusted_hash = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"',
+      'trusted_hash = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"\n[mcp_servers.astra_review]\ncommand = "review"',
+    );
+  verifyCodexInterruptHookTrust(moved, installed.installed);
+  const restored = restoreCodexInterruptHookTrust(moved, installed.installed);
+  expect(restored).toContain('[mcp_servers.astra_review]');
+  expect(restored.match(/\[mcp_servers\.astra_review\]/g)).toHaveLength(1);
+  expect(restored).not.toContain("hooks.state");
+  expect(restored).not.toContain("JSON interrupt hook trust");
+});
+
+test("does not join adjacent user assignments when the JSON trust start marker moves", () => {
+  const installed = installCodexInterruptHookTrust(
+    'model = "gpt-5.6-sol"\n',
+    "/Users/test/.codex/hooks.json:interrupt:0:0",
+    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  );
+  const moved = installed.text
+    .replace(MANAGED_INTERRUPT_HOOK_TRUST_START, "")
+    .replace(
+      'model = "gpt-5.6-sol"\n',
+      'model = "gpt-5.6-sol"\n[mcp_servers.astra_review]\ncommand = "review"\n'
+        + `${MANAGED_INTERRUPT_HOOK_TRUST_START}\nargs = []\n`,
+    );
+  verifyCodexInterruptHookTrust(moved, installed.installed);
+  const restored = restoreCodexInterruptHookTrust(moved, installed.installed);
+  expect(restored).toContain('command = "review"\nargs = []');
+  expect(Bun.TOML.parse(restored)).toMatchObject({
+    mcp_servers: { astra_review: { command: "review", args: [] } },
+  });
+});
+
+test("refuses JSON trust markers moved into multiline TOML strings", () => {
+  const installed = installCodexInterruptHookTrust(
+    'model = "gpt-5.6-sol"\n',
+    "/Users/test/.codex/hooks.json:interrupt:0:0",
+    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  );
+  const moved = installed.text
+    .replace(MANAGED_INTERRUPT_HOOK_TRUST_START, "")
+    .replace(
+      'model = "gpt-5.6-sol"\n',
+      'model = "gpt-5.6-sol"\n[metadata]\ndescription = """\n'
+        + `${MANAGED_INTERRUPT_HOOK_TRUST_START}\nuser text\n"""\n`,
+    );
+  expect(() => restoreCodexInterruptHookTrust(moved, installed.installed)).toThrow("changed after setup");
+});
+
+test("removes only the parsed JSON trust table when matching lines appear in a string", () => {
+  const installed = installCodexInterruptHookTrust(
+    'model = "gpt-5.6-sol"\n',
+    "/Users/test/.codex/hooks.json:interrupt:0:0",
+    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  );
+  const header = `[hooks.state.${JSON.stringify(installed.installed.stateKey)}]`;
+  const hash = `trusted_hash = ${JSON.stringify(installed.installed.trustedHash)}`;
+  const changed = installed.text.replace(
+    'model = "gpt-5.6-sol"\n',
+    `model = "gpt-5.6-sol"\n[metadata]\ndescription = """\n${header}\n${hash}\n"""\n`,
+  );
+  const restored = restoreCodexInterruptHookTrust(changed, installed.installed);
+  expect(restored).toContain(`description = """\n${header}\n${hash}\n"""`);
+  expect(Bun.TOML.parse(restored)).toMatchObject({
+    metadata: { description: `${header}\n${hash}\n` },
+  });
+  expect(restored).not.toContain('trusted_hash = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"\n# End codex-chatgpt-web JSON interrupt hook trust state');
+});
+
+test("refuses extra assignments in the owned JSON trust table", () => {
+  const installed = installCodexInterruptHookTrust(
+    'model = "gpt-5.6-sol"\n',
+    "/Users/test/.codex/hooks.json:interrupt:0:0",
+    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  );
+  const changed = installed.text.replace(
+    MANAGED_INTERRUPT_HOOK_TRUST_END,
+    'approved = false\n' + MANAGED_INTERRUPT_HOOK_TRUST_END,
+  );
+  expect(() => restoreCodexInterruptHookTrust(changed, installed.installed)).toThrow("changed after setup");
 });
 
 test("Interrupt hook command is absolute, quoted, and bound to the exact application home", () => {

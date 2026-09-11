@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   activateCodexIntegration,
   deactivateCodexIntegration,
@@ -194,6 +194,13 @@ describe("reversible native Codex route integration", () => {
     installCodexIntegration(nativeConfig("browser-only"));
     expect(lstatSync(hooksPath).isSymbolicLink()).toBe(true);
     expect(readFileSync(target, "utf8")).toContain('"Interrupt"');
+    const journal = installCodexIntegration(nativeConfig("browser-only"));
+    expect(journal.interruptHook.storage).toBe("json");
+    if (journal.interruptHook.storage === "json") {
+      expect(journal.interruptHook.stateKey).toBe(
+        `${join(realpathSync.native(dirname(hooksPath)), "hooks.json")}:interrupt:0:0`,
+      );
+    }
 
     deactivateCodexIntegration();
     expect(lstatSync(hooksPath).isSymbolicLink()).toBe(true);
