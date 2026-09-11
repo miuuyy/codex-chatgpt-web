@@ -193,9 +193,9 @@ function chatGptModelControlUnavailableError(diagnostic: string): Error {
   return new Error(CHATGPT_MODEL_CONTROL_UNAVAILABLE_MESSAGE, { cause: new Error(diagnostic) });
 }
 
-function chatGptModelControlUnavailableAdapterError(diagnostic: string): ChatGptWebAdapterError {
+function chatGptModelControlUnavailableAdapterError(diagnostic: string, userVisibleDetail?: string): ChatGptWebAdapterError {
   return new ChatGptWebAdapterError(
-    CHATGPT_MODEL_CONTROL_UNAVAILABLE_MESSAGE,
+    userVisibleDetail ? `${CHATGPT_MODEL_CONTROL_UNAVAILABLE_MESSAGE} ${userVisibleDetail}` : CHATGPT_MODEL_CONTROL_UNAVAILABLE_MESSAGE,
     {
       status: 502,
       errorType: "server_error",
@@ -204,6 +204,23 @@ function chatGptModelControlUnavailableAdapterError(diagnostic: string): ChatGpt
       cause: new Error(diagnostic),
     },
   );
+}
+
+const CHATGPT_PRO_RETRY_AFTER_RE = /Try again after [A-Z][a-z]{2} \d{1,2}, \d{4}/;
+
+async function chatGptProUsageLimitTooltip(page: Page, menu: Locator): Promise<string | undefined> {
+  const proItem = menu.locator(CHATGPT_EFFORT_ITEM_SELECTOR).filter({ hasText: /^\s*Pro\s*$/ }).last();
+  if (!await proItem.isVisible().catch(() => false)) return undefined;
+  if (!await proItem.hover({ timeout: 1_500 }).then(() => true).catch(() => false)) return undefined;
+  const hint = page.getByText(CHATGPT_PRO_RETRY_AFTER_RE).last();
+  try {
+    await hint.waitFor({ state: "visible", timeout: 1_500 });
+  } catch (error) {
+    if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
+    return undefined;
+  }
+  const text = (await hint.innerText()).trim();
+  return text || undefined;
 }
 
 export type ChatGptPersonalizationPreflight = "already-personalized" | "enabled";
@@ -2402,13 +2419,16 @@ export class ChatGptBrowserWorker {
     }
     const targetValue = sliderState.min + uiEffortIndex;
     if (targetValue > sliderState.max) {
-      const proUsageLimitHint = uiEffortIndex === 4 && sliderState.min === 0 && sliderState.max === 3
+      const proUnavailable = uiEffortIndex === 4 && sliderState.min === 0 && sliderState.max === 3;
+      const proUsageLimitTooltip = proUnavailable ? await chatGptProUsageLimitTooltip(page, activation.menu) : undefined;
+      const proUsageLimitHint = proUnavailable
         ? " If you have made many Pro requests recently, ChatGPT may have temporarily hidden Pro because you reached its usage limit."
         : "";
       throw chatGptModelControlUnavailableAdapterError(
         `ChatGPT effort slider does not expose item index ${uiEffortIndex}`
         + ` (min=${sliderState.min}; max=${sliderState.max})`
         + proUsageLimitHint,
+        proUsageLimitTooltip,
       );
     }
     const sliderControl = effortSlider.locator("xpath=ancestor::*[@role='menuitem'][1]");
