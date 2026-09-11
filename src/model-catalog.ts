@@ -3,11 +3,49 @@ import type { CodexModelContextOverride } from "./codex-integration";
 import {
   availableChatGptWebModelRoutes,
   CHATGPT_WEB_MODEL_PREFIX,
+  CHATGPT_WEB_LUNA_BACKEND_MODEL,
   resolveChatGptWebContextLimits,
   type ChatGptWebModelRoute,
 } from "./chatgpt-web-models";
 
 type JsonObject = Record<string, unknown>;
+
+/**
+ * Build the catalog served to an external router. It is intentionally independent from the
+ * native Codex catalog: no upstream request or official authentication is needed to enumerate
+ * the Web routes that this process can actually serve.
+ */
+export function buildExternalProviderModelCatalog(config: AppConfig): JsonObject {
+  const models = availableChatGptWebModelRoutes(config).map(route => {
+    const limits = resolveChatGptWebContextLimits(route.backendModel, route.adapterEffort, config);
+    const supportsTools = config.mode === "full";
+    const supportsCompact = route.backendModel !== CHATGPT_WEB_LUNA_BACKEND_MODEL;
+    const inputModalities = route.interactionMode === "manual" ? ["text"] : ["text", "image"];
+    const capabilities = ["reasoning", ...(supportsTools ? ["tools"] : []), ...(supportsCompact ? ["compact"] : [])];
+    return {
+      id: route.slug,
+      object: "model",
+      created: 0,
+      owned_by: "codex-chatgpt-web",
+      name: route.displayName,
+      display_name: route.displayName,
+      description: route.description,
+      context_window: limits.contextWindow,
+      max_context_window: limits.contextWindow,
+      input_modalities: inputModalities,
+      capabilities,
+      supports_tools: supportsTools,
+      supports_reasoning: true,
+      supports_compact: supportsCompact,
+      reasoning_efforts: [route.codexEffort],
+      default_reasoning_effort: route.codexEffort,
+    } satisfies JsonObject;
+  });
+  return {
+    object: "list",
+    data: models,
+  };
+}
 
 function object(value: unknown, label: string): JsonObject {
   if (!value || typeof value !== "object" || Array.isArray(value)) {

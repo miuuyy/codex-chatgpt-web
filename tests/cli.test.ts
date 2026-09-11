@@ -51,6 +51,26 @@ test("production and DEV setup reject the removed connector-name option before c
   }
 });
 
+test("setup help and flags expose explicit integration ownership", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-integration-"));
+  try {
+    const env = {
+      ...process.env,
+      CODEX_HOME: join(root, "codex"),
+      CODEX_CHATGPT_WEB_HOME: join(root, "app"),
+    };
+    const help = await runCli(["--help"], env);
+    expect(help.stdout).toContain("--integration-mode MODE");
+    const invalid = await runCli([
+      "setup", "--browser-only", "--integration-mode", "router", "--acknowledge-unofficial",
+    ], env);
+    expect(invalid.exitCode).toBe(1);
+    expect(invalid.stderr).toContain("must be direct or external-provider");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("setup validates the port before performing runtime work", async () => {
   const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-"));
   try {

@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { ChatGptThreadEnvironmentStore } from "../src/adapters/chatgpt-web/thread-environment";
 import { chatGptTurnUserRevisionHistory, extractChatGptTurnEnvironment, extractChatGptTurnUserRevision } from "../src/adapters/chatgpt-web/environment";
+import { chatGptInstructionLineage } from "../src/adapters/chatgpt-web/turn-execution";
 import { parseRequest } from "../src/responses/parser";
 import type { CodexParsedRequest } from "../src/types";
 
@@ -114,4 +115,50 @@ test("V2 parent instructions bind the current environment without changing nativ
   }
   const restricted = parseRequest({ ...raw, client_metadata: { "x-codex-turn-metadata": JSON.stringify({ ...metadata, sandbox: "read-only" }) } });
   expect(() => extractChatGptTurnEnvironment(restricted)).toThrow("missing cwd");
+});
+
+test("OpenCodex-stripped V2 agent_message still binds the parent task and follow-up lineage", () => {
+  const environmentItem = { ...item("msg_environment", "user", environment, childTurnId) };
+  const task = {
+    type: "agent_message", id: "amsg_task", author: "/root", recipient: "/root/reviewer",
+    content: [{ type: "input_text", text: "Inspect the workspace." }],
+  };
+  const followup = {
+    ...task,
+    id: "amsg_followup",
+    content: [{ type: "input_text", text: "Review the second file." }],
+  };
+  const raw = request(childThreadId, childTurnId, [environmentItem, task], parentThreadId)._rawBody as Record<string, unknown>;
+  raw.model = "chatgpt-web/high";
+  const stripProvenance = (value: Record<string, unknown>) => {
+    const next = { ...value };
+    delete next.id;
+    delete next.internal_chat_message_metadata_passthrough;
+    return next;
+  };
+  const strippedTask = parseRequest({
+    ...raw,
+    input: [stripProvenance(environmentItem), stripProvenance(task)],
+  });
+  expect(extractChatGptTurnEnvironment(strippedTask).cwd).toBe(root);
+  expect(extractChatGptTurnUserRevision(strippedTask)).toEqual(task.content);
+  const taskLineage = chatGptInstructionLineage(strippedTask);
+
+  const strippedFollowup = parseRequest({
+    ...raw,
+    input: [stripProvenance(environmentItem), stripProvenance(task), stripProvenance(followup)],
+  });
+  expect(extractChatGptTurnUserRevision(strippedFollowup)).toEqual(followup.content);
+  const followupLineage = chatGptInstructionLineage(strippedFollowup);
+  expect(followupLineage.current).not.toBe(taskLineage.current);
+  expect(followupLineage.predecessors.has(taskLineage.current)).toBe(true);
+
+  const strippedPeer = parseRequest({
+    ...raw,
+    input: [
+      stripProvenance(environmentItem),
+      stripProvenance({ ...task, author: "/root/peer", recipient: "/root/reviewer" }),
+    ],
+  });
+  expect(() => extractChatGptTurnUserRevision(strippedPeer)).toThrow("current-turn user message");
 });

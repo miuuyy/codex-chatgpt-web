@@ -16,6 +16,7 @@ const {
 const { embeddedRuntimeInvocation, runtimeInvocation } = require("./runtime-command.cjs");
 const { redactText } = require("./logging.cjs");
 const { DETACH_OWNED_CHILD, terminateOwnedProcessTree } = require("./process-tree.cjs");
+const { resolveIntegrationMode } = require("./integration-mode.cjs");
 
 const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
 const MAX_RUNTIME_LOG_LINE_CHARS = 64 * 1024;
@@ -177,6 +178,7 @@ class RuntimeHost {
     publishOperation,
     supervisor,
     getBrowserInteractionMode = () => "automatic",
+    getIntegrationMode = () => "direct",
   }) {
     this.app = app;
     this.logger = logger;
@@ -204,6 +206,7 @@ class RuntimeHost {
     this.publishOperation = publishOperation;
     this.supervisor = supervisor;
     this.getBrowserInteractionMode = getBrowserInteractionMode;
+    this.getIntegrationMode = getIntegrationMode;
     this.active = null;
     this.activeChild = null;
     this.lifecycleOperation = null;
@@ -428,6 +431,7 @@ class RuntimeHost {
         configured: false,
         owner: "none",
         mode: "browser-only",
+        integrationMode: resolveIntegrationMode({ integrationMode: this.getIntegrationMode() }),
         serialized: null,
       };
     }
@@ -437,9 +441,36 @@ class RuntimeHost {
       configured: true,
       owner: launcherOwned ? "launcher" : "external",
       mode: config.mode === "full" ? "full" : "browser-only",
+      integrationMode: resolveIntegrationMode(config),
       serialized: JSON.stringify(config),
       config: structuredClone(config),
     };
+  }
+
+  integrationMode() {
+    const snapshot = this.runtimeConfigSnapshot();
+    return snapshot.configured
+      ? resolveIntegrationMode(snapshot.config)
+      : resolveIntegrationMode({ integrationMode: this.getIntegrationMode() });
+  }
+
+  isExternalProvider() {
+    return this.integrationMode() === "external-provider";
+  }
+
+  productionSetupArgs(args, options = {}) {
+    if (this.launcherProfile !== "production") return args;
+    const next = [...args];
+    if (this.isExternalProvider()) {
+      if (!next.includes("--integration-mode")) next.push("--integration-mode", "external-provider");
+      return next.filter(arg => arg !== "--replace-codex-route");
+    }
+    if (!next.includes("--integration-mode")) next.push("--integration-mode", "direct");
+    if (options.replaceCodexRoute === false) {
+      return next.filter(arg => arg !== "--replace-codex-route");
+    }
+    if (!next.includes("--replace-codex-route")) next.push("--replace-codex-route");
+    return next;
   }
 
   mcpCredentialsConfigured(requestedMode) {
@@ -474,8 +505,6 @@ class RuntimeHost {
       this.supervisor.configPath,
       path.join(coreHome, "codex", "integration-journal.json"),
       path.join(coreHome, "codex", "integration-journal.recovery.json"),
-      path.join(this.codexHome, "config.toml"),
-      path.join(this.codexHome, "models_cache.json"),
       path.join(coreHome, "secrets", "tunnel-runtime.key"),
       path.join(coreHome, "secrets", "tunnel-runtime-automatic.key"),
       path.join(coreHome, "secrets", "tunnel-runtime-zero-risk.key"),
@@ -484,6 +513,10 @@ class RuntimeHost {
       path.join(coreHome, "tunnel", "profiles", "codex-chatgpt-web-dev.yaml"),
       path.join(coreHome, "tunnel", "profiles", "codex-chatgpt-web-dev-zero-risk.yaml"),
     ]);
+    if (!this.isExternalProvider()) {
+      paths.add(path.join(this.codexHome, "config.toml"));
+      paths.add(path.join(this.codexHome, "models_cache.json"));
+    }
     if (snapshot.owner === "external" && this.platform === "darwin") {
       paths.add(path.join(this.launchAgentsDir, "io.github.codex-chatgpt-web.daemon.plist"));
       paths.add(path.join(this.launchAgentsDir, "io.github.codex-chatgpt-web.tunnel.plist"));
@@ -838,6 +871,9 @@ class RuntimeHost {
   }
 
   async restoreBridgeRouteWithinOperation(operationName) {
+    if (this.isExternalProvider()) {
+      return { installed: false, active: false, errors: [], skipped: true, reason: "external-provider" };
+    }
     const current = await this.bridgeStatus(operationName);
     if (!current.installed || !current.active) return current;
     const disconnected = await this.run(operationName, ["route", "disconnect"], {
@@ -858,6 +894,9 @@ class RuntimeHost {
   }
 
   async restoreBridgeRoute(operationName = "bridge-route-restore") {
+    if (this.isExternalProvider()) {
+      return { installed: false, active: false, errors: [], skipped: true, reason: "external-provider" };
+    }
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
     this.lifecycleOperation = operationName;
     try {
@@ -869,6 +908,9 @@ class RuntimeHost {
 
   async connectBridgeRoute() {
     this.assertProductionProfile("Codex bridge routing");
+    if (this.isExternalProvider()) {
+      return { installed: false, active: false, changed: false, errors: [], skipped: true, reason: "external-provider" };
+    }
     const name = "bridge-connect";
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
     this.lifecycleOperation = name;
@@ -963,13 +1005,17 @@ class RuntimeHost {
         const result = await this.run(name, ["uninstall", "--yes", "--launcher-control"], {
           embedded: true,
           env: this.launcherControlEnvironment(),
-          message: "Restoring the previous Codex route",
+          message: this.isExternalProvider()
+            ? "Removing the local ChatGPT Web provider without changing Codex routing"
+            : "Restoring the previous Codex route",
           successMessage: "Codex Web GPT integration removed",
           timeoutMs: UNINSTALL_TIMEOUT_MS,
         });
-        const verified = await this.bridgeStatus(name);
-        if (verified.installed || verified.active) {
-          throw new Error("Codex integration removal did not persist in the active config");
+        if (!this.isExternalProvider()) {
+          const verified = await this.bridgeStatus(name);
+          if (verified.installed || verified.active) {
+            throw new Error("Codex integration removal did not persist in the active config");
+          }
         }
         return result;
       } catch (error) {
@@ -1008,11 +1054,10 @@ class RuntimeHost {
         mode: interactionMode,
         refreshCapabilities: interactionMode === "automatic",
       }),
-      "--replace-codex-route",
       "--acknowledge-unofficial",
       "--restart-service",
     ];
-    const result = await this.runSetup("core-setup", args, {
+    const result = await this.runSetup("core-setup", this.productionSetupArgs(args), {
       message: "Installing ChatGPT Web models into Codex",
       successMessage: "Codex integration installed",
       timeoutMs: CORE_SETUP_TIMEOUT_MS,
@@ -1082,13 +1127,12 @@ class RuntimeHost {
       "--browser-host-descriptor",
       this.browserDescriptorPath,
       ...this.browserInteractionArgs(),
-      "--replace-codex-route",
       "--acknowledge-unofficial",
       "--restart-service",
       contextFlag,
     ];
     if (current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
-    const result = await this.runSetup("bigger-context", args, {
+    const result = await this.runSetup("bigger-context", this.productionSetupArgs(args), {
       message: enabled ? "Enabling Bigger Context" : "Disabling Bigger Context",
       successMessage: enabled ? "Bigger Context enabled; restart Codex" : "Standard context restored; restart Codex",
       timeoutMs: CORE_SETUP_TIMEOUT_MS,
@@ -1114,7 +1158,7 @@ class RuntimeHost {
       "--acknowledge-unofficial",
       "--standard-context",
       profileFlag,
-      ...(this.launcherProfile === "production" ? ["--replace-codex-route", "--restart-service"] : []),
+      ...(this.launcherProfile === "production" ? ["--restart-service"] : []),
     ];
     if (current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
     const options = {
@@ -1126,7 +1170,7 @@ class RuntimeHost {
     };
     const result = this.launcherProfile === "development"
       ? await this.runDevSetup("zero-risk-pro", args, options)
-      : await this.runSetup("zero-risk-pro", args, options);
+      : await this.runSetup("zero-risk-pro", this.productionSetupArgs(args), options);
     return { ...result, mode: current.mode, enabled: enabled === true };
   }
 
@@ -1172,7 +1216,7 @@ class RuntimeHost {
       "--acknowledge-unofficial",
       "--restart-service",
     ];
-    const result = await this.runSetup("runtime-upgrade", args, {
+    const result = await this.runSetup("runtime-upgrade", this.productionSetupArgs(args, { replaceCodexRoute: false }), {
       message: tunnelProfileMigrationRequired
         ? `Separating ${interactionMode === "manual" ? "Zero Risk" : "Automatic"} MCP credentials`
         : `Upgrading launcher runtime from ${existing.config.releaseVersion} to ${currentVersion}`,
@@ -1208,11 +1252,10 @@ class RuntimeHost {
       "--browser-host-descriptor",
       this.browserDescriptorPath,
       ...this.browserInteractionArgs({ mode: targetMode }),
-      "--replace-codex-route",
     ];
     if (reuseSavedCredentials) {
       args.push("--acknowledge-unofficial", "--restart-service");
-      return this.runSetup("mcp-setup", args, {
+      return this.runSetup("mcp-setup", this.productionSetupArgs(args), {
         message: "Reconnecting the native Codex harness with saved tunnel credentials",
         successMessage: "Local MCP tools are ready",
         timeoutMs: MCP_SETUP_TIMEOUT_MS,
@@ -1232,7 +1275,7 @@ class RuntimeHost {
       "--acknowledge-unofficial",
       "--restart-service",
     );
-    return this.runSetup("mcp-setup", args, {
+    return this.runSetup("mcp-setup", this.productionSetupArgs(args), {
       message: "Connecting the native Codex harness",
       successMessage: "Local MCP tools are ready",
       timeoutMs: MCP_SETUP_TIMEOUT_MS,
@@ -1302,7 +1345,7 @@ class RuntimeHost {
       this.browserDescriptorPath,
       ...this.browserInteractionArgs({ mode, refreshCapabilities: true }),
       "--acknowledge-unofficial",
-      ...(this.launcherProfile === "production" ? ["--replace-codex-route", "--restart-service"] : []),
+      ...(this.launcherProfile === "production" ? ["--restart-service"] : []),
       mode === "automatic" && current.config?.experimentalBiggerContext === true
         ? "--bigger-context"
         : "--standard-context",
@@ -1320,7 +1363,7 @@ class RuntimeHost {
     };
     const result = this.launcherProfile === "development"
       ? await this.runDevSetup("browser-interaction-mode", args, options)
-      : await this.runSetup("browser-interaction-mode", args, options);
+      : await this.runSetup("browser-interaction-mode", this.productionSetupArgs(args), options);
     return { configured: true, mode, stdout: result.stdout };
   }
 

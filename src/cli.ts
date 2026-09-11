@@ -6,7 +6,14 @@ import { existsSync, rmSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { stdin, stdout } from "node:process";
 import { captureSystemBrowserLoginToFile, checkBrowserEngine, loginToChatGpt } from "./browser-login";
-import { defaultConfig, getConfigDir, getConfigPath, loadConfig, loadConfigForSetup } from "./config";
+import {
+  defaultConfig,
+  getConfigDir,
+  getConfigPath,
+  isExternalProviderMode,
+  loadConfig,
+  loadConfigForSetup,
+} from "./config";
 import {
   inspectLauncherBrowserHost,
   inspectLauncherBrowserHostLiveness,
@@ -25,7 +32,7 @@ import { runChatGptMcpMain } from "./adapters/chatgpt-web/mcp-main";
 import { runCommand } from "./process";
 import { startServer } from "./server";
 import { assertServiceIdle, cancelActiveTurns, getServiceStatus, installService, interruptActiveTurn, restartService, startService, stopService, uninstallService } from "./service";
-import { existingFullSetupCredentials, preflightSetup, setup, type SetupOptions } from "./setup";
+import { existingFullSetupCredentials, formatSetupReport, preflightSetup, setup, type SetupOptions } from "./setup";
 import { installRuntimeKeyBytes, managedRuntimeKeyPath, stopTunnel, tunnelStatus, waitForTunnelReady } from "./tunnel";
 import { getTunnelServiceStatus, restartTunnelService, startTunnelService, stopTunnelService, uninstallTunnelService } from "./tunnel-service";
 import { VERSION } from "./version";
@@ -73,6 +80,7 @@ Setup options:
   --tunnel-id ID               Existing OpenAI tunnel id (full mode)
   --runtime-key-file PATH      File containing a Tunnels Read+Use runtime key
   --replace-codex-route        Reversibly replace existing Responses or Voice route settings
+  --integration-mode MODE      direct (default) or external-provider (OpenCodex owns routing)
   --subagent-protocol MODE     compatibility-v1 (default) or native (advanced)
   --restart-service            Explicitly restart this project's daemon after an update
   --login                      Refresh the stored ChatGPT login even if one exists
@@ -269,6 +277,13 @@ async function setupCommand(args: string[]): Promise<void> {
     mode: full ? "full" : "browser-only",
     ...(portRaw ? { port: Number(portRaw) } : {}),
   };
+  const integrationMode = takeOption(args, "--integration-mode");
+  if (integrationMode !== undefined) {
+    if (integrationMode !== "direct" && integrationMode !== "external-provider") {
+      throw new Error("--integration-mode must be direct or external-provider");
+    }
+    options.integrationMode = integrationMode;
+  }
   const automaticBrowserInteraction = takeFlag(args, "--automatic-browser-interaction");
   const manualBrowserInteraction = takeFlag(args, "--zero-risk-browser-interaction");
   if (automaticBrowserInteraction && manualBrowserInteraction) {
@@ -348,13 +363,7 @@ async function setupCommand(args: string[]): Promise<void> {
   }
 
   const result = await setup(options);
-  stdout.write(`Setup complete: ${result.mode}\n`);
-  stdout.write(`Config: ${result.configPath}\n`);
-  if (result.connectorSetupRequired) {
-    stdout.write("One account-level step remains: attach the tunnel to the ChatGPT connector named in config.\n");
-    stdout.write("Open: https://chatgpt.com/#settings/Plugins\n");
-  }
-  stdout.write("Restart the Codex app once so its native model catalog refreshes through the installed route.\n");
+  stdout.write(formatSetupReport(result));
 }
 
 async function doctorCommand(args: string[]): Promise<void> {
@@ -368,10 +377,16 @@ async function doctorCommand(args: string[]): Promise<void> {
 async function routeCommand(args: string[]): Promise<void> {
   const action = args.shift() ?? "status";
   assertNoArgs(args);
+  const config = existsSync(getConfigPath()) ? loadConfig() : undefined;
+  if (action !== "status" && config && isExternalProviderMode(config)) {
+    throw new Error("Codex routing is managed by OpenCodex in external-provider mode; route mutations are disabled");
+  }
   const result = action === "status"
     ? (() => {
         const status = inspectCodexIntegration();
         return {
+          integrationMode: config?.integrationMode ?? "direct",
+          routingOwner: config && isExternalProviderMode(config) ? "external-router" : "codex-chatgpt-web",
           installed: status.installed,
           active: status.active,
           ...(status.routeUrl ? { routeUrl: status.routeUrl } : {}),
@@ -397,6 +412,8 @@ async function subagentsCommand(args: string[]): Promise<void> {
   if (action === "status") {
     const integration = inspectCodexIntegration();
     stdout.write(`${JSON.stringify({
+      integrationMode: config.integrationMode,
+      routingOwner: isExternalProviderMode(config) ? "external-router" : "codex-chatgpt-web",
       protocol: readCodexSubagentProtocol(config.subagentProtocol),
       installed: integration.installed,
       active: integration.active,
@@ -405,6 +422,9 @@ async function subagentsCommand(args: string[]): Promise<void> {
   }
   if (action !== "compatibility-v1" && action !== "native") {
     throw new Error("Subagent protocol must be one of: status, compatibility-v1, native");
+  }
+  if (isExternalProviderMode(config)) {
+    throw new Error("Codex feature overrides are owned by OpenCodex in external-provider mode; subagent protocol mutations are disabled");
   }
   const journal = setCodexSubagentProtocol(config, action);
   stdout.write(`${JSON.stringify({
@@ -531,7 +551,7 @@ async function uninstallCommand(args: string[]): Promise<void> {
     stopTunnel(config);
   }
   if (config && process.platform === "darwin" && !launcherRuntimeStopped) await uninstallService(config);
-  uninstallCodexIntegration();
+  uninstallCodexIntegration(config);
   if (!keepData) rmSync(getConfigDir(), { recursive: true, force: true });
   stdout.write(keepData ? "Uninstalled; private application data was preserved.\n" : "Uninstalled and removed private application data.\n");
 }

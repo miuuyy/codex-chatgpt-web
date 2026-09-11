@@ -35,6 +35,7 @@ const {
   nextSessionRefreshReminderAt,
   validateSidebarState,
 } = require("./state.cjs");
+const { isExternalProviderMode, resolveIntegrationMode } = require("./integration-mode.cjs");
 const {
   MIN_WINDOW_BOUNDS,
   readWindowState,
@@ -160,6 +161,9 @@ function startCatalogVerificationMonitor({ logger, stateStore }) {
 }
 
 async function restoreCodexRouteAfterRuntimeFailure({ logger, stateStore }) {
+  if (isExternalProviderMode(stateStore.read()) || runtimeHost?.isExternalProvider?.()) {
+    return { restored: false, skipped: true, reason: "external-provider" };
+  }
   try {
     const route = await runtimeHost.restoreBridgeRoute("runtime-start-fail-safe");
     if (!route.installed || route.active) return { restored: false };
@@ -437,6 +441,17 @@ function registerIpc({ logger, stateStore }) {
       manual: "Codex Zero Risk",
     },
     mcpCredentialsConfigured: runtimeHost?.mcpCredentialsConfigured() ?? false,
+    integrationMode: resolveIntegrationMode({
+      ...stateStore.read(),
+      ...runtimeHost.runtimeConfigSnapshot().config,
+    }),
+    routingOwner: (runtimeHost?.isExternalProvider?.() || isExternalProviderMode(stateStore.read()))
+      ? "external-router"
+      : "codex-chatgpt-web",
+    providerBaseUrl: (() => {
+      const config = runtimeHost.runtimeConfigSnapshot().config;
+      return config?.host && config?.port ? `http://${config.host}:${config.port}/v1` : null;
+    })(),
     logs: logger.recent(),
     urls: { github: GITHUB_URL, x: X_URL, connectors: CONNECTORS_URL, tunnels: TUNNELS_URL, keys: KEYS_URL },
     platform: process.platform,
@@ -466,6 +481,7 @@ function registerIpc({ logger, stateStore }) {
     const next = stateStore.update({
       language: validateLanguage(language),
       browserInteractionMode: validateBrowserInteractionMode(rawInteractionMode),
+      integrationMode: current.integrationMode === "external-provider" ? "external-provider" : "direct",
       onboardingComplete: true,
     });
     updateTrayMenu(next.language);
@@ -683,11 +699,14 @@ function registerIpc({ logger, stateStore }) {
       );
     }
     const result = IS_DEV_PROFILE ? await runtimeHost.setupDevCore() : await runtimeHost.setupCore();
+    const runtimeSnapshot = runtimeHost.runtimeConfigSnapshot();
+    const integrationMode = resolveIntegrationMode(runtimeSnapshot.config ?? stateStore.read());
     stateStore.update({
+      integrationMode,
       coreSetupComplete: true,
-      codexCatalogVerified: IS_DEV_PROFILE ? true : false,
-      codexRestartRequired: IS_DEV_PROFILE ? false : true,
-      zeroRiskProEnabled: runtimeHost.runtimeConfigSnapshot().config?.zeroRiskProEnabled === true,
+      codexCatalogVerified: IS_DEV_PROFILE || integrationMode === "external-provider",
+      codexRestartRequired: IS_DEV_PROFILE || integrationMode === "external-provider" ? false : true,
+      zeroRiskProEnabled: runtimeSnapshot.config?.zeroRiskProEnabled === true,
       ...(result.mode === "full" ? {
         mcpRuntimeInstalled: true,
         mcpSetupComplete: false,
@@ -704,7 +723,7 @@ function registerIpc({ logger, stateStore }) {
       });
     });
     if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
-    return { ok: true, stdout: result.stdout, restartRequired: !IS_DEV_PROFILE };
+    return { ok: true, stdout: result.stdout, restartRequired: !IS_DEV_PROFILE && integrationMode !== "external-provider" };
   });
   handle("launcher:setup-mcp", async (_event, input) => {
     const currentMode = stateStore.read().browserInteractionMode;
@@ -997,6 +1016,7 @@ async function start() {
     publishOperation,
     supervisor: runtimeSupervisor,
     getBrowserInteractionMode: () => stateStore.read().browserInteractionMode,
+    getIntegrationMode: () => resolveIntegrationMode(stateStore.read()),
   });
   const configuredInteractionMode = runtimeHost.runtimeConfigSnapshot().config?.browserInteractionMode;
   if ((configuredInteractionMode === "automatic" || configuredInteractionMode === "manual")
@@ -1153,21 +1173,27 @@ async function start() {
       const enabled = configuredRuntime.config?.experimentalBiggerContext === true;
       const zeroRiskProEnabled = configuredRuntime.config?.zeroRiskProEnabled === true;
       const saved = stateStore.read();
+      const integrationMode = resolveIntegrationMode({ ...saved, ...configuredRuntime.config });
       if (saved.experimentalBiggerContext !== enabled
-        || saved.zeroRiskProEnabled !== zeroRiskProEnabled) {
-        const state = stateStore.update({ experimentalBiggerContext: enabled, zeroRiskProEnabled });
+        || saved.zeroRiskProEnabled !== zeroRiskProEnabled
+        || saved.integrationMode !== integrationMode) {
+        const state = stateStore.update({ experimentalBiggerContext: enabled, zeroRiskProEnabled, integrationMode });
         send("launcher:state-changed", state);
       }
     }
     const runtime = await runtimeSupervisor.startIfConfigured();
     if (runtime.status !== "ready") return runtime;
-    const route = await runtimeHost.connectBridgeRoute();
+    const route = runtimeHost.isExternalProvider()
+      ? { changed: false, skipped: true, reason: "external-provider" }
+      : await runtimeHost.connectBridgeRoute();
     return { ...runtime, bridgeRouteChanged: route.changed === true };
   })().then(async (runtime) => {
     if (runtime.status === "ready") {
       const config = runtimeSupervisor.readConfig();
       const current = stateStore.read();
+      const integrationMode = resolveIntegrationMode({ ...current, ...config });
       const patch = {
+        integrationMode,
         coreSetupComplete: true,
         mcpRuntimeInstalled: config.mode === "full",
         experimentalBiggerContext: config.experimentalBiggerContext === true,
@@ -1175,6 +1201,9 @@ async function start() {
         ...(runtime.bridgeRouteChanged ? {
           codexCatalogVerified: false,
           codexRestartRequired: true,
+        } : integrationMode === "external-provider" ? {
+          codexCatalogVerified: true,
+          codexRestartRequired: false,
         } : {}),
         ...(config.mode === "browser-only" ? {
           mcpSetupComplete: false,

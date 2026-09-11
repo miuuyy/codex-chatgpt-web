@@ -25,6 +25,7 @@ test("launcher state persists onboarding, language, and autostart atomically", (
       keepRunningOnClose: true,
       showBrowserDuringTurns: true,
       browserInteractionMode: "automatic",
+      integrationMode: "direct",
       experimentalBiggerContext: false,
       zeroRiskProEnabled: false,
       browserSmokePassed: false,
@@ -51,6 +52,7 @@ test("launcher state persists onboarding, language, and autostart atomically", (
       keepRunningOnClose: false,
       showBrowserDuringTurns: true,
       browserInteractionMode: "automatic",
+      integrationMode: "direct",
       experimentalBiggerContext: false,
       zeroRiskProEnabled: false,
       browserSmokePassed: true,
@@ -116,6 +118,7 @@ test("persisted sidebar corruption is repaired without changing the rest of laun
       keepRunningOnClose: true,
       showBrowserDuringTurns: true,
       browserInteractionMode: "automatic",
+      integrationMode: "direct",
       experimentalBiggerContext: false,
       zeroRiskProEnabled: false,
       browserSmokePassed: false,
@@ -125,6 +128,25 @@ test("persisted sidebar corruption is repaired without changing the rest of laun
       mcpGuideStep: 0,
       sessionRefreshReminderAt: null,
     });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an explicit external-provider intent survives a missing bridgeEnabled field", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-external-state-"));
+  const file = path.join(root, "state.json");
+  try {
+    fs.writeFileSync(file, JSON.stringify({
+      version: 1,
+      onboardingComplete: true,
+      coreSetupComplete: true,
+      codexIntegrationMode: "external-provider",
+    }));
+    const state = createStateStore(file).read();
+    assert.equal(state.integrationMode, "external-provider");
+    assert.equal("bridgeEnabled" in state, false);
+    assert.equal(state.coreSetupComplete, true);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

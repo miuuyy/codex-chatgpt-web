@@ -1108,6 +1108,8 @@ function SetupSurface({
 }) {
   const [localBusy, setLocalBusy] = useState(false);
   const manualInteraction = snapshot.state.browserInteractionMode === "manual";
+  const externalProvider = snapshot.state.integrationMode === "external-provider"
+    || snapshot.routingOwner === "external-router";
   const busy = localBusy
     || operation?.status === "running"
     || (!manualInteraction && (
@@ -1181,13 +1183,15 @@ function SetupSurface({
           action={snapshot.state.coreSetupComplete
             ? devProfile ? copy.devReinstall : copy.reinstall
             : devProfile ? copy.devInstall : copy.install}
-          complete={snapshot.state.codexCatalogVerified === true}
-          description={devProfile ? copy.devStepInstallBody : copy.stepInstallBody}
+          complete={snapshot.state.codexCatalogVerified === true || (externalProvider && snapshot.state.coreSetupComplete === true)}
+          description={devProfile
+            ? copy.devStepInstallBody
+            : externalProvider ? copy.stepInstallExternalBody : copy.stepInstallBody}
           disabled={busy || (!snapshot.smokePassed && snapshot.state.coreSetupComplete !== true)}
           index={manualInteraction ? 1 : 3}
           onAction={install}
           repeatable
-          title={devProfile ? copy.devStepInstall : copy.stepInstall}
+          title={devProfile ? copy.devStepInstall : externalProvider ? copy.stepInstallExternal : copy.stepInstall}
           titleAction={manualInteraction ? (
             <ZeroRiskModelMenu
               busy={busy || snapshot.state.coreSetupComplete !== true}
@@ -1201,7 +1205,7 @@ function SetupSurface({
 
       {!devProfile && snapshot.state.codexRestartRequired ? (
         <NoticeRow icon="alert" tone="warning">
-          {copy.restartCodex}
+          {externalProvider ? copy.restartOpenCodex : copy.restartCodex}
         </NoticeRow>
       ) : null}
 
@@ -1596,6 +1600,8 @@ function SettingsSurface({
   const [busy, setBusy] = useState(false);
   const [turnsCancelled, setTurnsCancelled] = useState(false);
   const [integrationRemoved, setIntegrationRemoved] = useState(false);
+  const externalProvider = snapshot.state.integrationMode === "external-provider"
+    || snapshot.routingOwner === "external-router";
 
   const updateLanguage = async (next: Language) => {
     try {
@@ -1684,6 +1690,11 @@ function SettingsSurface({
           mode={snapshot.state.browserInteractionMode}
           onChange={(mode) => void setInteractionMode(mode)}
         />
+        {externalProvider ? (
+          <SettingRow body={copy.routingOwnerExternal} label={copy.integrationExternal}>
+            <span>{snapshot.providerBaseUrl || copy.providerAddress}</span>
+          </SettingRow>
+        ) : null}
         <SettingRow body={devProfile ? copy.devKeepRunningBody : copy.keepRunningOnCloseBody} label={copy.keepRunningOnClose}>
           <Switch
             checked={snapshot.state.keepRunningOnClose}
@@ -1722,7 +1733,7 @@ function SettingsSurface({
 
       {!devProfile && snapshot.state.codexRestartRequired ? (
         <NoticeRow icon="alert" tone="warning">
-          {copy.restartCodex}
+          {externalProvider ? copy.restartOpenCodex : copy.restartCodex}
         </NoticeRow>
       ) : null}
 

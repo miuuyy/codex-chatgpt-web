@@ -120,6 +120,11 @@ This source path requires Bun 1.4.0. The command installs locked dependencies an
 | **Full harness (With Automation)** | Free/Go: Luna; Plus: Instant–High; Pro: adds Extra High and Pro | Yes for every listed effort, including Pro | OpenAI tunnel + ChatGPT connector |
 | **Zero Risk** | Choose the ChatGPT model and effort manually; optional Pro-sized context | Yes; the full turn-bound Codex harness remains available | Separate OpenAI tunnel + `Codex Zero Risk` connector; paste and send manually |
 
+**Direct vs OpenCodex provider.** Direct mode is the default: this project still owns Codex
+`openai_base_url`. `--integration-mode external-provider` starts the same Responses server and
+browser session, but never writes Codex routing. Register the loopback `/v1` URL in OpenCodex,
+keep Codex pointed at OpenCodex, and choose a `chatgpt-web/...` model there.
+
 Each automatic picker entry has one fixed ChatGPT mode. Codex still displays its built-in Effort and
 Speed rows, but changing them cannot silently change the selected browser model. In automatic Full
 mode every available effort receives the same turn-bound MCP capability. Pro has no separate
@@ -164,6 +169,18 @@ that option clicks **Allow once**, never a permanent grant.
 Use **Activity** for safe local diagnostics and **Settings → Run doctor** for end-to-end health.
 Settings can also cancel a retained browser turn or remove the Codex integration before uninstall.
 Set `CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1` only when every browser checkpoint needs a screenshot.
+
+To run as an independent OpenCodex provider from source, use an isolated home so this process never
+touches your live Codex or OpenCodex files:
+
+```bash
+codex-chatgpt-web setup --browser-only --integration-mode external-provider --acknowledge-unofficial
+codex-chatgpt-web serve
+```
+
+Then add a custom OpenCodex provider that points at `http://127.0.0.1:17841/v1` with adapter
+`openai-responses`, `--allow-private-network`, and live model discovery. Do not set Codex
+`openai_base_url` to this bridge. See [OpenCodex provider](docs/opencodex-provider.md).
 
 New installs use **Compatibility V1** for cross-backend subagents. **Native** preserves Codex's own
 feature settings and enables plaintext Web-to-Web V2 delegation. Restart Codex and start a new task

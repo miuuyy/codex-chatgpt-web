@@ -92,6 +92,18 @@ function itemTurnId(value: unknown): string | undefined {
   return typeof turnId === "string" ? turnId : undefined;
 }
 
+function itemHasTurnProvenance(value: unknown): boolean {
+  const item = record(value);
+  if (!item) return false;
+  if (itemTurnId(item)) return true;
+  return typeof item.id === "string" && item.id.length > 0;
+}
+
+function inputItems(parsed: CodexParsedRequest): unknown[] {
+  const body = record(parsed._rawBody);
+  return Array.isArray(body?.input) ? body.input : [];
+}
+
 function rawMessageText(value: Record<string, unknown>): string {
   if (typeof value.content === "string") return value.content;
   if (!Array.isArray(value.content)) return "";
@@ -171,9 +183,11 @@ function contextualUserMessage(value: Record<string, unknown>): boolean {
 function isUserOrParentInstruction(
   item: Record<string, unknown> | undefined,
   metadata?: Record<string, unknown>,
+  options: { allowMissingAgentMessageId?: boolean } = {},
 ): item is Record<string, unknown> {
   if (item?.type === "message" && item.role === "user") return !contextualUserMessage(item);
-  if (item?.type !== "agent_message" || typeof item.id !== "string" || !item.id
+  if (item?.type !== "agent_message"
+    || (!options.allowMissingAgentMessageId && (typeof item.id !== "string" || !item.id))
     || metadata?.subagent_kind !== "thread_spawn"
     || (metadata.request_kind !== "turn" && metadata.request_kind !== "compaction")
     || typeof metadata.thread_id !== "string" || !metadata.thread_id
@@ -220,7 +234,8 @@ export function extractChatGptTurnUserRevision(parsed: CodexParsedRequest): unkn
   const identity = extractChatGptTurnIdentity(parsed);
   const turnId = identity.turnId;
   if (!turnId) throw new Error("ChatGPT web requires native Codex turn_id metadata for browser-session replay");
-  const revision = latestChatGptTurnUserRevision(parsed, turnId);
+  const revision = latestChatGptTurnUserRevision(parsed, turnId)
+    ?? strippedRoutedUserRevision(parsed, turnId);
   if (!revision) throw new Error("ChatGPT web requires a current-turn user message for browser-session replay");
   // A pre-turn compact may summarize an earlier user message before native Codex continues
   // under its new turn id without adding a new human message. Accept only our exact completed
@@ -234,14 +249,44 @@ export function extractChatGptTurnUserRevision(parsed: CodexParsedRequest): unkn
 }
 
 function latestChatGptTurnUserRevision(parsed: CodexParsedRequest, expectedTurnId?: string): ChatGptTurnUserRevision | undefined {
-  const body = record(parsed._rawBody);
-  const input = Array.isArray(body?.input) ? body.input : [];
+  const input = inputItems(parsed);
   const metadata = clientTurnMetadata(parsed);
   for (let index = input.length - 1; index >= 0; index -= 1) {
     const revision = userRevision(input[index], expectedTurnId, metadata);
     if (revision) return revision;
   }
   return undefined;
+}
+
+/**
+ * OpenCodex's openai-responses adapter strips Codex-private item ids and
+ * internal_chat_message_metadata_passthrough before a non-canonical destination.
+ * When every input item lost that provenance, bind remaining human instructions
+ * to the native turn already proven by client_metadata, preserving order so
+ * later steering can prove it supersedes the in-flight instruction.
+ */
+function strippedRoutedUserRevisions(
+  parsed: CodexParsedRequest,
+  expectedTurnId: string,
+): ChatGptTurnUserRevision[] {
+  const input = inputItems(parsed);
+  if (input.some(itemHasTurnProvenance)) return [];
+  const metadata = clientTurnMetadata(parsed);
+  const revisions: ChatGptTurnUserRevision[] = [];
+  for (const value of input) {
+    const item = record(value);
+    if (!isUserOrParentInstruction(item, metadata, { allowMissingAgentMessageId: true })) continue;
+    if (item.type === "message" && isTurnAbortedNotice(item)) continue;
+    revisions.push({ content: item.content, turnId: expectedTurnId });
+  }
+  return revisions;
+}
+
+function strippedRoutedUserRevision(
+  parsed: CodexParsedRequest,
+  expectedTurnId: string,
+): ChatGptTurnUserRevision | undefined {
+  return strippedRoutedUserRevisions(parsed, expectedTurnId).at(-1);
 }
 
 function userRevision(value: unknown, expectedTurnId?: string, metadata?: Record<string, unknown>): ChatGptTurnUserRevision | undefined {
@@ -259,13 +304,15 @@ function userRevision(value: unknown, expectedTurnId?: string, metadata?: Record
 
 /** Canonical instruction order distinguishes new steering from a delayed older request. */
 export function chatGptTurnUserRevisionHistory(parsed: CodexParsedRequest): ChatGptTurnUserRevision[] {
-  const body = record(parsed._rawBody);
+  const input = inputItems(parsed);
   const turnId = extractChatGptTurnIdentity(parsed).turnId;
   const metadata = clientTurnMetadata(parsed);
-  return (Array.isArray(body?.input) ? body.input : []).flatMap(value => {
+  const revisions = input.flatMap(value => {
     const revision = userRevision(value, turnId, metadata);
     return revision ? [revision] : [];
   });
+  if (revisions.length > 0 || !turnId) return revisions;
+  return strippedRoutedUserRevisions(parsed, turnId);
 }
 
 /** The human instruction summarized by a remote compaction request belongs to an earlier turn. */
@@ -465,6 +512,7 @@ function canonicalMetadataEnvironmentBeforeUser(
   userIndex: number,
   metadata: Record<string, unknown> | undefined,
   requireMetadataBoundRoots = false,
+  instructionOptions: { allowMissingAgentMessageId?: boolean } = {},
 ): string | undefined {
   if (userIndex <= 0 || !metadata) return undefined;
   const metadataTurnId = typeof metadata.turn_id === "string" ? metadata.turn_id.trim() : "";
@@ -472,7 +520,9 @@ function canonicalMetadataEnvironmentBeforeUser(
   if (!metadataTurnId || !metadataSandbox) return undefined;
 
   const user = record(input[userIndex]);
-  if (!isUserOrParentInstruction(user, metadata) || typeof user.id !== "string" || !user.id) return undefined;
+  if (!isUserOrParentInstruction(user, metadata, instructionOptions)) return undefined;
+  const userHasId = typeof user.id === "string" && user.id.length > 0;
+  if (!userHasId && requireMetadataBoundRoots) return undefined;
   const userTurnId = itemTurnId(user);
   if (userTurnId !== undefined && userTurnId !== metadataTurnId) return undefined;
 
@@ -481,11 +531,15 @@ function canonicalMetadataEnvironmentBeforeUser(
   while (candidate?.type === "message" && candidate.role === "developer") {
     const developerTurnId = itemTurnId(candidate);
     const serverOwnedId = typeof candidate.id === "string" && candidate.id.length > 0;
-    if (developerTurnId === undefined ? !serverOwnedId : developerTurnId !== metadataTurnId) return undefined;
+    if (developerTurnId === undefined
+      ? requireMetadataBoundRoots && !serverOwnedId
+      : developerTurnId !== metadataTurnId) return undefined;
     candidateIndex -= 1;
     candidate = record(input[candidateIndex]);
   }
-  if (candidate?.type !== "message" || candidate.role !== "user" || typeof candidate.id !== "string" || !candidate.id) return undefined;
+  if (candidate?.type !== "message" || candidate.role !== "user") return undefined;
+  const candidateHasId = typeof candidate.id === "string" && candidate.id.length > 0;
+  if (!candidateHasId && requireMetadataBoundRoots) return undefined;
   const candidateTurnId = itemTurnId(candidate);
   if (candidateTurnId !== undefined && candidateTurnId !== metadataTurnId) return undefined;
 
@@ -516,14 +570,49 @@ function hasAssistantOutputBetween(input: unknown[], startIndex: number, endInde
   return false;
 }
 
+function strippedRoutedEnvironmentBeforeUser(
+  input: unknown[],
+  userIndex: number,
+  metadata: Record<string, unknown> | undefined,
+): string | undefined {
+  if (userIndex <= 0 || input.some(itemHasTurnProvenance)) return undefined;
+  const user = record(input[userIndex]);
+  if (!isUserOrParentInstruction(user, metadata, { allowMissingAgentMessageId: true })) return undefined;
+
+  let candidateIndex = userIndex - 1;
+  let candidate = record(input[candidateIndex]);
+  while (candidate?.type === "message" && candidate.role === "developer") {
+    if (itemTurnId(candidate)) return undefined;
+    candidateIndex -= 1;
+    candidate = record(input[candidateIndex]);
+  }
+  if (candidate?.type !== "message" || candidate.role !== "user") return undefined;
+
+  const content = Array.isArray(candidate.content) ? candidate.content : [];
+  for (const part of content) {
+    const text = record(part)?.text;
+    if (typeof text !== "string") continue;
+    const trimmed = text.trim();
+    if (!/^<environment_context>[\s\S]*<\/environment_context>$/.test(trimmed)) continue;
+    if (metadata && sandboxTypeFromMetadata(canonicalSandboxMetadata(metadata))) {
+      if (!environmentMatchesCanonicalMetadata(trimmed, metadata, false)) continue;
+    } else if (!sandboxTypeFromEnvironment(trimmed)) {
+      continue;
+    }
+    return trimmed;
+  }
+  return undefined;
+}
+
 function rawEnvironmentText(parsed: CodexParsedRequest): string | undefined {
   const body = record(parsed._rawBody);
   const input = Array.isArray(body?.input) ? body.input : [];
   const metadata = clientTurnMetadata(parsed);
   let activeUserIndex = -1;
+  const instructionOptions = input.some(itemHasTurnProvenance) ? {} : { allowMissingAgentMessageId: true };
   for (let index = input.length - 1; index >= 0; index -= 1) {
     const item = record(input[index]);
-    if (isUserOrParentInstruction(item, metadata)) {
+    if (isUserOrParentInstruction(item, metadata, instructionOptions)) {
       activeUserIndex = index;
       break;
     }
@@ -537,8 +626,10 @@ function rawEnvironmentText(parsed: CodexParsedRequest): string | undefined {
   );
   if (currentByTurn) return currentByTurn;
 
-  const current = canonicalMetadataEnvironmentBeforeUser(input, activeUserIndex, metadata);
+  const current = canonicalMetadataEnvironmentBeforeUser(input, activeUserIndex, metadata, false, instructionOptions);
   if (current) return current;
+  const stripped = strippedRoutedEnvironmentBeforeUser(input, activeUserIndex, metadata);
+  if (stripped) return stripped;
 
   // A skill invocation appends another server-owned user item after the real instruction. Recover
   // the earlier current-turn environment/prompt pair only through canonical metadata, and bind all
@@ -549,7 +640,7 @@ function rawEnvironmentText(parsed: CodexParsedRequest): string | undefined {
     // Replayed untagged history is not a same-turn skill invocation. Only explicit current-turn
     // provenance may cross an assistant response; otherwise resolve from the native rollout.
     if (crossedAssistantOutput && itemTurnId(input[index]) !== turnId) continue;
-    const sameTurn = canonicalMetadataEnvironmentBeforeUser(input, index, metadata, true);
+    const sameTurn = canonicalMetadataEnvironmentBeforeUser(input, index, metadata, true, instructionOptions);
     if (sameTurn) return sameTurn;
   }
 

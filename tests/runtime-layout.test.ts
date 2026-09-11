@@ -99,6 +99,7 @@ test("default setup uses the fixed production connector identities", () => {
   expect(defaultConfig("full").subagentProtocol).toBe("compatibility-v1");
   expect(defaultConfig("full").browserInteractionMode).toBe("automatic");
   expect(defaultConfig("full").zeroRiskProEnabled).toBe(false);
+  expect(defaultConfig("full").integrationMode).toBe("direct");
 });
 
 test.each([

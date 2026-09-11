@@ -249,6 +249,8 @@ test("saved ChatGPT authentication is refreshed before setup is presented", () =
   assert.ok(upgrade > refreshBarrier, "runtime upgrade must not inspect the browser before refresh settles");
   assert.ok(runtimeStart > upgrade, "configured runtime must start after any upgrade");
   assert.ok(routeConnect > runtimeStart, "Codex route must connect only after the runtime is healthy");
+  assert.match(electronMain, /runtimeHost.isExternalProvider\(\)/);
+  assert.match(electronMain, /reason: "external-provider"/);
   assert.match(appSource, /browser\?\.status === "loading" \? copy\.checkingSignIn/);
 });
 

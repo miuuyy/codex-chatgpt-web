@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const { writePrivateFileAtomic } = require("./atomic-file.cjs");
+const { resolveIntegrationMode } = require("./integration-mode.cjs");
 const SIDEBAR_MIN_WIDTH = 240;
 const SIDEBAR_MAX_WIDTH = 420;
 const SESSION_REFRESH_REMINDER_INTERVAL_MS = 48 * 60 * 60 * 1000;
@@ -14,6 +15,7 @@ const DEFAULT_STATE = Object.freeze({
   keepRunningOnClose: true,
   showBrowserDuringTurns: true,
   browserInteractionMode: "automatic",
+  integrationMode: "direct",
   experimentalBiggerContext: false,
   zeroRiskProEnabled: false,
   browserSmokePassed: false,
@@ -35,6 +37,8 @@ function readState(filePath) {
     if (!parsed || parsed.version !== 1) return { ...DEFAULT_STATE };
     const state = { ...DEFAULT_STATE, ...parsed };
     delete state.bridgeEnabled;
+    state.integrationMode = resolveIntegrationMode(parsed);
+    delete state.codexIntegrationMode;
     if (state.language !== null && state.language !== "en" && state.language !== "zh-CN" && state.language !== "ja") {
       state.language = DEFAULT_STATE.language;
     }
@@ -54,6 +58,11 @@ function readState(filePath) {
     }
     if (state.browserInteractionMode !== "automatic" && state.browserInteractionMode !== "manual") {
       state.browserInteractionMode = DEFAULT_STATE.browserInteractionMode;
+    }
+    if (state.integrationMode !== "direct" && state.integrationMode !== "external-provider") {
+      // A persisted external-provider alias is already copied above. Only unknown values
+      // fall back to direct; never invent a Codex route from a missing bridgeEnabled field.
+      state.integrationMode = DEFAULT_STATE.integrationMode;
     }
     if (state.coreSetupComplete !== true) {
       if (state.onboardingComplete !== true) state.browserInteractionMode = "automatic";

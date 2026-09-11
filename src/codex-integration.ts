@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
-import type { AppConfig } from "./config";
-import { getConfigPath, loadConfig, saveConfig } from "./config";
+import type { AppConfig, IntegrationMode } from "./config";
+import { getConfigPath, isExternalProviderMode, loadConfig, resolveIntegrationMode, saveConfig } from "./config";
 import { installCodexInterruptHook, installCodexInterruptHookCommand } from "./codex-interrupt-hook";
 import {
   CODEX_REALTIME_WEBRTC_CALL_BASE_URL,
@@ -99,6 +99,32 @@ function journalProtocol(journal: Exclude<AnyCodexIntegrationJournal, { version:
     : "native";
 }
 
+/**
+ * All Codex route mutations pass through this boundary. The external-provider mode intentionally
+ * fails closed: a missing or stale external router is an operational problem, not permission for
+ * this process to take ownership of the user's Codex configuration.
+ */
+function configuredIntegrationMode(): IntegrationMode {
+  try {
+    return resolveIntegrationMode(loadConfig());
+  } catch {
+    // Setup may call the guard before a runtime config exists. In that case the historical direct
+    // behavior remains available; an explicit external config is always parsed above and wins.
+    return "direct";
+  }
+}
+
+export function assertDirectCodexIntegration(
+  config?: Pick<AppConfig, "integrationMode"> | { integrationMode?: unknown; codexIntegrationMode?: unknown },
+): void {
+  if (isExternalProviderMode(config ?? { integrationMode: configuredIntegrationMode() })) {
+    throw new Error(
+      "Codex routing is managed by an external provider in external-provider mode; "
+      + "route connect, disconnect, install, and restore are disabled",
+    );
+  }
+}
+
 export {
   getCodexConfigPath,
   getCodexHome,
@@ -128,6 +154,7 @@ export function setCodexSubagentProtocol(
   config: AppConfig,
   protocol: AppConfig["subagentProtocol"],
 ): CodexIntegrationJournal {
+  assertDirectCodexIntegration(config);
   const status = inspectCodexIntegration();
   if (!status.installed) throw new Error("Codex integration is not installed; run setup first");
   if (!status.active) {
@@ -170,6 +197,7 @@ export function preflightCodexIntegration(
   config: AppConfig,
   options: InstallCodexIntegrationOptions = {},
 ): void {
+  assertDirectCodexIntegration(config);
   const configPath = getCodexConfigPath();
   const configSnapshot = snapshotFile(configPath, { followSymlink: true });
   const configExists = configSnapshot.exists;
@@ -230,6 +258,7 @@ export function installCodexIntegration(
   config: AppConfig,
   options: InstallCodexIntegrationOptions = {},
 ): CodexIntegrationJournal {
+  assertDirectCodexIntegration(config);
   const configPath = getCodexConfigPath();
   mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
   const configExists = existsSync(configPath);
@@ -342,6 +371,7 @@ export function installCodexIntegration(
 }
 
 export function deactivateCodexIntegration(): SetCodexIntegrationActiveResult {
+  assertDirectCodexIntegration();
   const existing = readJournal();
   if (!existing) return { changed: false, active: false };
   if (existing.version === 2) {
@@ -371,6 +401,7 @@ export function deactivateCodexIntegration(): SetCodexIntegrationActiveResult {
 }
 
 export function activateCodexIntegration(): SetCodexIntegrationActiveResult {
+  assertDirectCodexIntegration();
   const existing = readJournal();
   if (!existing) throw new Error("Codex integration is not installed");
   if (existing.version === 2) {
@@ -437,7 +468,14 @@ export function activateCodexIntegration(): SetCodexIntegrationActiveResult {
   return { changed: true, active: true };
 }
 
-export function uninstallCodexIntegration(): UninstallCodexIntegrationResult {
+export function uninstallCodexIntegration(
+  config?: Pick<AppConfig, "integrationMode"> | { integrationMode?: unknown; codexIntegrationMode?: unknown },
+): UninstallCodexIntegrationResult {
+  // Removal is deliberately an idempotent no-op in external mode. It must not restore a stale
+  // journal or delete a Codex file that belongs to OpenCodex (or another router).
+  if (isExternalProviderMode(config ?? { integrationMode: configuredIntegrationMode() })) {
+    return { changed: false };
+  }
   const journal = readJournal();
   if (!journal) return { changed: false };
   if (!existsSync(journal.configPath)) throw new Error(`Codex config is missing: ${journal.configPath}`);

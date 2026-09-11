@@ -118,6 +118,11 @@ bun run app
 | **Browser-only** | Free/Go: Luna、Plus: Instant～High、Pro: Extra High と Pro を追加 | なし。Codex が警告を表示 | なし |
 | **Full harness** | Free/Go: Luna、Plus: Instant～High、Pro: Extra High と Pro を追加 | Pro を含むすべての表示 effort で使用可能 | OpenAI トンネル + ChatGPT コネクタ |
 
+**Direct と OpenCodex プロバイダー。** Direct が既定です。このプロジェクトが Codex の
+`openai_base_url` を管理します。`--integration-mode external-provider` は同じ Responses サーバーと
+ブラウザーセッションを起動しますが、Codex ルーティングは書き込みません。loopback の `/v1` URL を
+OpenCodex に登録し、Codex は OpenCodex を指したまま `chatgpt-web/...` モデルを選んでください。
+
 モデル選択画面の各項目は、1 つの固定 ChatGPT モードに対応します。Codex には内蔵の Effort と Speed 行も表示されますが、
 それらを変更しても、選択済みのブラウザーモデルが黙って切り替わることはありません。
 Full モードでは、利用可能なすべての effort が同じターン紐付き MCP capability を受け取ります。
@@ -159,6 +164,19 @@ ChatGPT のツール呼び出しを現在の Codex タスクへ接続します�
 **設定 → 診断を実行**を使用します。設定から、保持中のブラウザーターンのキャンセルや、
 アンインストール前の Codex 統合削除も行えます。すべてのブラウザーチェックポイントでスクリーンショットが必要な場合にのみ、
 `CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1` を設定してください。
+
+ソースから独立した OpenCodex プロバイダーとして実行する場合は、実際の Codex / OpenCodex 設定を
+変更しないよう、隔離された home を使ってください。
+
+```bash
+codex-chatgpt-web setup --browser-only --integration-mode external-provider --acknowledge-unofficial
+codex-chatgpt-web serve
+```
+
+その後 OpenCodex にカスタムプロバイダーを追加し、`http://127.0.0.1:17841/v1` を
+`openai-responses` アダプター、`--allow-private-network`、ライブモデル検出で登録します。
+Codex の `openai_base_url` をこのブリッジに向けないでください。詳細は
+[OpenCodex provider](docs/opencodex-provider.md) を参照してください。
 
 新規インストールでは、クロスバックエンドのサブエージェントに **Compatibility V1** を使用します。
 **Native** は Codex 独自の機能設定を維持し、プレーンテキストの Web-to-Web V2 delegation を有効にします。

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import type { AppConfig } from "./config";
-import { getConfigDir, getConfigPath, loadConfig } from "./config";
+import { getConfigDir, getConfigPath, isExternalProviderMode, loadConfig } from "./config";
 import { join } from "node:path";
 import { inspectCodexIntegration } from "./codex-integration";
 import { browserLoginStateExists, loginVerificationMarkerPath } from "./browser-login";
@@ -26,6 +26,7 @@ export interface DoctorCheck {
 export interface DoctorReport {
   ok: boolean;
   mode?: AppConfig["mode"];
+  integrationMode?: AppConfig["integrationMode"];
   checks: DoctorCheck[];
 }
 
@@ -108,6 +109,21 @@ export async function runDoctor(): Promise<DoctorReport> {
     return { ok: false, checks };
   }
 
+  if (isExternalProviderMode(config)) {
+    checks.push({
+      id: "integration",
+      status: "ok",
+      message: "Integration mode is external-provider; Codex routing is owned by OpenCodex",
+      detail: `Provider URL: http://${config.host}:${config.port}/v1`,
+    });
+  } else {
+    checks.push({
+      id: "integration",
+      status: "ok",
+      message: "Integration mode is direct; this process owns the Codex Responses route",
+    });
+  }
+
   if (config.browserHost === "launcher") {
     try {
       const descriptor = config.browserInteractionMode === "manual"
@@ -149,7 +165,14 @@ export async function runDoctor(): Promise<DoctorReport> {
   }
 
   const codex = inspectCodexIntegration();
-  if (!codex.installed) {
+  if (isExternalProviderMode(config)) {
+    checks.push({
+      id: "codex",
+      status: "ok",
+      message: "Codex routing is managed by OpenCodex; this process does not install openai_base_url",
+      detail: "Register http://127.0.0.1:<port>/v1 as an openai-responses provider in OpenCodex.",
+    });
+  } else if (!codex.installed) {
     checks.push({ id: "codex", status: "error", message: "Codex model route is not installed" });
   } else if (codex.errors.length > 0) {
     checks.push({ id: "codex", status: "error", message: "Codex integration is inconsistent", detail: codex.errors.join("; ") });
@@ -222,6 +245,7 @@ export async function runDoctor(): Promise<DoctorReport> {
   return {
     ok: !checks.some(check => check.status === "error"),
     mode: config.mode,
+    integrationMode: config.integrationMode,
     checks,
   };
 }

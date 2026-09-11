@@ -18,12 +18,12 @@ import {
 import { rememberCompactionContinuation } from "./adapters/chatgpt-web/compaction-continuation";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse } from "./bridge";
 import type { AppConfig } from "./config";
-import { providerConfig } from "./config";
+import { isExternalProviderMode, providerConfig } from "./config";
 import { AsyncEventQueue } from "./event-queue";
 import { readJsonRequestBody } from "./http-body";
 import { httpStatusFromTerminalError } from "./lib/errors";
 import { createHash } from "node:crypto";
-import { augmentNativeModelCatalog } from "./model-catalog";
+import { augmentNativeModelCatalog, buildExternalProviderModelCatalog } from "./model-catalog";
 import {
   readCodexModelContextOverride,
   readCodexSubagentProtocol,
@@ -378,6 +378,17 @@ export async function modelsRequest(
   fetchUpstream?: NativeFetch,
   contextOverride?: () => CodexModelContextOverride | undefined,
 ): Promise<Response> {
+  if (isExternalProviderMode(config)) {
+    const catalog = buildExternalProviderModelCatalog(config);
+    const body = JSON.stringify(catalog);
+    return new Response(body, {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        etag: `W/\"${createHash("sha256").update(body).digest("base64url")}\"`,
+      },
+    });
+  }
   let upstream: Response;
   try {
     upstream = await forwardNativeCodexRequest(req, "models", fetchUpstream);
@@ -443,6 +454,28 @@ function toolBridgeMaps(parsed: CodexParsedRequest): {
   return { toolNsMap, freeformToolNames, toolSearchToolNames };
 }
 
+function applyCodexTurnMetadataHeader(
+  raw: Record<string, unknown>,
+  req: Request,
+): Record<string, unknown> {
+  const headerTurnMetadata = req.headers.get("x-codex-turn-metadata");
+  if (!headerTurnMetadata) return raw;
+  const existingMetadata = raw.client_metadata;
+  const clientMetadata = existingMetadata && typeof existingMetadata === "object" && !Array.isArray(existingMetadata)
+    ? existingMetadata as Record<string, unknown>
+    : {};
+  if (typeof clientMetadata["x-codex-turn-metadata"] === "string" && clientMetadata["x-codex-turn-metadata"]) {
+    return raw;
+  }
+  return {
+    ...raw,
+    client_metadata: {
+      ...clientMetadata,
+      "x-codex-turn-metadata": headerTurnMetadata,
+    },
+  };
+}
+
 export async function responseRequest(
   req: Request,
   config: AppConfig,
@@ -460,6 +493,9 @@ export async function responseRequest(
       error instanceof Error ? error.message : "Request body must be valid JSON",
     );
   }
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    raw = applyCodexTurnMetadataHeader(raw as Record<string, unknown>, req);
+  }
   const requestedModel = raw && typeof raw === "object" && !Array.isArray(raw)
     ? (raw as { model?: unknown }).model
     : undefined;
@@ -470,6 +506,16 @@ export async function responseRequest(
     }
   } catch (error) {
     return formatErrorResponse(400, "invalid_request_error", error instanceof Error ? error.message : String(error));
+  }
+  if (isExternalProviderMode(config)
+    && (typeof requestedModel !== "string" || !isChatGptWebModelSlug(requestedModel))) {
+    return formatErrorResponse(
+      400,
+      "model_not_found",
+      typeof requestedModel === "string"
+        ? `Model ${requestedModel} is not provided by codex-chatgpt-web in external-provider mode`
+        : "A model is required in external-provider mode",
+    );
   }
   if (typeof requestedModel === "string" && !isChatGptWebModelSlug(requestedModel)) {
     try {
@@ -669,22 +715,7 @@ export async function compactRequest(
       error instanceof Error ? error.message : "Compaction request body must be a JSON object",
     );
   }
-  const headerTurnMetadata = req.headers.get("x-codex-turn-metadata");
-  if (headerTurnMetadata) {
-    const existingMetadata = raw.client_metadata;
-    const clientMetadata = existingMetadata && typeof existingMetadata === "object" && !Array.isArray(existingMetadata)
-      ? existingMetadata as Record<string, unknown>
-      : {};
-    raw = {
-      ...raw,
-      client_metadata: {
-        ...clientMetadata,
-        // `/responses/compact` carries native turn authority in this canonical Codex header,
-        // unlike ordinary `/responses` payloads where the same value also appears in the body.
-        "x-codex-turn-metadata": headerTurnMetadata,
-      },
-    };
-  }
+  raw = applyCodexTurnMetadataHeader(raw, req);
   try {
     const identity = extractCodexTurnIdentityFromBody(raw);
     if (identity.threadId && identity.turnId) {
@@ -695,6 +726,13 @@ export async function compactRequest(
   }
   if (typeof raw.model !== "string" || !raw.model) {
     return formatErrorResponse(400, "invalid_request_error", "Compaction request requires a model");
+  }
+  if (isExternalProviderMode(config) && !isChatGptWebModelSlug(raw.model)) {
+    return formatErrorResponse(
+      400,
+      "model_not_found",
+      `Model ${raw.model} is not provided by codex-chatgpt-web in external-provider mode`,
+    );
   }
   if (!isChatGptWebModelSlug(raw.model)) {
     try {
@@ -810,6 +848,9 @@ export function startServer(
           service: "codex-chatgpt-web",
           version: VERSION,
           mode: config.mode,
+          integration_mode: config.integrationMode,
+          routing_owner: isExternalProviderMode(config) ? "external-router" : "codex-chatgpt-web",
+          provider_base_url: `http://${config.host}:${config.port}/v1`,
           pid: process.pid,
           port: config.port,
           uptime: (Date.now() - startedAt) / 1_000,
@@ -1014,6 +1055,9 @@ export function startServer(
       }
       if (req.method === "POST" && url.pathname === "/v1/alpha/search") {
         if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
+        if (isExternalProviderMode(config)) {
+          return formatErrorResponse(501, "unsupported_operation", "Native search is not provided by codex-chatgpt-web in external-provider mode");
+        }
         return httpTurns.track(
           signal => nativeSearchRequest(new Request(req, { signal }), dependencies.fetchUpstream),
           req.signal,
@@ -1024,6 +1068,9 @@ export function startServer(
       if (req.method === "POST"
         && (url.pathname === "/v1/images/generations" || url.pathname === "/v1/images/edits")) {
         if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
+        if (isExternalProviderMode(config)) {
+          return formatErrorResponse(501, "unsupported_operation", "Native image endpoints are not provided by codex-chatgpt-web in external-provider mode");
+        }
         const endpoint: NativeImageEndpoint = url.pathname === "/v1/images/generations"
           ? "images/generations"
           : "images/edits";

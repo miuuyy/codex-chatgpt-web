@@ -71,9 +71,11 @@ test("core setup preserves an existing full-harness installation", async () => {
     "/runtime/launcher-browser.json",
     "--automatic-browser-interaction",
     "--refresh-account-capabilities",
-    "--replace-codex-route",
     "--acknowledge-unofficial",
     "--restart-service",
+    "--integration-mode",
+    "direct",
+    "--replace-codex-route",
   ]);
 });
 
@@ -184,10 +186,12 @@ test("Bigger Context uses the setup transaction and refreshes the production Cod
       "--browser-host-descriptor",
       "/runtime/launcher-browser.json",
       "--automatic-browser-interaction",
-      "--replace-codex-route",
       "--acknowledge-unofficial",
       "--restart-service",
       "--bigger-context",
+      "--integration-mode",
+      "direct",
+      "--replace-codex-route",
     ],
   });
 });
@@ -233,8 +237,10 @@ test("Zero Risk Pro transaction installs or removes only its explicit model prof
       "--acknowledge-unofficial",
       "--standard-context",
       "--zero-risk-pro",
-      "--replace-codex-route",
       "--restart-service",
+      "--integration-mode",
+      "direct",
+      "--replace-codex-route",
     ],
   });
 
@@ -385,6 +391,8 @@ test("launcher update transaction upgrades its owned full runtime with saved con
     "--refresh-account-capabilities",
     "--acknowledge-unofficial",
     "--restart-service",
+    "--integration-mode",
+    "direct",
   ]);
   assert.deepEqual(result, {
     updated: true,
@@ -416,6 +424,8 @@ test("launcher migrates the legacy connector identity even when the release vers
     "--refresh-account-capabilities",
     "--acknowledge-unofficial",
     "--restart-service",
+    "--integration-mode",
+    "direct",
   ]);
   assert.equal(result.updated, true);
   assert.equal(result.connectorMigrated, true);
@@ -435,6 +445,7 @@ test("launcher update transaction does not preserve a stale disconnected route p
   assert.equal("bridgeEnabled" in result, false);
   assert.equal(fixture.invocation().args.includes("disconnect"), false);
   assert.equal(fixture.invocation().args.includes("--refresh-account-capabilities"), true);
+  assert.equal(fixture.invocation().args.includes("--replace-codex-route"), false);
 });
 
 test("launcher update preserves Zero Risk and never probes its account capabilities", async () => {
@@ -470,6 +481,18 @@ test("launcher update transaction leaves current and externally owned runtimes u
   assert.equal(external.invocation(), undefined);
 });
 
+test("automatic runtime upgrade never injects --replace-codex-route", async () => {
+  const missingMode = hostFor({
+    mode: "browser-only",
+    browserHost: "launcher",
+    releaseVersion: "1.1.1",
+  });
+  const result = await missingMode.host.upgradeManagedRuntime();
+  assert.equal(result.updated, true);
+  assert.equal(missingMode.invocation().args.includes("--replace-codex-route"), false);
+  assert.equal(missingMode.invocation().args.includes("--integration-mode"), true);
+});
+
 test("MCP setup reuses valid private credentials without exposing or rewriting them", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-saved-mcp-"));
   const keyPath = path.join(root, "tunnel-runtime.key");
@@ -491,9 +514,11 @@ test("MCP setup reuses valid private credentials without exposing or rewriting t
       "--browser-host-descriptor",
       "/runtime/launcher-browser.json",
       "--automatic-browser-interaction",
-      "--replace-codex-route",
       "--acknowledge-unofficial",
       "--restart-service",
+      "--integration-mode",
+      "direct",
+      "--replace-codex-route",
     ]);
     assert.equal(fixture.invocation().args.includes("--refresh-account-capabilities"), false);
     assert.equal(fixture.invocation().args.includes("--replace-codex-route"), true);
@@ -617,6 +642,61 @@ test("startup recovery can restore the Codex route without requiring a healthy l
   const result = await fixture.host.restoreBridgeRoute("runtime-start-fail-safe");
   assert.equal(result.active, false);
   assert.deepEqual(fixture.calls, ["route status", "route disconnect", "route status"]);
+});
+
+test("external-provider setup never sends --replace-codex-route or route connect", async () => {
+  const fixture = hostFor({
+    mode: "browser-only",
+    browserHost: "launcher",
+    integrationMode: "external-provider",
+  });
+  await fixture.host.setupCore();
+  assert.equal(fixture.invocation().args.includes("--replace-codex-route"), false);
+  assert.equal(fixture.invocation().args.includes("--integration-mode"), true);
+  assert.equal(fixture.invocation().args.at(-1), "external-provider");
+
+  const route = await fixture.host.connectBridgeRoute();
+  assert.equal(route.skipped, true);
+  assert.equal(route.reason, "external-provider");
+});
+
+test("external-provider recovery does not disconnect an OpenCodex Codex route", async () => {
+  const fixture = bridgeFixture({ active: true });
+  fixture.host.runtimeConfigSnapshot = () => ({
+    configured: true,
+    owner: "launcher",
+    mode: "browser-only",
+    integrationMode: "external-provider",
+    config: { integrationMode: "external-provider" },
+  });
+  const result = await fixture.host.restoreBridgeRoute("runtime-start-fail-safe");
+  assert.equal(result.skipped, true);
+  assert.deepEqual(fixture.calls, []);
+});
+
+test("external-provider uninstall does not inspect or restore Codex routing", async () => {
+  const calls = [];
+  const config = { mode: "browser-only", browserHost: "launcher", integrationMode: "external-provider" };
+  const host = new RuntimeHost({
+    app: { getPath: () => path.join(os.tmpdir(), "codex-web-gpt-external-uninstall") },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: "/source",
+    browserDescriptorPath: "/runtime/launcher-browser.json",
+    supervisor: {
+      readConfig: () => config,
+      readSetupConfig: () => config,
+      stopForSetup: async () => { calls.push("runtime:stop"); },
+    },
+  });
+  host.launcherControlEnvironment = () => ({ CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: "test-token" });
+  host.run = async (_name, args) => {
+    const action = args.join(" ");
+    calls.push(action);
+    if (action === "uninstall --yes --launcher-control") return { stdout: "" };
+    throw new Error(`Unexpected command: ${action}`);
+  };
+  await host.uninstallIntegration();
+  assert.deepEqual(calls, ["runtime:stop", "uninstall --yes --launcher-control"]);
 });
 
 test("failed runtime cleanup during removal still restores the previous Codex route", async () => {
@@ -1095,6 +1175,78 @@ test("failed launcher update restores every mutable setup file before restarting
     assert.equal(fs.statSync(sharedDirectory).mode & 0o777, directoryMode);
     assert.equal(fs.statSync(sharedConfigPath).mode & 0o777, fileMode);
     assert.equal(fs.readFileSync(codexModelsCachePath, "utf8"), "old codex models cache\n");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("external-provider setup rollback does not restore or delete Codex routing files", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-external-checkpoint-"));
+  const coreHome = path.join(root, "core");
+  const codexHome = path.join(root, "codex");
+  const configPath = path.join(coreHome, "config.json");
+  const journalPath = path.join(coreHome, "codex", "integration-journal.json");
+  const recoveryJournalPath = path.join(coreHome, "codex", "integration-journal.recovery.json");
+  const codexConfigPath = path.join(codexHome, "config.toml");
+  const codexModelsCachePath = path.join(codexHome, "models_cache.json");
+  const oldConfig = {
+    mode: "browser-only",
+    browserHost: "launcher",
+    releaseVersion: "0.1.16",
+    integrationMode: "external-provider",
+  };
+  for (const file of [configPath, journalPath, recoveryJournalPath, codexConfigPath]) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+  }
+  fs.writeFileSync(configPath, `${JSON.stringify(oldConfig)}\n`, { mode: 0o600 });
+  fs.writeFileSync(journalPath, "old journal\n", { mode: 0o600 });
+  fs.writeFileSync(recoveryJournalPath, "old recovery journal\n", { mode: 0o600 });
+  fs.writeFileSync(codexConfigPath, "openai_base_url = \"http://127.0.0.1:10100/v1\"\n", { mode: 0o600 });
+
+  const readConfig = () => JSON.parse(fs.readFileSync(configPath, "utf8"));
+  const host = new RuntimeHost({
+    app: { getPath: () => path.join(root, "launcher"), getVersion: () => "0.2.0" },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: "/source",
+    browserDescriptorPath: path.join(coreHome, "runtime", "launcher-browser.json"),
+    codexHome,
+    supervisor: {
+      coreHome,
+      configPath,
+      readSetupConfig: readConfig,
+      readConfig,
+      stopForSetup: async () => ({ status: "stopped" }),
+      startIfConfigured: async () => {
+        if (readConfig().releaseVersion !== oldConfig.releaseVersion) {
+          throw new Error("synthetic updated runtime startup failure");
+        }
+        return { status: "ready" };
+      },
+    },
+    getIntegrationMode: () => "external-provider",
+  });
+  host.run = async (_name, args) => {
+    if (args.includes("--preflight-only")) return { code: 0, stdout: "", stderr: "" };
+    fs.writeFileSync(configPath, `${JSON.stringify({ ...oldConfig, releaseVersion: "0.2.0" })}\n`);
+    fs.writeFileSync(journalPath, "new journal\n");
+    fs.writeFileSync(recoveryJournalPath, "new recovery journal\n");
+    fs.writeFileSync(codexConfigPath, "openai_base_url = \"http://127.0.0.1:10100/v1\"\nmodel = \"chatgpt-web/high\"\n");
+    fs.writeFileSync(codexModelsCachePath, "opencodex live catalog\n");
+    return { code: 0, stdout: "", stderr: "" };
+  };
+
+  try {
+    await assert.rejects(
+      host.runSetup("core-setup", ["setup", "--browser-only"], {}),
+      /synthetic updated runtime startup failure$/,
+    );
+    assert.deepEqual(readConfig(), oldConfig);
+    assert.equal(fs.readFileSync(journalPath, "utf8"), "old journal\n");
+    assert.equal(
+      fs.readFileSync(codexConfigPath, "utf8"),
+      "openai_base_url = \"http://127.0.0.1:10100/v1\"\nmodel = \"chatgpt-web/high\"\n",
+    );
+    assert.equal(fs.readFileSync(codexModelsCachePath, "utf8"), "opencodex live catalog\n");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

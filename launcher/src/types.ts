@@ -1,6 +1,7 @@
 export type Language = "en" | "zh-CN" | "ja";
 export type LauncherProfile = "production" | "development";
 export type BrowserInteractionMode = "automatic" | "manual";
+export type IntegrationMode = "direct" | "external-provider";
 export type Surface = "browser" | "setup" | "mcp" | "activity" | "settings";
 
 export interface LauncherState {
@@ -13,6 +14,7 @@ export interface LauncherState {
   keepRunningOnClose: boolean;
   showBrowserDuringTurns: boolean;
   browserInteractionMode: BrowserInteractionMode;
+  integrationMode?: IntegrationMode;
   experimentalBiggerContext: boolean;
   zeroRiskProEnabled: boolean;
   sidebarOpen: boolean;
@@ -77,6 +79,7 @@ export interface DoctorCheck {
 export interface DoctorReport {
   ok: boolean;
   mode?: "browser-only" | "full";
+  integrationMode?: "direct" | "external-provider";
   checks: DoctorCheck[];
 }
 
@@ -103,6 +106,9 @@ export interface LauncherSnapshot {
   connectorName: string;
   connectorNames: Record<BrowserInteractionMode, string>;
   mcpCredentialsConfigured: boolean;
+  integrationMode?: IntegrationMode;
+  routingOwner?: "codex-chatgpt-web" | "external-router";
+  providerBaseUrl?: string | null;
   logs: LogRecord[];
   urls: {
     github: string;

@@ -11,6 +11,7 @@ const {
   terminateOwnedProcessTree,
 } = require("./process-tree.cjs");
 const { runtimeInvocation } = require("./runtime-command.cjs");
+const { resolveIntegrationMode } = require("./integration-mode.cjs");
 
 const RESTART_WINDOW_MS = 60_000;
 const MAX_RESTARTS_PER_WINDOW = 5;
@@ -206,6 +207,11 @@ function validateConfig(config, descriptorPath, platform = process.platform, lau
   if (config.browserInteractionMode !== "automatic" && config.browserInteractionMode !== "manual") {
     throw new Error("Runtime configuration has an invalid browser interaction mode");
   }
+  const integrationMode = resolveIntegrationMode(config);
+  if (integrationMode !== "direct" && integrationMode !== "external-provider") {
+    throw new Error("Runtime configuration has an invalid integration mode");
+  }
+  config = { ...config, integrationMode };
   if (config.subagentProtocol !== undefined
     && config.subagentProtocol !== "compatibility-v1"
     && config.subagentProtocol !== "native") {
@@ -577,6 +583,7 @@ class RuntimeSupervisor {
       && body?.status === "ok"
       && body?.mode === config.mode
       && body?.version === config.releaseVersion
+      && (body?.integration_mode === undefined || body.integration_mode === config.integrationMode)
       && (expectedPid === undefined || body?.pid === expectedPid)
       && (!requireAccepting || body?.accepting_turns === true);
   }

@@ -319,6 +319,42 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(() => chatGptTurnExecutionKey(request)).not.toThrow();
   });
 
+  test("accepts OpenCodex-stripped current-turn items that omit ids and passthrough metadata", () => {
+    const request = canonicalCurrentWireRequest(environmentXml);
+    const raw = request._rawBody as { input: Array<Record<string, unknown>> };
+    for (const item of raw.input) {
+      delete item.id;
+      delete item.internal_chat_message_metadata_passthrough;
+    }
+
+    expect(extractChatGptTurnUserRevision(request)).toEqual([
+      { type: "input_text", text: "Inspect the project" },
+    ]);
+    expect(extractChatGptTurnEnvironment(request).cwd).toBe(tempRoot);
+    expect(() => chatGptTurnExecutionKey(request)).not.toThrow();
+    expect(chatGptInstructionLineage(request).current).toEqual(expect.any(String));
+  });
+
+  test("OpenCodex-stripped history preserves predecessor instructions for in-turn steering", () => {
+    const original = canonicalCurrentWireRequest(environmentXml);
+    const originalRaw = original._rawBody as { input: Array<Record<string, unknown>> };
+    for (const item of originalRaw.input) {
+      delete item.id;
+      delete item.internal_chat_message_metadata_passthrough;
+    }
+    const steered = structuredClone(original);
+    const steeredInput = (steered._rawBody as { input: Array<Record<string, unknown>> }).input;
+    steeredInput.push({
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "Also inspect the tests" }],
+    });
+    const originalLineage = chatGptInstructionLineage(original);
+    const steeredLineage = chatGptInstructionLineage(steered);
+    expect(steeredLineage.current).not.toBe(originalLineage.current);
+    expect(steeredLineage.predecessors.has(originalLineage.current)).toBe(true);
+  });
+
   test("rejects canonical environment and user revision when an item conflicts with the current turn", () => {
     const request = canonicalCurrentWireRequest(environmentXml);
     const raw = request._rawBody as { input: Array<Record<string, unknown>> };
@@ -953,6 +989,45 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(starts).toBe(1);
     finishNew("done");
     await current.browserOutcome;
+    sessions.clear();
+  });
+
+  test("OpenCodex-stripped steering proves predecessors and retires the in-flight turn", async () => {
+    const sessions = new ChatGptTurnSessions();
+    const original = canonicalCurrentWireRequest(environmentXml);
+    const originalRaw = original._rawBody as { input: Array<Record<string, unknown>> };
+    for (const item of originalRaw.input) {
+      delete item.id;
+      delete item.internal_chat_message_metadata_passthrough;
+    }
+    const steered = structuredClone(original);
+    (steered._rawBody as { input: Array<Record<string, unknown>> }).input.push({
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "Also inspect the tests" }],
+    });
+    const oldKey = chatGptTurnExecutionKey(original);
+    const newKey = chatGptTurnExecutionKey(steered);
+    expect(newKey).not.toBe(oldKey);
+    let rejectOld!: (reason: Error) => void;
+    let cleanup!: () => void;
+    const cancellations: Error[] = [];
+    sessions.getOrCreate(oldKey, () => ({
+      mode: "read-only",
+      browser: new Promise<string>((_, reject) => { rejectOld = reject; }),
+      physicalSettlement: new Promise<void>(resolve => { cleanup = resolve; }),
+      trace: new ChatGptTraceFeed(), text: new ChatGptTextFeed(),
+      cancel: reason => { if (reason) { cancellations.push(reason); rejectOld(reason); } },
+    }), "old-trace", "thread", "native-turn", "native-thread", chatGptInstructionLineage(original).current);
+    const next = sessions.getOrCreateAfterOwnerRetirement(newKey, "thread", () => ({
+      mode: "read-only" as const,
+      browser: Promise.resolve("steered"),
+      physicalSettlement: Promise.resolve(),
+      trace: new ChatGptTraceFeed(), text: new ChatGptTextFeed(), cancel: () => {},
+    }), "new-trace", undefined, "native-turn", "native-thread", chatGptInstructionLineage(steered));
+    expect(cancellations).toHaveLength(1);
+    cleanup();
+    expect((await next).traceId).toBe("new-trace");
     sessions.clear();
   });
 

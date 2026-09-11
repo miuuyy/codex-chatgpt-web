@@ -11,6 +11,8 @@ import type { CodexProviderConfig } from "./types";
 import { VERSION } from "./version";
 
 export type RuntimeMode = "browser-only" | "full";
+/** Who owns the Codex connection route. This is independent from RuntimeMode/tool execution. */
+export type IntegrationMode = "direct" | "external-provider";
 export type BrowserHostMode = "managed-chrome" | "launcher";
 export type BrowserInteractionMode = "automatic" | "manual";
 export type SubagentProtocol = "compatibility-v1" | "native";
@@ -67,6 +69,8 @@ export interface AppConfig {
   purpose?: "dev-harness";
   releaseVersion: string;
   mode: RuntimeMode;
+  /** `direct` may edit Codex routing; `external-provider` is a provider behind another router. */
+  integrationMode: IntegrationMode;
   subagentProtocol: SubagentProtocol;
   host: "127.0.0.1";
   port: number;
@@ -196,6 +200,7 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     version: 3,
     releaseVersion: VERSION,
     mode,
+    integrationMode: "direct",
     subagentProtocol: "compatibility-v1",
     host: "127.0.0.1",
     port: 17841,
@@ -353,6 +358,12 @@ export function loadConfigForSetup(): AppConfig {
     raw.version = 3;
     raw.browserHost = "managed-chrome";
   }
+  // Version 3 configurations predate explicit integration ownership. Keep the old direct
+  // behavior, while preserving an explicitly persisted external-provider intent when present.
+  const legacyIntegrationMode = raw.codexIntegrationMode;
+  if (raw.integrationMode === undefined && legacyIntegrationMode !== undefined) {
+    raw.integrationMode = legacyIntegrationMode;
+  }
   const interactionMode = raw.browserInteractionMode ?? "automatic";
   const automaticName = raw.automaticAppName
     ?? (interactionMode === "automatic" ? raw.appName : CHATGPT_CONNECTOR_NAME);
@@ -372,6 +383,29 @@ function parseConfig(value: unknown, path: string): AppConfig {
   }
   if (typeof parsed.releaseVersion !== "string" || !parsed.releaseVersion.trim()) throw new Error(`Missing releaseVersion in ${path}`);
   if (parsed.mode !== "browser-only" && parsed.mode !== "full") throw new Error(`Invalid runtime mode in ${path}`);
+  const rawIntegrationMode = (value as Record<string, unknown>).integrationMode;
+  const legacyIntegrationMode = (value as Record<string, unknown>).codexIntegrationMode;
+  const validateIntegrationMode = (candidate: unknown, key: string): IntegrationMode | undefined => {
+    if (candidate === undefined) return undefined;
+    if (candidate !== "direct" && candidate !== "external-provider") {
+      throw new Error(`Invalid ${key} in ${path}; expected direct or external-provider`);
+    }
+    return candidate;
+  };
+  const integrationMode = validateIntegrationMode(rawIntegrationMode, "integrationMode");
+  const legacyMode = validateIntegrationMode(legacyIntegrationMode, "codexIntegrationMode");
+  let resolvedIntegrationMode: IntegrationMode;
+  if (integrationMode && legacyMode && integrationMode !== legacyMode) {
+    // An explicit external-provider intent must never be silently demoted to direct, even when
+    // a second alias disagrees. Fail closed on the more conservative ownership.
+    if (integrationMode === "external-provider" || legacyMode === "external-provider") {
+      resolvedIntegrationMode = "external-provider";
+    } else {
+      throw new Error(`Conflicting integrationMode and codexIntegrationMode in ${path}`);
+    }
+  } else {
+    resolvedIntegrationMode = integrationMode ?? legacyMode ?? "direct";
+  }
   const subagentProtocol = parsed.subagentProtocol ?? "compatibility-v1";
   if (subagentProtocol !== "compatibility-v1" && subagentProtocol !== "native") {
     throw new Error(`Invalid subagentProtocol in ${path}`);
@@ -507,8 +541,12 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (proAvailable && !solAvailable) {
     throw new Error(`Invalid ChatGPT account capabilities in ${path}: Pro requires Sol`);
   }
+  const normalized = { ...parsed } as Record<string, unknown>;
+  // Do not perpetuate the compatibility alias once the config has been parsed. The canonical
+  // field is integrationMode; accepting the alias is only a migration aid for old launcher state.
+  delete normalized.codexIntegrationMode;
   return {
-    ...parsed,
+    ...normalized,
     appName: expectedAppName,
     automaticAppName,
     manualAppName,
@@ -518,7 +556,36 @@ function parseConfig(value: unknown, path: string): AppConfig {
     proAvailable,
     experimentalBiggerContext,
     zeroRiskProEnabled,
+    integrationMode: resolvedIntegrationMode,
   } as AppConfig;
+}
+
+/** Resolve integration ownership for partially migrated launcher/runtime values. */
+export function resolveIntegrationMode(
+  value: { integrationMode?: unknown; codexIntegrationMode?: unknown } | null | undefined,
+): IntegrationMode {
+  const primary = value?.integrationMode;
+  const legacy = value?.codexIntegrationMode;
+  const valid = (candidate: unknown): candidate is IntegrationMode => (
+    candidate === "direct" || candidate === "external-provider"
+  );
+  if (primary !== undefined && !valid(primary)) {
+    throw new Error("Invalid integrationMode; expected direct or external-provider");
+  }
+  if (legacy !== undefined && !valid(legacy)) {
+    throw new Error("Invalid codexIntegrationMode; expected direct or external-provider");
+  }
+  if (valid(primary) && valid(legacy) && primary !== legacy) {
+    if (primary === "external-provider" || legacy === "external-provider") return "external-provider";
+    throw new Error("Conflicting integrationMode and codexIntegrationMode");
+  }
+  return (valid(primary) ? primary : valid(legacy) ? legacy : "direct");
+}
+
+export function isExternalProviderMode(
+  value: Pick<AppConfig, "integrationMode"> | { integrationMode?: unknown; codexIntegrationMode?: unknown } | null | undefined,
+): boolean {
+  return resolveIntegrationMode(value) === "external-provider";
 }
 
 export function saveConfig(config: AppConfig): void {

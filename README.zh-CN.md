@@ -112,6 +112,11 @@ bun run app
 | **仅浏览器** | Free/Go：Luna；Plus：Instant–High；Pro：增加 Extra High 和 Pro | 不可用；Codex 会显示警告 | 无 |
 | **完整 harness** | Free/Go：Luna；Plus：Instant–High；Pro：增加 Extra High 和 Pro | 每个列出的 effort 均支持，包括 Pro | OpenAI 隧道 + ChatGPT 连接器 |
 
+**Direct 与 OpenCodex 供应商。** Direct 是默认模式：本项目仍管理 Codex 的 `openai_base_url`。
+`--integration-mode external-provider` 会启动同样的 Responses 服务器和浏览器会话，但不会写入
+Codex 路由。请在 OpenCodex 中注册 loopback `/v1` 地址，让 Codex 继续指向 OpenCodex，并在那里选择
+`chatgpt-web/...` 模型。
+
 模型选择器中的每一项都对应一个固定的 ChatGPT 模式。Codex 仍会显示内置的 Effort 和 Speed
 选项，但更改它们不会在后台静默切换所选的浏览器模型。在完整模式下，每一个可用 effort 都会
 获得同一个与当前回合绑定的 MCP 能力；Pro 没有单独限制，也没有缩减后的工具契约。
@@ -150,6 +155,17 @@ bun run app
 使用 **活动** 页面查看安全的本地诊断，并通过 **设置 → 运行诊断** 执行端到端健康检查。设置页还可
 取消保留的浏览器任务，或在卸载前移除 Codex 集成。仅在需要为每个浏览器检查点保存截图时设置
 `CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1`。
+
+要从源码作为独立 OpenCodex 供应商运行，请使用隔离的 home，避免修改当前 Codex 或 OpenCodex 文件：
+
+```bash
+codex-chatgpt-web setup --browser-only --integration-mode external-provider --acknowledge-unofficial
+codex-chatgpt-web serve
+```
+
+然后在 OpenCodex 中添加自定义供应商，指向 `http://127.0.0.1:17841/v1`，适配器为
+`openai-responses`，并启用 `--allow-private-network` 与实时模型发现。不要把 Codex 的
+`openai_base_url` 设成这个 bridge。详见 [OpenCodex provider](docs/opencodex-provider.md)。
 
 新安装默认使用 **Compatibility V1** 以支持跨后端 subagent。**Native** 会保留 Codex 自身的
 功能设置，并启用明文 Web-to-Web V2 委派。切换协议后，请重启 Codex 并创建新任务：
