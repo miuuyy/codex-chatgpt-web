@@ -19,6 +19,7 @@ import { rememberCompactionContinuation } from "./adapters/chatgpt-web/compactio
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse } from "./bridge";
 import type { AppConfig } from "./config";
 import { providerConfig } from "./config";
+import type { ChatGptWebProModelVersion } from "./chatgpt-web-models";
 import { AsyncEventQueue } from "./event-queue";
 import { readJsonRequestBody } from "./http-body";
 import { httpStatusFromTerminalError } from "./lib/errors";
@@ -359,6 +360,8 @@ export interface ResponseRequestOptions {
   onAdapterEvent?: (event: AdapterEvent) => void;
   /** Bind the physical HTTP stream to the exact native Codex turn that owns it. */
   onTurnIdentity?: (identity: NativeCodexTurnIdentity) => void;
+  /** Read the live Pro preference only after this request resolves to the automatic Pro route. */
+  readProModelVersion?: () => ChatGptWebProModelVersion | undefined;
 }
 
 export function routeChatGptWebRequest(parsed: CodexParsedRequest, config: AppConfig): ChatGptWebModelRoute {
@@ -494,6 +497,13 @@ export async function responseRequest(
   } catch (error) {
     return formatErrorResponse(400, "invalid_request_error", error instanceof Error ? error.message : String(error));
   }
+  let requestConfig = config;
+  if (route.interactionMode === "automatic" && route.adapterEffort === "max" && options.readProModelVersion) {
+    requestConfig = { ...config };
+    const proModelVersion = options.readProModelVersion();
+    if (proModelVersion === undefined) delete requestConfig.proModelVersion;
+    else requestConfig.proModelVersion = proModelVersion;
+  }
   if (parsed._opaqueMultiAgentV2Payload) {
     return formatErrorResponse(
       400,
@@ -550,7 +560,12 @@ export async function responseRequest(
     parsed.context.messages.push({ role: "user", content: COMPACT_PROMPT, timestamp: Date.now() });
   }
 
-  const provider = providerConfig(config);
+  const provider = providerConfig(requestConfig);
+  // A Pro pin is part of retained-chat identity only for turns whose UI selection it changes.
+  // Keeping it on High/Light would abandon otherwise compatible retained conversations.
+  if (!(route.interactionMode === "automatic" && route.adapterEffort === "max")) {
+    delete provider.chatgptWeb?.proModelVersion;
+  }
   let traceId: string | undefined;
   try {
     traceId = chatGptWebTraceId(provider, parsed);
@@ -654,7 +669,7 @@ export async function compactRequest(
   req: Request,
   config: AppConfig,
   adapterFactory: ChatGptWebAdapterFactory = createChatGptWebAdapter,
-  options: Pick<ResponseRequestOptions, "onTurnIdentity"> = {},
+  options: Pick<ResponseRequestOptions, "onTurnIdentity" | "readProModelVersion"> = {},
 ): Promise<Response> {
   const nativeRequest = req.clone();
   let raw: Record<string, unknown>;
@@ -769,7 +784,11 @@ export async function compactRequest(
 
 export function startServer(
   config: AppConfig,
-  dependencies: { fetchUpstream?: NativeFetch; adapterFactory?: ChatGptWebAdapterFactory } = {},
+  dependencies: {
+    fetchUpstream?: NativeFetch;
+    adapterFactory?: ChatGptWebAdapterFactory;
+    readProModelVersion?: () => ChatGptWebProModelVersion | undefined;
+  } = {},
 ): ReturnType<typeof Bun.serve> {
   if (config.purpose === "dev-harness") {
     throw new Error("DEV harness configuration cannot start a Responses listener");
@@ -991,7 +1010,10 @@ export function startServer(
             new Request(req, { signal }),
             config,
             dependencies.adapterFactory,
-            { onTurnIdentity: bindIdentity },
+            {
+              onTurnIdentity: bindIdentity,
+              ...(dependencies.readProModelVersion ? { readProModelVersion: dependencies.readProModelVersion } : {}),
+            },
           ),
           req.signal,
           process.platform,
@@ -1005,7 +1027,10 @@ export function startServer(
             new Request(req, { signal }),
             config,
             dependencies.adapterFactory,
-            { onTurnIdentity: bindIdentity },
+            {
+              onTurnIdentity: bindIdentity,
+              ...(dependencies.readProModelVersion ? { readProModelVersion: dependencies.readProModelVersion } : {}),
+            },
           ),
           req.signal,
           process.platform,

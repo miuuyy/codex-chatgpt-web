@@ -165,6 +165,12 @@ Use **Activity** for safe local diagnostics and **Settings → Run doctor** for 
 Settings can also cancel a retained browser turn or remove the Codex integration before uninstall.
 Set `CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1` only when every browser checkpoint needs a screenshot.
 
+**Settings → Automated Pro model** can pin automated Pro turns to **GPT-5.6 Sol Pro**,
+**GPT-5.5 Pro**, or **GPT-6 Astra Pro**. The default **Follow ChatGPT** preserves existing behavior.
+The choice applies to the next Pro turn without restarting Codex or the launcher; other efforts and
+manual Zero Risk turns are unchanged. An unavailable or unverifiable version stops before sending
+the pending prompt, with no fallback. GPT-6 uses **Latest** only while ChatGPT verifies it as 6 Pro.
+
 New installs use **Compatibility V1** for cross-backend subagents. **Native** preserves Codex's own
 feature settings and enables plaintext Web-to-Web V2 delegation. Restart Codex and start a new task
 after changing the protocol:

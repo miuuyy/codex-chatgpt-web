@@ -151,6 +151,11 @@ bun run app
 取消保留的浏览器任务，或在卸载前移除 Codex 集成。仅在需要为每个浏览器检查点保存截图时设置
 `CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1`。
 
+**设置 → 自动化 Pro 模型**可将自动化 Pro 回合固定为 **GPT-5.6 Sol Pro**、**GPT-5.5 Pro**
+或 **GPT-6 Astra Pro**。默认的**跟随 ChatGPT**保留原有行为。选项从下一次 Pro 回合生效，
+无需重启 Codex 或启动器，不影响其他档位及手动 Zero Risk 回合。所选版本不可用或无法验证时，
+会在发送当前提示词前报错，不会切换到其他版本；GPT-6 仅在验证显示为 6 Pro 时使用“最新”选项。
+
 新安装默认使用 **Compatibility V1** 以支持跨后端 subagent。**Native** 会保留 Codex 自身的
 功能设置，并启用明文 Web-to-Web V2 委派。切换协议后，请重启 Codex 并创建新任务：
 

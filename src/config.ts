@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import {
   CHATGPT_WEB_ZERO_RISK_BACKEND_MODEL,
   CHATGPT_WEB_ZERO_RISK_PRO_BACKEND_MODEL,
+  parseChatGptWebProModelVersion,
+  type ChatGptWebProModelVersion,
 } from "./chatgpt-web-models";
 import type { CodexProviderConfig } from "./types";
 import { VERSION } from "./version";
@@ -83,6 +85,8 @@ export interface AppConfig {
   headed: boolean;
   solAvailable: boolean;
   proAvailable: boolean;
+  /** Optional explicit ChatGPT model family used for generic Pro turns. */
+  proModelVersion?: ChatGptWebProModelVersion;
   experimentalBiggerContext: boolean;
   /** Explicitly install the additional Pro-sized model row while Zero Risk is active. */
   zeroRiskProEnabled: boolean;
@@ -483,6 +487,12 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (parsed.proAvailable !== undefined && typeof parsed.proAvailable !== "boolean") {
     throw new Error(`Invalid proAvailable in ${path}`);
   }
+  let proModelVersion: ChatGptWebProModelVersion | undefined;
+  try {
+    proModelVersion = parseChatGptWebProModelVersion(parsed.proModelVersion);
+  } catch {
+    throw new Error(`Invalid proModelVersion in ${path}`);
+  }
   if (parsed.solAvailable !== undefined && typeof parsed.solAvailable !== "boolean") {
     throw new Error(`Invalid solAvailable in ${path}`);
   }
@@ -516,6 +526,7 @@ function parseConfig(value: unknown, path: string): AppConfig {
     subagentProtocol,
     solAvailable,
     proAvailable,
+    proModelVersion,
     experimentalBiggerContext,
     zeroRiskProEnabled,
   } as AppConfig;
@@ -570,6 +581,9 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       localToolsEnabled: config.mode === "full",
       solAvailable: manual ? false : config.solAvailable,
       proAvailable: manual ? false : config.proAvailable,
+      ...(!manual && config.proModelVersion !== undefined
+        ? { proModelVersion: config.proModelVersion }
+        : {}),
       experimentalBiggerContext: manual ? false : config.experimentalBiggerContext,
       ...(config.stallTimeoutSec !== undefined ? { stallTimeoutSec: config.stallTimeoutSec } : {}),
       autoApproveToolCalls: manual ? false : config.autoApproveToolCalls,

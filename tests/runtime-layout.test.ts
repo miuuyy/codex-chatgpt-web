@@ -17,6 +17,7 @@ import {
   resolveBrokerEndpoint,
   resolveInteractionConnectorIdentities,
   runtimeCommandForProcess,
+  saveConfig,
   ZERO_RISK_CHATGPT_CONNECTOR_NAME,
 } from "../src/config";
 import { removeLegacyRuntimeArtifacts } from "../src/service";
@@ -99,7 +100,50 @@ test("default setup uses the fixed production connector identities", () => {
   expect(defaultConfig("full").subagentProtocol).toBe("compatibility-v1");
   expect(defaultConfig("full").browserInteractionMode).toBe("automatic");
   expect(defaultConfig("full").zeroRiskProEnabled).toBe(false);
+  expect(defaultConfig("full").proModelVersion).toBeUndefined();
 });
+
+test("legacy configurations without a Pro model version keep generic Pro selection", () => {
+  const root = join(tmpdir(), `codex-chatgpt-web-pro-version-default-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  process.env.CODEX_CHATGPT_WEB_HOME = root;
+  mkdirSync(root, { recursive: true });
+  const legacyV3: Record<string, unknown> = { ...defaultConfig("browser-only") };
+  delete legacyV3.proModelVersion;
+  writeFileSync(join(root, "config.json"), `${JSON.stringify(legacyV3)}\n`);
+
+  expect(loadConfig().proModelVersion).toBeUndefined();
+  expect(loadConfigForSetup().proModelVersion).toBeUndefined();
+  expect(providerConfig(loadConfig()).chatgptWeb).not.toHaveProperty("proModelVersion");
+});
+
+test.each(["5.6", "5.5", "6"] as const)("configuration round-trips Pro model version %s", version => {
+  const root = join(tmpdir(), `codex-chatgpt-web-pro-version-${version}-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  process.env.CODEX_CHATGPT_WEB_HOME = root;
+  const config = defaultConfig("browser-only");
+  config.proModelVersion = version;
+  saveConfig(config);
+
+  expect(loadConfig().proModelVersion).toBe(version);
+  expect(providerConfig(loadConfig()).chatgptWeb?.proModelVersion).toBe(version);
+});
+
+test.each([null, true, 5.6, "", "5", "5.7", "gpt-5.6"])(
+  "configuration rejects invalid Pro model version %p",
+  invalid => {
+    const root = join(tmpdir(), `codex-chatgpt-web-invalid-pro-version-${process.pid}-${Date.now()}-${String(invalid)}`);
+    roots.push(root);
+    process.env.CODEX_CHATGPT_WEB_HOME = root;
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, "config.json"), `${JSON.stringify({
+      ...defaultConfig("browser-only"),
+      proModelVersion: invalid,
+    })}\n`);
+
+    expect(() => loadConfig()).toThrow("Invalid proModelVersion");
+  },
+);
 
 test.each([
   ["production", CHATGPT_CONNECTOR_NAME],
@@ -253,6 +297,7 @@ test("manual provider configuration preserves a distinct backend without guessin
   config.browserInteractionMode = "manual";
   config.solAvailable = true;
   config.proAvailable = true;
+  config.proModelVersion = "5.6";
   const provider = providerConfig(config);
 
   expect(provider.models).toEqual([CHATGPT_WEB_ZERO_RISK_BACKEND_MODEL]);
@@ -267,6 +312,7 @@ test("manual provider configuration preserves a distinct backend without guessin
     proAvailable: false,
     experimentalBiggerContext: false,
   });
+  expect(provider.chatgptWeb).not.toHaveProperty("proModelVersion");
 
   config.zeroRiskProEnabled = true;
   const proProvider = providerConfig(config);

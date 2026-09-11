@@ -408,6 +408,13 @@ function validateBrowserInteractionMode(value) {
   return value;
 }
 
+function validateProModelVersion(value) {
+  if (value !== null && value !== "5.6" && value !== "5.5" && value !== "6") {
+    throw new Error("Pro model version must be follow, 5.6, 5.5, or 6");
+  }
+  return value;
+}
+
 function validateBounds(value) {
   if (!value || typeof value !== "object") throw new Error("Browser bounds are required");
   for (const key of ["x", "y", "width", "height"]) {
@@ -430,6 +437,7 @@ function registerIpc({ logger, stateStore }) {
       userData: launcherUserData,
     },
     state: stateStore.read(),
+    proModelVersion: runtimeHost.proModelVersion(),
     browser: browserHost?.snapshot() ?? null,
     connectorName: runtimeHost.browserConnectorName(),
     connectorNames: {
@@ -818,6 +826,18 @@ function registerIpc({ logger, stateStore }) {
     send("launcher:browser-state", browserHost.snapshot());
     if (!IS_DEV_PROFILE && result.configured) startCatalogVerificationMonitor({ logger, stateStore });
     return { state, credentialsRequired: false, targetMode: mode };
+  });
+  handle("launcher:pro-model-version", async (_event, rawVersion) => {
+    const version = validateProModelVersion(rawVersion);
+    const browserOperation = browserHost.currentOperation();
+    if (browserHost.activeTraceId || browserOperation) {
+      throw new Error(
+        browserHost.activeTraceId
+          ? "Finish or cancel active ChatGPT turns before changing the Pro model version"
+          : `Finish ${browserOperation} before changing the Pro model version`,
+      );
+    }
+    return runtimeHost.setProModelVersion(version);
   });
   handle("launcher:set-preference", (_event, key, value) => {
     const ordinary = key === "keepRunningOnClose" || key === "showBrowserDuringTurns";

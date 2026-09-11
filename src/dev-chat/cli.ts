@@ -30,12 +30,14 @@ import {
   resolveDevProfilePaths,
 } from "./profile";
 import { DEV_CONFIG_PURPOSE, DEV_LAUNCHER_PROFILE } from "./constants";
+import { runProModelVersionConfigCommand } from "../pro-model-config";
 
 const DEV_HELP = `Codex Web GPT DEV chat
 
 Usage:
   codex-chatgpt-web dev launcher
   codex-chatgpt-web dev status [--json]
+  codex-chatgpt-web dev config pro-model-version <follow|5.6|5.5|6> --launcher-control
   codex-chatgpt-web dev setup --browser-only [--automatic-browser-interaction]
   codex-chatgpt-web dev setup --full --tunnel-id ID --runtime-key-file PATH [--automatic-browser-interaction|--zero-risk-browser-interaction]
   codex-chatgpt-web dev chat NAME [--model MODEL] [MESSAGE]
@@ -333,6 +335,11 @@ export async function runDevCommand(args: string[]): Promise<void> {
       stdout.write(`Bigger Context: ${features.biggerContext ? "enabled (experimental, adaptive 1/2/3 messages; same-agent compaction handoff)" : "disabled"}\n`);
       stdout.write("Codex route: isolated and unused\nResponses listener: not started\n");
     }
+    return;
+  }
+  if (action === "config") {
+    activateDevProfileEnvironment(paths);
+    await runProModelVersionConfigCommand(args);
     return;
   }
   if (action === "setup") {
