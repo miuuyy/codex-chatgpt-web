@@ -211,8 +211,9 @@ test("a transient effort control does not turn a Luna-only account into Sol", as
   expect(visibilityReads).toBe(2);
 });
 
-function reasoningPicker(options: { max?: string; delay?: number; missing?: boolean } = {}) {
+function reasoningPicker(options: { max?: string; delay?: number; missing?: boolean; proTooltip?: string } = {}) {
   let value = 0;
+  let tooltipVisible = false;
   const keys: string[] = [];
   const hidden = {
     filter() { return this; }, last() { return this; }, getByText() { return this; },
@@ -244,8 +245,28 @@ function reasoningPicker(options: { max?: string; delay?: number; missing?: bool
     getAttribute: async (name: string) => name === "aria-expanded" ? "true" : null,
   };
   const composer = { filter() { return this; }, last() { return this; }, locator: () => ({ locator: () => control }) };
-  const modelRows = { count: async () => 3, first() { return this; }, waitFor: async () => {}, nth: () => { throw new Error("Model rows are not effort choices"); } };
+  const proRow = { last() { return this; }, isVisible: async () => true, hover: async () => { tooltipVisible = true; } };
+  const modelRows = {
+    count: async () => 3, first() { return this; }, last() { return this; }, waitFor: async () => {},
+    nth: () => { throw new Error("Model rows are not effort choices"); },
+    filter: ({ hasText }: { hasText?: string | RegExp }) => {
+      const matchesPro = typeof hasText === "string" ? "Pro".includes(hasText) : hasText?.test("Pro") === true;
+      return options.proTooltip && matchesPro ? proRow : hidden;
+    },
+  };
   const menu = { filter() { return this; }, last() { return this; }, isVisible: async () => true, locator: () => modelRows };
+  const tooltip = {
+    filter() { return this; }, last() { return this; }, isVisible: async () => tooltipVisible,
+    waitFor: async ({ state }: { state: string }) => {
+      expect(state).toBe("visible");
+      if (!tooltipVisible) {
+        const error = new Error("tooltip not visible");
+        error.name = "TimeoutError";
+        throw error;
+      }
+    },
+    innerText: async () => options.proTooltip ?? "",
+  };
   const page = {
     locator: (selector: string) => {
       if (selector === CHATGPT_COMPOSER_SELECTOR) return composer;
@@ -253,9 +274,14 @@ function reasoningPicker(options: { max?: string; delay?: number; missing?: bool
       if (selector === CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR) return container;
       return hidden;
     },
+    getByText: (pattern: string | RegExp) => {
+      const haystack = options.proTooltip ?? "";
+      const matches = typeof pattern === "string" ? haystack.includes(pattern) : pattern.test(haystack);
+      return matches ? tooltip : hidden;
+    },
     keyboard: { press: async () => {} },
   };
-  return { page, composer, keys, value: () => value };
+  return { page, composer, keys, value: () => value, tooltipVisible: () => tooltipVisible };
 }
 
 test.each([0, 50])("capabilities wait for the visible container and read its hidden semantic input (delay=%s)", async delay => {
@@ -281,4 +307,55 @@ test("Pro selection changes the hidden slider through its visible owner, never t
   await select.call({ activeComposer: async () => fixture.composer }, fixture.page, "gpt-5.6-sol", "max", { localToolsEnabled: false, solAvailable: true, proAvailable: true });
   expect(fixture.keys).toEqual(["ArrowRight", "ArrowRight", "ArrowRight", "ArrowRight"]);
   expect(fixture.value()).toBe(4);
+});
+
+test("Pro selection surfaces the usage-limit tooltip mounted by Playwright hover", async () => {
+  const tooltipText = "Limit reached. Try again after Sep 15, 2026.";
+  const fixture = reasoningPicker({ max: "3", proTooltip: tooltipText });
+  const select = (ChatGptBrowserWorker.prototype as unknown as {
+    selectModelAndEffort(...args: unknown[]): Promise<unknown>;
+  }).selectModelAndEffort;
+  await expect(select.call({ activeComposer: async () => fixture.composer }, fixture.page, "gpt-5.6-sol", "max", { localToolsEnabled: false, solAvailable: true, proAvailable: true })).rejects.toThrow(tooltipText);
+  expect(fixture.tooltipVisible()).toBe(true);
+});
+
+test("Pro selection keeps the existing model-control error when no usage-limit tooltip is available", async () => {
+  const fixture = reasoningPicker({ max: "3" });
+  const select = (ChatGptBrowserWorker.prototype as unknown as {
+    selectModelAndEffort(...args: unknown[]): Promise<unknown>;
+  }).selectModelAndEffort;
+  const error = await select.call({ activeComposer: async () => fixture.composer }, fixture.page, "gpt-5.6-sol", "max", { localToolsEnabled: false, solAvailable: true, proAvailable: true }).catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).toBe("ChatGPT model controls are unavailable. Reload ChatGPT and retry the task.");
+  expect(fixture.tooltipVisible()).toBe(false);
+});
+
+test("Extra High never inherits the Pro usage-limit tooltip", async () => {
+  const fixture = reasoningPicker({ max: "3", proTooltip: "Limit reached. Try again after Sep 15, 2026." });
+  const select = (ChatGptBrowserWorker.prototype as unknown as {
+    selectModelAndEffort(...args: unknown[]): Promise<unknown>;
+  }).selectModelAndEffort;
+  await expect(select.call({ activeComposer: async () => fixture.composer }, fixture.page, "gpt-5.6-sol", "xhigh", { localToolsEnabled: false, solAvailable: true, proAvailable: true })).resolves.toMatchObject({ displayLabel: "Extra High", uiEffortIndex: 3 });
+  expect(fixture.keys).toEqual(["ArrowRight", "ArrowRight", "ArrowRight"]);
+  expect(fixture.tooltipVisible()).toBe(false);
+});
+
+test("missing model controls keep the existing error without a fabricated Pro retry date", async () => {
+  const effortControl = {
+    last() { return this; },
+    waitFor: async () => {
+      const error = new Error("effort control unavailable");
+      error.name = "TimeoutError";
+      throw error;
+    },
+  };
+  const composer = { locator: () => ({ locator: () => effortControl }) };
+  const hiddenSurface = { filter() { return this; }, last() { return this; }, waitFor: async () => await new Promise<void>(() => {}), isVisible: async () => false };
+  const select = (ChatGptBrowserWorker.prototype as unknown as {
+    selectModelAndEffort(...args: unknown[]): Promise<unknown>;
+  }).selectModelAndEffort;
+  const error = await select.call({ activeComposer: async () => composer }, { locator: () => hiddenSurface }, "gpt-5.6-sol", "max", { localToolsEnabled: false, solAvailable: true, proAvailable: true }).catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).toBe("ChatGPT model controls are unavailable. Reload ChatGPT and retry the task.");
+  expect((error as Error).message).not.toContain("Try again after");
 });
