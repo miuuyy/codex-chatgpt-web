@@ -1,0 +1,23 @@
+{
+  "observedAt": "2026-09-11",
+  "locale": "zh-CN",
+  "triggerLabel": "选择模型",
+  "options": [
+    { "role": "menuitemradio", "name": "最新", "version": "6" },
+    { "role": "menuitemradio", "name": "GPT-5.6 Sol", "version": "5.6" },
+    { "role": "menuitemradio", "name": "GPT-5.5", "version": "5.5" }
+  ],
+  "slider": {
+    "tag": "span", "role": "slider", "aria-hidden": "true",
+    "aria-valuemin": "0", "aria-valuemax": "4", "aria-valuenow": "4"
+  },
+  "keyboardControl": {
+    "tag": "div", "role": "menuitem", "aria-label": "能力",
+    "aria-keyshortcuts": "ArrowLeft ArrowRight",
+    "aria-describedby": "picker-value picker-instructions"
+  },
+  "descriptions": {
+    "picker-value": "5.6 Pro，第 5 项，共 5 项。",
+    "picker-instructions": "使用左右箭头键调整能力。"
+  }
+}

@@ -152,6 +152,26 @@ test("launcher UI localizes MCP verification progress and doctor check messages"
   );
 });
 
+test("launcher localizes exact Pro model choices and the no-fallback contract", () => {
+  const { copyFor } = loadI18nModule();
+  for (const language of ["en", "zh-CN", "ja"]) {
+    const copy = copyFor(language);
+    assert.equal(copy.proModel56, "GPT-5.6 Sol Pro");
+    assert.equal(copy.proModel55, "GPT-5.5 Pro");
+    assert.equal(copy.proModel6, "GPT-6 Astra Pro");
+    assert.ok(copy.proModelFollow.length > 0);
+    assert.match(copy.proModelVersionBody, /Pro/);
+  }
+  const english = copyFor("en").proModelVersionBody;
+  assert.match(english, /next (?:automated )?Pro turn/i);
+  assert.match(english, /only affects automated Pro routing/i);
+  assert.match(english, /without silently falling back/i);
+  assert.ok(english.length < 240, "the Settings explanation should stay concise");
+  assert.doesNotMatch(english, /Latest|reports a GPT-6 model/i);
+  assert.doesNotMatch(copyFor("zh-CN").proModelVersionBody, /最新/);
+  assert.doesNotMatch(copyFor("ja").proModelVersionBody, /最新/);
+});
+
 test("Chinese diagnostics cover the same progress and successful checks as Japanese", () => {
   const { copyFor, localizeRuntimeMessage } = loadI18nModule();
   const copy = copyFor("zh-CN");

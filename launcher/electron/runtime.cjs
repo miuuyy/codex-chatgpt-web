@@ -1096,6 +1096,48 @@ class RuntimeHost {
     return { ...result, mode, enabled: enabled === true };
   }
 
+  proModelVersion() {
+    return this.runtimeConfigSnapshot().config?.proModelVersion ?? null;
+  }
+
+  async setProModelVersion(value) {
+    if (value !== null && value !== "5.6" && value !== "5.5" && value !== "6") {
+      throw new Error("Pro model version must be follow, 5.6, 5.5, or 6");
+    }
+    const current = this.runtimeConfigSnapshot();
+    if (!current.configured) {
+      throw new Error("Install the Codex integration before changing the Pro model version");
+    }
+    const persisted = current.config?.proModelVersion ?? null;
+    if (persisted === value) return { proModelVersion: persisted };
+
+    const version = value ?? "follow";
+    const args = [
+      ...(this.launcherProfile === "development" ? ["dev"] : []),
+      "config",
+      "pro-model-version",
+      version,
+      "--launcher-control",
+    ];
+    const options = {
+      ...(this.launcherProfile === "development" ? {
+        embedded: true,
+        environment: this.devSetupEnvironment(),
+      } : {}),
+      env: this.launcherControlEnvironment(),
+      message: "Saving the automated Pro model version",
+      successMessage: "Automated Pro model version saved for the next Pro turn",
+      timeoutMs: CORE_SETUP_TIMEOUT_MS,
+    };
+    await this.run("pro-model-version", args, options);
+
+    const saved = this.proModelVersion();
+    if (saved !== value) {
+      throw new Error("Runtime configuration did not persist the requested Pro model version");
+    }
+    return { proModelVersion: saved };
+  }
+
   async setZeroRiskPro(enabled) {
     const current = this.runtimeConfigSnapshot();
     if (!current.configured) {

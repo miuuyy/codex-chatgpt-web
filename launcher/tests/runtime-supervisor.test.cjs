@@ -158,6 +158,25 @@ test("launcher runtime ownership cannot cross production and DEV profiles", () =
   );
 });
 
+test("launcher runtime accepts only explicit persisted Pro model versions", () => {
+  const descriptorPath = path.join(os.tmpdir(), "launcher-pro-model-version.json");
+  const config = launcherConfig(descriptorPath, { solAvailable: true });
+
+  assert.equal(validateConfig(config, descriptorPath).proModelVersion, undefined);
+  for (const proModelVersion of ["5.6", "5.5", "6"]) {
+    assert.equal(
+      validateConfig({ ...config, proModelVersion }, descriptorPath).proModelVersion,
+      proModelVersion,
+    );
+  }
+  for (const proModelVersion of [null, "latest", "6.0", 6]) {
+    assert.throws(
+      () => validateConfig({ ...config, proModelVersion }, descriptorPath),
+      /invalid proModelVersion/,
+    );
+  }
+});
+
 test("DEV runtime supervision ignores launcher version mismatch and starts only the isolated MCP tunnel", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-dev-tunnel-supervisor-"));
   const descriptorPath = path.join(root, "runtime", "launcher-browser.json");

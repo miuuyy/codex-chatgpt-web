@@ -255,6 +255,12 @@ function validateConfig(config, descriptorPath, platform = process.platform, lau
     && typeof config.experimentalBiggerContext !== "boolean") {
     throw new Error("Runtime configuration has an invalid experimentalBiggerContext");
   }
+  if (config.proModelVersion !== undefined
+    && config.proModelVersion !== "5.6"
+    && config.proModelVersion !== "5.5"
+    && config.proModelVersion !== "6") {
+    throw new Error("Runtime configuration has an invalid proModelVersion");
+  }
   if (config.stallTimeoutSec !== undefined
     && (!Number.isFinite(config.stallTimeoutSec) || config.stallTimeoutSec <= 0)) {
     throw new Error("Runtime configuration has an invalid stallTimeoutSec");
