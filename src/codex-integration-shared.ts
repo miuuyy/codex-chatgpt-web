@@ -50,7 +50,45 @@ export interface InstalledCodexInterruptHook {
   fragment: string;
 }
 
+export interface InstalledCodexInterruptHookJson {
+  storage: "json";
+  command: string;
+  hooksPath: string;
+  groupIndex: number;
+  hookIndex: number;
+  entryHash: string;
+  stateKey: string;
+  trustedHash: string;
+  trustFragment: string;
+}
+
+export interface InstalledCodexInterruptHookToml extends InstalledCodexInterruptHook {
+  storage: "toml";
+}
+
 export interface CodexIntegrationJournal {
+  version: 11;
+  active: boolean;
+  configPath: string;
+  installed: {
+    openai_base_url: string;
+    experimental_realtime_webrtc_call_base_url: string;
+    subagent_protocol: SubagentProtocol;
+    agent_max_depth?: number;
+  };
+  previous: Record<ManagedAssignmentKey, PreviousAssignment>;
+  previousRealtimeWebrtcCallBaseUrl: PreviousAssignment;
+  interruptHook: InstalledCodexInterruptHookToml | InstalledCodexInterruptHookJson;
+  previousMultiAgent?: PreviousFeatureAssignment;
+  previousMultiAgentV2?: PreviousFeatureAssignment;
+  previousAgentMaxDepth?: PreviousAgentAssignment;
+  format?: {
+    lineEnding: "\n" | "\r\n" | "\r";
+    trailingNewline: boolean;
+  };
+}
+
+export interface LegacyCodexIntegrationJournalV10 {
   version: 10;
   active: boolean;
   configPath: string;
@@ -209,6 +247,7 @@ export interface LegacyCodexIntegrationJournal {
 
 export type ManagedRouteJournal =
   | CodexIntegrationJournal
+  | LegacyCodexIntegrationJournalV10
   | LegacyCodexIntegrationJournalV9
   | LegacyCodexIntegrationJournalV8
   | LegacyCodexIntegrationJournalV7
@@ -249,6 +288,10 @@ export function getCodexHome(): string {
 
 export function getCodexConfigPath(): string {
   return join(getCodexHome(), "config.toml");
+}
+
+export function getCodexHooksPath(): string {
+  return join(getCodexHome(), "hooks.json");
 }
 
 export function getCodexModelsCachePath(): string {
@@ -351,6 +394,7 @@ export function writeIntegrationState(
   journal: AnyCodexIntegrationJournal,
   configWrite?: { path: string; data: string },
   removals: string[] = [],
+  additionalWrites: Array<{ path: string; data: string; followSymlink?: boolean }> = [],
 ): void {
   const data = serializeJournal(journal);
   // The recovery copy records intent and the primary copy records commit. If the process stops
@@ -358,6 +402,7 @@ export function writeIntegrationState(
   writeFilesWithCompensation([
     { path: getCodexJournalRecoveryPath(), data },
     ...(configWrite ? [{ ...configWrite, followSymlink: true }] : []),
+    ...additionalWrites.map(write => ({ ...write, followSymlink: write.followSymlink ?? true })),
     { path: getCodexJournalPath(), data },
   ], removals);
 }

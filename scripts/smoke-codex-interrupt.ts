@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -84,7 +84,13 @@ const server = startServer(config, {
 if (server.port === undefined) throw new Error("Interrupt smoke server did not bind a port");
 config.port = server.port;
 saveConfig(config);
+writeFileSync(join(codexHome, "hooks.json"), JSON.stringify({
+  hooks: { Stop: [{ hooks: [{ type: "command", command: "true" }] }] },
+}));
 const journal = installCodexIntegration(config);
+if (journal.interruptHook.storage !== "json") {
+  throw new Error("Interrupt smoke expected an existing hooks.json to select JSON hook storage");
+}
 
 type RpcResponse = { id: number; result?: any; error?: { code?: number; message?: string; data?: unknown } };
 

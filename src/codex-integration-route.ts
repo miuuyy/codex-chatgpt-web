@@ -10,6 +10,7 @@ import {
 } from "./codex-integration-shared";
 import type {
   CodexIntegrationJournal,
+  LegacyCodexIntegrationJournalV10,
   LegacyCodexIntegrationJournal,
   LegacyCodexIntegrationJournalV4,
   LegacyCodexIntegrationJournalV5,
@@ -22,11 +23,15 @@ import type {
   PreviousAssignment,
   PreviousFeatureAssignment,
   PreviousAgentAssignment,
+  InstalledCodexInterruptHookJson,
 } from "./codex-integration-shared";
 import {
   restoreCodexInterruptHook,
+  restoreCodexInterruptHookTrust,
   verifyCodexInterruptHook,
   verifyCodexInterruptHookRestored,
+  verifyCodexInterruptHookTrust,
+  verifyCodexInterruptHookTrustRestored,
 } from "./codex-interrupt-hook";
 import {
   assignments,
@@ -52,7 +57,7 @@ import {
 } from "./codex-integration-document";
 
 function compatibilityV1Evidence(
-  journal: CodexIntegrationJournal | LegacyCodexIntegrationJournalV9 | LegacyCodexIntegrationJournalV8,
+  journal: CodexIntegrationJournal | LegacyCodexIntegrationJournalV10 | LegacyCodexIntegrationJournalV9 | LegacyCodexIntegrationJournalV8,
 ): {
   previousMultiAgent: PreviousFeatureAssignment;
   previousMultiAgentV2: PreviousFeatureAssignment;
@@ -74,7 +79,7 @@ function compatibilityV1Evidence(
 
 function restoreOwnedManagedFeatures(text: string, journal: ManagedRouteJournal): string {
   let restored = text;
-  if (journal.version === 8 || journal.version === 9 || journal.version === 10) {
+  if (journal.version === 8 || journal.version === 9 || journal.version === 10 || journal.version === 11) {
     const evidence = compatibilityV1Evidence(journal);
     if (evidence) {
       const depth = findAgentMaxDepthAssignment(splitLines(restored));
@@ -178,10 +183,18 @@ export function replacementBaseline(
   if (!configExists) return "";
   if (!managedJournalIsActive(journal)) return currentText;
 
-  if (journal.version === 9 || journal.version === 10) {
+  if (journal.version === 9 || journal.version === 10 || journal.version === 11) {
     const withoutHook = journal.version === 10
       ? restoreCodexInterruptHook(currentText, journal.interruptHook, { allowAbsent: true })
-      : currentText;
+      : journal.version === 11 && journal.interruptHook.storage === "toml"
+        ? restoreCodexInterruptHook(currentText, journal.interruptHook, { allowAbsent: true })
+        : journal.version === 11
+          ? restoreCodexInterruptHookTrust(currentText, {
+            stateKey: journal.interruptHook.stateKey,
+            trustedHash: journal.interruptHook.trustedHash,
+            fragment: (journal.interruptHook as InstalledCodexInterruptHookJson).trustFragment,
+          })
+          : currentText;
     const baseline = restoreOwnedManagedFeatures(withoutHook, journal);
     const document = parseDocument(baseline);
     removeManagedComment(document);
@@ -286,13 +299,13 @@ export function verifyInstalledRoute(text: string, journal: ManagedRouteJournal)
   if (current.openai_base_url.value !== journal.installed.openai_base_url) {
     throw new Error("Codex openai_base_url changed after setup; refusing to overwrite the user's newer value");
   }
-  const expectedMarker = journal.version === 9 || journal.version === 10
+  const expectedMarker = journal.version === 9 || journal.version === 10 || journal.version === 11
     ? MANAGED_ROUTE_COMMENT
     : MANAGED_COMMENT;
   if (!lines.includes(expectedMarker)) {
     throw new Error("Managed Codex route marker changed after setup; refusing to overwrite it");
   }
-  if (journal.version === 9 || journal.version === 10) {
+  if (journal.version === 9 || journal.version === 10 || journal.version === 11) {
     const realtime = findTopLevelAssignment(lines, "experimental_realtime_webrtc_call_base_url");
     const expectedLine = `experimental_realtime_webrtc_call_base_url = ${JSON.stringify(journal.installed.experimental_realtime_webrtc_call_base_url)}`;
     if (realtime.value !== journal.installed.experimental_realtime_webrtc_call_base_url
@@ -301,7 +314,18 @@ export function verifyInstalledRoute(text: string, journal: ManagedRouteJournal)
     }
   }
   if (journal.version === 10) verifyCodexInterruptHook(text, journal.interruptHook);
-  if (journal.version === 8 || journal.version === 9 || journal.version === 10) {
+  if (journal.version === 11) {
+    if (journal.interruptHook.storage === "toml") {
+      verifyCodexInterruptHook(text, journal.interruptHook);
+    } else {
+      verifyCodexInterruptHookTrust(text, {
+        stateKey: journal.interruptHook.stateKey,
+        trustedHash: journal.interruptHook.trustedHash,
+        fragment: journal.interruptHook.trustFragment,
+      });
+    }
+  }
+  if (journal.version === 8 || journal.version === 9 || journal.version === 10 || journal.version === 11) {
     const evidence = compatibilityV1Evidence(journal);
     if (evidence) {
       verifyCompatibilityV1Features(
@@ -311,7 +335,7 @@ export function verifyInstalledRoute(text: string, journal: ManagedRouteJournal)
       );
     }
   }
-  if (journal.version !== 7 && journal.version !== 8 && journal.version !== 9 && journal.version !== 10) {
+  if (journal.version !== 7 && journal.version !== 8 && journal.version !== 9 && journal.version !== 10 && journal.version !== 11) {
     if (current.model_provider.present || current.model_catalog_json.present) {
       throw new Error("Codex model_provider or model_catalog_json changed after setup; refusing to overwrite the user's newer value");
     }
@@ -331,11 +355,11 @@ function previousAssignmentMatchesExactly(current: PreviousAssignment, previous:
 
 export function verifyRestoredRoute(
   text: string,
-  journal: CodexIntegrationJournal | LegacyCodexIntegrationJournalV9 | LegacyCodexIntegrationJournalV8 | LegacyCodexIntegrationJournalV7 | LegacyCodexIntegrationJournalV6 | LegacyCodexIntegrationJournalV5 | LegacyCodexIntegrationJournalV4,
+  journal: CodexIntegrationJournal | LegacyCodexIntegrationJournalV10 | LegacyCodexIntegrationJournalV9 | LegacyCodexIntegrationJournalV8 | LegacyCodexIntegrationJournalV7 | LegacyCodexIntegrationJournalV6 | LegacyCodexIntegrationJournalV5 | LegacyCodexIntegrationJournalV4,
 ): void {
   const lines = splitLines(text);
   const current = assignments(lines);
-  const keys = journal.version === 7 || journal.version === 8 || journal.version === 9 || journal.version === 10
+  const keys = journal.version === 7 || journal.version === 8 || journal.version === 9 || journal.version === 10 || journal.version === 11
     ? (["openai_base_url"] as const)
     : (["openai_base_url", "model_provider", "model_catalog_json"] as const);
   for (const key of keys) {
@@ -346,7 +370,7 @@ export function verifyRestoredRoute(
   if (lines.includes(MANAGED_COMMENT) || lines.includes(MANAGED_ROUTE_COMMENT)) {
     throw new Error("Managed Codex route marker is present while the bridge is disconnected");
   }
-  if (journal.version === 9 || journal.version === 10) {
+  if (journal.version === 9 || journal.version === 10 || journal.version === 11) {
     const realtime = findTopLevelAssignment(lines, "experimental_realtime_webrtc_call_base_url");
     if (!previousAssignmentMatchesExactly(realtime, journal.previousRealtimeWebrtcCallBaseUrl)) {
       throw new Error(
@@ -355,6 +379,13 @@ export function verifyRestoredRoute(
     }
   }
   if (journal.version === 10) verifyCodexInterruptHookRestored(text);
+  if (journal.version === 11) {
+    if (journal.interruptHook.storage === "toml") {
+      verifyCodexInterruptHookRestored(text);
+    } else {
+      verifyCodexInterruptHookTrustRestored(text);
+    }
+  }
   if (journal.version === 5 || journal.version === 6) {
     const previousFeatures: Array<readonly [string, PreviousFeatureAssignment]> = [
       ["remote_compaction_v2", journal.previousRemoteCompactionV2],
@@ -377,7 +408,7 @@ export function verifyRestoredRoute(
       }
     }
   }
-  if (journal.version === 8 || journal.version === 9 || journal.version === 10) {
+  if (journal.version === 8 || journal.version === 9 || journal.version === 10 || journal.version === 11) {
     const evidence = compatibilityV1Evidence(journal);
     if (evidence) {
       for (const [key, previous] of [
@@ -433,7 +464,15 @@ export function restoreManagedRoute(text: string, journal: ManagedRouteJournal):
   verifyInstalledRoute(text, journal);
   const withoutHook = journal.version === 10
     ? restoreCodexInterruptHook(text, journal.interruptHook)
-    : text;
+    : journal.version === 11 && journal.interruptHook.storage === "toml"
+      ? restoreCodexInterruptHook(text, journal.interruptHook)
+      : journal.version === 11
+        ? restoreCodexInterruptHookTrust(text, {
+          stateKey: journal.interruptHook.stateKey,
+          trustedHash: journal.interruptHook.trustedHash,
+          fragment: (journal.interruptHook as InstalledCodexInterruptHookJson).trustFragment,
+        })
+        : text;
   const document = parseDocument(withoutHook);
   removeManagedComment(document);
   const currentBaseUrl = findTopLevelAssignment(document.lines, "openai_base_url");
@@ -445,7 +484,7 @@ export function restoreManagedRoute(text: string, journal: ManagedRouteJournal):
   } else {
     removeDocumentLine(document, currentBaseUrl.index);
   }
-  if (journal.version === 9 || journal.version === 10) {
+  if (journal.version === 9 || journal.version === 10 || journal.version === 11) {
     const currentRealtime = findTopLevelAssignment(document.lines, "experimental_realtime_webrtc_call_base_url");
     if (currentRealtime.index === undefined) throw new Error("Managed Codex realtime WebRTC call route is missing");
     const previousRealtime = journal.previousRealtimeWebrtcCallBaseUrl;
@@ -458,7 +497,7 @@ export function restoreManagedRoute(text: string, journal: ManagedRouteJournal):
       removeDocumentLine(document, currentRealtime.index);
     }
   }
-  if (journal.version !== 7 && journal.version !== 8 && journal.version !== 9 && journal.version !== 10) {
+  if (journal.version !== 7 && journal.version !== 8 && journal.version !== 9 && journal.version !== 10 && journal.version !== 11) {
     const removedAssignments = (["model_provider", "model_catalog_json"] as const)
       .map(key => ({ key, previous: journal.previous[key] }))
       .filter(item => item.previous.present)
@@ -470,7 +509,7 @@ export function restoreManagedRoute(text: string, journal: ManagedRouteJournal):
     }
   }
   const restoredRoute = renderDocument(document);
-  if (journal.version === 8 || journal.version === 9 || journal.version === 10) {
+  if (journal.version === 8 || journal.version === 9 || journal.version === 10 || journal.version === 11) {
     const evidence = compatibilityV1Evidence(journal);
     return evidence
       ? restoreCompatibilityV1Features(

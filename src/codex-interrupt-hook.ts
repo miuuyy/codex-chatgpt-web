@@ -9,6 +9,10 @@ export const MANAGED_INTERRUPT_HOOK_START =
   "# Managed by codex-chatgpt-web: release the exact Responses request when its Codex turn is interrupted.";
 export const MANAGED_INTERRUPT_HOOK_END =
   "# End codex-chatgpt-web interrupt lifecycle hook.";
+export const MANAGED_INTERRUPT_HOOK_TRUST_START =
+  "# Managed by codex-chatgpt-web: trust the Interrupt hook defined in hooks.json.";
+export const MANAGED_INTERRUPT_HOOK_TRUST_END =
+  "# End codex-chatgpt-web JSON interrupt hook trust state.";
 
 function canonicalJson(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalJson);
@@ -82,6 +86,10 @@ function canonicalConfigPath(configPath: string): string {
   }
 }
 
+export function codexInterruptHookStateKey(path: string, groupIndex: number, hookIndex: number): string {
+  return `${canonicalConfigPath(path)}:interrupt:${groupIndex}:${hookIndex}`;
+}
+
 export function installCodexInterruptHook(
   text: string,
   configPath: string,
@@ -99,7 +107,7 @@ export function installCodexInterruptHookCommand(
     throw new Error("Codex config already contains a codex-chatgpt-web interrupt hook marker");
   }
   const groupIndex = interruptGroupCount(text);
-  const stateKey = `${canonicalConfigPath(configPath)}:interrupt:${groupIndex}:0`;
+  const stateKey = codexInterruptHookStateKey(configPath, groupIndex, 0);
   const trustedHash = codexInterruptHookHash(command);
   const ending = lineEnding(text);
   const core = [
@@ -128,6 +136,75 @@ export function installCodexInterruptHookCommand(
     text: `${text}${fragment}`,
     installed: { command, groupIndex, stateKey, trustedHash, fragment },
   };
+}
+
+export interface InstalledCodexInterruptHookTrust {
+  stateKey: string;
+  trustedHash: string;
+  fragment: string;
+}
+
+export function installCodexInterruptHookTrust(
+  text: string,
+  stateKey: string,
+  trustedHash: string,
+): { text: string; installed: InstalledCodexInterruptHookTrust } {
+  if (text.includes(MANAGED_INTERRUPT_HOOK_TRUST_START) || text.includes(MANAGED_INTERRUPT_HOOK_TRUST_END)) {
+    throw new Error("Codex config already contains a codex-chatgpt-web JSON interrupt hook trust marker");
+  }
+  if (!/^sha256:[a-f0-9]{64}$/.test(trustedHash)) {
+    throw new Error("Codex JSON interrupt hook trust hash is invalid");
+  }
+  const ending = lineEnding(text);
+  const core = [
+    MANAGED_INTERRUPT_HOOK_TRUST_START,
+    `[hooks.state.${JSON.stringify(stateKey)}]`,
+    `trusted_hash = ${JSON.stringify(trustedHash)}`,
+    MANAGED_INTERRUPT_HOOK_TRUST_END,
+  ].join(ending);
+  const leading = text.length === 0
+    ? ""
+    : text.endsWith(`${ending}${ending}`)
+      ? ""
+      : text.endsWith(ending)
+        ? ending
+        : `${ending}${ending}`;
+  const trailing = text.length > 0 && text.endsWith(ending) ? ending : "";
+  const fragment = `${leading}${core}${trailing}`;
+  return { text: `${text}${fragment}`, installed: { stateKey, trustedHash, fragment } };
+}
+
+function locateCodexInterruptHookTrust(text: string, installed: InstalledCodexInterruptHookTrust): { start: number; end: number } {
+  if (!installed.stateKey || !/^sha256:[a-f0-9]{64}$/.test(installed.trustedHash) || !installed.fragment) {
+    throw new Error("Codex JSON interrupt hook trust journal entry is invalid");
+  }
+  const marker = installed.fragment.indexOf(MANAGED_INTERRUPT_HOOK_TRUST_END);
+  if (marker < 0) {
+    throw new Error("Codex JSON interrupt hook trust journal fragment is invalid");
+  }
+  const pattern = new RegExp(hookTextPattern(installed.fragment), "g");
+  const match = pattern.exec(text);
+  if (!match || pattern.exec(text)
+    || text.split(MANAGED_INTERRUPT_HOOK_TRUST_START).length !== 2
+    || text.split(MANAGED_INTERRUPT_HOOK_TRUST_END).length !== 2) {
+    throw new Error("Codex JSON interrupt hook trust changed after setup; refusing to overwrite it");
+  }
+  return { start: match.index, end: match.index + match[0].length };
+}
+
+export function verifyCodexInterruptHookTrust(text: string, installed: InstalledCodexInterruptHookTrust): void {
+  locateCodexInterruptHookTrust(text, installed);
+}
+
+export function restoreCodexInterruptHookTrust(text: string, installed: InstalledCodexInterruptHookTrust): string {
+  const owned = locateCodexInterruptHookTrust(text, installed);
+  return text.slice(0, owned.start) + text.slice(owned.end);
+}
+
+export function verifyCodexInterruptHookTrustRestored(text: string): void {
+  if (text.includes(MANAGED_INTERRUPT_HOOK_TRUST_START) || text.includes(MANAGED_INTERRUPT_HOOK_TRUST_END)) {
+    throw new Error("Codex JSON interrupt hook trust state is present while the bridge is disconnected");
+  }
 }
 
 function hookTextPattern(text: string): string {
