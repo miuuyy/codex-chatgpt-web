@@ -211,6 +211,16 @@ const NATIVE_COPY = Object.freeze({
     removeMessage: "从 Codex 中移除 ChatGPT Web 模型并恢复此前的模型路由？",
     removeDetail: "启动器中的 ChatGPT 登录 profile 会保留。Codex 需要重启一次。",
   }),
+  "zh-TW": Object.freeze({
+    openLauncher: "開啟 Codex Web GPT",
+    quit: "結束",
+    exportDiagnostics: "匯出隱私安全診斷",
+    cancel: "取消",
+    remove: "移除",
+    removeTitle: "移除 Codex Web GPT",
+    removeMessage: "從 Codex 中移除 ChatGPT Web 模型並還原先前的模型路由？",
+    removeDetail: "啟動器中的 ChatGPT 登入設定檔會保留。Codex 需要重新啟動一次。",
+  }),
   ja: Object.freeze({
     openLauncher: "Codex Web GPT を開く",
     quit: "終了",
@@ -395,8 +405,8 @@ async function loadRenderer(window) {
 }
 
 function validateLanguage(value) {
-  if (value !== "en" && value !== "zh-CN" && value !== "ja") {
-    throw new Error("Language must be en, zh-CN, or ja");
+  if (value !== "en" && value !== "zh-CN" && value !== "zh-TW" && value !== "ja") {
+    throw new Error("Language must be en, zh-CN, zh-TW, or ja");
   }
   return value;
 }
@@ -1126,6 +1136,8 @@ async function start() {
       codexRestartRequired: false,
       autoStart: false,
       experimentalBiggerContext: config?.experimentalBiggerContext === true,
+      biggerContextPlan: config?.biggerContextPlan === "pro" ? "pro" : "plus",
+      allowWebSubagents: config?.allowWebSubagents === true,
       zeroRiskProEnabled: config?.zeroRiskProEnabled === true,
     });
     send("launcher:state-changed", state);
@@ -1152,6 +1164,8 @@ async function start() {
         codexCatalogVerified: false,
         codexRestartRequired: true,
         experimentalBiggerContext: runtimeHost.runtimeConfigSnapshot().config?.experimentalBiggerContext === true,
+        biggerContextPlan: runtimeHost.runtimeConfigSnapshot().config?.biggerContextPlan === "pro" ? "pro" : "plus",
+        allowWebSubagents: runtimeHost.runtimeConfigSnapshot().config?.allowWebSubagents === true,
         zeroRiskProEnabled: runtimeHost.runtimeConfigSnapshot().config?.zeroRiskProEnabled === true,
         ...(upgrade.mode === "full" ? {
           mcpRuntimeInstalled: true,
@@ -1174,11 +1188,20 @@ async function start() {
     const configuredRuntime = runtimeHost.runtimeConfigSnapshot();
     if (configuredRuntime.configured) {
       const enabled = configuredRuntime.config?.experimentalBiggerContext === true;
+      const biggerContextPlan = configuredRuntime.config?.biggerContextPlan === "pro" ? "pro" : "plus";
+      const allowWebSubagents = configuredRuntime.config?.allowWebSubagents === true;
       const zeroRiskProEnabled = configuredRuntime.config?.zeroRiskProEnabled === true;
       const saved = stateStore.read();
       if (saved.experimentalBiggerContext !== enabled
+        || saved.biggerContextPlan !== biggerContextPlan
+        || saved.allowWebSubagents !== allowWebSubagents
         || saved.zeroRiskProEnabled !== zeroRiskProEnabled) {
-        const state = stateStore.update({ experimentalBiggerContext: enabled, zeroRiskProEnabled });
+        const state = stateStore.update({
+          experimentalBiggerContext: enabled,
+          biggerContextPlan,
+          allowWebSubagents,
+          zeroRiskProEnabled,
+        });
         send("launcher:state-changed", state);
       }
     }
@@ -1194,6 +1217,8 @@ async function start() {
         coreSetupComplete: true,
         mcpRuntimeInstalled: config.mode === "full",
         experimentalBiggerContext: config.experimentalBiggerContext === true,
+        biggerContextPlan: config.biggerContextPlan === "pro" ? "pro" : "plus",
+        allowWebSubagents: config.allowWebSubagents === true,
         zeroRiskProEnabled: config.zeroRiskProEnabled === true,
         ...(runtime.bridgeRouteChanged ? {
           codexCatalogVerified: false,

@@ -1,4 +1,4 @@
-export type Language = "en" | "zh-CN" | "ja";
+export type Language = "en" | "zh-CN" | "zh-TW" | "ja";
 export type LauncherProfile = "production" | "development";
 export type BrowserInteractionMode = "automatic" | "manual";
 export type BiggerContextPlan = "plus" | "pro";

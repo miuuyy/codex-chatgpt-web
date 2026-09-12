@@ -254,6 +254,13 @@ function Onboarding({
                 onClick={() => setSelectedLanguage("zh-CN")}
               />
               <WelcomeOption
+                active={selectedLanguage === "zh-TW"}
+                detail={localized.traditionalChinese}
+                label={localized.traditionalChinese}
+                marker="繁"
+                onClick={() => setSelectedLanguage("zh-TW")}
+              />
+              <WelcomeOption
                 active={selectedLanguage === "ja"}
                 detail={localized.japanese}
                 label={localized.japanese}
@@ -1738,7 +1745,10 @@ function SettingsSurface({
             onChange={(checked) => void setBiggerContext(checked)}
           />
         </SettingRow>
-        <SettingRow body={copy.chatgptPlanBody} label={copy.chatgptPlan}>
+        <SettingRow
+          body={copy.chatgptPlanBody}
+          label={copy.chatgptPlan}
+        >
           <div className="interaction-mode-picker" role="radiogroup" aria-label={copy.chatgptPlan}>
             <button
               aria-checked={snapshot.state.biggerContextPlan !== "pro"}
@@ -2357,6 +2367,7 @@ function LanguageMenu({ copy, language, onChange }: { copy: Copy; language: Lang
   const options: Array<{ label: string; value: Language }> = [
     { label: copy.english, value: "en" },
     { label: copy.chinese, value: "zh-CN" },
+    { label: copy.traditionalChinese, value: "zh-TW" },
     { label: copy.japanese, value: "ja" },
   ];
   const selected = options.find((option) => option.value === language) ?? options[0];
@@ -2614,7 +2625,9 @@ function formatTime(value: string, language: Language): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
     ? value
-    : date.toLocaleTimeString(language === "ja" ? "ja-JP" : language === "zh-CN" ? "zh-CN" : "en", {
+    : date.toLocaleTimeString(
+      language === "ja" ? "ja-JP" : language === "zh-TW" ? "zh-TW" : language === "zh-CN" ? "zh-CN" : "en",
+      {
         hour: "2-digit",
         minute: "2-digit",
         second: "2-digit",
