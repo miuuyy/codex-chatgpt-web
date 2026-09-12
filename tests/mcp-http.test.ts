@@ -1,8 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { createChatGptMcpServer } from "../src/adapters/chatgpt-web/mcp-server";
+import { handleChatGptMcpRequest } from "../src/adapters/chatgpt-web/mcp-server";
 
 const servers: Array<ReturnType<typeof Bun.serve>> = [];
 
@@ -16,16 +15,10 @@ describe("ChatGPT Web MCP Streamable HTTP transport", () => {
       hostname: "127.0.0.1",
       port: 0,
       async fetch(request) {
-        const serverTransport = new WebStandardStreamableHTTPServerTransport({
-          sessionIdGenerator: undefined,
-          enableJsonResponse: true,
-        });
-        const mcpServer = createChatGptMcpServer({
+        return handleChatGptMcpRequest(request, {
           brokerSocketPath: "/tmp/codex-chatgpt-web-http-contract.sock",
           contract: "native",
         });
-        await mcpServer.connect(serverTransport);
-        return serverTransport.handleRequest(request);
       },
     });
     servers.push(http);
@@ -46,6 +39,7 @@ describe("ChatGPT Web MCP Streamable HTTP transport", () => {
         "codex_write_stdin",
       ]);
       for (const tool of listed.tools) {
+        expect(tool.inputSchema.$schema).toBeUndefined();
         expect(JSON.stringify(tool.inputSchema)).toContain("turn_token");
         expect(JSON.stringify(tool.inputSchema)).not.toContain("request_id");
       }

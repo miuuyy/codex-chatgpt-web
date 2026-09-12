@@ -54,8 +54,11 @@ The working-tree adapter attaches to a tab leased only from that DEV launcher. I
 mode the DEV launcher owns one stable loopback daemon, private turn broker, and Streamable HTTP
 `/mcp` endpoint. Named CLI chats attach to that broker through the existing remote broker protocol;
 they do not own an endpoint. ChatGPT selects the already-installed Routing_MCP connector, while
-`codex-chatgpt-web` is registered separately as an ordinary downstream Routing Plugin. DEV therefore
-requires neither a dedicated Tunnel nor a second ChatGPT connector.
+`codex-chatgpt-web` is registered separately as an ordinary downstream Routing Plugin. On this
+Routing-only HTTP surface, `tools/list` omits only the MCP SDK's top-level draft-07 `$schema`
+declaration so Routing can publish the same schema semantics under its existing default dialect;
+the stdio/Standalone contract is unchanged. DEV therefore requires neither a dedicated Tunnel nor
+a second ChatGPT connector.
 
 Only the responsibilities normally owned by native Codex are synthetic: named history storage,
 turn metadata, tool-result execution, context-threshold scheduling, and installation of compacted

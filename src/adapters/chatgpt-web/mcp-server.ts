@@ -936,17 +936,73 @@ export function createChatGptMcpServer(options: {
   return server;
 }
 
+const ROUTING_HTTP_DOWNSTREAM_SCHEMA_DIALECT = "http://json-schema.org/draft-07/schema#";
+
+async function isToolsListRequest(request: Request): Promise<boolean> {
+  const contentLength = Number.parseInt(request.headers.get("content-length") ?? "", 10);
+  if (Number.isFinite(contentLength) && contentLength > 4_096) return false;
+  try {
+    const payload = await request.clone().json() as { method?: unknown };
+    return payload?.method === "tools/list";
+  } catch {
+    return false;
+  }
+}
+
+function normalizeRoutingHttpSchema(schema: unknown): unknown {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return schema;
+  const normalized = structuredClone(schema as Record<string, unknown>);
+  if (normalized.$schema === ROUTING_HTTP_DOWNSTREAM_SCHEMA_DIALECT) delete normalized.$schema;
+  return normalized;
+}
+
+async function normalizeRoutingHttpToolListResponse(response: Response): Promise<Response> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) return response;
+  let payload: unknown;
+  try {
+    payload = await response.clone().json();
+  } catch {
+    return response;
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return response;
+  const result = (payload as { result?: unknown }).result;
+  if (!result || typeof result !== "object" || Array.isArray(result)) return response;
+  const tools = (result as { tools?: unknown }).tools;
+  if (!Array.isArray(tools)) return response;
+
+  const normalizedTools = tools.map((tool) => {
+    if (!tool || typeof tool !== "object" || Array.isArray(tool)) return tool;
+    const normalized = structuredClone(tool as Record<string, unknown>);
+    if ("inputSchema" in normalized) normalized.inputSchema = normalizeRoutingHttpSchema(normalized.inputSchema);
+    if ("outputSchema" in normalized) normalized.outputSchema = normalizeRoutingHttpSchema(normalized.outputSchema);
+    return normalized;
+  });
+  const normalizedPayload = structuredClone(payload as Record<string, unknown>);
+  normalizedPayload.result = { ...(result as Record<string, unknown>), tools: normalizedTools };
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  headers.delete("content-encoding");
+  return new Response(JSON.stringify(normalizedPayload), {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 export async function handleChatGptMcpRequest(
   request: Request,
   options: { brokerSocketPath: string; contract?: ChatGptMcpContract },
 ): Promise<Response> {
+  const normalizeToolList = await isToolsListRequest(request);
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     enableJsonResponse: true,
   });
   const server = createChatGptMcpServer(options);
   await server.connect(transport);
-  return transport.handleRequest(request);
+  const response = await transport.handleRequest(request);
+  return normalizeToolList ? normalizeRoutingHttpToolListResponse(response) : response;
 }
 
 export async function runChatGptMcpServer(options: {

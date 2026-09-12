@@ -209,7 +209,8 @@ diagnostics, and broker. It can run beside the normal launcher and never changes
 mode owns no local daemon; in this deployment DEV Full mode reuses the existing Routing_MCP ChatGPT
 connector and the DEV launcher owns one stable loopback daemon at the configured port;
 that daemon exposes the Codex bridge as Streamable HTTP `/mcp` for the normal Routing_MCP Plugin
-path. It does not create or require a DEV-specific Tunnel.
+path. Its HTTP `tools/list` omits only the SDK-emitted top-level draft-07 `$schema` declaration used
+by the unchanged stdio/Standalone contract. It does not create or require a DEV-specific Tunnel.
 
 `dev:chat` is a named, persistent synthetic outer-Codex harness. It executes the current working
 tree through that isolated launcher browser, Temporary Chat, prompt compiler, Responses parser, and
