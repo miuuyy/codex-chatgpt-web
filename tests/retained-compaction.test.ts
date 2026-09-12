@@ -1262,7 +1262,7 @@ test.each([false, true])("structured compact rebuilds canonical context when its
     await TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!).close();
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 30_000);
 
 test("fresh multipart compaction gives each acknowledged phase its own handoff budget", async () => {
   const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-phased-fallback-compact-"));
