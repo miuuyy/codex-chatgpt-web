@@ -861,6 +861,13 @@ function BrowserSurface({
       setError(messageOf(cause));
     }
   };
+  const newTab = async () => {
+    try {
+      await api!.newBrowserTab();
+    } catch (cause) {
+      setError(messageOf(cause));
+    }
+  };
   const selectTab = async (tabId: string) => {
     try {
       await api!.selectBrowserTab(tabId);
@@ -937,6 +944,16 @@ function BrowserSurface({
             ) : null}
           </div>
         ))}
+        <button
+          className="toolbar-text-button"
+          disabled={!browser || manualInteraction
+            || browser.tabs.filter(tab => tab.id !== "home").length >= browser.maxTabs}
+          onClick={() => void newTab()}
+          title={copy.newChatTabHint}
+          type="button"
+        >
+          {copy.newChatTab}
+        </button>
         <div className="browser-tab-drag draggable" />
       </div>
       <div className="browser-toolbar">

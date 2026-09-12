@@ -29,7 +29,7 @@ const CHATGPT_ORIGIN = "https://chatgpt.com";
 const IDLE_BROWSER_URL = "data:text/html;charset=utf-8,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22utf-8%22%3E%3Ctitle%3ECodex%20Web%20GPT%3C%2Ftitle%3E%3C%2Fhead%3E%3Cbody%3E%3C%2Fbody%3E%3C%2Fhtml%3E#codex-web-gpt-browser-host";
 const PRIMARY_VIEW_BOOTSTRAP_TIMEOUT_MS = 10_000;
 const MAX_BROWSER_VIEW_DIMENSION = 16_384;
-const MAX_BROWSER_TABS = 5;
+const MAX_BROWSER_TABS = 10;
 const MAX_CANCELLED_TURN_TRACES = 256;
 const MANUAL_SUBMIT_TIMEOUT_MS = 30_000;
 const MANUAL_COMPACTION_SUBMIT_TIMEOUT_MS = 120_000;
@@ -497,7 +497,7 @@ class BrowserHost {
   tabSnapshot(tab) {
     const snapshot = {
       id: tab.id,
-      traceId: tab.traceId,
+      traceId: tab.userManaged ? null : tab.traceId,
       title: tab.label,
       status: tab.status,
       loading: tab.loading === true,
@@ -520,7 +520,13 @@ class BrowserHost {
     return this.turnTabs.get(this.selectedTabId) || null;
   }
 
-  async createTurnTab(traceId, helperPid, conversationKey, connectorIdentity) {
+  async createTurnTab({
+    traceId,
+    helperPid,
+    conversationKey,
+    connectorIdentity,
+    userManaged = false,
+  }) {
     if (this.turnTabs.size >= MAX_BROWSER_TABS
       && !BrowserHost.prototype.evictOldestReclaimableTurnTab.call(this)) {
       throw new Error(
@@ -551,13 +557,14 @@ class BrowserHost {
       connectorBound: false,
       helperPid,
       view,
-      status: "running",
+      status: userManaged ? "ready" : "running",
+      userManaged,
       ordinal,
       label: `ChatGPT ${ordinal}`,
       pageTitle: "ChatGPT",
       url: IDLE_BROWSER_URL,
       loading: true,
-      message: "ChatGPT is working",
+      message: userManaged ? "Separate ChatGPT conversation" : "ChatGPT is working",
       interactionMode: "automatic",
       initializingSurface: true,
       bootstrapReady: false,
@@ -589,6 +596,28 @@ class BrowserHost {
       throw error;
     }
     return tab;
+  }
+
+  async newChatTab() {
+    await this.ready();
+    requireAutomaticBrowserInspection(this, "Additional ChatGPT tabs");
+    if (this.manualOperation) {
+      throw new Error(`ChatGPT browser is busy with ${this.manualOperation}`);
+    }
+    const tab = await this.createTurnTab({
+      traceId: `user_${randomBytes(12).toString("base64url")}`,
+      helperPid: process.pid,
+      userManaged: true,
+    });
+    this.show();
+    try {
+      // Reuse the owned login partition, not another tab's conversation or task lease.
+      await tab.view.webContents.loadURL(TEMPORARY_CHAT_URL);
+    } catch (error) {
+      if (this.turnTabs.get(tab.id) === tab) this.removeTurnTab(tab, false);
+      throw error;
+    }
+    return this.snapshot();
   }
 
   createManualTurnTab(traceId, helperPid, conversationKey, prompt, manualSubmitTimeoutMs) {
@@ -694,7 +723,7 @@ class BrowserHost {
 
   evictOldestRetainedTurnTab() {
     const retained = [...this.turnTabs.values()]
-      .filter(tab => tab.status === "ready")
+      .filter(tab => tab.status === "ready" && !tab.userManaged)
       .sort((left, right) => (left.lastHeartbeatAt ?? 0) - (right.lastHeartbeatAt ?? 0))[0];
     if (!retained) return false;
     this.removeTurnTab(retained, false);
@@ -1347,6 +1376,8 @@ class BrowserHost {
       return;
     }
     for (const tab of [...this.turnTabs.values()]) {
+      // User-opened tabs have no helper heartbeat and remain until explicitly closed.
+      if (tab.userManaged) continue;
       if (tab.interactionMode === "manual") {
         if (tab.status === "ready") {
           if (now - (tab.lastHeartbeatAt ?? 0) < RETAINED_TURN_TAB_TTL_MS) continue;
@@ -1465,7 +1496,7 @@ class BrowserHost {
       }
       tab.view.setBounds(bounds);
     }
-    tab.view.setVisible(visible || tab.status === "running");
+    tab.view.setVisible(visible || tab.status === "running" || tab.userManaged === true);
   }
 
   presentPrimaryView(visible) {
@@ -1808,8 +1839,9 @@ class BrowserHost {
   }
 
   navigate(action) {
-    if (this.activeTraceId) {
-      throw new Error("Browser navigation is locked while ChatGPT is running a Codex turn");
+    const selected = this.selectedTurnTab();
+    if (selected?.status === "running" || (!selected && this.activeTraceId)) {
+      throw new Error("Browser navigation is locked for the active Codex turn");
     }
     if (this.manualOperation) {
       throw new Error(`Browser navigation is locked during ${this.manualOperation}`);
@@ -2265,7 +2297,7 @@ class BrowserHost {
       if (!existing.view.webContents.isDestroyed()) {
         existing.view.webContents.setBackgroundThrottling(false);
       }
-      this.selectedTabId = existing.id;
+      if (reveal || !this.visible) this.selectedTabId = existing.id;
       if (reveal) this.show();
       else this.syncViewVisibility();
       this.publishState?.(this.snapshot());
@@ -2283,8 +2315,13 @@ class BrowserHost {
       error.code = "retained_conversation_unavailable";
       throw error;
     }
-    const tab = await this.createTurnTab(traceId, helperPid, conversationKey, connectorIdentity);
-    this.selectedTabId = tab.id;
+    const tab = await this.createTurnTab({
+      traceId,
+      helperPid,
+      conversationKey,
+      connectorIdentity,
+    });
+    if (reveal || !this.visible) this.selectedTabId = tab.id;
     if (reveal) this.show();
     else this.syncViewVisibility();
     this.publishState?.(this.snapshot());
@@ -2332,7 +2369,7 @@ class BrowserHost {
       && (!tab.connectorIdentity || connectorBound)) {
       tab.connectorBound = connectorBound === true;
       tab.lastHeartbeatAt = Date.now();
-      if (hideAfterTurn && !this.activeTraceId) this.hide();
+      if (hideAfterTurn && !this.activeTraceId && !this.selectedTurnTab()?.userManaged) this.hide();
       this.logger.info("browser.tab_retained", { tabId: tab.id, traceId });
       this.publishState?.(this.snapshot());
       this.writeDescriptor();
@@ -2341,7 +2378,7 @@ class BrowserHost {
     // A browser tab represents an active Codex turn, not durable task history. The result already
     // lives in Codex, so release the terminal browser document without touching concurrent turns.
     this.removeTurnTab(tab, false);
-    if (hideAfterTurn && !this.activeTraceId) this.hide();
+    if (hideAfterTurn && !this.activeTraceId && !this.selectedTurnTab()?.userManaged) this.hide();
     this.logger.info("browser.tab_released", { tabId: tab.id, traceId, status: tab.status });
     return { cancelledByUser };
   }

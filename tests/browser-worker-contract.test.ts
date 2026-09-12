@@ -131,8 +131,8 @@ test("a retained MCP conversation reuses its proven connector binding", () => {
   expect(chatGptConnectorAttachmentMode(false, false)).toBe("none");
 });
 
-test("browser turns run concurrently up to the five-tab limit", async () => {
-  expect(MAX_CHATGPT_BROWSER_TABS).toBe(5);
+test("browser turns run concurrently up to the ten-tab limit", async () => {
+  expect(MAX_CHATGPT_BROWSER_TABS).toBe(10);
   const releases = new Map<string, () => void>();
   const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
     config: { browserHost: "managed-chrome" },
@@ -149,20 +149,25 @@ test("browser turns run concurrently up to the five-tab limit", async () => {
     onTextDelta() {},
   });
 
-  const active = Array.from({ length: 5 }, (_unused, index) => worker.run(browserTurn(`trace_${index + 1}`)));
+  const active = Array.from(
+    { length: MAX_CHATGPT_BROWSER_TABS },
+    (_unused, index) => worker.run(browserTurn(`trace_${index + 1}`)),
+  );
   await Promise.resolve();
-  expect(releases.size).toBe(5);
-  await expect(worker.run(browserTurn("trace_6"))).rejects.toThrow("at most 5 simultaneous browser turns");
+  expect(releases.size).toBe(MAX_CHATGPT_BROWSER_TABS);
+  const overflowTrace = `trace_${MAX_CHATGPT_BROWSER_TABS + 1}`;
+  await expect(worker.run(browserTurn(overflowTrace)))
+    .rejects.toThrow(`at most ${MAX_CHATGPT_BROWSER_TABS} simultaneous browser turns`);
 
   releases.get("trace_1")?.();
   await active[0];
-  const sixth = worker.run(browserTurn("trace_6"));
+  const overflow = worker.run(browserTurn(overflowTrace));
   await Promise.resolve();
-  expect(releases.has("trace_6")).toBeTrue();
-  for (const traceId of ["trace_2", "trace_3", "trace_4", "trace_5", "trace_6"]) {
+  expect(releases.has(overflowTrace)).toBeTrue();
+  for (const traceId of [...active.slice(1).map((_turn, index) => `trace_${index + 2}`), overflowTrace]) {
     releases.get(traceId)?.();
   }
-  await Promise.all([...active.slice(1), sixth]);
+  await Promise.all([...active.slice(1), overflow]);
 });
 
 test("browser turns have no absolute deadline unless one is explicitly configured", () => {

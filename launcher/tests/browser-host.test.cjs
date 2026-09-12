@@ -2138,8 +2138,13 @@ test("a retained conversation is not reused for a different connector identity",
     manualOperation: null,
     turnTabs: new Map([[retained.id, retained]]),
     userCancelledTurnOwners: new Map(),
-    createTurnTab: (...args) => {
-      assert.deepEqual(args, ["trace_next", 222, conversationKey, "Other Connector"]);
+    createTurnTab: (options) => {
+      assert.deepEqual(options, {
+        traceId: "trace_next",
+        helperPid: 222,
+        conversationKey,
+        connectorIdentity: "Other Connector",
+      });
       return created;
     },
     writeDescriptor() {},
@@ -2289,15 +2294,53 @@ test("a required retained conversation fails before creating a browser tab", asy
   assert.equal(created, false);
 });
 
-test("five browser tabs are a hard account-safety limit", async () => {
-  const turnTabs = new Map(Array.from({ length: 5 }, (_unused, index) => [
+test("a new user tab does not replace the selected tab", async () => {
+  const selectedTab = { id: "selected" };
+  const createdTab = {
+    id: "created",
+    view: { webContents: { loadURL: async () => {} } },
+  };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    manualOperation: null,
+    selectedTabId: selectedTab.id,
+    turnTabs: new Map([[selectedTab.id, selectedTab]]),
+    ready: async () => {},
+    requireAutomaticBrowserInspection: () => {},
+    createTurnTab: async (options) => {
+      assert.match(options.traceId, /^user_/);
+      assert.equal(options.helperPid, process.pid);
+      assert.equal(options.userManaged, true);
+      assert.equal("conversationKey" in options, false);
+      assert.equal("connectorIdentity" in options, false);
+      fixture.turnTabs.set(createdTab.id, createdTab);
+      return createdTab;
+    },
+    show: () => {},
+    snapshot: () => ({ activeTabId: fixture.selectedTabId }),
+  });
+
+  const snapshot = await BrowserHost.prototype.newChatTab.call(fixture);
+
+  assert.deepEqual(snapshot, { activeTabId: selectedTab.id });
+  assert.equal(fixture.selectedTabId, selectedTab.id);
+  assert.equal(fixture.turnTabs.has(createdTab.id), true);
+});
+
+test("ten browser tabs are a hard account-safety limit", async () => {
+  const turnTabs = new Map(Array.from({ length: 10 }, (_unused, index) => [
     `tab-${index + 1}`,
     { ordinal: index + 1 },
   ]));
 
   await assert.rejects(
-    BrowserHost.prototype.createTurnTab.call({ turnTabs }, "trace_six", 444),
-    /already has 5 browser tabs.*avoid excessive parallel traffic/,
+    BrowserHost.prototype.createTurnTab.call({
+      turnTabs,
+      evictOldestReclaimableTurnTab: () => false,
+    }, {
+      traceId: "trace_six",
+      helperPid: 444,
+    }),
+    /already has 10 browser tabs.*avoid excessive parallel traffic/,
   );
 });
 

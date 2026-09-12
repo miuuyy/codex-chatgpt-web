@@ -157,7 +157,7 @@ still requires its own diagnosis; changing the native protocol does not increase
 
 ## ChatGPT says the account is temporarily limited
 
-The bridge permits at most five simultaneous browser tabs as an account-safety ceiling. Five is not
+The bridge permits at most ten simultaneous browser tabs as an account-safety ceiling. Ten is not
 a recommended concurrency setting, and ChatGPT does not expose a stable numeric quota or cooldown.
 Some accounts have reached a limit with only two turns started close together.
 
