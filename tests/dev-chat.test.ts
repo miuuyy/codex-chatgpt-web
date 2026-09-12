@@ -220,7 +220,7 @@ test("an existing DEV chat changes route only when the user explicitly requests 
   });
 });
 
-test("Bigger Context triples the DEV compaction window and fails closed for Luna", async () => {
+test("Bigger Context uses the conservative DEV budget and fails closed for Luna", async () => {
   const root = scratch("cgw-dev-bigger-context");
   const config = {
     ...defaultConfig("browser-only"),
@@ -248,10 +248,10 @@ test("Bigger Context triples the DEV compaction window and fails closed for Luna
   const biggerState = bigger.open("bigger-window", "chatgpt-web/high").state;
   const biggerStatus = bigger.status(biggerState);
   expect(biggerStatus).toMatchObject({
-    autoCompactTokenLimit: 285_000,
-    contextWindow: 333_579,
+    autoCompactTokenLimit: 240_000,
+    contextWindow: 270_000,
   });
-  expect(biggerStatus.percent).toBe(Math.round((biggerStatus.inputTokens / 285_000) * 1_000) / 10);
+  expect(biggerStatus.percent).toBe(Math.round((biggerStatus.inputTokens / 240_000) * 1_000) / 10);
   const luna = new DevChatDriver({
     ...biggerConfig,
     solAvailable: false,

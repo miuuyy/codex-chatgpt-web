@@ -766,6 +766,18 @@ function registerIpc({ logger, stateStore }) {
     if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
     return state;
   });
+  handle("launcher:bigger-context-plan", async (_event, plan) => {
+    if (plan !== "plus" && plan !== "pro") throw new Error("ChatGPT plan must be plus or pro");
+    const result = await runtimeHost.setBiggerContextPlan(plan);
+    const state = stateStore.update({
+      biggerContextPlan: result.plan,
+      codexCatalogVerified: IS_DEV_PROFILE ? true : false,
+      codexRestartRequired: IS_DEV_PROFILE ? false : true,
+    });
+    send("launcher:state-changed", state);
+    if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
+    return state;
+  });
   handle("launcher:zero-risk-pro", async (_event, enabled) => {
     const browserOperation = browserHost.currentOperation();
     if (browserHost.activeTraceId || browserOperation) {
@@ -1083,7 +1095,8 @@ async function start() {
     browserHost.destroy();
     await browserControl.close();
     mainWindow.destroy();
-    app.quit();
+    // Windows smoke waits on process exit; app.quit() can hang on helper processes.
+    app.exit(0);
     return;
   }
   if (IS_DEV_PROFILE) {

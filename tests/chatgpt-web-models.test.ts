@@ -195,15 +195,37 @@ describe("fixed ChatGPT Web model routes", () => {
     });
   });
 
-  test("triples Sol context and compaction limits only when Bigger Context is enabled", () => {
-    expect(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, "max", {
-      ...pro,
-      experimentalBiggerContext: true,
-    })).toEqual({
-      contextWindow: 336_579,
-      effectiveContextWindowPercent: 85,
-      autoCompactTokenLimit: 285_000,
+  test("Bigger Context keeps original 3× windows for Plus and Instant 123k / 400k for Pro", () => {
+    const plusBigger = { ...plus, experimentalBiggerContext: true, biggerContextPlan: "plus" as const };
+    expect(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, "low", plusBigger)).toEqual({
+      contextWindow: 123_000,
+      effectiveContextWindowPercent: 78,
+      autoCompactTokenLimit: 96_000,
     });
+    expect(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, "high", plusBigger)).toEqual({
+      contextWindow: 270_000,
+      effectiveContextWindowPercent: 89,
+      autoCompactTokenLimit: 240_000,
+    });
+    // A conservative Plus selection must not grow simply because Pro is available.
+    for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
+      expect(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, effort, {
+        ...pro, experimentalBiggerContext: true, biggerContextPlan: "plus",
+      }).contextWindow).toBe(effort === "low" ? 123_000 : 270_000);
+    }
+    const proBigger = { ...pro, experimentalBiggerContext: true, biggerContextPlan: "pro" as const };
+    expect(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, "low", proBigger)).toEqual({
+      contextWindow: 123_000,
+      effectiveContextWindowPercent: 90,
+      autoCompactTokenLimit: 110_700,
+    });
+    for (const effort of ["medium", "high", "xhigh", "max"] as const) {
+      expect(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, effort, proBigger)).toEqual({
+        contextWindow: 400_000,
+        effectiveContextWindowPercent: 90,
+        autoCompactTokenLimit: 360_000,
+      });
+    }
     expect(resolveChatGptWebContextLimits(CHATGPT_WEB_LUNA_BACKEND_MODEL, "low", {
       solAvailable: false,
       proAvailable: false,
