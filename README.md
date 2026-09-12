@@ -205,9 +205,9 @@ bun run app:package
 
 `dev:launcher` starts a second launcher profile under `~/.codex-chatgpt-web-dev`: separate Electron
 state, browser cookies/login, ChatGPT account, configuration, sandboxed `CODEX_HOME`, chats,
-diagnostics, and broker. It can run beside the normal launcher and never starts a Responses daemon
-or changes Codex. In this deployment, DEV Full mode reuses the existing Routing_MCP ChatGPT
-connector. In Full mode the DEV launcher owns one stable loopback daemon at the configured port;
+diagnostics, and broker. It can run beside the normal launcher and never changes Codex. Browser-only
+mode owns no local daemon; in this deployment DEV Full mode reuses the existing Routing_MCP ChatGPT
+connector and the DEV launcher owns one stable loopback daemon at the configured port;
 that daemon exposes the Codex bridge as Streamable HTTP `/mcp` for the normal Routing_MCP Plugin
 path. It does not create or require a DEV-specific Tunnel.
 

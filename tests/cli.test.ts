@@ -261,6 +261,76 @@ test("DEV status reports the isolated home without creating a Codex route", asyn
   }
 });
 
+test("DEV Routing status reports ready only from the launcher-owned Full runtime health", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-dev-routing-status-"));
+  const devHome = join(root, "dev");
+  const descriptorPath = join(devHome, "runtime", "launcher-browser.json");
+  const helperScript = join(root, "helper.cjs");
+  const health = createServer((request, response) => {
+    expect(request.url).toBe("/healthz");
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      status: "ok",
+      service: "codex-chatgpt-web",
+      mode: "full",
+      accepting_turns: true,
+    }));
+  });
+  await new Promise<void>((resolveListen, rejectListen) => {
+    health.once("error", rejectListen);
+    health.listen(0, "127.0.0.1", resolveListen);
+  });
+  try {
+    const address = health.address();
+    if (!address || typeof address === "string") throw new Error("health server has no port");
+    mkdirSync(join(devHome, "runtime"), { recursive: true });
+    writeFileSync(helperScript, "module.exports = {};\n", { mode: 0o700 });
+    const config = {
+      ...defaultConfig("full"),
+      purpose: "dev-harness" as const,
+      host: "127.0.0.1",
+      port: address.port,
+      appName: "Routing MCP APP Phase1",
+      automaticAppName: "Routing MCP APP Phase1",
+      browserHost: "launcher" as const,
+      browserHostDescriptorPath: descriptorPath,
+    };
+    delete config.tunnel;
+    delete config.automaticTunnel;
+    delete config.manualTunnel;
+    writeFileSync(join(devHome, "config.json"), `${JSON.stringify(config)}\n`, { mode: 0o600 });
+    writeFileSync(descriptorPath, `${JSON.stringify({
+      version: 3,
+      kind: "codex-web-gpt-launcher",
+      profile: "development",
+      pid: process.pid,
+      endpoint: "http://127.0.0.1:48121",
+      control: { endpoint: "http://127.0.0.1:48122", token: "dev-routing-status-token-0123456789abcdefghijklmnop" },
+      helper: { executable: process.execPath, script: helperScript },
+      partition: "persist:codex-web-gpt-dev-chatgpt",
+      idleUrl: LAUNCHER_BROWSER_IDLE_URL,
+      surfaceId: "e".repeat(32),
+      surfaceTargets: { ["e".repeat(32)]: "native-owned-target" },
+      createdAt: new Date().toISOString(),
+    })}\n`, { mode: 0o600 });
+    const result = await runCli(["dev", "status", "--json"], {
+      ...process.env,
+      CODEX_WEB_GPT_DEV_HOME: devHome,
+      CODEX_CHATGPT_WEB_HOME: join(root, "production"),
+      CODEX_HOME: join(root, "production-codex"),
+    });
+    expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" });
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      launcher: { running: true, profile: "development" },
+      config: { configured: true, mode: "full", purpose: "dev-harness" },
+      mcpRuntime: { required: true, ready: true },
+    });
+  } finally {
+    await new Promise<void>(resolveClose => health.close(() => resolveClose()));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("DEV chat explains the isolated launcher setup when its profile is empty", async () => {
   const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-dev-empty-"));
   try {
@@ -352,7 +422,7 @@ test("DEV browser-only setup persists only the isolated harness profile", async 
       CODEX_HOME: join(root, "production-codex"),
     });
     expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" });
-    expect(result.stdout).toContain("No Codex route, Responses listener, or system service was installed");
+    expect(result.stdout).toContain("Setup installed no Codex route or system service and started no listener itself");
     expect(result.stdout).toContain("No standalone Tunnel was installed");
     expect(inspections).toBe(1);
     expect(JSON.parse(readFileSync(join(devHome, "config.json"), "utf8"))).toMatchObject({

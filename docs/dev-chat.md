@@ -168,10 +168,12 @@ The DEV driver:
 - does not call setup, route connect/disconnect, service start/stop, or uninstall;
 - never starts a Responses daemon from the named-chat CLI; in Full Routing mode the DEV launcher
   owns the configured loopback daemon and Plugin `/mcp` endpoint;
-- rejects any attempt to start the Responses server from a `dev-harness` config;
+- rejects direct/unowned attempts to start the Responses server from a `dev-harness` config; only
+  the DEV launcher may start the stable Full Routing daemon;
 - does not edit the normal `~/.codex/config.toml` or integration journal;
 - leases an isolated DEV-launcher browser tab and runs the working-tree browser helper;
-- owns the private DEV broker socket only for the command's lifetime;
+- attaches named chats to the private DEV broker socket owned by the launcher; closing a chat never
+  owns or tears down that broker;
 - uses the existing ChatGPT-facing Routing_MCP connector and creates no DEV-specific Tunnel or alias;
 - keeps the downstream Routing Plugin identity separate from that connector display name;
 - can run beside the production launcher because its home, browser partition, descriptor, broker

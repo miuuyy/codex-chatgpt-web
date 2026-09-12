@@ -159,7 +159,7 @@ function printHeader(
   if (biggerContext) {
     stdout.write(`${yellow("Bigger Context experimental")} · adaptive 1/2/3-message context · same-agent compaction handoff · elevated rate-limit/cooldown risk\n`);
   }
-  stdout.write(`${dim("Codex route is untouched. No Responses port is bound, replaced, stopped, or restarted.")}\n`);
+  stdout.write(`${dim("Codex route is untouched. The named chat does not own, replace, stop, or restart the launcher-owned Responses/MCP listener.")}\n`);
 }
 
 async function assertLauncherReady(config: ReturnType<typeof loadConfig>): Promise<void> {
@@ -261,6 +261,26 @@ async function interactive(driver: DevChatDriver, state: DevChatState): Promise<
   }
 }
 
+async function inspectDevRoutingRuntime(config: ReturnType<typeof loadConfig>): Promise<{ ready: boolean; detail: string }> {
+  if (config.host !== "127.0.0.1") return { ready: false, detail: "DEV Routing runtime host is not loopback" };
+  try {
+    const response = await fetch(`http://${config.host}:${config.port}/healthz`, {
+      method: "GET",
+      signal: AbortSignal.timeout(1_000),
+    });
+    if (!response.ok) return { ready: false, detail: `launcher-owned runtime health returned HTTP ${response.status}` };
+    const health = await response.json() as Record<string, unknown>;
+    const ready = health.service === "codex-chatgpt-web"
+      && health.mode === "full"
+      && health.accepting_turns === true;
+    return ready
+      ? { ready: true, detail: `launcher-owned Routing_MCP endpoint ready at http://${config.host}:${config.port}/mcp` }
+      : { ready: false, detail: "launcher-owned runtime health does not match DEV Full Routing mode" };
+  } catch (error) {
+    return { ready: false, detail: `launcher-owned Routing_MCP endpoint unavailable: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
 export async function runDevCommand(args: string[]): Promise<void> {
   const action = args.shift() ?? "help";
   const paths = resolveDevProfilePaths();
@@ -318,8 +338,11 @@ export async function runDevCommand(args: string[]): Promise<void> {
           if (loaded.tunnel) {
             const inspected = tunnelStatus(loaded);
             mcpRuntime = { required: true, ready: inspected.ok && inspected.ready, detail: `legacy tunnel: ${inspected.detail}` };
+          } else if (!launcher.running) {
+            mcpRuntime = { required: true, ready: false, detail: "DEV launcher is not running" };
           } else {
-            mcpRuntime = { required: true, ready: true, detail: "Routing_MCP endpoint starts with each named DEV chat" };
+            const inspected = await inspectDevRoutingRuntime(loaded);
+            mcpRuntime = { required: true, ready: inspected.ready, detail: inspected.detail };
           }
         }
       } catch (error) {
@@ -335,7 +358,9 @@ export async function runDevCommand(args: string[]): Promise<void> {
       stdout.write(`config: ${config.configured ? `${config.mode} (${config.purpose})` : `not ready${config.error ? ` · ${config.error}` : ""}`}\n`);
       stdout.write(`MCP runtime: ${mcpRuntime.required ? (mcpRuntime.ready ? "ready" : `not ready${mcpRuntime.detail ? ` · ${mcpRuntime.detail}` : ""}`) : "not required"}\n`);
       stdout.write(`Bigger Context: ${features.biggerContext ? "enabled (experimental, adaptive 1/2/3 messages; same-agent compaction handoff)" : "disabled"}\n`);
-      stdout.write("Codex route: isolated and unused\nResponses listener: not started\n");
+      stdout.write("Codex route: isolated and unused\n");
+      if (config.mode === "full") stdout.write(`Responses/MCP listener: ${mcpRuntime.ready ? "launcher-owned and ready" : "not ready"}\n`);
+      else stdout.write("Responses/MCP listener: not required\n");
     }
     return;
   }
@@ -374,8 +399,8 @@ export async function runDevCommand(args: string[]): Promise<void> {
     });
     stdout.write(
       `Isolated DEV profile configured (${result.mode}) at ${result.configPath}.\n`
-      + "No Codex route, Responses listener, or system service was installed."
-      + " No standalone Tunnel was installed; in Full mode, each DEV chat exposes its MCP endpoint through the existing Routing_MCP connector.\n",
+      + "Setup installed no Codex route or system service and started no listener itself."
+      + " No standalone Tunnel was installed; in Full mode, the DEV launcher owns the stable /mcp endpoint used by the existing Routing_MCP connector.\n",
     );
     return;
   }

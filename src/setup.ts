@@ -625,9 +625,10 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
 }
 
 /**
- * Configure the isolated launcher/browser/tunnel inputs used by the repository DEV harness.
- * This deliberately has no Codex integration, Responses listener, or system service; the DEV
- * launcher supervises only the isolated MCP tunnel after this transaction commits.
+ * Configure the isolated launcher/browser inputs used by the repository DEV harness.
+ * This transaction installs no Codex route or system service and starts no listener itself.
+ * In Full Routing mode the DEV launcher subsequently owns the stable loopback daemon, broker,
+ * and /mcp endpoint; legacy tunnel-bearing profiles remain compatibility-only until migrated.
  */
 export async function setupDevProfile(options: SetupOptions): Promise<DevProfileSetupResult> {
   const existing = loadExistingConfig();
