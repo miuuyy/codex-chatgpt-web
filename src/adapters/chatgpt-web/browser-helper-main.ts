@@ -6,7 +6,7 @@ import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError } from "./adap
 import type { ChatGptWebCapabilities } from "./model";
 import { createProcessLineWriter } from "./process-line-writer";
 import { createBrowserHelperPromptSelection } from "./browser-helper-prompt-selection";
-import type { CompiledChatGptWebPrompt } from "./prompt";
+import { isChatGptWebMultipartPartCount, type CompiledChatGptWebPrompt } from "./prompt";
 import { ChatGptMirroredTurnProgress } from "./turn-progress";
 import type { ChatGptExternalTurnProgressSnapshot } from "./turn-progress";
 
@@ -402,7 +402,7 @@ input.on("line", line => {
     if (prepared.multipart !== undefined) {
       const multipart = prepared.multipart;
       if (!multipart || !Array.isArray(multipart.parts)
-        || (multipart.parts.length !== 2 && multipart.parts.length !== 3)
+        || !isChatGptWebMultipartPartCount(multipart.parts.length)
         || multipart.parts.some(part => typeof part !== "string")
         || typeof multipart.commit !== "string") {
         writeProtocol({ type: "error", id: message.id, message: "Browser helper multipart prompt is invalid" });

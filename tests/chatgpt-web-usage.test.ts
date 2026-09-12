@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { estimateChatGptWebInputTokens, resolveBiggerContextMultipartParts } from "../src/adapters/chatgpt-web/usage";
-import { compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
+import { compileChatGptWebPrompt, reconstructChatGptWebMultipartRecords } from "../src/adapters/chatgpt-web/prompt";
 import { compiledChatGptWebMessages, estimateChatGptWebImageTokens, estimateCompiledChatGptWebInputTokens } from "../src/adapters/chatgpt-web/input-tokens";
 import { assertChatGptWebMultipartInputWithinLimits, resolveChatGptWebMultipartStagingMode } from "../src/adapters/chatgpt-web/browser-worker";
 import { estimateTokens } from "../src/lib/token-estimate";
@@ -15,6 +15,13 @@ function request(text: string): CodexParsedRequest {
     context: { messages: [{ role: "user", content: text, timestamp: 1 }] },
     options: { reasoning: "high" },
   };
+}
+
+function reconstructedMessageContents(parts: readonly string[]): unknown[] {
+  return reconstructChatGptWebMultipartRecords(parts).map(record => {
+    if (record.kind !== "message") throw new Error("expected message records");
+    return record.message.content;
+  });
 }
 
 test.each([
@@ -37,10 +44,25 @@ test("multipart selection accounts for whole-record and composer fit before subm
     expect(parts).toBe(expected);
     const compiled = compileChatGptWebPrompt(parsed, plus, undefined, { experimentalMultipartParts: parts });
     if (parts) {
-      expect(compiled.multipart!.parts.flatMap(part => JSON.parse(part).records).map(record => record.message.content))
-        .toEqual([...contents]);
+      expect(reconstructedMessageContents(compiled.multipart!.parts)).toEqual([...contents]);
     }
   }
+}, 30_000);
+
+test("multipart selection uses more than three parts when whole records need them", () => {
+  const parsed = request("");
+  parsed.context.messages = Array.from({ length: 8 }, (_, index) => ({
+    role: "user" as const,
+    content: `record-${index}-${"word ".repeat(40_000)}`,
+    timestamp: index + 1,
+  }));
+  const parts = resolveBiggerContextMultipartParts(parsed, capabilities);
+  expect(parts).toBeGreaterThanOrEqual(4);
+  expect(parts).toBeLessThanOrEqual(8);
+  const compiled = compileChatGptWebPrompt(parsed, capabilities, undefined, { experimentalMultipartParts: parts });
+  expect(compiled.multipart!.parts).toHaveLength(parts!);
+  expect(reconstructedMessageContents(compiled.multipart!.parts))
+    .toEqual(parsed.context.messages.map(message => message.content));
 }, 30_000);
 
 test("Bigger Context compaction selects three parts before the legacy inline byte budget", () => {
@@ -50,7 +72,7 @@ test("Bigger Context compaction selects three parts before the legacy inline byt
   expect(parts).toBe(3);
   const compiled = compileChatGptWebPrompt(parsed, capabilities, undefined, { experimentalMultipartParts: parts });
   expect(compiled.trimmedCompactionMessages).toBeUndefined();
-  expect(compiled.multipart!.parts.flatMap(part => JSON.parse(part).records).map(record => record.message.content))
+  expect(reconstructedMessageContents(compiled.multipart!.parts))
     .toEqual([parsed.context.messages[0]!.content]);
 });
 
