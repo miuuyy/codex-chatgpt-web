@@ -356,6 +356,7 @@ export function createChatGptWebAdapter(
     localToolsEnabled: provider.chatgptWeb?.localToolsEnabled === true,
     solAvailable: provider.chatgptWeb?.solAvailable !== false,
     proAvailable: provider.chatgptWeb?.proAvailable === true,
+    allowWebSubagents: provider.chatgptWeb?.allowWebSubagents === true,
   };
   const manualInteraction = provider.chatgptWeb?.browserInteractionMode === "manual";
   const executionNamespace = chatGptWebExecutionNamespace(provider);

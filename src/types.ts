@@ -304,5 +304,6 @@ export interface CodexProviderConfig {
     /** DEV-only experimental transport: adapt one context across one, two, or three ChatGPT messages. */
     experimentalBiggerContext?: boolean;
     biggerContextPlan?: "plus" | "pro";
+    allowWebSubagents?: boolean;
   };
 }

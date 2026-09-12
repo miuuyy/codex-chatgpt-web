@@ -701,6 +701,10 @@ export function compileChatGptWebPrompt(
       "Continue using the available tools until the requested work is complete and verified.",
       "Write the user-facing final answer only after the last required tool result has settled. Do not call another tool after beginning that final answer.",
       "Complete this task directly in the current parent response.",
+      ...(capabilities.allowWebSubagents ? [] : [
+        "Do not create, spawn, delegate to, or wait on sub-agents. ChatGPT Web cannot run Codex spawn_agent.",
+        "Use non-agent tools directly instead.",
+      ]),
     ]
     : [
       `This is ChatGPT Web ${mode.displayLabel} with no Codex Native bridge to the user's local computer attached to this response. This restriction applies only to local Codex files, commands, processes, and computer mutations.`,
@@ -709,6 +713,10 @@ export function compileChatGptWebPrompt(
       "Do not claim a new local inspection, command, edit, or verification unless it actually appears in the task history. If the latest request requires fresh local-computer access or a local mutation, state only that exact limitation instead of inventing success.",
       "Otherwise perform the full requested research, analysis, or synthesis with every capability actually available to you; do not stop at a plan or progress report.",
       "Complete this task directly in the current parent response.",
+      ...(capabilities.allowWebSubagents ? [] : [
+        "Do not create, spawn, delegate to, or wait on sub-agents. ChatGPT Web cannot run Codex spawn_agent.",
+        "Use non-agent tools directly instead.",
+      ]),
     ];
   const outputControlContract = parsed._compactionRequest
   ? []

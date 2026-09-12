@@ -255,6 +255,14 @@ function validateConfig(config, descriptorPath, platform = process.platform, lau
     && typeof config.experimentalBiggerContext !== "boolean") {
     throw new Error("Runtime configuration has an invalid experimentalBiggerContext");
   }
+  if (config.biggerContextPlan !== undefined
+    && config.biggerContextPlan !== "plus"
+    && config.biggerContextPlan !== "pro") {
+    throw new Error("Runtime configuration has an invalid biggerContextPlan");
+  }
+  if (config.allowWebSubagents !== undefined && typeof config.allowWebSubagents !== "boolean") {
+    throw new Error("Runtime configuration has an invalid allowWebSubagents");
+  }
   if (config.stallTimeoutSec !== undefined
     && (!Number.isFinite(config.stallTimeoutSec) || config.stallTimeoutSec <= 0)) {
     throw new Error("Runtime configuration has an invalid stallTimeoutSec");

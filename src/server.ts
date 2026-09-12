@@ -485,7 +485,7 @@ export async function responseRequest(
   let parsed: CodexParsedRequest;
   let route: ChatGptWebModelRoute;
   try {
-    parsed = parseRequest(expanded);
+    parsed = parseRequest(expanded, { allowWebSubagents: config.allowWebSubagents === true });
     route = routeChatGptWebRequest(parsed, config);
     const identity = extractChatGptTurnIdentity(parsed);
     if (identity.threadId && identity.turnId) {

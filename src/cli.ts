@@ -310,6 +310,12 @@ async function setupCommand(args: string[]): Promise<void> {
     }
     options.biggerContextPlan = biggerContextPlan;
   }
+  const allowWebSubagents = takeFlag(args, "--allow-web-subagents");
+  const noWebSubagents = takeFlag(args, "--no-web-subagents");
+  if (allowWebSubagents && noWebSubagents) {
+    throw new Error("Choose at most one sub-agent mode: --allow-web-subagents or --no-web-subagents");
+  }
+  if (allowWebSubagents || noWebSubagents) options.allowWebSubagents = allowWebSubagents;
   const zeroRiskPro = takeFlag(args, "--zero-risk-pro");
   const zeroRiskDefault = takeFlag(args, "--zero-risk-default");
   if (zeroRiskPro && zeroRiskDefault) {

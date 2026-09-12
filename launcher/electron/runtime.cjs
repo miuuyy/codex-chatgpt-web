@@ -1119,6 +1119,7 @@ class RuntimeHost {
       ...(this.launcherProfile === "production" ? ["--replace-codex-route", "--restart-service"] : []),
     ];
     if (current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
+    if (current.config?.allowWebSubagents === true) args.push("--allow-web-subagents");
     const options = {
       message: plan === "pro" ? "Switching Bigger Context to the Pro windows" : "Restoring Plus Bigger Context windows",
       successMessage: plan === "pro"
@@ -1130,6 +1131,41 @@ class RuntimeHost {
       ? await this.runDevSetup("bigger-context-plan", args, options)
       : await this.runSetup("bigger-context-plan", args, options);
     return { ...result, mode, plan };
+  }
+
+  async setAllowWebSubagents(enabled) {
+    const current = this.runtimeConfigSnapshot();
+    if (!current.configured) {
+      throw new Error("Initialize the runtime before changing ChatGPT Web sub-agents");
+    }
+    const mode = current.mode;
+    const contextFlag = current.config?.experimentalBiggerContext === true
+      ? "--bigger-context"
+      : "--standard-context";
+    const args = [
+      ...(this.launcherProfile === "development" ? ["dev", "setup"] : ["setup"]),
+      mode === "full" ? "--full" : "--browser-only",
+      "--browser-host-descriptor",
+      this.browserDescriptorPath,
+      ...this.browserInteractionArgs(),
+      "--acknowledge-unofficial",
+      contextFlag,
+      enabled === true ? "--allow-web-subagents" : "--no-web-subagents",
+      ...(this.launcherProfile === "production" ? ["--replace-codex-route", "--restart-service"] : []),
+    ];
+    if (current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
+    if (current.config?.biggerContextPlan === "pro") args.push("--bigger-context-plan", "pro");
+    const options = {
+      message: enabled ? "Allowing ChatGPT Web sub-agents" : "Blocking ChatGPT Web sub-agents",
+      successMessage: enabled
+        ? `ChatGPT Web sub-agents allowed${this.launcherProfile === "production" ? "; restart Codex" : ""}`
+        : `ChatGPT Web sub-agents blocked${this.launcherProfile === "production" ? "; restart Codex" : ""}`,
+      timeoutMs: CORE_SETUP_TIMEOUT_MS,
+    };
+    const result = this.launcherProfile === "development"
+      ? await this.runDevSetup("allow-web-subagents", args, options)
+      : await this.runSetup("allow-web-subagents", args, options);
+    return { ...result, mode, enabled: enabled === true };
   }
 
   async setZeroRiskPro(enabled) {

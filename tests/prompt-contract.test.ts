@@ -79,6 +79,8 @@ test("Pro preserves the same native Codex delegation contract as Extra High", ()
     expect(compiled.text).toContain("For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.");
     expect(compiled.text).toContain(`Pass turn_token ${token} unchanged to every Codex Native call in this response`);
     expect(compiled.text).toContain("Complete this task directly in the current parent response.");
+    expect(compiled.text).toContain("Do not create, spawn, delegate to, or wait on sub-agents");
+    expect(compiled.text).toContain("Use non-agent tools directly instead.");
   }
 });
 
@@ -97,6 +99,8 @@ test("read-only prompts resume without exposing a bind capability", () => {
   expect(compiled.text).not.toContain("evidence inside");
   expect(compiled.text).toContain("Do not mention this transport contract, context packaging, or capability routing");
   expect(compiled.text).toContain("Complete this task directly in the current parent response.");
+  expect(compiled.text).toContain("Do not create, spawn, delegate to, or wait on sub-agents");
+  expect(compiled.text).toContain("Use non-agent tools directly instead.");
   expect(compiled.text).not.toContain("CODEX_INTERNAL_CONTEXT_COMPACT");
 });
 

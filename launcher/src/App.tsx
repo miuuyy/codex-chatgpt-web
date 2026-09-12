@@ -1649,6 +1649,17 @@ function SettingsSurface({
       setBusy(false);
     }
   };
+  const setAllowWebSubagents = async (enabled: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      updateState(await api!.setAllowWebSubagents(enabled));
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
   const setInteractionMode = async (mode: BrowserInteractionMode) => {
     setBusy(true);
     setError(null);
@@ -1754,6 +1765,13 @@ function SettingsSurface({
               <span><strong>{copy.chatgptPlanPro}</strong></span>
             </button>
           </div>
+        </SettingRow>
+        <SettingRow body={copy.webSubagentsBody} label={copy.webSubagents}>
+          <Switch
+            checked={snapshot.state.allowWebSubagents === true}
+            disabled={busy || snapshot.state.coreSetupComplete !== true}
+            onChange={(checked) => void setAllowWebSubagents(checked)}
+          />
         </SettingRow>
         <SettingRow body={copy.chooseLanguageHint} label={copy.language}>
           <LanguageMenu copy={copy} language={language} onChange={(next) => void updateLanguage(next)} />
