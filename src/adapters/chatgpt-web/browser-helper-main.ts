@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline";
+import { assertChatGptContextFile, CHATGPT_CONTEXT_FILE_FEATURE } from "./context-file";
 import { stdin, stderr, stdout } from "node:process";
 import type { CodexProviderConfig } from "../../types";
 import { ChatGptBrowserWorker, closeChatGptBrowserWorkers, type BrowserTurn } from "./browser-worker";
@@ -410,6 +411,16 @@ input.on("line", line => {
         return;
       }
     }
+    if (prepared.contextFile !== undefined) {
+      try {
+        assertChatGptContextFile(prepared.contextFile);
+        if (prepared.multipart) throw new Error("Context file cannot be combined with multipart");
+      } catch {
+        writeProtocol({ type: "error", id: message.id, message: "Browser helper context-file prompt is invalid" });
+        abortControllers.get(message.id)?.abort();
+        return;
+      }
+    }
     const selection = preparedSelections.get(message.id);
     if (!selection) {
       writeProtocol({ type: "error", id: message.id, message: "Browser helper has no pending prompt selection" });
@@ -517,4 +528,4 @@ process.once("SIGTERM", () => {
 });
 
 // Advertise the optional frames this helper understands so the daemon can negotiate them explicitly.
-writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack"] });
+writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack", CHATGPT_CONTEXT_FILE_FEATURE] });
