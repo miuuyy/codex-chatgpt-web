@@ -26,7 +26,7 @@ async function runCli(args: string[], env: Record<string, string | undefined>) {
   return { exitCode, stdout, stderr };
 }
 
-test("production and DEV setup reject the removed connector-name option before configuration", async () => {
+test("production and DEV setup still reject the retired generic connector-name option", async () => {
   const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-fixed-connector-"));
   try {
     const env = {
@@ -46,6 +46,30 @@ test("production and DEV setup reject the removed connector-name option before c
     expect(existsSync(join(root, "dev", "config.json"))).toBeFalse();
     const help = await runCli(["--help"], env);
     expect(help.stdout).not.toContain("--app-name");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("DEV Full setup requires the existing Routing connector instead of standalone tunnel arguments", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-routing-setup-"));
+  try {
+    const env = {
+      ...process.env,
+      CODEX_WEB_GPT_DEV_HOME: join(root, "dev"),
+      CODEX_CHATGPT_WEB_HOME: join(root, "prod"),
+      CODEX_HOME: join(root, "codex"),
+    };
+    const missing = await runCli(["dev", "setup", "--full", "--acknowledge-unofficial"], env);
+    expect(missing.exitCode).toBe(1);
+    expect(missing.stderr).toContain("--routing-connector-name");
+
+    const tunnel = await runCli([
+      "dev", "setup", "--full", "--tunnel-id", `tunnel_${"a".repeat(32)}`,
+      "--runtime-key-file", join(root, "runtime.key"), "--acknowledge-unofficial",
+    ], env);
+    expect(tunnel.exitCode).toBe(1);
+    expect(tunnel.stderr).toMatch(/Unknown DEV setup arguments: .*--tunnel-id/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -329,7 +353,7 @@ test("DEV browser-only setup persists only the isolated harness profile", async 
     });
     expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" });
     expect(result.stdout).toContain("No Codex route, Responses listener, or system service was installed");
-    expect(result.stdout).toContain("DEV launcher owns the isolated MCP tunnel");
+    expect(result.stdout).toContain("No standalone Tunnel was installed");
     expect(inspections).toBe(1);
     expect(JSON.parse(readFileSync(join(devHome, "config.json"), "utf8"))).toMatchObject({
       version: 3,

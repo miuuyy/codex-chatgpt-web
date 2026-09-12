@@ -47,14 +47,15 @@ The DEV chat is not another provider or browser implementation. It is a syntheti
 driver around the same in-process Responses handlers. `dev launcher` starts the packaged launcher
 with an explicit `development` profile. That profile has a different core home, sandboxed
 `CODEX_HOME`, Electron `userData`, persistent browser partition, descriptor, cookie jar, login,
-configuration, chat store, diagnostic store, broker path, tunnel profile, and alias. The normal and
-DEV launchers can therefore run at the same time with different ChatGPT accounts.
+configuration, chat store, diagnostic store, and broker path. The normal and DEV launchers can
+therefore run at the same time with different ChatGPT accounts.
 
-The working-tree adapter attaches to a tab leased only from that DEV launcher. In Full mode the DEV
-launcher owns one persistent, isolated tunnel runtime; a named CLI chat owns only the private turn
-broker attached to that tunnel for the command's lifetime. The distinct `Codex Native2 DEV`
-connector reaches the same MCP server and turn-token contract without requiring any Responses
-daemon or colliding with the production `Codex Native2` connector.
+The working-tree adapter attaches to a tab leased only from that DEV launcher. In Full Routing
+mode the DEV launcher owns one stable loopback daemon, private turn broker, and Streamable HTTP
+`/mcp` endpoint. Named CLI chats attach to that broker through the existing remote broker protocol;
+they do not own an endpoint. ChatGPT selects the already-installed Routing_MCP connector, while
+`codex-chatgpt-web` is registered separately as an ordinary downstream Routing Plugin. DEV therefore
+requires neither a dedicated Tunnel nor a second ChatGPT connector.
 
 Only the responsibilities normally owned by native Codex are synthetic: named history storage,
 turn metadata, tool-result execution, context-threshold scheduling, and installation of compacted
@@ -64,11 +65,12 @@ replacement history. Every tool result is an explicit `simulated: true` receipt 
 The driver calls `responseRequest` and `compactRequest` directly. It starts no HTTP server, does not
 read or write Codex's route journal or `config.toml`, and does not stop or replace the normal
 launcher-owned daemon. A `dev-harness` discriminator prevents the Responses server and production
-launcher from starting a Responses daemon for its config. DEV setup stores browser capabilities
-and tunnel credentials but performs no Codex integration, system service installation, or port
-probe. The DEV launcher supervisor owns only the isolated MCP tunnel. Browser diagnostics, broker
-state, thread authority, checkpoints, and named chat state live
-under `~/.codex-chatgpt-web-dev` by default.
+launcher from starting an unowned Responses daemon for its config. The DEV launcher has the sole
+internal exception needed to supervise the stable Full-mode daemon. DEV setup stores browser
+capabilities and the ChatGPT-facing Routing_MCP connector display name but performs no Codex route
+integration, system service installation, or standalone Tunnel setup. Browser diagnostics, broker
+state, thread authority, checkpoints, and named chat state live under
+`~/.codex-chatgpt-web-dev` by default.
 
 The ChatGPT connector name is also the public MCP ABI identity. The direct turn-token contract uses
 `Codex Native2`; the retired `Codex Native` identity is never selected or refreshed in place. Setup
@@ -76,8 +78,9 @@ migrates known legacy local configuration to the new name, clears prior verifica
 requires the user to create the new connector. Browser verification accepts the exact new identity,
 reports a specific migration error when only the legacy identity is visible, and never falls back to
 the legacy connector. Future public schema changes require another explicit connector identity.
-Repository DEV mode uses `Codex Native2 DEV` so the same ChatGPT account can keep both production
-and development connectors installed without renaming, refreshing, or deleting either one.
+Repository DEV mode selects the existing ChatGPT-facing Routing_MCP connector by configured display
+name; that value is not the downstream Plugin id or namespace. It does not create, rename, refresh,
+or delete a standalone Codex connector.
 
 ## Browser lifecycle
 

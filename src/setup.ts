@@ -6,6 +6,7 @@ import type { AppConfig, BrowserInteractionMode, RuntimeMode, SubagentProtocol }
 import {
   currentRuntimeCommand,
   defaultBrokerEndpoint,
+  DEV_CHATGPT_CONNECTOR_NAME,
   defaultConfig,
   getConfigPath,
   loadConfigForSetup,
@@ -61,6 +62,8 @@ export interface SetupOptions {
   tunnelId?: string;
   runtimeKeyFile?: string;
   runtimeKeyValue?: string;
+  /** Existing ChatGPT connector that exposes Routing_MCP; DEV-only. */
+  routingConnectorName?: string;
 }
 
 export interface SetupResult {
@@ -653,11 +656,41 @@ export async function setupDevProfile(options: SetupOptions): Promise<DevProfile
       throw new Error("DEV stored account capabilities require explicitly persisted solAvailable and proAvailable values");
     }
   }
+
+  const persistedRoutingConnector = existing?.mode === "full"
+    && !existing.tunnel
+    && existing.browserInteractionMode === "automatic"
+    && existing.automaticAppName !== DEV_CHATGPT_CONNECTOR_NAME
+    ? existing.automaticAppName
+    : undefined;
+  const routingConnectorName = options.routingConnectorName?.trim() || persistedRoutingConnector;
+  if (options.mode === "full") {
+    if (!routingConnectorName) {
+      throw new Error("DEV Full mode requires --routing-connector-name for the existing Routing_MCP ChatGPT connector");
+    }
+    if (options.browserInteractionMode === "manual" || existing?.browserInteractionMode === "manual" && options.browserInteractionMode === undefined) {
+      throw new Error("Routing_MCP DEV Full mode requires automatic browser interaction");
+    }
+    if (options.tunnelId || options.runtimeKeyFile || options.runtimeKeyValue) {
+      throw new Error("DEV Routing_MCP mode does not accept standalone tunnel credentials");
+    }
+  } else if (options.routingConnectorName) {
+    throw new Error("--routing-connector-name is valid only with DEV --full");
+  }
+
   const config = baseConfig(existing, options, DEV_LAUNCHER_PROFILE);
   if (config.browserHost !== "launcher") {
     throw new Error("DEV profile setup requires the desktop launcher browser host");
   }
   config.purpose = DEV_CONFIG_PURPOSE;
+  if (routingConnectorName && config.mode === "full") {
+    config.browserInteractionMode = "automatic";
+    config.appName = routingConnectorName;
+    config.automaticAppName = routingConnectorName;
+    delete config.tunnel;
+    delete config.automaticTunnel;
+    delete config.manualTunnel;
+  }
   if (config.browserInteractionMode === "automatic") {
     const capabilities = await inspectLauncherCapabilities(
       config,
@@ -670,22 +703,12 @@ export async function setupDevProfile(options: SetupOptions): Promise<DevProfile
     config.proAvailable = capabilities.solAvailable && capabilities.proAvailable;
   }
 
-  const explicitTunnelChange = Boolean(options.tunnelId || options.runtimeKeyFile || options.runtimeKeyValue);
-  await configureTunnel(config, existing, options);
-  let tunnelReady: boolean | null = null;
-  if (config.mode === "full") {
-    const profilePath = join(config.tunnel!.profileDir, `${config.tunnel!.profileName}.yaml`);
-    const needsProfile = !existsSync(profilePath);
-    if (needsProfile || tunnelWorkerRuntimeChanged(existing, config) || explicitTunnelChange) {
-      await bootstrapTunnelProfile(config);
-    }
-    tunnelReady = false;
-  }
+  if (config.mode === "browser-only") await configureTunnel(config, existing, options);
   saveConfig(config);
   return {
     mode: config.mode,
     configPath: getConfigPath(),
-    tunnelReady,
-    connectorSetupRequired: config.mode === "full",
+    tunnelReady: null,
+    connectorSetupRequired: false,
   };
 }

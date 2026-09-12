@@ -37,7 +37,7 @@ Usage:
   codex-chatgpt-web dev launcher
   codex-chatgpt-web dev status [--json]
   codex-chatgpt-web dev setup --browser-only [--automatic-browser-interaction] [--reuse-stored-account-capabilities]
-  codex-chatgpt-web dev setup --full --tunnel-id ID --runtime-key-file PATH [--automatic-browser-interaction|--zero-risk-browser-interaction]
+  codex-chatgpt-web dev setup --full --routing-connector-name NAME [--automatic-browser-interaction]
   codex-chatgpt-web dev chat NAME [--model MODEL] [MESSAGE]
   codex-chatgpt-web dev list
 
@@ -315,8 +315,12 @@ export async function runDevCommand(args: string[]): Promise<void> {
         const loaded = loadConfig();
         config = { configured: true, mode: loaded.mode, purpose: loaded.purpose };
         if (loaded.mode === "full") {
-          const inspected = tunnelStatus(loaded);
-          mcpRuntime = { required: true, ready: inspected.ok && inspected.ready, detail: inspected.detail };
+          if (loaded.tunnel) {
+            const inspected = tunnelStatus(loaded);
+            mcpRuntime = { required: true, ready: inspected.ok && inspected.ready, detail: `legacy tunnel: ${inspected.detail}` };
+          } else {
+            mcpRuntime = { required: true, ready: true, detail: "Routing_MCP endpoint starts with each named DEV chat" };
+          }
         }
       } catch (error) {
         config = { configured: false, error: error instanceof Error ? error.message : String(error) };
@@ -340,8 +344,7 @@ export async function runDevCommand(args: string[]): Promise<void> {
     const browserOnly = takeFlag(args, "--browser-only");
     const full = takeFlag(args, "--full");
     if (browserOnly === full) throw new Error("Choose exactly one DEV setup mode: --browser-only or --full");
-    const tunnelId = takeOption(args, "--tunnel-id");
-    const runtimeKeyFile = takeOption(args, "--runtime-key-file");
+    const routingConnectorName = takeOption(args, "--routing-connector-name");
     const descriptorPath = takeOption(args, "--browser-host-descriptor") ?? paths.descriptorPath;
     const acknowledgedUnofficial = takeFlag(args, "--acknowledge-unofficial");
     const refreshAccountCapabilities = takeFlag(args, "--refresh-account-capabilities");
@@ -367,13 +370,12 @@ export async function runDevCommand(args: string[]): Promise<void> {
         ? { browserInteractionMode: manualBrowserInteraction ? "manual" : "automatic" }
         : {}),
       ...(biggerContext || standardContext ? { experimentalBiggerContext: biggerContext } : {}),
-      ...(tunnelId ? { tunnelId } : {}),
-      ...(runtimeKeyFile ? { runtimeKeyFile } : {}),
+      ...(routingConnectorName ? { routingConnectorName } : {}),
     });
     stdout.write(
       `Isolated DEV profile configured (${result.mode}) at ${result.configPath}.\n`
       + "No Codex route, Responses listener, or system service was installed."
-      + " In Full mode, the DEV launcher owns the isolated MCP tunnel.\n",
+      + " No standalone Tunnel was installed; in Full mode, each DEV chat exposes its MCP endpoint through the existing Routing_MCP connector.\n",
     );
     return;
   }
@@ -392,8 +394,8 @@ export async function runDevCommand(args: string[]): Promise<void> {
     );
   }
   const config = loadConfig();
-  if (config.mode === "full" && config.appName !== DEV_CHATGPT_CONNECTOR_NAME) {
-    throw new Error("DEV connector identity is outdated. Refresh the DEV profile in the launcher before starting a named chat");
+  if (config.mode === "full" && !config.tunnel && config.appName === DEV_CHATGPT_CONNECTOR_NAME) {
+    throw new Error("DEV Routing connector is not configured. Rerun DEV setup with --routing-connector-name");
   }
   const runtimeStateRoot = paths.runtimePath;
   const features = readDevChatExperimentalFeatures(paths);

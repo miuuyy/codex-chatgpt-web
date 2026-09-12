@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import * as z from "zod/v4";
 import { namespacedToolName, type CodexTool } from "../../types";
 import { VERSION } from "../../version";
@@ -441,10 +442,10 @@ function execCommandGatewayProgram(
   ]);
 }
 
-export async function runChatGptMcpServer(options: {
+export function createChatGptMcpServer(options: {
   brokerSocketPath: string;
   contract?: ChatGptMcpContract;
-}): Promise<void> {
+}): McpServer {
   const contract = options.contract ?? "native";
   const server = new McpServer(
     { name: contract === "safe" ? "codex-safe" : "codex-native", version: VERSION },
@@ -932,5 +933,26 @@ export async function runChatGptMcpServer(options: {
     );
   }
 
+  return server;
+}
+
+export async function handleChatGptMcpRequest(
+  request: Request,
+  options: { brokerSocketPath: string; contract?: ChatGptMcpContract },
+): Promise<Response> {
+  const transport = new WebStandardStreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  });
+  const server = createChatGptMcpServer(options);
+  await server.connect(transport);
+  return transport.handleRequest(request);
+}
+
+export async function runChatGptMcpServer(options: {
+  brokerSocketPath: string;
+  contract?: ChatGptMcpContract;
+}): Promise<void> {
+  const server = createChatGptMcpServer(options);
   await server.connect(new StdioServerTransport());
 }
