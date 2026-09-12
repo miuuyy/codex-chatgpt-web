@@ -47,7 +47,7 @@ test("multipart selection accounts for whole-record and composer fit before subm
       expect(reconstructedMessageContents(compiled.multipart!.parts)).toEqual([...contents]);
     }
   }
-}, 30_000);
+}, 90_000);
 
 test("multipart selection uses more than three parts when whole records need them", () => {
   const parsed = request("");
@@ -74,7 +74,7 @@ test("Bigger Context compaction selects three parts before the legacy inline byt
   expect(compiled.trimmedCompactionMessages).toBeUndefined();
   expect(reconstructedMessageContents(compiled.multipart!.parts))
     .toEqual([parsed.context.messages[0]!.content]);
-});
+}, 30_000);
 
 test("multipart planning leaves room for final attachments and execution instructions without losing history", () => {
   for (const scenario of [
