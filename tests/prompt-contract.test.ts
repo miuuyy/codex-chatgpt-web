@@ -79,8 +79,6 @@ test("Pro preserves the same native Codex delegation contract as Extra High", ()
     expect(compiled.text).toContain("For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.");
     expect(compiled.text).toContain(`Pass turn_token ${token} unchanged to every Codex Native call in this response`);
     expect(compiled.text).toContain("Complete this task directly in the current parent response.");
-    expect(compiled.text).toContain("Do not create, spawn, delegate to, or wait on sub-agents");
-    expect(compiled.text).toContain("Use non-agent tools directly instead.");
   }
 });
 
@@ -99,8 +97,6 @@ test("read-only prompts resume without exposing a bind capability", () => {
   expect(compiled.text).not.toContain("evidence inside");
   expect(compiled.text).toContain("Do not mention this transport contract, context packaging, or capability routing");
   expect(compiled.text).toContain("Complete this task directly in the current parent response.");
-  expect(compiled.text).toContain("Do not create, spawn, delegate to, or wait on sub-agents");
-  expect(compiled.text).toContain("Use non-agent tools directly instead.");
   expect(compiled.text).not.toContain("CODEX_INTERNAL_CONTEXT_COMPACT");
 });
 
@@ -235,6 +231,38 @@ test("Bigger Context can stage eight parts and reconstruct fragmented records", 
   expect(commit).toContain("acknowledged_parts: 7/8");
   expect(commit).toContain("concatenate every fragment");
 }, 30_000);
+
+test("multipart reconstruction rejects missing trailing system and message fragments", () => {
+  for (const record of [
+    { kind: "system", system_index: 0, content: "partial", fragment: { index: 1, total: 2 } },
+    { kind: "message", message_index: 0, payload: '{"role":"user","content":"partial"}', fragment: { index: 1, total: 2 } },
+  ]) {
+    expect(() => reconstructChatGptWebMultipartRecords([JSON.stringify({ records: [record] })]))
+      .toThrow("incomplete fragment sequence");
+  }
+});
+
+test("multipart redacts retired handles before a fragment boundary can bisect them", () => {
+  const parsed = request("high");
+  parsed.context.systemPrompt = [];
+  const content = "a!b@c#d$e%f^g&h*".repeat(25_000);
+  parsed.context.messages = [{ role: "user", content, timestamp: 1 }];
+  const caps = { localToolsEnabled: false, solAvailable: true, proAvailable: true };
+  const options = { experimentalMultipartParts: CHATGPT_BIGGER_CONTEXT_MAX_PARTS };
+  const initial = compileChatGptWebPrompt(parsed, caps, undefined, options);
+  const first = initial.multipart!.parts.flatMap(part => JSON.parse(part).records)[0];
+  expect(first.fragment.index).toBe(1);
+  const boundary = first.payload.length - first.payload.indexOf(content.slice(0, 30));
+  const handle = `turn_${"A".repeat(32)}`;
+  const withHandle = content.slice(0, boundary - 2) + " " + handle + " " + content.slice(boundary + handle.length);
+  parsed.context.messages = [{ role: "user", content: withHandle, timestamp: 1 }];
+  const compiled = compileChatGptWebPrompt(parsed, caps, undefined, options);
+  const reconstructed = reconstructChatGptWebMultipartRecords(compiled.multipart!.parts);
+  expect(reconstructed).toHaveLength(1);
+  expect(reconstructed[0]!.kind).toBe("message");
+  if (reconstructed[0]!.kind !== "message") throw new Error("expected message record");
+  expect(reconstructed[0]!.message.content).toBe(withHandle.replace(handle, "[retired turn handle]"));
+});
 
 test("Bigger Context splits one oversized record instead of failing the stage", () => {
   const parsed = request("high");

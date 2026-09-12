@@ -207,6 +207,12 @@ describe("fixed ChatGPT Web model routes", () => {
       effectiveContextWindowPercent: 89,
       autoCompactTokenLimit: 240_000,
     });
+    // A conservative Plus selection must not grow simply because Pro is available.
+    for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
+      expect(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, effort, {
+        ...pro, experimentalBiggerContext: true, biggerContextPlan: "plus",
+      }).contextWindow).toBe(effort === "low" ? 123_000 : 270_000);
+    }
     const proBigger = { ...pro, experimentalBiggerContext: true, biggerContextPlan: "pro" as const };
     expect(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, "low", proBigger)).toEqual({
       contextWindow: 123_000,

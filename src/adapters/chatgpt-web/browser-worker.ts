@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { acceptsChatGptFiles, assertChatGptContextFile } from "./context-file";
 import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright-core";
@@ -2043,7 +2044,38 @@ export function chatGptImageFilePayloads(images: ChatGptWebPromptImage[]): Array
 export function chatGptPromptFilePayloads(
   prompt: CompiledChatGptWebPrompt,
 ): Array<{ name: string; mimeType: string; buffer: Buffer }> {
-  return chatGptImageFilePayloads(prompt.images);
+  const images = chatGptImageFilePayloads(prompt.images);
+  if (!prompt.contextFile) return images;
+  assertChatGptContextFile(prompt.contextFile);
+  if (images.length + 1 > CHATGPT_MAX_INPUT_IMAGES) throw new Error("ChatGPT context file and images exceed the attachment count limit");
+  return [{ name: prompt.contextFile.name, mimeType: prompt.contextFile.mimeType, buffer: Buffer.from(prompt.contextFile.content, "utf8") }, ...images];
+}
+
+export function assertChatGptContextFileInputWithinLimits(
+  prompt: CompiledChatGptWebPrompt,
+  modelId: string,
+  effort: ChatGptWebModelMode["effort"],
+  capabilities: ChatGptWebCapabilities,
+): void {
+  assertChatGptContextFile(prompt.contextFile);
+  if (prompt.multipart || modelId !== CHATGPT_WEB_MODEL_ID) {
+    throw new Error("Context-file transport is available only for automatic ChatGPT Sol modes");
+  }
+  resolveChatGptWebModelMode(modelId, effort, capabilities);
+  if (prompt.images.length + 1 > CHATGPT_MAX_INPUT_IMAGES) throw new Error("ChatGPT context file exceeds the attachment count limit");
+  // The composer budget applies to the small instruction message, while total usage includes the file.
+  assertChatGptWebInputWithinLimits(
+    estimateCompiledChatGptWebInputTokens({ ...prompt, contextFile: undefined }, modelId),
+    estimateCompiledChatGptWebMessageTokens(prompt, modelId), modelId, effort, capabilities, prompt.text.length,
+  );
+  const total = estimateCompiledChatGptWebInputTokens(prompt, modelId);
+  const ceiling = Math.min(prompt.contextFile.maxInputTokens, resolveChatGptWebContextLimits(modelId, effort,
+    { ...capabilities, experimentalBiggerContext: true, biggerContextPlan: "pro" }).contextWindow);
+  if (total > ceiling) {
+    throw new ChatGptWebAdapterError(`Context-file input requires ${total} estimated tokens; maximum ${ceiling}. Compact before retrying.`, {
+      status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false,
+    });
+  }
 }
 
 /**
@@ -3707,7 +3739,14 @@ export class ChatGptBrowserWorker {
     if (files.length === 0) return;
     const composer = await this.activeComposer(page);
     const composerForm = composer.locator("xpath=ancestor::form[1]");
-    const input = page.locator('input[data-testid="upload-photos-input"]');
+    let input = page.locator('input[data-testid="upload-photos-input"]');
+    if (prompt.contextFile) {
+      const inputs = page.locator('input[type="file"]');
+      const candidates = await inputs.evaluateAll(nodes => nodes.map((node, index) => ({ index, accept: node.getAttribute("accept") ?? "" })));
+      const candidate = candidates.find(item => acceptsChatGptFiles(item.accept, files));
+      if (!candidate) throw new Error("ChatGPT has no file picker accepting the context TXT and its image attachments");
+      input = inputs.nth(candidate.index);
+    }
     await input.waitFor({ state: "attached", timeout: 20_000 });
     await input.setInputFiles(files);
     try {
@@ -4359,7 +4398,9 @@ export class ChatGptBrowserWorker {
           maxStageChars!,
         )
         : requestedMode;
-      if (prepared.multipart) {
+      if (prepared.contextFile) {
+        assertChatGptContextFileInputWithinLimits(prepared, turn.modelId, requestedMode.effort, browserCapabilities);
+      } else if (prepared.multipart) {
         const partCount = prepared.multipart.parts.length;
         if (!isChatGptWebMultipartPartCount(partCount)) {
           throw new Error("ChatGPT multipart prompt part count is invalid");
@@ -4528,7 +4569,7 @@ export class ChatGptBrowserWorker {
         && this.config.browserHostDescriptorPath !== undefined;
       await diagnostics.capture(page, "browser-page-acquired");
       console.info(
-        `[chatgpt-web] browser turn ${turn.traceId} opened (transport=${prepared.multipart ? `multipart-${prepared.multipart.parts.length}` : "inline"}, maxMessageChars=${maxMessageChars}, estimatedInputTokens=${estimatedInputTokens}, images=${prepared.images.length}, compactionTrimmedMessages=${prepared.trimmedCompactionMessages ?? 0})`,
+        `[chatgpt-web] browser turn ${turn.traceId} opened (transport=${prepared.contextFile ? "context-file" : prepared.multipart ? `multipart-${prepared.multipart.parts.length}` : "inline"}, maxMessageChars=${maxMessageChars}, estimatedInputTokens=${estimatedInputTokens}, images=${prepared.images.length}, compactionTrimmedMessages=${prepared.trimmedCompactionMessages ?? 0})`,
       );
       if (multipartStages) {
         console.info(
