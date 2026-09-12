@@ -72,7 +72,7 @@ test("proxies official /models auth and query, then appends the fixed ChatGPT We
     expect(model.auto_compact_token_limit).toBe(limits.autoCompactTokenLimit);
     expect(model.supported_in_api).toBe(true);
     expect(model.priority).toBe(1);
-    expect(model.multi_agent_version).toBe("v2");
+    expect(model.multi_agent_version).toBe("disabled");
   }
 });
 
@@ -142,7 +142,7 @@ test("Zero Risk returns one generic Web row without using scanned capabilities",
     additional_speed_tiers: [],
     service_tiers: [],
     default_service_tier: null,
-    multi_agent_version: "v1",
+    multi_agent_version: "disabled",
   }]);
 });
 
