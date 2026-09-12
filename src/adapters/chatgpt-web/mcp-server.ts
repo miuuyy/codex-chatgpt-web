@@ -374,7 +374,7 @@ function execGatewayProgram(
  * as direct calls. The model still owns its JavaScript; only the tool registry it receives is a
  * transparent proxy whose native wait functions validate their transport-bound argument before dispatch.
  */
-function transportBoundRawExecProgram(
+export function transportBoundRawExecProgram(
   input: string,
   blockedExecName: string,
   spawnExclusions: readonly string[],

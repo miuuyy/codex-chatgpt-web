@@ -6,10 +6,13 @@ export const COLLABORATION_TOOL_NAMES = new Set([
   "send_message",
   "list_agents",
   "wait_agent",
+  "interrupt_agent",
 ]);
 
 export const COLLABORATION_NAMESPACES = [
   "collaboration",
+  "collaboration-optimize",
+  "collaboration_optimize",
   "multi_agent_v1",
   "multi_agent_v2",
 ] as const;
@@ -21,24 +24,27 @@ const SPAWN_FAMILY_NAMES = new Set([
   "list_agents",
 ]);
 
-function collaborationBaseName(wireName: string): string {
+function collaborationBaseName(wireName: string): string | undefined {
   const lower = wireName.toLowerCase();
   const separator = lower.lastIndexOf("__");
-  return separator === -1 ? lower : lower.slice(separator + 2);
+  if (separator === -1) return lower;
+  return (COLLABORATION_NAMESPACES as readonly string[]).includes(lower.slice(0, separator))
+    ? lower.slice(separator + 2)
+    : undefined;
 }
 
 export function isCollaborationTool(tool: CodexTool): boolean {
   const namespace = (tool.namespace ?? "").toLowerCase();
   if ((COLLABORATION_NAMESPACES as readonly string[]).includes(namespace)) return true;
-  const name = tool.name.toLowerCase();
-  return name.startsWith("collaboration__")
-    || name.startsWith("multi_agent_v1__")
-    || name.startsWith("multi_agent_v2__")
-    || COLLABORATION_TOOL_NAMES.has(name);
+  // A short name inside an unrelated namespace is not a Codex collaboration tool.
+  if (namespace) return false;
+  const name = collaborationBaseName(tool.name);
+  return name !== undefined && COLLABORATION_TOOL_NAMES.has(name);
 }
 
 export function isSpawnCollaborationWireName(name: string): boolean {
-  return SPAWN_FAMILY_NAMES.has(collaborationBaseName(name));
+  const baseName = collaborationBaseName(name);
+  return baseName !== undefined && SPAWN_FAMILY_NAMES.has(baseName);
 }
 
 export function chatgptWebBlockedGatewayWireNames(): string[] {

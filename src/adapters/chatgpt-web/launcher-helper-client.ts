@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
+import { assertChatGptContextFile, CHATGPT_CONTEXT_FILE_FEATURE } from "./context-file";
 import { notifyLauncherTurn, readLauncherBrowserHostDescriptor } from "../../launcher-browser-host";
 import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError } from "./adapter-error";
 import type { CompiledChatGptWebPrompt } from "./prompt";
@@ -513,6 +514,15 @@ export class LauncherBrowserHelperClient {
         const prepare = message.reused ? pending.turn.prepareResume : pending.turn.prepare;
         void Promise.resolve().then(() => prepare?.()).then(prepared => {
           if (!prepared) throw new Error("Launcher browser helper selected an unavailable continuation prompt");
+          if (prepared.contextFile) {
+            try {
+              assertChatGptContextFile(prepared.contextFile);
+              if (!this.helperFeatures.has(CHATGPT_CONTEXT_FILE_FEATURE)) throw new Error("Launcher browser helper does not support context-file transport; update and restart Codex Web GPT");
+            } catch (error) {
+              prepared.release();
+              throw error;
+            }
+          }
           if (this.pending.get(message.id) !== pending) {
             prepared.release();
             return;
@@ -526,6 +536,7 @@ export class LauncherBrowserHelperClient {
               prepared: {
                 text: prepared.text,
                 images: prepared.images,
+                ...(prepared.contextFile ? { contextFile: prepared.contextFile } : {}),
                 ...(prepared.multipart ? { multipart: prepared.multipart } : {}),
                 ...(prepared.trimmedCompactionMessages !== undefined
                   ? { trimmedCompactionMessages: prepared.trimmedCompactionMessages }

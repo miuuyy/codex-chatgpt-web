@@ -5,6 +5,7 @@ import {
   resolveChatGptWebContextLimits,
   resolveChatGptWebMessageTokenBudget,
   resolveChatGptWebTransportLimits,
+  type BiggerContextPlan,
 } from "../../chatgpt-web-models";
 import type { CodexParsedRequest, CodexUsage } from "../../types";
 import { compiledChatGptWebMessages, estimateChatGptWebImageTokens, estimateCompiledChatGptWebInputTokens } from "./input-tokens";
@@ -20,6 +21,7 @@ import {
 import { extractChatGptTurnIdentity } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import type { BrokerToolRequest } from "./turn-broker";
+import { ChatGptWebAdapterError } from "./adapter-error";
 
 // The real capability has the same length. Keeping it out of usage accounting would make
 // estimates differ slightly between the prepared browser prompt and later Codex tool rounds.
@@ -51,6 +53,7 @@ export function estimateChatGptWebInputTokens(
     mode.localTools ? ESTIMATE_TURN_TOKEN : undefined,
     {
       ...options,
+      measureOnly: true,
       ...(manual ? { manualControl: true as const } : {}),
       captureLunaCheckpoint: parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID
         && !parsed._compactionRequest
@@ -58,6 +61,27 @@ export function estimateChatGptWebInputTokens(
     },
   );
   return estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId);
+}
+
+/** One shared file/inline choice for automatic Sol modes and their accounting. */
+export function resolveChatGptWebCompileOptions(
+  parsed: CodexParsedRequest,
+  capabilities: ChatGptWebCapabilities,
+  experimentalBiggerContext = false,
+  biggerContextPlan: BiggerContextPlan = "plus",
+): CompileChatGptWebPromptOptions {
+  if (!experimentalBiggerContext) return {};
+  if (parsed.modelId === CHATGPT_WEB_BACKEND_MODEL) {
+    const { effort } = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
+    const inline = compileChatGptWebPrompt(parsed, capabilities, capabilities.localToolsEnabled ? ESTIMATE_TURN_TOKEN : undefined,
+      { preserveCompactionHistory: true });
+    const budget = resolveChatGptWebMessageTokenBudget(parsed.modelId, effort, capabilities, estimateChatGptWebImageTokens(inline));
+    const chars = resolveChatGptWebTransportLimits(parsed.modelId, effort, capabilities).browserComposerCharLimit ?? Infinity;
+    if (estimateTokens(inline.text) <= budget && inline.text.length <= chars) return { preserveCompactionHistory: true };
+    const limit = resolveChatGptWebContextLimits(parsed.modelId, effort, { ...capabilities, experimentalBiggerContext: true, biggerContextPlan }).contextWindow;
+    return { contextFile: true, contextFileTokenLimit: limit, preserveCompactionHistory: true };
+  }
+  return { experimentalMultipartParts: resolveBiggerContextMultipartParts(parsed, capabilities) };
 }
 
 /**
@@ -84,7 +108,7 @@ export function resolveBiggerContextMultipartParts(
   );
   const compile = (parts?: ChatGptWebMultipartPartCount): CompiledChatGptWebPrompt => compileChatGptWebPrompt(
     parsed, capabilities, mode.localTools ? ESTIMATE_TURN_TOKEN : undefined,
-    { experimentalMultipartParts: parts },
+    { experimentalMultipartParts: parts, preserveCompactionHistory: true },
   );
   const fits = (compiled: CompiledChatGptWebPrompt): boolean => {
     const messages = compiledChatGptWebMessages(compiled);
@@ -106,8 +130,13 @@ export function resolveBiggerContextMultipartParts(
   if (parsed._compactionRequest) {
     for (let parts = CHATGPT_BIGGER_CONTEXT_PARTS; parts <= CHATGPT_BIGGER_CONTEXT_MAX_PARTS; parts += 1) {
       if (!isChatGptWebMultipartPartCount(parts)) continue;
-      if (fits(compile(parts))) return parts;
+      try {
+        if (fits(compile(parts))) return parts;
+      } catch (error) {
+        if (!(error instanceof ChatGptWebAdapterError) || error.code !== "context_length_exceeded") throw error;
+      }
     }
+    // Only the final compile at the widest supported transport may trim old history.
     return CHATGPT_BIGGER_CONTEXT_MAX_PARTS;
   }
   const inline = compile();
@@ -159,12 +188,10 @@ export function estimateChatGptWebUsage(
   evidence: ChatGptWebRoundEvidence,
   capabilities: ChatGptWebCapabilities,
   experimentalBiggerContext = false,
+  biggerContextPlan: BiggerContextPlan = "plus",
 ): CodexUsage {
-  const inputTokens = estimateChatGptWebInputTokens(parsed, capabilities, {
-    experimentalMultipartParts: experimentalBiggerContext
-      ? resolveBiggerContextMultipartParts(parsed, capabilities)
-      : undefined,
-  });
+  const inputTokens = estimateChatGptWebInputTokens(parsed, capabilities,
+    resolveChatGptWebCompileOptions(parsed, capabilities, experimentalBiggerContext, biggerContextPlan));
   const outputTokens = conservativeTextTokens(roundEvidenceText(evidence), parsed.modelId);
   return {
     inputTokens,
