@@ -2620,6 +2620,7 @@ describe("ChatGPT outer-native harness v4", () => {
       expect(listed.tools.map(tool => tool.name).sort()).toEqual([
         "codex_apply_patch",
         "codex_exec",
+        "codex_read_text_file",
         "codex_tool_call",
         "codex_tool_inventory",
         "codex_view_image",
@@ -2636,7 +2637,7 @@ describe("ChatGPT outer-native harness v4", () => {
       // ChatGPT caches the complete tools/list contract under a connector identity.
       // An intentional hash change therefore requires an explicit connector refresh or identity migration.
       expect(createHash("sha256").update(canonicalJson(publicConnectorAbi)).digest("hex"))
-        .toBe("5cb59b378c7d1939e260a2b4a60f58e22da31208fe09c2cc17a2cf31eb5ff3ad");
+        .toBe("e14eec31c6479470244b33a810f4f476e111d97a9718a61f5d18d3ca63e56c6b");
       for (const tool of listed.tools) {
         const properties = tool.inputSchema.properties as Record<string, unknown>;
         expect(properties.turn_token).toEqual({ type: "string", minLength: 20, maxLength: 256 });
@@ -2648,6 +2649,9 @@ describe("ChatGPT outer-native harness v4", () => {
         destructiveHint: true,
         idempotentHint: false,
         openWorldHint: true,
+      });
+      expect(listed.tools.find(tool => tool.name === "codex_read_text_file")?.annotations).toEqual({
+        readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false,
       });
       expect(listed.tools.find(tool => tool.name === "codex_write_stdin")?.annotations).toMatchObject({
         readOnlyHint: false,
@@ -2679,6 +2683,28 @@ describe("ChatGPT outer-native harness v4", () => {
         idempotentHint: false,
         openWorldHint: true,
       });
+
+      if (process.platform !== "win32") {
+        const reading = call("codex_read_text_file", { turn_token: token, path: "text.txt", max_bytes: 16 });
+        const [request] = await broker.nextToolBatch(token);
+        expect(request).toMatchObject({ wireName: "exec", freeform: true });
+        const gatewayCalls: GatewayProgramCall[] = [];
+        await executeGatewayProgram(request!.input!, ["exec_command"], gatewayCalls);
+        expect(gatewayCalls).toHaveLength(1);
+        expect(gatewayCalls[0]).toMatchObject({ name: "exec_command", input: {
+          workdir: tempRoot, shell: "/bin/sh", login: false,
+        } });
+        expect((gatewayCalls[0]!.input as Record<string, unknown>).cmd)
+          .toContain("/usr/bin/python3 -I -S -B -c");
+        const rejectedCalls: GatewayProgramCall[] = [];
+        await expect(executeGatewayProgram(request!.input!, ["shell_command"], rejectedCalls))
+          .rejects.toThrow();
+        expect(rejectedCalls).toEqual([]);
+        broker.completeTool(token, request!.callId, {
+          isError: true, content: [{ type: "text", text: "native read denied" }],
+        });
+        expect((await reading).isError).toBeTrue();
+      }
 
       const firstExec = call("codex_exec", {
         turn_token: token,
