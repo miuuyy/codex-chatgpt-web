@@ -578,6 +578,7 @@ export function compileChatGptWebPrompt(
       "The task context is complete. Execute the latest active user request now under the capability contract above.",
       "</codex_transport_resume>",
     ];
+  let trimmedCompactionMessages = 0;
   const build = (sourceMessages: readonly CodexMessage[]): CompiledChatGptWebPrompt => {
     const images: ChatGptWebPromptImage[] = [];
     const budget: ImageBudget = {
@@ -650,7 +651,13 @@ export function compileChatGptWebPrompt(
       "<codex_context_json>",
       envelopeJson,
       "</codex_context_json>",
-      ...transportResume,
+      ...(trimmedCompactionMessages > 0 ? [
+        "<codex_transport_resume>",
+        `${trimmedCompactionMessages} older history item(s) omitted to fit the compaction transport budget; the supplied history is incomplete.`,
+        "Carry forward still-relevant progress, constraints, and pending work from the cumulative checkpoint, if present, together with the retained recent evidence. Omitted output is not evidence that earlier work never happened; do not invent missing details.",
+        "Produce the requested checkpoint summary now without calling work tools.",
+        "</codex_transport_resume>",
+      ] : transportResume),
     ].join("\n");
     return { text, images };
   };
@@ -671,22 +678,31 @@ export function compileChatGptWebPrompt(
     chatGptPromptJsonBytes(compiled.text) > CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET
   );
 
-  // Match native Codex compaction recovery: discard oldest history items one at a time until the
-  // summarization request fits. Never discard the final compaction instruction itself, and rebuild
-  // image references after every trim so removed messages cannot leave orphaned attachments.
+  // The previous checkpoint may be the only surviving record of earlier work. Keep the newest
+  // one verbatim even when it precedes a large tool transcript; otherwise fallback compaction
+  // silently resets cumulative progress to the most recent tool results.
+  const checkpoint = sourceMessages.findLast(message =>
+    message.role === "user" && isReadableCompactionSummaryText(plainMessageText(message))
+  );
+  // Discard the oldest other history items, preserving order and the final instruction. Rebuild
+  // image references and the omission notice after every trim, within the same byte budget.
   while (
     exceedsCompactionBudget()
     && sourceMessages.length > 1
   ) {
-    sourceMessages = sourceMessages.slice(1);
+    const discardIndex = sourceMessages.findIndex((message, index) =>
+      message !== checkpoint && index < sourceMessages.length - 1
+    );
+    if (discardIndex < 0) break;
+    sourceMessages = sourceMessages.filter((_message, index) => index !== discardIndex);
+    trimmedCompactionMessages = initialMessageCount - sourceMessages.length;
     compiled = build(sourceMessages);
   }
   const encodedBytes = chatGptPromptJsonBytes(compiled.text);
   if (exceedsCompactionBudget()) {
     throw new Error(
-      `ChatGPT Web compaction prompt still requires ${encodedBytes.toLocaleString("en-US")} JSON bytes after all older history was trimmed; the final compaction instruction alone exceeds the browser compaction budget`,
+      `ChatGPT Web compaction prompt still requires ${encodedBytes.toLocaleString("en-US")} JSON bytes after all expendable history was trimmed; the ${checkpoint ? "cumulative checkpoint and final compaction instruction exceed" : "final compaction instruction alone exceeds"} the browser compaction budget`,
     );
   }
-  const trimmedCompactionMessages = initialMessageCount - sourceMessages.length;
   return trimmedCompactionMessages > 0 ? { ...compiled, trimmedCompactionMessages } : compiled;
 }
