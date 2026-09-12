@@ -14,8 +14,10 @@ import {
   extractChatGptTurnIdentity,
   extractCodexTurnIdentityFromBody,
   extractChatGptCompactionSourceRevision,
+  chatGptTurnUserRevisionHistory,
 } from "./adapters/chatgpt-web/environment";
 import { rememberCompactionContinuation } from "./adapters/chatgpt-web/compaction-continuation";
+import { rememberRetryableTurnFailure } from "./adapters/chatgpt-web/retry-continuation";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse } from "./bridge";
 import type { AppConfig } from "./config";
 import { providerConfig } from "./config";
@@ -589,12 +591,19 @@ export async function responseRequest(
   const adapter = adapterFactory(provider);
   const queue = new AsyncEventQueue<AdapterEvent>();
   const abort = new AbortController();
+  const rememberRetryableFailure = (event: AdapterEvent): void => {
+    if (event.type !== "error" || event.retryable !== true || event.status !== 503) return;
+    const identity = extractChatGptTurnIdentity(parsed);
+    const source = chatGptTurnUserRevisionHistory(parsed).at(-1);
+    if (source) rememberRetryableTurnFailure(parsed, identity, source);
+  };
   if (req.signal.aborted) abort.abort();
   else req.signal.addEventListener("abort", () => abort.abort(), { once: true });
   const run = async () => {
     try {
       await adapter.runTurn!(parsed, { headers: req.headers, abortSignal: abort.signal }, event => {
         options.onAdapterEvent?.(event);
+        rememberRetryableFailure(event);
         queue.push(event);
       });
     } catch (error) {

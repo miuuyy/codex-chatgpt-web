@@ -3,6 +3,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isReadableCompactionSummaryText, OPAQUE_COMPACTION_NOTE } from "../../responses/compaction";
 import type { CodexContentPart, CodexParsedRequest, CodexTool } from "../../types";
 import { isAcceptedCompactionContinuation } from "./compaction-continuation";
+import { clearRetryableTurnHandoff, isAcceptedRetryContinuation } from "./retry-continuation";
 
 export type ChatGptSandboxPolicy =
   | { type: "dangerFullAccess" }
@@ -222,12 +223,17 @@ export function extractChatGptTurnUserRevision(parsed: CodexParsedRequest): unkn
   if (!turnId) throw new Error("ChatGPT web requires native Codex turn_id metadata for browser-session replay");
   const revision = latestChatGptTurnUserRevision(parsed, turnId);
   if (!revision) throw new Error("ChatGPT web requires a current-turn user message for browser-session replay");
+  if (revision.turnId === undefined || revision.turnId === turnId) {
+    clearRetryableTurnHandoff(parsed, identity);
+    return revision.content;
+  }
   // A pre-turn compact may summarize an earlier user message before native Codex continues
   // under its new turn id without adding a new human message. Accept only our exact completed
-  // checkpoint; an arbitrary older prompt is still not a new instruction or a valid handoff.
-  if (revision.turnId !== undefined && revision.turnId !== turnId
-    && (priorChatGptAbortedTurnIds(parsed).includes(revision.turnId)
-      || !isAcceptedCompactionContinuation(parsed, identity, revision))) {
+  // checkpoint. A retryable failure emitted by this daemon may also bind the exact same user
+  // instruction to one successor native turn. Arbitrary older prompts remain invalid.
+  if (priorChatGptAbortedTurnIds(parsed).includes(revision.turnId)
+    || (!isAcceptedCompactionContinuation(parsed, identity, revision)
+      && !isAcceptedRetryContinuation(parsed, identity, revision))) {
     throw new Error(CHATGPT_TURN_REVISION_CONFLICT_MESSAGE);
   }
   return revision.content;
