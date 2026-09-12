@@ -1749,7 +1749,7 @@ function SettingsSurface({
           body={copy.chatgptPlanBody}
           label={copy.chatgptPlan}
         >
-          <div className="interaction-mode-picker" role="radiogroup" aria-label={copy.chatgptPlan}>
+          <div className="plan-picker" role="radiogroup" aria-label={copy.chatgptPlan}>
             <button
               aria-checked={snapshot.state.biggerContextPlan !== "pro"}
               className={snapshot.state.biggerContextPlan !== "pro" ? "is-selected" : ""}
@@ -1760,7 +1760,7 @@ function SettingsSurface({
               role="radio"
               type="button"
             >
-              <span><strong>{copy.chatgptPlanPlus}</strong></span>
+              {copy.chatgptPlanPlus}
             </button>
             <button
               aria-checked={snapshot.state.biggerContextPlan === "pro"}
@@ -1772,7 +1772,7 @@ function SettingsSurface({
               role="radio"
               type="button"
             >
-              <span><strong>{copy.chatgptPlanPro}</strong></span>
+              {copy.chatgptPlanPro}
             </button>
           </div>
         </SettingRow>
