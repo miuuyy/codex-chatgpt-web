@@ -86,7 +86,7 @@ export interface AppConfig {
   solAvailable: boolean;
   proAvailable: boolean;
   experimentalBiggerContext: boolean;
-  /** Plus keeps original 3× Bigger Context windows; Pro uses Instant 128k / 400k. */
+  /** Plus keeps original 3× Bigger Context windows; Pro uses Instant 123k / 400k. */
   biggerContextPlan: BiggerContextPlan;
   /** Explicitly install the additional Pro-sized model row while Zero Risk is active. */
   zeroRiskProEnabled: boolean;

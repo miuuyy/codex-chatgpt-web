@@ -195,7 +195,7 @@ describe("fixed ChatGPT Web model routes", () => {
     });
   });
 
-  test("Bigger Context keeps original 3× windows for Plus and Instant 128k / 400k for Pro", () => {
+  test("Bigger Context keeps original 3× windows for Plus and Instant 123k / 400k for Pro", () => {
     const plusBigger = { ...plus, experimentalBiggerContext: true, biggerContextPlan: "plus" as const };
     expect(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, "low", plusBigger)).toEqual({
       contextWindow: 123_000,
@@ -209,9 +209,9 @@ describe("fixed ChatGPT Web model routes", () => {
     });
     const proBigger = { ...pro, experimentalBiggerContext: true, biggerContextPlan: "pro" as const };
     expect(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, "low", proBigger)).toEqual({
-      contextWindow: 128_000,
+      contextWindow: 123_000,
       effectiveContextWindowPercent: 90,
-      autoCompactTokenLimit: 115_200,
+      autoCompactTokenLimit: 110_700,
     });
     for (const effort of ["medium", "high", "xhigh", "max"] as const) {
       expect(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, effort, proBigger)).toEqual({

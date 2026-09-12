@@ -95,16 +95,16 @@ describe("native /models augmentation", () => {
     expect(pro.auto_compact_token_limit).toBe(285_000);
   });
 
-  test("Pro Bigger Context publishes Instant 128k and 400k catalog windows", () => {
+  test("Pro Bigger Context publishes Instant 123k and 400k catalog windows", () => {
     const config = defaultConfig("full");
     config.proAvailable = true;
     config.experimentalBiggerContext = true;
     config.biggerContextPlan = "pro";
     const models = augmentNativeModelCatalog(source(), config).models as Array<Record<string, unknown>>;
-    const pro = models.find(model => model.slug === "chatgpt-web/pro")!;
     const instant = models.find(model => model.slug === "chatgpt-web/light")!;
-    expect(instant.context_window).toBe(128_000);
-    expect(instant.auto_compact_token_limit).toBe(115_200);
+    const pro = models.find(model => model.slug === "chatgpt-web/pro")!;
+    expect(instant.context_window).toBe(123_000);
+    expect(instant.auto_compact_token_limit).toBe(110_700);
     expect(pro.context_window).toBe(400_000);
     expect(pro.auto_compact_token_limit).toBe(360_000);
   });
