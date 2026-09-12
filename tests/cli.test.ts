@@ -581,7 +581,7 @@ test("DEV stored-capability reuse rejects invalid preconditions without changing
     writeConfig({ browserHost: "launcher", browserHostDescriptorPath: descriptorPath });
     result = await runCli(baseArgs, env);
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("only for managed-chrome to launcher migration");
+    expect(result.stderr).toContain("only for managed-chrome migration or explicit legacy Full-to-Routing migration");
 
     const production = await runCli([
       "setup", "--browser-only", "--reuse-stored-account-capabilities", "--acknowledge-unofficial",
@@ -592,6 +592,63 @@ test("DEV stored-capability reuse rejects invalid preconditions without changing
     });
     expect(production.exitCode).toBe(1);
     expect(production.stderr).toMatch(/Unknown.*arguments: --reuse-stored-account-capabilities/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("DEV legacy Full can migrate to Routing Full offline without restarting its standalone tunnel", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-dev-legacy-routing-migration-"));
+  const devHome = join(root, "dev");
+  const descriptorPath = join(devHome, "runtime", "launcher-browser.json");
+  const tunnel = {
+    binaryPath: join(root, "bin", "tunnel-client"),
+    tunnelId: `tunnel_${"a".repeat(32)}`,
+    runtimeKeyFile: join(root, "secrets", "runtime.key"),
+    profileDir: join(root, "profiles"),
+    profileName: "codex-chatgpt-web-dev",
+    alias: "codex-chatgpt-web-dev",
+  };
+  try {
+    mkdirSync(devHome, { recursive: true });
+    const config = {
+      ...defaultConfig("full"),
+      purpose: "dev-harness" as const,
+      browserHost: "launcher" as const,
+      browserHostDescriptorPath: descriptorPath,
+      browserInteractionMode: "automatic" as const,
+      solAvailable: true,
+      proAvailable: false,
+      tunnel,
+    };
+    writeFileSync(join(devHome, "config.json"), `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+    const result = await runCli([
+      "dev", "setup", "--full",
+      "--routing-connector-name", "Routing MCP APP Phase1",
+      "--browser-host-descriptor", descriptorPath,
+      "--reuse-stored-account-capabilities",
+      "--acknowledge-unofficial",
+    ], {
+      ...process.env,
+      CODEX_WEB_GPT_DEV_HOME: devHome,
+      CODEX_CHATGPT_WEB_HOME: join(root, "production"),
+      CODEX_HOME: join(root, "production-codex"),
+    });
+    expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" });
+    const migrated = JSON.parse(readFileSync(join(devHome, "config.json"), "utf8"));
+    expect(migrated).toMatchObject({
+      purpose: "dev-harness",
+      mode: "full",
+      browserHost: "launcher",
+      browserInteractionMode: "automatic",
+      appName: "Routing MCP APP Phase1",
+      automaticAppName: "Routing MCP APP Phase1",
+      solAvailable: true,
+      proAvailable: false,
+    });
+    expect(migrated.tunnel).toBeUndefined();
+    expect(migrated.automaticTunnel).toBeUndefined();
+    expect(migrated.manualTunnel).toBeUndefined();
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

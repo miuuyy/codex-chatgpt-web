@@ -638,12 +638,20 @@ export async function setupDevProfile(options: SetupOptions): Promise<DevProfile
   if (!options.browserHostDescriptorPath) {
     throw new Error("DEV profile setup requires the isolated launcher browser descriptor");
   }
+  const legacyRoutingMigration = Boolean(
+    options.reuseStoredAccountCapabilities
+    && existing?.mode === "full"
+    && existing.tunnel
+    && existing.browserHost === "launcher"
+    && options.mode === "full"
+    && options.routingConnectorName?.trim(),
+  );
   if (options.reuseStoredAccountCapabilities) {
     if (!existing) {
       throw new Error("DEV stored account capabilities require an existing DEV configuration");
     }
-    if (existing.browserHost !== "managed-chrome") {
-      throw new Error("DEV stored account capabilities are only for managed-chrome to launcher migration");
+    if (existing.browserHost !== "managed-chrome" && !legacyRoutingMigration) {
+      throw new Error("DEV stored account capabilities are only for managed-chrome migration or explicit legacy Full-to-Routing migration");
     }
     const interactionMode = options.browserInteractionMode ?? existing.browserInteractionMode;
     if (interactionMode !== "automatic") {
@@ -693,13 +701,15 @@ export async function setupDevProfile(options: SetupOptions): Promise<DevProfile
     delete config.manualTunnel;
   }
   if (config.browserInteractionMode === "automatic") {
-    const capabilities = await inspectLauncherCapabilities(
-      config,
-      existing,
-      options.refreshAccountCapabilities === true,
-      DEV_LAUNCHER_PROFILE,
-      options.reuseStoredAccountCapabilities === true,
-    );
+    const capabilities = legacyRoutingMigration
+      ? { solAvailable: existing!.solAvailable!, proAvailable: existing!.proAvailable! }
+      : await inspectLauncherCapabilities(
+        config,
+        existing,
+        options.refreshAccountCapabilities === true,
+        DEV_LAUNCHER_PROFILE,
+        options.reuseStoredAccountCapabilities === true,
+      );
     config.solAvailable = capabilities.solAvailable;
     config.proAvailable = capabilities.solAvailable && capabilities.proAvailable;
   }
