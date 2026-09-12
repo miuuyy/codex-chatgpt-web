@@ -58,7 +58,7 @@ connects ChatGPT back to the tools of that same Codex task until its next compac
   Temporary Chat. At the context boundary, the retained agent writes the checkpoint before Codex
   starts a clean chat; if that chat was closed, canonical Codex history supplies the fallback.
 - **One cross-platform launcher.** The macOS, Windows, and Linux app owns sign-in, model setup, MCP
-  guidance, health checks, safe diagnostics, and up to five visible task-bound browser tabs.
+  guidance, health checks, safe diagnostics, and up to ten visible task-bound browser tabs.
 - **Fail-closed behavior.** Missing models, tools, or changed ChatGPT UI produce explicit errors
   instead of silently switching route or capability. End-to-end coverage is documented in
   [release validation](docs/release-validation.md).

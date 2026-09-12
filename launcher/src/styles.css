@@ -542,9 +542,12 @@ code {
   flex: 0 0 36px;
   align-items: flex-end;
   gap: 3px;
+  overflow-x: auto;
+  overflow-y: hidden;
   padding: 4px 8px 0;
   border-bottom: 1px solid var(--color-border-light);
   background: rgb(24 24 24 / 72%);
+  scrollbar-width: thin;
 }
 
 .app-shell:not(.is-sidebar-open) .browser-tab-strip {
@@ -554,10 +557,10 @@ code {
 .browser-tab {
   position: relative;
   display: flex;
-  width: min(220px, 32vw);
-  min-width: 96px;
+  width: auto;
+  min-width: clamp(64px, 10vw, 96px);
   max-width: 220px;
-  flex: 1 1 120px;
+  flex: 1 1 0;
   height: 28px;
   align-items: center;
   gap: 7px;
@@ -624,7 +627,7 @@ code {
 .browser-tab-drag {
   height: 100%;
   min-width: 20px;
-  flex: 1;
+  flex: 1 0 20px;
 }
 
 .tab-spinner {

@@ -8,7 +8,7 @@ launcher-owned codex-chatgpt-web daemon
   ├─ official /models passthrough + fixed ChatGPT Web models
   ├─ native Responses passthrough or ChatGPT Responses/SSE bridge
   ├─ authenticated native Search and Image Gen request forwarding
-  ├─ ChatGPT browser worker (up to five task-bound Electron tabs)
+  ├─ ChatGPT browser worker (up to ten task-bound Electron tabs)
   ├─ capability broker (full mode only)
   └─ stdio MCP server
             ▲
@@ -81,7 +81,7 @@ and development connectors installed without renaming, refreshing, or deleting e
 
 ## Browser lifecycle
 
-The desktop launcher owns one persistent Electron partition and up to five task-bound browser
+The desktop launcher owns one persistent Electron partition and up to ten task-bound browser
 tabs. Each task/model/effort/compaction epoch owns one exact `WebContentsView` lease; sequential
 native messages reuse that surface, while each message receives a fresh turn-bound MCP token and
 keeps all of its MCP tool rounds inside one ChatGPT response. Compaction asks the same retained Web
