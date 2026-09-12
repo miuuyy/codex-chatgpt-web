@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline";
+import { assertChatGptContextFile, CHATGPT_CONTEXT_FILE_FEATURE } from "./context-file";
 import { stdin, stderr, stdout } from "node:process";
 import type { CodexProviderConfig } from "../../types";
 import { ChatGptBrowserWorker, closeChatGptBrowserWorkers, type BrowserTurn } from "./browser-worker";
@@ -6,7 +7,7 @@ import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError } from "./adap
 import type { ChatGptWebCapabilities } from "./model";
 import { createProcessLineWriter } from "./process-line-writer";
 import { createBrowserHelperPromptSelection } from "./browser-helper-prompt-selection";
-import type { CompiledChatGptWebPrompt } from "./prompt";
+import { isChatGptWebMultipartPartCount, type CompiledChatGptWebPrompt } from "./prompt";
 import { ChatGptMirroredTurnProgress } from "./turn-progress";
 import type { ChatGptExternalTurnProgressSnapshot } from "./turn-progress";
 
@@ -402,10 +403,20 @@ input.on("line", line => {
     if (prepared.multipart !== undefined) {
       const multipart = prepared.multipart;
       if (!multipart || !Array.isArray(multipart.parts)
-        || (multipart.parts.length !== 2 && multipart.parts.length !== 3)
+        || !isChatGptWebMultipartPartCount(multipart.parts.length)
         || multipart.parts.some(part => typeof part !== "string")
         || typeof multipart.commit !== "string") {
         writeProtocol({ type: "error", id: message.id, message: "Browser helper multipart prompt is invalid" });
+        abortControllers.get(message.id)?.abort();
+        return;
+      }
+    }
+    if (prepared.contextFile !== undefined) {
+      try {
+        assertChatGptContextFile(prepared.contextFile);
+        if (prepared.multipart) throw new Error("Context file cannot be combined with multipart");
+      } catch {
+        writeProtocol({ type: "error", id: message.id, message: "Browser helper context-file prompt is invalid" });
         abortControllers.get(message.id)?.abort();
         return;
       }
@@ -517,4 +528,4 @@ process.once("SIGTERM", () => {
 });
 
 // Advertise the optional frames this helper understands so the daemon can negotiate them explicitly.
-writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack"] });
+writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack", CHATGPT_CONTEXT_FILE_FEATURE] });

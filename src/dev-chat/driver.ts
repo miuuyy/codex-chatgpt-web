@@ -590,7 +590,7 @@ export class DevChatDriver {
       input,
       false,
       this.config.mode === "full",
-    ));
+    ), { allowWebSubagents: this.config.allowWebSubagents === true });
     const route = routeChatGptWebRequest(parsed, this.config);
     const inputTokens = estimateChatGptWebInputTokens(parsed, {
       localToolsEnabled: this.config.mode === "full",

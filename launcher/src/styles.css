@@ -1915,6 +1915,35 @@ code {
   padding: 12px 0;
 }
 
+.plan-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 148px;
+  gap: 6px;
+}
+
+.plan-picker > button {
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+
+.plan-picker > button:hover:not(:disabled),
+.plan-picker > button.is-selected {
+  border-color: var(--color-border-heavy);
+  background: var(--color-background-control);
+  color: var(--color-text-primary);
+}
+
+.plan-picker > button:disabled {
+  opacity: 0.55;
+}
+
 .language-menu {
   position: relative;
   z-index: 1;

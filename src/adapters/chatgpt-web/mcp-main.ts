@@ -17,9 +17,12 @@ export async function runChatGptMcpMain(args: string[]): Promise<void> {
   if (requestedContract !== "native" && requestedContract !== "safe") {
     throw new Error(`--contract must be native or safe, received ${requestedContract}`);
   }
+  const allowWebSubagents = remaining.includes("--allow-web-subagents");
+  if (allowWebSubagents) remaining.splice(remaining.indexOf("--allow-web-subagents"), 1);
   if (remaining.length > 0) throw new Error(`Unknown MCP arguments: ${remaining.join(" ")}`);
   await runChatGptMcpServer({
     brokerSocketPath,
     contract: requestedContract as ChatGptMcpContract,
+    allowWebSubagents,
   });
 }

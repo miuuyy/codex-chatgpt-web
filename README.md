@@ -147,6 +147,19 @@ The launcher's **MCP** page guides the complete setup. For the exact clicks, see
 > up to 270,000 tokens with experimental **3× context** enabled, with native Codex compaction
 > supported throughout.
 
+With **Bigger Context** enabled, automatic **Instant, Medium, High, Extra High, and Pro** modes upload large canonical task
+context as one TXT attachment instead of splitting it across older chat messages. Small
+requests remain inline; manual Zero Risk and legacy Luna behavior is unchanged, and no model is switched
+automatically. Each new file-based turn opens a fresh web conversation and uploads the full
+context again so local tools remain available; tool calls within the same turn share that conversation.
+The file contains only the context already supplied by Codex, not an extra scan of
+your computer. File text, instructions, and images all count toward the selected context ceiling.
+At most nine images can accompany a context file. Upload or size failures are explicit and never
+silently trim the original file. Both the launcher runtime and its browser helper must be updated.
+This remains experimental: file recall tests are not a guarantee of full internal context retention.
+The existing per-mode and plan ceilings still apply: TXT transport does not increase Instant's
+123k total ceiling to the reasoning modes' 400k Pro-plan ceiling.
+
 1. Finish the required setup, open **MCP**, create the Tunnel and regular API key, then press
    **Connect harness**.
 2. Enable ChatGPT **Developer Mode** and create a new Tunnel connector named exactly

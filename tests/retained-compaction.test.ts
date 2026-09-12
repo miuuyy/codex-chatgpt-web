@@ -1206,13 +1206,15 @@ test("a compact HTTP observer can reconnect without sending a second retained-ch
   }
 });
 
-test.each([false, true])("structured compact rebuilds canonical context when its retained source is absent (Bigger Context=%s)", async experimentalBiggerContext => {
+test.each(["inline", "small-bigger", "file"])("structured compact rebuilds canonical context when its retained source is absent (%s)", async transport => {
+  const experimentalBiggerContext = transport !== "inline";
   const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-missing-retained-compact-"));
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: `browser://missing-retained-${Date.now()}`,
     chatgptWeb: {
       experimentalBiggerContext,
+      biggerContextPlan: "pro",
       browserHost: "launcher",
       browserHostDescriptorPath: join(root, "launcher.json"),
       brokerSocketPath: defaultBrokerEndpoint(root),
@@ -1230,21 +1232,28 @@ test.each([false, true])("structured compact rebuilds canonical context when its
     expect(turn.conversationKey).toBeUndefined();
     expect(turn.compaction).toBeTrue();
     const prepared = await turn.prepare();
-    const contextText = prepared.multipart?.parts.join("\n") ?? prepared.text;
+    const contextText = prepared.contextFile?.content ?? prepared.multipart?.parts.join("\n") ?? prepared.text;
     expect(contextText).toContain("Original task");
     expect(contextText).toContain("Continue with the next step");
-    if (experimentalBiggerContext) {
-      expect(prepared.multipart!.parts).toHaveLength(3);
+    if (transport === "file") {
+      expect(prepared.contextFile).toBeDefined();
+      expect(prepared.multipart).toBeUndefined();
       expect(prepared.trimmedCompactionMessages).toBeUndefined();
-      const lastRecord = prepared.multipart!.parts.flatMap(part => JSON.parse(part).records).at(-1);
-      expect(lastRecord.message.content).toBe(compact.context.messages.at(-1)!.content);
+      expect(JSON.parse(prepared.contextFile!.content).messages.at(-1).content).toBe(compact.context.messages.at(-1)!.content);
+    } else if (experimentalBiggerContext) {
+      expect(prepared.multipart).toBeUndefined();
+      expect(prepared.trimmedCompactionMessages).toBeUndefined();
+      expect(prepared.text).toContain(compact.context.messages.at(-1)!.content as string);
     }
     prepared.release();
     return "Fallback checkpoint from canonical Codex context";
   };
   const compact = request(true);
   const events: AdapterEvent[] = [];
-  if (experimentalBiggerContext) compact.context.messages.at(-1)!.content += "x".repeat(160_000);
+  if (transport === "file") {
+    compact.options.reasoning = "max";
+    compact.context.messages.at(-1)!.content += "word ".repeat(150_000);
+  } else if (experimentalBiggerContext) compact.context.messages.at(-1)!.content += "x".repeat(160_000);
   try {
     await createChatGptWebAdapter(provider).runTurn!(
       compact,
@@ -1262,7 +1271,7 @@ test.each([false, true])("structured compact rebuilds canonical context when its
     await TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!).close();
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 30_000);
 
 test("fresh multipart compaction gives each acknowledged phase its own handoff budget", async () => {
   const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-phased-fallback-compact-"));

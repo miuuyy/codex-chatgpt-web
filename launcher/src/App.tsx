@@ -12,6 +12,7 @@ import { createPortal } from "react-dom";
 import { copyFor, localizeRuntimeMessage, type Copy } from "./i18n";
 import { Icon, type IconName } from "./icons";
 import type {
+  BiggerContextPlan,
   BrowserInteractionMode,
   BrowserState,
   DoctorReport,
@@ -251,6 +252,13 @@ function Onboarding({
                 label={localized.chinese}
                 marker="简"
                 onClick={() => setSelectedLanguage("zh-CN")}
+              />
+              <WelcomeOption
+                active={selectedLanguage === "zh-TW"}
+                detail={localized.traditionalChinese}
+                label={localized.traditionalChinese}
+                marker="繁"
+                onClick={() => setSelectedLanguage("zh-TW")}
               />
               <WelcomeOption
                 active={selectedLanguage === "ja"}
@@ -1637,6 +1645,28 @@ function SettingsSurface({
       setBusy(false);
     }
   };
+  const setBiggerContextPlan = async (plan: BiggerContextPlan) => {
+    setBusy(true);
+    setError(null);
+    try {
+      updateState(await api!.setBiggerContextPlan(plan));
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const setAllowWebSubagents = async (enabled: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      updateState(await api!.setAllowWebSubagents(enabled));
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
   const setInteractionMode = async (mode: BrowserInteractionMode) => {
     setBusy(true);
     setError(null);
@@ -1713,6 +1743,44 @@ function SettingsSurface({
               || snapshot.state.browserInteractionMode === "manual"
               || snapshot.state.coreSetupComplete !== true}
             onChange={(checked) => void setBiggerContext(checked)}
+          />
+        </SettingRow>
+        <SettingRow
+          body={copy.chatgptPlanBody}
+          label={copy.chatgptPlan}
+        >
+          <div className="plan-picker" role="radiogroup" aria-label={copy.chatgptPlan}>
+            <button
+              aria-checked={snapshot.state.biggerContextPlan !== "pro"}
+              className={snapshot.state.biggerContextPlan !== "pro" ? "is-selected" : ""}
+              disabled={busy
+                || snapshot.state.browserInteractionMode === "manual"
+                || snapshot.state.coreSetupComplete !== true}
+              onClick={() => void setBiggerContextPlan("plus")}
+              role="radio"
+              type="button"
+            >
+              {copy.chatgptPlanPlus}
+            </button>
+            <button
+              aria-checked={snapshot.state.biggerContextPlan === "pro"}
+              className={snapshot.state.biggerContextPlan === "pro" ? "is-selected" : ""}
+              disabled={busy
+                || snapshot.state.browserInteractionMode === "manual"
+                || snapshot.state.coreSetupComplete !== true}
+              onClick={() => void setBiggerContextPlan("pro")}
+              role="radio"
+              type="button"
+            >
+              {copy.chatgptPlanPro}
+            </button>
+          </div>
+        </SettingRow>
+        <SettingRow body={copy.webSubagentsBody} label={copy.webSubagents}>
+          <Switch
+            checked={snapshot.state.allowWebSubagents === true}
+            disabled={busy || snapshot.state.coreSetupComplete !== true}
+            onChange={(checked) => void setAllowWebSubagents(checked)}
           />
         </SettingRow>
         <SettingRow body={copy.chooseLanguageHint} label={copy.language}>
@@ -2299,6 +2367,7 @@ function LanguageMenu({ copy, language, onChange }: { copy: Copy; language: Lang
   const options: Array<{ label: string; value: Language }> = [
     { label: copy.english, value: "en" },
     { label: copy.chinese, value: "zh-CN" },
+    { label: copy.traditionalChinese, value: "zh-TW" },
     { label: copy.japanese, value: "ja" },
   ];
   const selected = options.find((option) => option.value === language) ?? options[0];
@@ -2556,7 +2625,9 @@ function formatTime(value: string, language: Language): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
     ? value
-    : date.toLocaleTimeString(language === "ja" ? "ja-JP" : language === "zh-CN" ? "zh-CN" : "en", {
+    : date.toLocaleTimeString(
+      language === "ja" ? "ja-JP" : language === "zh-TW" ? "zh-TW" : language === "zh-CN" ? "zh-CN" : "en",
+      {
         hour: "2-digit",
         minute: "2-digit",
         second: "2-digit",

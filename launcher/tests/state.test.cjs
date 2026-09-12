@@ -26,6 +26,8 @@ test("launcher state persists onboarding, language, and autostart atomically", (
       showBrowserDuringTurns: true,
       browserInteractionMode: "automatic",
       experimentalBiggerContext: false,
+      biggerContextPlan: "plus",
+      allowWebSubagents: false,
       zeroRiskProEnabled: false,
       browserSmokePassed: false,
       browserSmokeVersion: null,
@@ -52,6 +54,8 @@ test("launcher state persists onboarding, language, and autostart atomically", (
       showBrowserDuringTurns: true,
       browserInteractionMode: "automatic",
       experimentalBiggerContext: false,
+      biggerContextPlan: "plus",
+      allowWebSubagents: false,
       zeroRiskProEnabled: false,
       browserSmokePassed: true,
       browserSmokeVersion: "0.2.0",
@@ -88,6 +92,17 @@ test("Japanese is preserved as a supported persisted launcher language", () => {
   }
 });
 
+test("Traditional Chinese is preserved as a supported persisted launcher language", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-zh-tw-state-"));
+  const file = path.join(root, "state.json");
+  try {
+    fs.writeFileSync(file, JSON.stringify({ version: 1, language: "zh-TW" }));
+    assert.equal(createStateStore(file).read().language, "zh-TW");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("persisted sidebar corruption is repaired without changing the rest of launcher state", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-sidebar-state-"));
   const file = path.join(root, "state.json");
@@ -117,6 +132,8 @@ test("persisted sidebar corruption is repaired without changing the rest of laun
       showBrowserDuringTurns: true,
       browserInteractionMode: "automatic",
       experimentalBiggerContext: false,
+      biggerContextPlan: "plus",
+      allowWebSubagents: false,
       zeroRiskProEnabled: false,
       browserSmokePassed: false,
       browserSmokeVersion: null,
