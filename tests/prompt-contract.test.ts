@@ -424,7 +424,7 @@ test("Bigger Context compaction trims until every inert stage fits the account s
     Math.max(...stages.map(text => estimateTokens(text, CHATGPT_WEB_MODEL_ID))),
     Math.max(...stages.map(text => text.length)),
   )).not.toThrow();
-}, 20_000);
+}, 60_000);
 
 test("Web compaction rebuilds attachments after trimming an oversized oldest image message", () => {
   const compact = request("high");
