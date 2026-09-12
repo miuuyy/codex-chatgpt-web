@@ -21,6 +21,13 @@ Nothing is copied from the normal launcher. The DEV command fails closed if its 
 browser descriptor, credentials, or connector are not ready. It never falls back to the production
 profile, another model, a fake browser, or a second connector.
 
+When migrating an already verified automatic DEV profile from terminal-only managed Chrome to the
+DEV launcher, `dev setup` may use `--reuse-stored-account-capabilities` to keep the explicitly
+persisted `solAvailable` / `proAvailable` values while still validating the launcher-owned ChatGPT
+session and Temporary Chat surface. The option is DEV-only, cannot be combined with
+`--refresh-account-capabilities`, and is rejected for any other profile or interaction mode. Without
+the flag, launcher setup keeps the normal capability-probe behavior.
+
 ## Run
 
 One browser-only message:

@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { join } from "node:path";
@@ -50,6 +50,7 @@ export interface SetupOptions {
   chromeExecutablePath?: string;
   browserHostDescriptorPath?: string;
   refreshAccountCapabilities?: boolean;
+  reuseStoredAccountCapabilities?: boolean;
   forceLogin?: boolean;
   autoApproveToolCalls?: boolean;
   experimentalBiggerContext?: boolean;
@@ -303,12 +304,15 @@ async function inspectLauncherCapabilities(
   existing: AppConfig | undefined,
   refreshAccountCapabilities: boolean,
   expectedProfile: "production" | "development",
+  reuseStoredAccountCapabilities = false,
 ): Promise<{ solAvailable: boolean; proAvailable: boolean }> {
-  const detectCapabilities = launcherCapabilityProbeRequired(
-    existing,
-    refreshAccountCapabilities,
-    config.browserInteractionMode,
-  );
+  const detectCapabilities = reuseStoredAccountCapabilities
+    ? false
+    : launcherCapabilityProbeRequired(
+      existing,
+      refreshAccountCapabilities,
+      config.browserInteractionMode,
+    );
   const inspected = await inspectLauncherBrowserHost(config.browserHostDescriptorPath!, {
     detectCapabilities,
     expectedProfile,
@@ -630,6 +634,25 @@ export async function setupDevProfile(options: SetupOptions): Promise<DevProfile
   if (!options.browserHostDescriptorPath) {
     throw new Error("DEV profile setup requires the isolated launcher browser descriptor");
   }
+  if (options.reuseStoredAccountCapabilities) {
+    if (!existing) {
+      throw new Error("DEV stored account capabilities require an existing DEV configuration");
+    }
+    if (existing.browserHost !== "managed-chrome") {
+      throw new Error("DEV stored account capabilities are only for managed-chrome to launcher migration");
+    }
+    const interactionMode = options.browserInteractionMode ?? existing.browserInteractionMode;
+    if (interactionMode !== "automatic") {
+      throw new Error("DEV stored account capabilities require automatic browser interaction");
+    }
+    if (options.refreshAccountCapabilities) {
+      throw new Error("Choose either --reuse-stored-account-capabilities or --refresh-account-capabilities");
+    }
+    const raw = JSON.parse(readFileSync(getConfigPath(), "utf8").replace(/^\uFEFF/, "")) as Record<string, unknown>;
+    if (typeof raw.solAvailable !== "boolean" || typeof raw.proAvailable !== "boolean") {
+      throw new Error("DEV stored account capabilities require explicitly persisted solAvailable and proAvailable values");
+    }
+  }
   const config = baseConfig(existing, options, DEV_LAUNCHER_PROFILE);
   if (config.browserHost !== "launcher") {
     throw new Error("DEV profile setup requires the desktop launcher browser host");
@@ -641,6 +664,7 @@ export async function setupDevProfile(options: SetupOptions): Promise<DevProfile
       existing,
       options.refreshAccountCapabilities === true,
       DEV_LAUNCHER_PROFILE,
+      options.reuseStoredAccountCapabilities === true,
     );
     config.solAvailable = capabilities.solAvailable;
     config.proAvailable = capabilities.solAvailable && capabilities.proAvailable;

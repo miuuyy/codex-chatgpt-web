@@ -349,6 +349,160 @@ test("DEV browser-only setup persists only the isolated harness profile", async 
   }
 });
 
+
+test("DEV setup can explicitly reuse persisted capabilities during managed-Chrome migration", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-dev-reuse-capabilities-"));
+  const devHome = join(root, "dev");
+  const descriptorPath = join(devHome, "runtime", "launcher-browser.json");
+  const helperScript = join(root, "helper.cjs");
+  const controlToken = "dev-reuse-control-token-0123456789abcdefghijklmnop";
+  let inspections = 0;
+  const control = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    inspections += 1;
+    expect(request.url).toBe("/v1/session/inspect");
+    expect(request.headers.authorization).toBe(`Bearer ${controlToken}`);
+    expect(JSON.parse(Buffer.concat(chunks).toString("utf8"))).toEqual({ detectCapabilities: false });
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      authenticated: true,
+      temporary: true,
+      url: "https://chatgpt.com/?temporary-chat=true",
+    }));
+  });
+  await new Promise<void>((resolveListen, rejectListen) => {
+    control.once("error", rejectListen);
+    control.listen(0, "127.0.0.1", resolveListen);
+  });
+  try {
+    const address = control.address();
+    if (!address || typeof address === "string") throw new Error("control server has no port");
+    mkdirSync(join(devHome, "runtime"), { recursive: true });
+    writeFileSync(helperScript, "module.exports = {};\n", { mode: 0o700 });
+    writeFileSync(descriptorPath, `${JSON.stringify({
+      version: 3,
+      kind: "codex-web-gpt-launcher",
+      profile: "development",
+      pid: process.pid,
+      endpoint: "http://127.0.0.1:48141",
+      control: { endpoint: `http://127.0.0.1:${address.port}`, token: controlToken },
+      helper: { executable: process.execPath, script: helperScript },
+      partition: "persist:codex-web-gpt-dev-chatgpt",
+      idleUrl: LAUNCHER_BROWSER_IDLE_URL,
+      surfaceId: "r".repeat(32),
+      surfaceTargets: { ["r".repeat(32)]: "native-owned-target" },
+      createdAt: new Date().toISOString(),
+    })}\n`, { mode: 0o600 });
+    mkdirSync(devHome, { recursive: true });
+    writeFileSync(join(devHome, "config.json"), `${JSON.stringify({
+      ...defaultConfig("browser-only"),
+      purpose: "dev-harness",
+      browserHost: "managed-chrome",
+      browserInteractionMode: "automatic",
+      solAvailable: true,
+      proAvailable: false,
+    }, null, 2)}\n`, { mode: 0o600 });
+    const result = await runCli([
+      "dev",
+      "setup",
+      "--browser-only",
+      "--browser-host-descriptor",
+      descriptorPath,
+      "--reuse-stored-account-capabilities",
+      "--acknowledge-unofficial",
+    ], {
+      ...process.env,
+      CODEX_WEB_GPT_DEV_HOME: devHome,
+      CODEX_CHATGPT_WEB_HOME: join(root, "production"),
+      CODEX_HOME: join(root, "production-codex"),
+    });
+    expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" });
+    expect(inspections).toBe(1);
+    expect(JSON.parse(readFileSync(join(devHome, "config.json"), "utf8"))).toMatchObject({
+      purpose: "dev-harness",
+      browserHost: "launcher",
+      browserHostDescriptorPath: descriptorPath,
+      solAvailable: true,
+      proAvailable: false,
+    });
+    expect(existsSync(join(root, "production-codex", "config.toml"))).toBe(false);
+  } finally {
+    await new Promise<void>(resolveClose => control.close(() => resolveClose()));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("DEV stored-capability reuse rejects invalid preconditions without changing normal setup", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-dev-reuse-invalid-"));
+  const devHome = join(root, "dev");
+  const descriptorPath = join(devHome, "runtime", "launcher-browser.json");
+  const env = {
+    ...process.env,
+    CODEX_WEB_GPT_DEV_HOME: devHome,
+    CODEX_CHATGPT_WEB_HOME: join(root, "production"),
+    CODEX_HOME: join(root, "production-codex"),
+  };
+  const baseArgs = [
+    "dev", "setup", "--browser-only", "--browser-host-descriptor", descriptorPath,
+    "--reuse-stored-account-capabilities", "--acknowledge-unofficial",
+  ];
+  const writeConfig = (overrides: Record<string, unknown> = {}, omitCapabilities = false) => {
+    mkdirSync(devHome, { recursive: true });
+    const value = {
+      ...defaultConfig("browser-only"),
+      purpose: "dev-harness",
+      browserHost: "managed-chrome",
+      browserInteractionMode: "automatic",
+      solAvailable: true,
+      proAvailable: false,
+      ...overrides,
+    } as Record<string, unknown>;
+    if (omitCapabilities) {
+      delete value.solAvailable;
+      delete value.proAvailable;
+    }
+    writeFileSync(join(devHome, "config.json"), `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  };
+  try {
+    let result = await runCli(baseArgs, env);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("require an existing DEV configuration");
+
+    writeConfig({}, true);
+    result = await runCli(baseArgs, env);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("require explicitly persisted solAvailable and proAvailable values");
+
+    writeConfig();
+    result = await runCli([...baseArgs, "--refresh-account-capabilities"], env);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Choose either --reuse-stored-account-capabilities or --refresh-account-capabilities");
+
+    writeConfig();
+    result = await runCli([...baseArgs, "--zero-risk-browser-interaction"], env);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("require automatic browser interaction");
+
+    writeConfig({ browserHost: "launcher", browserHostDescriptorPath: descriptorPath });
+    result = await runCli(baseArgs, env);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("only for managed-chrome to launcher migration");
+
+    const production = await runCli([
+      "setup", "--browser-only", "--reuse-stored-account-capabilities", "--acknowledge-unofficial",
+    ], {
+      ...process.env,
+      CODEX_HOME: join(root, "prod-codex"),
+      CODEX_CHATGPT_WEB_HOME: join(root, "prod-app"),
+    });
+    expect(production.exitCode).toBe(1);
+    expect(production.stderr).toMatch(/Unknown.*arguments: --reuse-stored-account-capabilities/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("DEV setup accepts explicit browser-interaction flags and preserves manual fail-closed validation", async () => {
   const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-dev-interaction-"));
   const devHome = join(root, "dev");
