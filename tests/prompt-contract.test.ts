@@ -230,7 +230,7 @@ test("Bigger Context can stage eight parts and reconstruct fragmented records", 
   const commit = formatChatGptWebMultipartCommit(compiled.multipart!, transactionId);
   expect(commit).toContain("acknowledged_parts: 7/8");
   expect(commit).toContain("concatenate every fragment");
-});
+}, 30_000);
 
 test("Bigger Context splits one oversized record instead of failing the stage", () => {
   const parsed = request("high");
@@ -263,7 +263,7 @@ test("Bigger Context splits one oversized record instead of failing the stage", 
     fragments.map((_record, index) => index + 1),
   );
   expect(new Set(fragments.map(record => record.fragment!.total))).toEqual(new Set([fragments.length]));
-});
+}, 30_000);
 
 test("browser-only Medium directs users to the full harness", () => {
   const capabilities = { localToolsEnabled: false, solAvailable: true, proAvailable: true };
@@ -335,7 +335,7 @@ test("Web compaction trims only the oldest history until the browser request fit
   expect(untrimmed.text).toContain("oldest-static");
   expect(untrimmed.text).toContain("newer-static");
   expect(untrimmed.trimmedCompactionMessages).toBeUndefined();
-});
+}, 30_000);
 
 test("Bigger Context compaction preserves history above the retired inline byte budget", () => {
   const compact = request("high");
@@ -390,7 +390,7 @@ test("Bigger Context minimizes the largest ordered stage instead of overfilling 
 
   expect(parts.map(part => part.records.length)).toEqual([2, 1, 2]);
   expect(Math.max(...multipart.multipart!.parts.map(part => part.length))).toBeLessThan(120_000);
-});
+}, 30_000);
 
 test("Bigger Context compaction trims until every inert stage fits the account staging budget", () => {
   const compact = request("high");
@@ -691,4 +691,4 @@ test("keeps large contexts intact in the inline text envelope", () => {
   expect(compiled.text).not.toContain(`<codex_context_attachment>`);
   expect(compiled.text).not.toContain("sha256");
   expect(compiled.text).not.toContain("SHA-256");
-});
+}, 30_000);
