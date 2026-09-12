@@ -1083,7 +1083,8 @@ async function start() {
     browserHost.destroy();
     await browserControl.close();
     mainWindow.destroy();
-    app.quit();
+    // Windows smoke waits on process exit; app.quit() can hang on helper processes.
+    app.exit(0);
     return;
   }
   if (IS_DEV_PROFILE) {
