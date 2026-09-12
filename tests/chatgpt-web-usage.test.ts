@@ -5,6 +5,7 @@ import { compiledChatGptWebMessages, estimateChatGptWebImageTokens, estimateComp
 import { assertChatGptWebMultipartInputWithinLimits, resolveChatGptWebMultipartStagingMode } from "../src/adapters/chatgpt-web/browser-worker";
 import { estimateTokens } from "../src/lib/token-estimate";
 import type { CodexParsedRequest } from "../src/types";
+import { CHATGPT_WEB_BACKEND_MODEL, resolveChatGptWebMessageTokenBudget } from "../src/chatgpt-web-models";
 
 const capabilities = { localToolsEnabled: false, solAvailable: true, proAvailable: true };
 
@@ -74,6 +75,43 @@ test("Bigger Context compaction selects three parts before the legacy inline byt
   expect(compiled.trimmedCompactionMessages).toBeUndefined();
   expect(reconstructedMessageContents(compiled.multipart!.parts))
     .toEqual([parsed.context.messages[0]!.content]);
+}, 30_000);
+
+test.each([false, true])("compaction tries wider transport before trimming history (single record: %s)", singleRecord => {
+  const parsed = request("");
+  parsed._compactionRequest = true;
+  parsed.context.messages = singleRecord
+    ? [{ role: "user", content: "word ".repeat(350_000), timestamp: 1 }]
+    : Array.from({ length: 8 }, (_, index) => ({
+      role: "user", content: `record-${index}-${"word ".repeat(40_000)}`, timestamp: index + 1,
+    }));
+  const parts = resolveBiggerContextMultipartParts(parsed, capabilities);
+  expect(parts).toBeGreaterThan(3);
+  const compiled = compileChatGptWebPrompt(parsed, capabilities, undefined, { experimentalMultipartParts: parts });
+  expect(compiled.trimmedCompactionMessages).toBeUndefined();
+  expect(reconstructedMessageContents(compiled.multipart!.parts))
+    .toEqual(parsed.context.messages.map(message => message.content));
+}, 30_000);
+
+test.each([40_000, 34_000])("compaction trims only after exhausting all eight parts (%s-word records)", size => {
+  const parsed = request("");
+  parsed._compactionRequest = true;
+  parsed.context.messages = Array.from({ length: 28 }, (_, index) => ({
+    role: "user", content: `record-${index}-${"word ".repeat(size)}`, timestamp: index + 1,
+  }));
+  parsed.context.messages.push({ role: "user", content: "checkpoint now", timestamp: 29 });
+  const parts = resolveBiggerContextMultipartParts(parsed, capabilities);
+  expect(parts).toBe(8);
+  const compiled = compileChatGptWebPrompt(parsed, capabilities, undefined, { experimentalMultipartParts: parts });
+  expect(compiled.trimmedCompactionMessages).toBeGreaterThan(0);
+  expect(reconstructedMessageContents(compiled.multipart!.parts))
+    .toEqual(parsed.context.messages.slice(compiled.trimmedCompactionMessages).map(message => message.content));
+  for (const [index, message] of compiledChatGptWebMessages(compiled).entries()) {
+    const effort = index === parts! - 1 ? "high" : "max";
+    expect(estimateTokens(message)).toBeLessThanOrEqual(
+      resolveChatGptWebMessageTokenBudget(CHATGPT_WEB_BACKEND_MODEL, effort, capabilities),
+    );
+  }
 }, 30_000);
 
 test("multipart planning leaves room for final attachments and execution instructions without losing history", () => {
