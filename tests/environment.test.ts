@@ -821,20 +821,29 @@ describe("trusted Codex task environment continuity", () => {
     });
   });
 
-  test.skipIf(process.platform !== "win32")("resumed Windows tasks accept the same indexed rollout with either path namespace", () => {
-    for (const namespaceHome of [false, true]) for (const namespaceRollout of [false, true]) {
+  for (const namespaceHome of [false, true]) for (const namespaceRollout of [false, true]) {
+    test.skipIf(process.platform !== "win32")(`resumed Windows tasks accept an indexed rollout (home namespace: ${namespaceHome}, rollout namespace: ${namespaceRollout})`, () => {
       const { codexHome, request, rolloutPath } = resumedRootFixture();
       const databasePath = join(codexHome, "state_5.sqlite");
-      createRolloutState(databasePath, namespaceRollout ? toNamespacedPath(rolloutPath) : rolloutPath);
-      const database = new Database(databasePath);
-      database.exec("DELETE FROM thread_spawn_edges; UPDATE threads SET agent_path = NULL");
-      database.close();
+      // Build the root-thread state directly in one transaction. Creating child state and then
+      // rewriting it needlessly forces several durable SQLite commits on Windows runners.
+      const database = new Database(databasePath, { create: true });
+      try {
+        database.transaction(() => {
+          database.exec("CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, agent_path TEXT)");
+          database.exec("CREATE TABLE thread_spawn_edges (parent_thread_id TEXT NOT NULL, child_thread_id TEXT NOT NULL PRIMARY KEY, status TEXT NOT NULL)");
+          database.query("INSERT INTO threads (id, rollout_path) VALUES (?, ?)")
+            .run(rolloutThreadId, namespaceRollout ? toNamespacedPath(rolloutPath) : rolloutPath);
+        })();
+      } finally {
+        database.close();
+      }
       const store = new ChatGptThreadEnvironmentStore(
         undefined, Date.now, namespaceHome ? toNamespacedPath(codexHome) : codexHome,
       );
       expect(store.resolve(request).cwd).toBe(root);
-    }
-  });
+    });
+  }
 
   for (const format of ["v1", "v2"]) for (const groupedPreamble of [false, true]) test(`${format} ${groupedPreamble ? "grouped preamble" : "context-only"} continuation requires a matching current rollout, not just a checkpoint`, () => {
     const { codexHome, request, rolloutPath } = resumedRootFixture();
