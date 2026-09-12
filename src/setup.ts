@@ -53,6 +53,8 @@ export interface SetupOptions {
   forceLogin?: boolean;
   autoApproveToolCalls?: boolean;
   experimentalBiggerContext?: boolean;
+  biggerContextPlan?: "plus" | "pro";
+  allowWebSubagents?: boolean;
   zeroRiskProEnabled?: boolean;
   replaceCodexRoute?: boolean;
   restartService?: boolean;
@@ -142,6 +144,8 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     solAvailable: before.solAvailable,
     proAvailable: before.proAvailable,
     experimentalBiggerContext: before.experimentalBiggerContext,
+    biggerContextPlan: before.biggerContextPlan,
+    allowWebSubagents: before.allowWebSubagents,
     zeroRiskProEnabled: before.zeroRiskProEnabled,
     autoApproveToolCalls: before.autoApproveToolCalls,
     controlToken: before.controlToken,
@@ -169,6 +173,8 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     solAvailable: after.solAvailable,
     proAvailable: after.proAvailable,
     experimentalBiggerContext: after.experimentalBiggerContext,
+    biggerContextPlan: after.biggerContextPlan,
+    allowWebSubagents: after.allowWebSubagents,
     zeroRiskProEnabled: after.zeroRiskProEnabled,
     autoApproveToolCalls: after.autoApproveToolCalls,
     controlToken: after.controlToken,
@@ -266,6 +272,12 @@ function baseConfig(
   if (options.autoApproveToolCalls !== undefined) config.autoApproveToolCalls = options.autoApproveToolCalls;
   if (options.experimentalBiggerContext !== undefined) {
     config.experimentalBiggerContext = options.experimentalBiggerContext;
+  }
+  if (options.biggerContextPlan !== undefined) {
+    config.biggerContextPlan = options.biggerContextPlan;
+  }
+  if (options.allowWebSubagents !== undefined) {
+    config.allowWebSubagents = options.allowWebSubagents;
   }
   if (options.zeroRiskProEnabled !== undefined) {
     if (config.browserInteractionMode !== "manual") {

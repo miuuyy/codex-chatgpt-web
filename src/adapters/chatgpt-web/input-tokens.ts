@@ -60,7 +60,8 @@ export function estimateCompiledChatGptWebInputTokens(
       modelId,
     ), 0)
     : 0;
-  return CHATGPT_WEB_PLATFORM_RESERVE_TOKENS + messageTokens + acknowledgementTokens + imageTokens;
+  const fileTokens = compiled.contextFile ? estimateTokens(compiled.contextFile.content, modelId) : 0;
+  return CHATGPT_WEB_PLATFORM_RESERVE_TOKENS + messageTokens + acknowledgementTokens + imageTokens + fileTokens;
 }
 
 export function estimateChatGptWebImageTokens(compiled: CompiledChatGptWebPrompt): number {

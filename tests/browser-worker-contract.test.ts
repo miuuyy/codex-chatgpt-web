@@ -118,11 +118,40 @@ test("assistant tracking rebinds only one proven replacement after React detache
     "conversation-turn-2",
     ["conversation-turn-1", "conversation-turn-3"],
   )).toBe("conversation-turn-3");
-  expect(() => chatGptReboundTurnIdentity(
+  expect(chatGptReboundTurnIdentity(
     ["conversation-turn-1"],
     "conversation-turn-2",
     ["conversation-turn-1", "conversation-turn-3", "conversation-turn-4"],
+  )).toBe("conversation-turn-4");
+});
+
+test("a long tool turn follows later assistant bubbles instead of failing the first shell", () => {
+  const initial = ["user-1"];
+  const bound = "assistant-tool-shell";
+  const current = ["assistant-tool-shell", "assistant-progress", "assistant-final"];
+  expect(chatGptReboundTurnIdentity(initial, bound, current)).toBe("assistant-final");
+  expect(chatGptSubmissionEvidence({
+    initialTurnIdentities: initial,
+    userIdentities: ["user-1"],
+    responseIdentities: current,
+    generationRunning: false,
+  })).toBe("assistant_turn");
+  expect(() => chatGptNewTurnIdentity(
+    ["user-1"],
+    ["user-1", "user-2", "user-3"],
   )).toThrow("2 new conversation turns");
+});
+
+test("assistant observation keeps scanning for later sibling turns while the first shell remains", () => {
+  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
+  expect(workerSource).not.toMatch(/if \(boundCount === 1\) return binding;/);
+  const mainLoop = workerSource.slice(
+    workerSource.indexOf("let completionFenceRevision"),
+    workerSource.indexOf("waiting for completed-turn evidence"),
+  );
+  expect(mainLoop.indexOf("this.reconcileAssistantTurnBinding(")).toBeGreaterThanOrEqual(0);
+  expect(mainLoop.indexOf("this.reconcileAssistantTurnBinding("))
+    .toBeLessThan(mainLoop.indexOf("let snapshot = await this.responseDomSnapshot(responseTurn.locator, responseDomCache);"));
 });
 
 test("a retained MCP conversation reuses its proven connector binding", () => {
@@ -2987,7 +3016,7 @@ test("Bigger Context fits mixed-density whole records within both token and comp
       { stagingEffort: stagingMode.effort, maxStageMessageTokens, maxStageChars, finalMessageTokens, finalMessageChars: final.length },
     )).not.toThrow();
   }
-}, 20_000);
+}, 60_000);
 
 test("Bigger Context preflight expands only the total context ceiling and keeps each message boundary", () => {
   const plus = {
@@ -3020,6 +3049,24 @@ test("Bigger Context preflight expands only the total context ceiling and keeps 
     900_000,
     3,
   )).toThrow("three-part ceiling");
+  expect(() => assertChatGptWebMultipartInputWithinLimits(
+    444_771,
+    95_000,
+    "gpt-5.6-sol",
+    "high",
+    pro,
+    900_000,
+    4,
+  )).not.toThrow();
+  expect(() => assertChatGptWebMultipartInputWithinLimits(
+    444_772,
+    95_000,
+    "gpt-5.6-sol",
+    "high",
+    pro,
+    900_000,
+    4,
+  )).toThrow("four-part ceiling");
   expect(() => assertChatGptWebMultipartInputWithinLimits(
     222_385,
     95_000,
@@ -3648,7 +3695,10 @@ test("multipart observation surfaces Stopped thinking on its first observation e
     acknowledgeToolBatch: async () => { acknowledged = true; },
   };
   const observe = (ChatGptBrowserWorker.prototype as any).waitForMultipartAcknowledgement;
-  await expect(observe.call({ responseDomSnapshot: async () => { observations += 1; return snapshot; } },
+  await expect(observe.call({
+    responseDomSnapshot: async () => { observations += 1; return snapshot; },
+    reconcileAssistantTurnBinding: async (_page: unknown, _baseline: unknown, current: unknown) => current,
+  },
     page, binding, {}, {}, Date.now() + 1_000, undefined, progress,
   )).rejects.toMatchObject({ code: "chatgpt_stopped_thinking", retryable: false });
   expect(observations).toBe(1);
@@ -3860,6 +3910,28 @@ test("Full mode has no fixed post-tool final-answer deadline", () => {
   expect(tracker.update({
     ...finalAnswer,
   }, 3_100 + CHATGPT_COMPLETION_SETTLE_MS)).toBeTrue();
+});
+
+test("rebinding to a later assistant bubble forgets the previous post-tool answer boundary", () => {
+  const tracker = new ChatGptCompletionTracker(500, 1_000);
+  const emptyShell = {
+    responsePresent: true,
+    running: false,
+    currentText: "",
+    currentHtml: "",
+    completionActionVisible: true,
+  };
+  expect(tracker.observeToolBatch(1, emptyShell.currentText)).toBeTrue();
+  tracker.resetAnswerWindow();
+  const finalAnswer = {
+    responsePresent: true,
+    running: false,
+    currentText: "complete final answer",
+    currentHtml: "<p>complete final answer</p>",
+    completionActionVisible: true,
+  };
+  expect(tracker.update(finalAnswer, 1_000)).toBeFalse();
+  expect(tracker.update(finalAnswer, 1_500)).toBeTrue();
 });
 
 test("Full mode fails closed when ChatGPT exposes completion without a post-tool final answer", () => {

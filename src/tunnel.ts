@@ -227,6 +227,7 @@ export function mcpCommand(config: AppConfig, platform = process.platform): stri
     contract,
     "--broker-socket",
     config.brokerSocketPath,
+    ...(config.allowWebSubagents ? ["--allow-web-subagents"] : []),
   ];
   if (platform === "win32") {
     return command.map(tunnelCommandQuoted).join(" ");
