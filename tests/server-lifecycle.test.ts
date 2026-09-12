@@ -4,6 +4,7 @@ import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chatGptWebTraceId } from "../src/adapters/chatgpt-web";
+import type { ProviderAdapter } from "../src/adapters/base";
 import { runStructuredCompactionOnce } from "../src/adapters/chatgpt-web/compaction-handoff";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, closeTurnBrokers, RemoteTurnBroker, TurnBroker } from "../src/adapters/chatgpt-web/turn-broker";
@@ -961,6 +962,135 @@ test("a restart recovery turn without a new user instruction fails terminally in
     },
   });
   expect(adapterConstructions).toBe(0);
+});
+
+test("a retryable failed turn can hand the exact user instruction to one successor turn", async () => {
+  const config = defaultConfig("browser-only");
+  const threadId = "thread_retry_turn_handoff";
+  const failedTurnId = "turn_retry_handoff_failed";
+  const retryTurnId = "turn_retry_handoff_successor";
+  const instruction = {
+    id: "msg_retry_handoff",
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text: "Keep working after model capacity recovers" }],
+    internal_chat_message_metadata_passthrough: { turn_id: failedTurnId },
+  };
+  const body = (turnId: string) => ({
+    model: "chatgpt-web/high",
+    stream: false,
+    client_metadata: {
+      "x-codex-turn-metadata": JSON.stringify({ thread_id: threadId, turn_id: turnId }),
+    },
+    input: [instruction],
+  });
+  let attempts = 0;
+  const adapterFactory = (): ProviderAdapter => ({
+    name: "retry-handoff-test",
+    runTurn: async (parsed, _incoming, emit) => {
+      attempts += 1;
+      if (attempts === 1) {
+        emit({
+          type: "error",
+          message: "Selected model is at capacity. Please try a different model.",
+          status: 503,
+          errorType: "server_error",
+          code: "server_is_overloaded",
+          retryable: true,
+        });
+        return;
+      }
+      // The real adapter computes the execution key again after the server-level trace check.
+      // The authenticated handoff must remain valid for repeated reads within this same turn.
+      chatGptWebTraceId(providerConfig(config), parsed);
+      emit({ type: "text_delta", text: "continued" });
+      emit({ type: "done" });
+    },
+  });
+
+  const failed = await responseRequest(new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body(failedTurnId)),
+  }), config, adapterFactory);
+  expect(await failed.json()).toMatchObject({
+    status: "failed",
+    retryable: true,
+    error: { code: "server_is_overloaded" },
+  });
+
+  const retried = await responseRequest(new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body(retryTurnId)),
+  }), config, adapterFactory);
+  expect(await retried.json()).toMatchObject({
+    status: "completed",
+    output: [{ type: "message", content: [{ type: "output_text", text: "continued" }] }],
+  });
+  expect(attempts).toBe(2);
+});
+
+test("a retryable failed turn does not authorize a different stale instruction", async () => {
+  const config = defaultConfig("browser-only");
+  const threadId = "thread_retry_turn_mismatch";
+  const failedTurnId = "turn_retry_mismatch_failed";
+  const firstSuccessorId = "turn_retry_mismatch_wrong";
+  const laterSuccessorId = "turn_retry_mismatch_later";
+  const instruction = (text: string) => ({
+    id: "msg_retry_mismatch",
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text }],
+    internal_chat_message_metadata_passthrough: { turn_id: failedTurnId },
+  });
+  const body = (turnId: string, text: string) => ({
+    model: "chatgpt-web/high",
+    stream: false,
+    client_metadata: {
+      "x-codex-turn-metadata": JSON.stringify({ thread_id: threadId, turn_id: turnId }),
+    },
+    input: [instruction(text)],
+  });
+  let adapterConstructions = 0;
+  const failed = await responseRequest(new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body(failedTurnId, "original instruction")),
+  }), config, () => {
+    adapterConstructions += 1;
+    return {
+      name: "retry-mismatch-test",
+      runTurn: async (_parsed, _incoming, emit) => emit({
+        type: "error",
+        message: "Selected model is at capacity. Please try a different model.",
+        status: 503,
+        errorType: "server_error",
+        code: "server_is_overloaded",
+        retryable: true,
+      }),
+    };
+  });
+  expect((await failed.json() as { status?: string }).status).toBe("failed");
+
+  const staleFactory = () => {
+    adapterConstructions += 1;
+    throw new Error("a mismatched stale instruction must not construct a browser adapter");
+  };
+  const mismatched = await responseRequest(new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body(firstSuccessorId, "different instruction")),
+  }), config, staleFactory);
+  expect(mismatched.status).toBe(400);
+
+  const later = await responseRequest(new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body(laterSuccessorId, "original instruction")),
+  }), config, staleFactory);
+  expect(later.status).toBe(400);
+  expect(adapterConstructions).toBe(1);
 });
 
 test.each(["alpha/search", "images/generations"])("authenticated lifecycle control aborts active %s before acknowledging cancellation", async path => {
