@@ -1,7 +1,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const { validateRuntimeBundle } = require("../electron/runtime-install.cjs");
 
 const launcherRoot = path.resolve(__dirname, "..");
@@ -29,6 +29,66 @@ function run(command, args, options = {}) {
     throw new Error(
       `${command} failed with status ${result.status}: ${result.stderr?.trim() || result.stdout?.trim() || "no output"}`,
     );
+  }
+}
+
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function killWindowsLauncher() {
+  spawnSync("taskkill.exe", ["/F", "/T", "/IM", `${launcherManifest.build.productName}.exe`], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+}
+
+function killSmokeProcess(child) {
+  if (!child.pid || child.exitCode !== null) return;
+  if (process.platform === "win32") {
+    spawnSync("taskkill.exe", ["/F", "/T", "/PID", String(child.pid)], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    return;
+  }
+  try {
+    process.kill(-child.pid, "SIGTERM");
+  } catch {
+    try { child.kill("SIGTERM"); } catch { /* already exited */ }
+  }
+}
+
+// NSIS runAfterFinish launches the app without smoke flags and holds the single-instance lock.
+// spawnSync then waits for a second instance that never writes the marker and never exits.
+function runUntilSmokeMarker(command, args, options = {}) {
+  const timeout = options.timeout || 90_000;
+  const child = spawn(command, args, {
+    cwd: options.cwd || scratch,
+    env: options.env || process.env,
+    stdio: "ignore",
+    windowsHide: true,
+    detached: process.platform !== "win32",
+  });
+  const deadline = Date.now() + timeout;
+  try {
+    while (!fs.existsSync(markerPath)) {
+      if (Date.now() > deadline) {
+        throw new Error(
+          `Packaged launcher did not write its readiness marker within ${timeout}ms`
+            + ` (command=${command})`,
+        );
+      }
+      if (child.exitCode !== null) {
+        throw new Error(
+          `Packaged launcher exited with status ${child.exitCode} before writing its readiness marker`,
+        );
+      }
+      sleep(200);
+    }
+  } finally {
+    killSmokeProcess(child);
+    if (process.platform === "win32") killWindowsLauncher();
   }
 }
 
@@ -68,6 +128,7 @@ function smokeEnvironment() {
     CODEX_CHATGPT_WEB_HOME: coreHome,
     CODEX_HOME: path.join(scratch, "codex-home"),
     CODEX_WEB_GPT_SMOKE_FILE: markerPath,
+    ELECTRON_DISABLE_GPU: "1",
   };
 }
 
@@ -98,6 +159,10 @@ try {
   } else if (process.platform === "win32") {
     const installer = artifact(/-win-x64\.exe$/, "Windows installer");
     run(installer, ["/S", "/currentuser"], { timeout: 120_000 });
+    // The NSIS package starts the app after install. That instance is not the smoke process.
+    killWindowsLauncher();
+    sleep(500);
+    killWindowsLauncher();
     executable = path.join(windowsInstallLocation(), `${launcherManifest.build.productName}.exe`);
     command = executable;
     args = ["--launcher-smoke-test"];
@@ -106,7 +171,7 @@ try {
   }
 
   if (!fs.existsSync(executable)) throw new Error(`Packaged launcher executable is missing: ${executable}`);
-  run(command, args, { env });
+  runUntilSmokeMarker(command, args, { env, timeout: process.platform === "win32" ? 120_000 : 90_000 });
   if (!fs.existsSync(markerPath)) throw new Error("Packaged launcher did not write its readiness marker");
   const marker = JSON.parse(fs.readFileSync(markerPath, "utf8"));
   if (marker.ok !== true
