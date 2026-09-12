@@ -22,6 +22,15 @@ test("pathological repeated text is counted in bounded chunks", () => {
   expect(estimateTokens("a".repeat(32_768))).toBe(4_096);
 });
 
+test("repeated chunks retain exact counts, including a final partial chunk", () => {
+  for (const chunk of [" ".repeat(4_096), "x".repeat(4_096), "😀".repeat(2_048)]) {
+    const tail = " final 😀";
+    expect(estimateTokens(chunk.repeat(300) + tail)).toBe(
+      estimateTokens(chunk) * 300 + estimateTokens(tail),
+    );
+  }
+});
+
 test("large ordinary prose is not inflated by a character-ratio heuristic", () => {
   const prose = `${"word ".repeat(97_999)}word`;
   expect(prose.length).toBe(489_999);
