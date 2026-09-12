@@ -368,7 +368,8 @@ describe("ChatGPT outer-native harness v4", () => {
     }
   });
 
-  test("keeps sequential native messages in one retained MCP conversation until compaction", async () => {
+  test.each([undefined, "low", "medium", "high", "xhigh", "max"])("sequential native messages retain ordinary chats but rehydrate files (effort=%s)", async fileEffort => {
+    const fileMode = fileEffort !== undefined;
     const socketPath = brokerTestEndpoint(`cgw-retained-messages-${process.pid}-${Date.now()}`);
     const provider: CodexProviderConfig = {
       adapter: "chatgpt-web",
@@ -380,18 +381,26 @@ describe("ChatGPT outer-native harness v4", () => {
         localToolsEnabled: true,
         solAvailable: true,
         proAvailable: true,
+        experimentalBiggerContext: fileMode,
+        biggerContextPlan: "pro",
       },
     };
     const worker = ChatGptBrowserWorker.forProvider(provider);
     const originalRun = worker.run.bind(worker);
     const preparedPrompts: string[] = [];
-    const conversationKeys: string[] = [];
+    const conversationKeys: Array<string | undefined> = [];
     const tokens: string[] = [];
     let browserMessages = 0;
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
-      const prepared = browserMessages === 0 ? await turn.prepare() : await turn.prepareResume!();
-      preparedPrompts.push(prepared.text);
-      conversationKeys.push(turn.conversationKey!);
+      const prepared = browserMessages === 0 || fileMode ? await turn.prepare() : await turn.prepareResume!();
+      if (fileMode) {
+        expect(turn.prepareResume).toBeUndefined();
+        expect(turn.retainConversation).not.toBe(true);
+        expect(prepared.contextFile?.content).toContain("file-history-head");
+        expect(prepared.contextFile?.content).toContain("file-history-tail");
+      }
+      preparedPrompts.push(prepared.contextFile?.content ?? prepared.text);
+      conversationKeys.push(turn.conversationKey);
       const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
       if (!token) throw new Error("retained message prompt has no current turn token");
       tokens.push(token);
@@ -404,6 +413,12 @@ describe("ChatGPT outer-native harness v4", () => {
 
     const first = rawWireRequest(environmentXml);
     const second = parsed();
+    if (fileMode) {
+      first.options.reasoning = second.options.reasoning = fileEffort;
+      const filler = fileEffort === "low" ? " information".repeat(60_000) : "word ".repeat(140_000);
+      first.context.systemPrompt = [...first.context.systemPrompt ?? [], "file-history-head " + filler + " file-history-tail"];
+      second.context.systemPrompt = [...first.context.systemPrompt];
+    }
     second.context.messages = [
       { role: "user", content: "Inspect the project", timestamp: 2 },
       { role: "assistant", content: [{ type: "text", text: "First retained answer" }], timestamp: 3 },
@@ -440,12 +455,13 @@ describe("ChatGPT outer-native harness v4", () => {
       await adapter.runTurn!(second, { headers: new Headers() }, () => {});
 
       expect(browserMessages).toBe(2);
-      expect(conversationKeys[0]).toBe(chatGptConversationKey(first, chatGptWebExecutionNamespace(provider))!);
+      expect(conversationKeys[0]).toBe(fileMode ? undefined : chatGptConversationKey(first, chatGptWebExecutionNamespace(provider))!);
       expect(conversationKeys[1]).toBe(conversationKeys[0]);
       expect(tokens[1]).not.toBe(tokens[0]);
       expect(preparedPrompts[0]).toContain("Inspect the project");
       expect(preparedPrompts[1]).toContain("Continue in the same repository");
-      expect(preparedPrompts[1]).not.toContain("First retained answer");
+      if (fileMode) expect(preparedPrompts[1]).toContain("First retained answer");
+      else expect(preparedPrompts[1]).not.toContain("First retained answer");
       expect(preparedPrompts[1]).not.toContain(environmentXml);
     } finally {
       (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
