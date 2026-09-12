@@ -303,6 +303,13 @@ async function setupCommand(args: string[]): Promise<void> {
     throw new Error("Choose at most one context mode: --bigger-context or --standard-context");
   }
   if (biggerContext || standardContext) options.experimentalBiggerContext = biggerContext;
+  const biggerContextPlan = takeOption(args, "--bigger-context-plan");
+  if (biggerContextPlan !== undefined) {
+    if (biggerContextPlan !== "plus" && biggerContextPlan !== "pro") {
+      throw new Error("--bigger-context-plan must be plus or pro");
+    }
+    options.biggerContextPlan = biggerContextPlan;
+  }
   const zeroRiskPro = takeFlag(args, "--zero-risk-pro");
   const zeroRiskDefault = takeFlag(args, "--zero-risk-default");
   if (zeroRiskPro && zeroRiskDefault) {

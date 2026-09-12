@@ -95,6 +95,30 @@ describe("native /models augmentation", () => {
     expect(pro.auto_compact_token_limit).toBe(285_000);
   });
 
+  test("Pro Bigger Context publishes Instant 128k and 400k catalog windows", () => {
+    const config = defaultConfig("full");
+    config.proAvailable = true;
+    config.experimentalBiggerContext = true;
+    config.biggerContextPlan = "pro";
+    const models = augmentNativeModelCatalog(source(), config).models as Array<Record<string, unknown>>;
+    const pro = models.find(model => model.slug === "chatgpt-web/pro")!;
+    const instant = models.find(model => model.slug === "chatgpt-web/light")!;
+    expect(instant.context_window).toBe(128_000);
+    expect(instant.auto_compact_token_limit).toBe(115_200);
+    expect(pro.context_window).toBe(400_000);
+    expect(pro.auto_compact_token_limit).toBe(360_000);
+  });
+
+  test("Plus Bigger Context keeps the original 3× catalog windows", () => {
+    const config = defaultConfig("full");
+    config.experimentalBiggerContext = true;
+    config.biggerContextPlan = "plus";
+    const models = augmentNativeModelCatalog(source(), config).models as Array<Record<string, unknown>>;
+    const high = models.find(model => model.slug === "chatgpt-web/high")!;
+    expect(high.context_window).toBe(270_000);
+    expect(high.auto_compact_token_limit).toBe(240_000);
+  });
+
   test("keeps native Sol selectable in the bounded Compatibility V1 registry", () => {
     const config = defaultConfig("full");
     config.subagentProtocol = "compatibility-v1";

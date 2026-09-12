@@ -1096,6 +1096,42 @@ class RuntimeHost {
     return { ...result, mode, enabled: enabled === true };
   }
 
+  async setBiggerContextPlan(plan) {
+    if (plan !== "plus" && plan !== "pro") throw new Error("ChatGPT plan must be plus or pro");
+    const current = this.runtimeConfigSnapshot();
+    if (!current.configured) {
+      throw new Error("Initialize the runtime before changing the ChatGPT plan");
+    }
+    const mode = current.mode;
+    const contextFlag = current.config?.experimentalBiggerContext === true
+      ? "--bigger-context"
+      : "--standard-context";
+    const args = [
+      ...(this.launcherProfile === "development" ? ["dev", "setup"] : ["setup"]),
+      mode === "full" ? "--full" : "--browser-only",
+      "--browser-host-descriptor",
+      this.browserDescriptorPath,
+      ...this.browserInteractionArgs(),
+      "--acknowledge-unofficial",
+      contextFlag,
+      "--bigger-context-plan",
+      plan,
+      ...(this.launcherProfile === "production" ? ["--replace-codex-route", "--restart-service"] : []),
+    ];
+    if (current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
+    const options = {
+      message: plan === "pro" ? "Switching Bigger Context to the Pro windows" : "Restoring Plus Bigger Context windows",
+      successMessage: plan === "pro"
+        ? `Pro Bigger Context windows selected${this.launcherProfile === "production" ? "; restart Codex" : ""}`
+        : `Plus Bigger Context windows restored${this.launcherProfile === "production" ? "; restart Codex" : ""}`,
+      timeoutMs: CORE_SETUP_TIMEOUT_MS,
+    };
+    const result = this.launcherProfile === "development"
+      ? await this.runDevSetup("bigger-context-plan", args, options)
+      : await this.runSetup("bigger-context-plan", args, options);
+    return { ...result, mode, plan };
+  }
+
   async setZeroRiskPro(enabled) {
     const current = this.runtimeConfigSnapshot();
     if (!current.configured) {
