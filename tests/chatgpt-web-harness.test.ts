@@ -1221,9 +1221,17 @@ describe("ChatGPT outer-native harness v4", () => {
       const response = buildResponseJSON(events, CHATGPT_WEB_MODEL_ID);
       expect(response).toMatchObject({ status: "failed", retryable: false,
         error: { type: "server_error", code: "chatgpt_stopped_thinking" } });
-      expect(JSON.stringify(response)).toContain("usage limit may have been reached");
+      expect(JSON.stringify(response)).toContain("does not identify the cause");
+      expect(JSON.stringify(response)).not.toContain("usage limit");
       expect(browserStarts).toBe(1);
       expect(events.some(event => event.type === "done")).toBeFalse();
+
+      const replayEvents: AdapterEvent[] = [];
+      await createChatGptWebAdapter(provider).runTurn!(rawWireRequest(environmentXml),
+        { headers: new Headers() }, event => replayEvents.push(event));
+      expect(replayEvents.at(-1)).toMatchObject({ type: "error", code: "chatgpt_stopped_thinking", retryable: false });
+      expect(browserStarts).toBe(1);
+      expect(replayEvents.some(event => event.type === "done")).toBeFalse();
     } finally {
       worker.run = originalRun;
       await TurnBroker.forSocket(socketPath).close();

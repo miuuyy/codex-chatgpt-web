@@ -3287,8 +3287,58 @@ test("visible DOM trace emits one complete commentary paragraph before the next 
 test("Stopped thinking is an explicit upstream error, not a user cancellation or a proven quota error", () => {
   const error = chatGptStoppedThinkingError();
   expect(error).toMatchObject({ status: 502, errorType: "server_error", code: "chatgpt_stopped_thinking", retryable: false });
-  expect(error.message).toContain("usage limit may have been reached");
+  expect(error.message).toContain("does not identify the cause");
+  expect(error.message).toContain("will not be automatically sent again");
+  expect(error.message).not.toContain("usage limit");
   expect(error.message).not.toContain("5 seconds");
+});
+
+test("the shipped stopped-thinking detector recognizes the Chinese status only in the bound visible UI", () => {
+  // Execute the production page.evaluate predicate against a real DOM, without opening ChatGPT.
+  const { createDocument } = require("@mixmark-io/domino") as {
+    createDocument: (html: string) => Document;
+  };
+  const worker = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
+  const source = worker.split("// CHATGPT_STOPPED_THINKING_BEGIN")[1]?.split("// CHATGPT_STOPPED_THINKING_END")[0];
+  if (!source) throw new Error("stopped-thinking detector sentinels are missing");
+  const javascript = new Bun.Transpiler({ loader: "ts" }).transformSync(source);
+  const detect = new Function(
+    "root", "overlapsRenderedAnswer", "overlapsCommentary", "renderedInDom", "document", "NodeFilter",
+    `${javascript}; return stoppedThinkingVisible;`,
+  ) as (...args: unknown[]) => boolean;
+  const detected = (html: string): boolean => {
+    const document = createDocument(`<body>${html}</body>`);
+    const root = document.querySelector<HTMLElement>('[data-turn-id="current"]')!;
+    // Domino's NodeList is array-like rather than iterable; preserve its real selector behavior.
+    const queryAll = root.querySelectorAll.bind(root);
+    Object.defineProperty(root, "querySelectorAll", {
+      value: (selector: string) => Array.from(queryAll(selector)),
+    });
+    const overlaps = (selector: string) => (candidate: HTMLElement): boolean => (
+      Array.from(queryAll(selector)).some(element => element.contains(candidate) || candidate.contains(element))
+    );
+    return detect(root, overlaps(".answer"), overlaps(".commentary"),
+      (element: HTMLElement) => !element.hidden && element.style.display !== "none"
+        && element.style.visibility !== "hidden" && element.style.opacity !== "0",
+      document, { SHOW_TEXT: 4 });
+  };
+  expect(detected('<section data-turn-id="current"><button>已停止思考<svg></svg></button></section>')).toBeTrue();
+  expect(detected('<section data-turn-id="current"><button aria-label="已停止思考"></button></section>')).toBeTrue();
+  expect(detected('<section data-turn-id="current"><button>Stopped thinking</button></section>')).toBeTrue();
+  for (const content of [
+    '<div class="answer"><p>已停止思考</p></div>',
+    '<div class="commentary"><p>已停止思考</p></div>',
+    '<pre><code>已停止思考</code></pre>',
+    '<blockquote>已停止思考</blockquote>',
+    '<div hidden><button>已停止思考</button></div>',
+    '<div style="display:none"><button aria-label="已停止思考"></button></div>',
+    '<button>Pro 思考中</button>',
+    '<button>已思考</button>',
+  ]) {
+    expect(detected(`<section data-turn-id="current">${content}</section>`)).toBeFalse();
+  }
+  expect(detected('<section data-turn-id="old"><button>已停止思考</button></section>'
+    + '<section data-turn-id="current"><button>Pro 思考中</button></section>')).toBeFalse();
 });
 
 test("visible DOM trace keeps a complete action phrase instead of a nested count", () => {
