@@ -4065,6 +4065,7 @@ export class ChatGptBrowserWorker {
           complete: block.complete === true || index < blocks.length - 1,
         } : {}),
       }));
+      // CHATGPT_STOPPED_THINKING_BEGIN
       const stoppedThinkingVisible = (() => {
         // Only ChatGPT UI in the bound response may terminate the turn. A model quoting this
         // phrase in its answer or reasoning is ordinary content, not a stopped-thinking status.
@@ -4076,17 +4077,23 @@ export class ChatGptBrowserWorker {
           }
           return true;
         };
-        const ariaMatch = [...root.querySelectorAll<HTMLElement>('[aria-label="Stopped thinking"]')]
+        // Exact labels observed in the English and Simplified Chinese ChatGPT UI. A generic
+        // "stopped" match could turn ordinary answer text into a false upstream failure.
+        const stoppedLabels = new Set(["Stopped thinking", "已停止思考"]);
+        const ariaMatch = [...root.querySelectorAll<HTMLElement>(
+          '[aria-label="Stopped thinking"], [aria-label="已停止思考"]',
+        )]
           .some(isStatus);
         if (ariaMatch) return true;
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
         for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-          if (node.textContent?.replace(/\s+/g, " ").trim() !== "Stopped thinking") continue;
+          if (!stoppedLabels.has(node.textContent?.replace(/\s+/g, " ").trim() ?? "")) continue;
           const parent = node.parentElement;
           if (parent && isStatus(parent)) return true;
         }
         return false;
       })();
+      // CHATGPT_STOPPED_THINKING_END
       return {
         key: observerKey,
         snapshot: {
