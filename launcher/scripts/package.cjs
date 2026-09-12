@@ -37,6 +37,10 @@ const builderArgs = [
 ];
 if (target === "--mac" && !env.CSC_LINK && !env.CSC_NAME) {
   builderArgs.push("--config.mac.identity=-");
+  // PR builds still need a valid ad-hoc seal. This branch cannot use a
+  // certificate: identity is explicitly '-' and discovery is disabled above.
+  // Keep electron-builder's PR protection intact for credentialed builds.
+  env.CSC_FOR_PULL_REQUEST = "true";
 }
 
 const staging = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-package-"));
