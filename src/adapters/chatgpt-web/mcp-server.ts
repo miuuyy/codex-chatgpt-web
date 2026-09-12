@@ -7,6 +7,7 @@ import { VERSION } from "../../version";
 import type { ChatGptTurnEnvironment } from "./environment";
 import { CODEX_COMPACTION_CONTROL_WIRE_NAME } from "./native-compaction-control";
 import { callTurnBroker, TurnBrokerTimeoutError, type BrokerToolResult } from "./turn-broker";
+import { nativeTextReadCommand } from "./native-text-read";
 
 interface ClaimedTurn {
   bindingId: string;
@@ -19,6 +20,7 @@ export type ChatGptMcpContract = "native" | "safe";
 const BRIDGE_TOOL_NAMES = new Set([
   "codex_turn_start",
   "codex_exec",
+  "codex_read_text_file",
   "codex_write_stdin",
   "codex_apply_patch",
   "codex_view_image",
@@ -607,6 +609,35 @@ export async function runChatGptMcpServer(options: {
       input: execGatewayProgram(nestedToolName, freeform, payload, bound.tools.map(wireName)),
     }, signal);
   };
+
+  server.registerTool(
+    "codex_read_text_file",
+    {
+      title: "Read a text file through the native Codex harness",
+      description: afterSafeStart(contract, "Read up to 65536 bytes from a regular UTF-8 file. Accepts a file path and byte range only; cannot run arbitrary commands, write files, or access the network. Uses a fixed Python 3 read-only program through the current POSIX native command tool, preserving the outer Codex sandbox and approval policy. Use next_offset for the next chunk; truncated means the file was not fully read."),
+      inputSchema: {
+        ...turnReferenceInput(contract),
+        path: z.string().min(1).max(16_384).refine(value => !value.includes("\0")),
+        offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
+        max_bytes: z.number().int().min(4).max(65_536).default(65_536),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (input, extra) => withClaimedTurn(
+      "codex_read_text_file", turnReference(contract, input), extra,
+      async claimed => {
+        const bound = claimed.environment;
+        const cmd = nativeTextReadCommand(input.path, input.offset, input.max_bytes);
+        const execArguments = { cmd, workdir: bound.cwd, shell: "/bin/sh", login: false,
+          yield_time_ms: 10_000, max_output_tokens: 80_000 };
+        const tool = exactTool(bound, "exec_command");
+        return tool
+          ? invoke(claimed.bindingId, bound, tool, { arguments: execArguments }, extra.signal)
+          : invokeNestedNative(claimed.bindingId, bound, "exec_command", false,
+            { arguments: execArguments }, extra.signal);
+      },
+    ),
+  );
 
   server.registerTool(
     "codex_exec",

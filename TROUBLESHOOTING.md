@@ -108,6 +108,20 @@ Browser-only mode needs no connector. Full harness mode requires all of the foll
 Do not rename or refresh an old **Codex Native** connector. ChatGPT caches the public MCP contract by
 connector identity, so create **Codex Native2** as a new connector.
 
+### Bounded read-only text tool is missing
+
+Native2 exposes `codex_read_text_file` for regular UTF-8 text reads on POSIX systems with
+`/usr/bin/python3`. It accepts a path and byte range, uses a fixed read-only program through the
+current outer Codex command tool, and retains native sandbox and approval checks. A result marked
+`truncated` is incomplete; continue from `next_offset` when the task needs the remaining text.
+
+After updating the running MCP service, refresh the existing **Codex Native2** connector's tool
+list in ChatGPT settings and confirm that `codex_read_text_file` is listed. This is an additive
+Native2 contract update, not a migration of the old **Codex Native** connector. Windows or a missing
+required interpreter returns an explicit failure. The tool does not accept arbitrary commands,
+write files, or access the network; other command and write tools retain their existing capabilities.
+It does not disable upstream safety checks or justify routing a rejected read through another tool.
+
 ### ChatGPT shows `Error creating connector`
 
 1. Confirm that the Tunnel ID and the regular API key used by the launcher were created under the
