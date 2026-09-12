@@ -86,7 +86,7 @@ export interface AppConfig {
   solAvailable: boolean;
   proAvailable: boolean;
   experimentalBiggerContext: boolean;
-  /** Plus keeps original 3× Bigger Context windows; Pro uses Instant 128k / 400k. */
+  /** Plus keeps original 3× Bigger Context windows; Pro uses Instant 123k / 400k. */
   biggerContextPlan: BiggerContextPlan;
   /** When false, ChatGPT Web models cannot spawn Codex sub-agents. Default false. */
   allowWebSubagents: boolean;

@@ -72,7 +72,8 @@ export const CHATGPT_WEB_PRO_MODEL_COMPOSER_CHAR_LIMIT = 1_635_000;
  */
 export const CHATGPT_WEB_LUNA_CONTEXT_WINDOW = 1_050_000;
 export const CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER = 3;
-export const CHATGPT_WEB_BIGGER_CONTEXT_INSTANT_WINDOW = 128_000;
+export const CHATGPT_WEB_BIGGER_CONTEXT_INSTANT_WINDOW =
+  CHATGPT_WEB_INSTANT_CONTEXT_WINDOW * CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER;
 export const CHATGPT_WEB_BIGGER_CONTEXT_STANDARD_WINDOW = 400_000;
 export const CHATGPT_WEB_BIGGER_CONTEXT_COMPACT_PERCENT = 90;
 export type BiggerContextPlan = "plus" | "pro";
@@ -162,7 +163,7 @@ export function resolveChatGptWebContextLimits(
     throw new Error(`ChatGPT Plus context limit is not defined for unavailable effort: ${effort}`);
   }
   if (!capabilities.experimentalBiggerContext) return limits;
-  // Plus keeps the original 3× measured windows. Pro opts into Instant 128k / 400k at 90%.
+  // Plus keeps the original 3× measured windows. Pro uses the same Instant 123k as Plus, and 400k at 90% for other efforts.
   if (capabilities.biggerContextPlan === "pro") {
     const contextWindow = effort === "low"
       ? CHATGPT_WEB_BIGGER_CONTEXT_INSTANT_WINDOW
