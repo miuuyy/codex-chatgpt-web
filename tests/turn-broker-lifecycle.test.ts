@@ -141,7 +141,7 @@ test("session cache expiry never cancels a still-active long browser turn", asyn
   sessions.clear();
 });
 
-test("five active turns coexist and a sixth fails closed", () => {
+test("ten active turns coexist and an eleventh fails closed", () => {
   const sessions = new ChatGptTurnSessions();
   let cancelled = 0;
   const runtime = () => ({
@@ -153,19 +153,19 @@ test("five active turns coexist and a sixth fails closed", () => {
     cancel: () => { cancelled += 1; },
   });
 
-  const active = Array.from({ length: 5 }, (_unused, index) => (
+  const active = Array.from({ length: 10 }, (_unused, index) => (
     sessions.getOrCreate(`turn-${index + 1}`, runtime)
   ));
-  expect(sessions.activeCount()).toBe(5);
+  expect(sessions.activeCount()).toBe(10);
   expect(cancelled).toBe(0);
-  expect(() => sessions.getOrCreate("turn-6", runtime)).toThrow("at most 5 simultaneous browser turns");
+  expect(() => sessions.getOrCreate("turn-11", runtime)).toThrow("at most 10 simultaneous browser turns");
 
   expect(sessions.getOrCreate("turn-3", () => {
     throw new Error("an in-flight turn must be reused");
   })).toBe(active[2]);
   expect(cancelled).toBe(0);
   sessions.clear();
-  expect(cancelled).toBe(5);
+  expect(cancelled).toBe(10);
 });
 
 test("settled replay sessions expire from their last use instead of their creation time", async () => {
