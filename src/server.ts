@@ -1,6 +1,7 @@
 import { chatGptWebTraceId, createChatGptWebAdapter } from "./adapters/chatgpt-web";
 import { closeChatGptBrowserWorkers } from "./adapters/chatgpt-web/browser-worker";
 import { closeTurnBrokers, TurnBroker } from "./adapters/chatgpt-web/turn-broker";
+import { handleChatGptMcpRequest } from "./adapters/chatgpt-web/mcp-server";
 import { timingSafeEqual } from "node:crypto";
 import { chatGptTurnSessions } from "./adapters/chatgpt-web/turn-execution";
 import {
@@ -770,9 +771,10 @@ export async function compactRequest(
 export function startServer(
   config: AppConfig,
   dependencies: { fetchUpstream?: NativeFetch; adapterFactory?: ChatGptWebAdapterFactory } = {},
+  options: { allowDevHarness?: boolean } = {},
 ): ReturnType<typeof Bun.serve> {
-  if (config.purpose === "dev-harness") {
-    throw new Error("DEV harness configuration cannot start a Responses listener");
+  if (config.purpose === "dev-harness" && options.allowDevHarness !== true) {
+    throw new Error("DEV harness configuration cannot start a Responses listener without launcher ownership");
   }
   const startedAt = Date.now();
   const turnBroker = config.mode === "full" ? TurnBroker.forSocket(config.brokerSocketPath) : undefined;
@@ -804,6 +806,11 @@ export function startServer(
     idleTimeout: 0,
     async fetch(req) {
       const url = new URL(req.url);
+      if (url.pathname === "/mcp") {
+        if (config.mode !== "full") return new Response("Not found", { status: 404 });
+        if (draining) return new Response("Service unavailable", { status: 503 });
+        return handleChatGptMcpRequest(req, { brokerSocketPath: config.brokerSocketPath });
+      }
       if (req.method === "GET" && url.pathname === "/healthz") {
         return Response.json({
           status: "ok",

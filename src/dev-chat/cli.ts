@@ -36,8 +36,8 @@ const DEV_HELP = `Codex Web GPT DEV chat
 Usage:
   codex-chatgpt-web dev launcher
   codex-chatgpt-web dev status [--json]
-  codex-chatgpt-web dev setup --browser-only [--automatic-browser-interaction]
-  codex-chatgpt-web dev setup --full --tunnel-id ID --runtime-key-file PATH [--automatic-browser-interaction|--zero-risk-browser-interaction]
+  codex-chatgpt-web dev setup --browser-only [--automatic-browser-interaction] [--reuse-stored-account-capabilities]
+  codex-chatgpt-web dev setup --full --routing-connector-name NAME [--automatic-browser-interaction]
   codex-chatgpt-web dev chat NAME [--model MODEL] [MESSAGE]
   codex-chatgpt-web dev list
 
@@ -159,7 +159,7 @@ function printHeader(
   if (biggerContext) {
     stdout.write(`${yellow("Bigger Context experimental")} · adaptive 1/2/3-message context · same-agent compaction handoff · elevated rate-limit/cooldown risk\n`);
   }
-  stdout.write(`${dim("Codex route is untouched. No Responses port is bound, replaced, stopped, or restarted.")}\n`);
+  stdout.write(`${dim("Codex route is untouched. The named chat does not own, replace, stop, or restart the launcher-owned Responses/MCP listener.")}\n`);
 }
 
 async function assertLauncherReady(config: ReturnType<typeof loadConfig>): Promise<void> {
@@ -261,6 +261,26 @@ async function interactive(driver: DevChatDriver, state: DevChatState): Promise<
   }
 }
 
+async function inspectDevRoutingRuntime(config: ReturnType<typeof loadConfig>): Promise<{ ready: boolean; detail: string }> {
+  if (config.host !== "127.0.0.1") return { ready: false, detail: "DEV Routing runtime host is not loopback" };
+  try {
+    const response = await fetch(`http://${config.host}:${config.port}/healthz`, {
+      method: "GET",
+      signal: AbortSignal.timeout(1_000),
+    });
+    if (!response.ok) return { ready: false, detail: `launcher-owned runtime health returned HTTP ${response.status}` };
+    const health = await response.json() as Record<string, unknown>;
+    const ready = health.service === "codex-chatgpt-web"
+      && health.mode === "full"
+      && health.accepting_turns === true;
+    return ready
+      ? { ready: true, detail: `launcher-owned Routing_MCP endpoint ready at http://${config.host}:${config.port}/mcp` }
+      : { ready: false, detail: "launcher-owned runtime health does not match DEV Full Routing mode" };
+  } catch (error) {
+    return { ready: false, detail: `launcher-owned Routing_MCP endpoint unavailable: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
 export async function runDevCommand(args: string[]): Promise<void> {
   const action = args.shift() ?? "help";
   const paths = resolveDevProfilePaths();
@@ -315,8 +335,15 @@ export async function runDevCommand(args: string[]): Promise<void> {
         const loaded = loadConfig();
         config = { configured: true, mode: loaded.mode, purpose: loaded.purpose };
         if (loaded.mode === "full") {
-          const inspected = tunnelStatus(loaded);
-          mcpRuntime = { required: true, ready: inspected.ok && inspected.ready, detail: inspected.detail };
+          if (loaded.tunnel) {
+            const inspected = tunnelStatus(loaded);
+            mcpRuntime = { required: true, ready: inspected.ok && inspected.ready, detail: `legacy tunnel: ${inspected.detail}` };
+          } else if (!launcher.running) {
+            mcpRuntime = { required: true, ready: false, detail: "DEV launcher is not running" };
+          } else {
+            const inspected = await inspectDevRoutingRuntime(loaded);
+            mcpRuntime = { required: true, ready: inspected.ready, detail: inspected.detail };
+          }
         }
       } catch (error) {
         config = { configured: false, error: error instanceof Error ? error.message : String(error) };
@@ -331,7 +358,9 @@ export async function runDevCommand(args: string[]): Promise<void> {
       stdout.write(`config: ${config.configured ? `${config.mode} (${config.purpose})` : `not ready${config.error ? ` · ${config.error}` : ""}`}\n`);
       stdout.write(`MCP runtime: ${mcpRuntime.required ? (mcpRuntime.ready ? "ready" : `not ready${mcpRuntime.detail ? ` · ${mcpRuntime.detail}` : ""}`) : "not required"}\n`);
       stdout.write(`Bigger Context: ${features.biggerContext ? "enabled (experimental, adaptive 1/2/3 messages; same-agent compaction handoff)" : "disabled"}\n`);
-      stdout.write("Codex route: isolated and unused\nResponses listener: not started\n");
+      stdout.write("Codex route: isolated and unused\n");
+      if (config.mode === "full") stdout.write(`Responses/MCP listener: ${mcpRuntime.ready ? "launcher-owned and ready" : "not ready"}\n`);
+      else stdout.write("Responses/MCP listener: not required\n");
     }
     return;
   }
@@ -340,11 +369,11 @@ export async function runDevCommand(args: string[]): Promise<void> {
     const browserOnly = takeFlag(args, "--browser-only");
     const full = takeFlag(args, "--full");
     if (browserOnly === full) throw new Error("Choose exactly one DEV setup mode: --browser-only or --full");
-    const tunnelId = takeOption(args, "--tunnel-id");
-    const runtimeKeyFile = takeOption(args, "--runtime-key-file");
+    const routingConnectorName = takeOption(args, "--routing-connector-name");
     const descriptorPath = takeOption(args, "--browser-host-descriptor") ?? paths.descriptorPath;
     const acknowledgedUnofficial = takeFlag(args, "--acknowledge-unofficial");
     const refreshAccountCapabilities = takeFlag(args, "--refresh-account-capabilities");
+    const reuseStoredAccountCapabilities = takeFlag(args, "--reuse-stored-account-capabilities");
     const automaticBrowserInteraction = takeFlag(args, "--automatic-browser-interaction");
     const manualBrowserInteraction = takeFlag(args, "--zero-risk-browser-interaction");
     if (automaticBrowserInteraction && manualBrowserInteraction) {
@@ -360,18 +389,18 @@ export async function runDevCommand(args: string[]): Promise<void> {
       mode: full ? "full" : "browser-only",
       browserHostDescriptorPath: descriptorPath,
       refreshAccountCapabilities,
+      reuseStoredAccountCapabilities,
       acknowledgedUnofficial,
       ...(automaticBrowserInteraction || manualBrowserInteraction
         ? { browserInteractionMode: manualBrowserInteraction ? "manual" : "automatic" }
         : {}),
       ...(biggerContext || standardContext ? { experimentalBiggerContext: biggerContext } : {}),
-      ...(tunnelId ? { tunnelId } : {}),
-      ...(runtimeKeyFile ? { runtimeKeyFile } : {}),
+      ...(routingConnectorName ? { routingConnectorName } : {}),
     });
     stdout.write(
       `Isolated DEV profile configured (${result.mode}) at ${result.configPath}.\n`
-      + "No Codex route, Responses listener, or system service was installed."
-      + " In Full mode, the DEV launcher owns the isolated MCP tunnel.\n",
+      + "Setup installed no Codex route or system service and started no listener itself."
+      + " No standalone Tunnel was installed; in Full mode, the DEV launcher owns the stable /mcp endpoint used by the existing Routing_MCP connector.\n",
     );
     return;
   }
@@ -390,8 +419,8 @@ export async function runDevCommand(args: string[]): Promise<void> {
     );
   }
   const config = loadConfig();
-  if (config.mode === "full" && config.appName !== DEV_CHATGPT_CONNECTOR_NAME) {
-    throw new Error("DEV connector identity is outdated. Refresh the DEV profile in the launcher before starting a named chat");
+  if (config.mode === "full" && !config.tunnel && config.appName === DEV_CHATGPT_CONNECTOR_NAME) {
+    throw new Error("DEV Routing connector is not configured. Rerun DEV setup with --routing-connector-name");
   }
   const runtimeStateRoot = paths.runtimePath;
   const features = readDevChatExperimentalFeatures(paths);

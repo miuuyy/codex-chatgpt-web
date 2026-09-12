@@ -576,9 +576,13 @@ async function main(): Promise<void> {
       stdout.write("Playwright can launch the configured Chrome executable.\n");
     }
   } else if (command === "serve") {
+    const allowDevHarness = takeFlag(args, "--launcher-dev-harness");
     assertNoArgs(args);
     const config = loadConfig();
-    const server = startServer(config);
+    if (allowDevHarness && config.purpose !== "dev-harness") {
+      throw new Error("--launcher-dev-harness is valid only for the isolated DEV launcher");
+    }
+    const server = startServer(config, {}, { allowDevHarness });
     stdout.write(`codex-chatgpt-web ${VERSION} listening on http://${config.host}:${server.port}/v1 (${config.mode})\n`);
     await new Promise<void>(() => {});
   } else if (command === "dev") await runDevCommand(args);

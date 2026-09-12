@@ -460,19 +460,29 @@ function parseConfig(value: unknown, path: string): AppConfig {
     }
   };
   if (parsed.mode === "full") {
-    validateTunnel(parsed.tunnel, "tunnel");
-    if (parsed.automaticTunnel !== undefined) validateTunnel(parsed.automaticTunnel, "automaticTunnel");
-    if (parsed.manualTunnel !== undefined) validateTunnel(parsed.manualTunnel, "manualTunnel");
-    if (parsed.automaticTunnel && parsed.manualTunnel
-      && parsed.automaticTunnel.tunnelId === parsed.manualTunnel.tunnelId) {
-      throw new Error(`Automatic and Zero Risk must use different Tunnel IDs in ${path}`);
-    }
-    const activeTunnel = browserInteractionMode === "manual" ? parsed.manualTunnel : parsed.automaticTunnel;
-    if ((parsed.automaticTunnel || parsed.manualTunnel) && !activeTunnel) {
-      throw new Error(`Active browser interaction mode has no tunnel configuration in ${path}`);
-    }
-    if (activeTunnel && JSON.stringify(activeTunnel) !== JSON.stringify(parsed.tunnel)) {
-      throw new Error(`Active tunnel does not match browserInteractionMode in ${path}; rerun MCP setup`);
+    const devRoutingFull = parsed.purpose === "dev-harness" && parsed.tunnel === undefined;
+    if (devRoutingFull) {
+      if (browserInteractionMode !== "automatic") {
+        throw new Error(`DEV Routing Full mode requires automatic browser interaction in ${path}`);
+      }
+      if (parsed.automaticTunnel !== undefined || parsed.manualTunnel !== undefined) {
+        throw new Error(`DEV Routing Full mode cannot retain standalone tunnel configuration in ${path}`);
+      }
+    } else {
+      validateTunnel(parsed.tunnel, "tunnel");
+      if (parsed.automaticTunnel !== undefined) validateTunnel(parsed.automaticTunnel, "automaticTunnel");
+      if (parsed.manualTunnel !== undefined) validateTunnel(parsed.manualTunnel, "manualTunnel");
+      if (parsed.automaticTunnel && parsed.manualTunnel
+        && parsed.automaticTunnel.tunnelId === parsed.manualTunnel.tunnelId) {
+        throw new Error(`Automatic and Zero Risk must use different Tunnel IDs in ${path}`);
+      }
+      const activeTunnel = browserInteractionMode === "manual" ? parsed.manualTunnel : parsed.automaticTunnel;
+      if ((parsed.automaticTunnel || parsed.manualTunnel) && !activeTunnel) {
+        throw new Error(`Active browser interaction mode has no tunnel configuration in ${path}`);
+      }
+      if (activeTunnel && JSON.stringify(activeTunnel) !== JSON.stringify(parsed.tunnel)) {
+        throw new Error(`Active tunnel does not match browserInteractionMode in ${path}; rerun MCP setup`);
+      }
     }
   }
   if (!Array.isArray(parsed.runtimeCommand) || parsed.runtimeCommand.length === 0

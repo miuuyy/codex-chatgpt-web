@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { join } from "node:path";
@@ -6,6 +6,7 @@ import type { AppConfig, BrowserInteractionMode, RuntimeMode, SubagentProtocol }
 import {
   currentRuntimeCommand,
   defaultBrokerEndpoint,
+  DEV_CHATGPT_CONNECTOR_NAME,
   defaultConfig,
   getConfigPath,
   loadConfigForSetup,
@@ -50,6 +51,7 @@ export interface SetupOptions {
   chromeExecutablePath?: string;
   browserHostDescriptorPath?: string;
   refreshAccountCapabilities?: boolean;
+  reuseStoredAccountCapabilities?: boolean;
   forceLogin?: boolean;
   autoApproveToolCalls?: boolean;
   experimentalBiggerContext?: boolean;
@@ -60,6 +62,8 @@ export interface SetupOptions {
   tunnelId?: string;
   runtimeKeyFile?: string;
   runtimeKeyValue?: string;
+  /** Existing ChatGPT connector that exposes Routing_MCP; DEV-only. */
+  routingConnectorName?: string;
 }
 
 export interface SetupResult {
@@ -303,12 +307,15 @@ async function inspectLauncherCapabilities(
   existing: AppConfig | undefined,
   refreshAccountCapabilities: boolean,
   expectedProfile: "production" | "development",
+  reuseStoredAccountCapabilities = false,
 ): Promise<{ solAvailable: boolean; proAvailable: boolean }> {
-  const detectCapabilities = launcherCapabilityProbeRequired(
-    existing,
-    refreshAccountCapabilities,
-    config.browserInteractionMode,
-  );
+  const detectCapabilities = reuseStoredAccountCapabilities
+    ? false
+    : launcherCapabilityProbeRequired(
+      existing,
+      refreshAccountCapabilities,
+      config.browserInteractionMode,
+    );
   const inspected = await inspectLauncherBrowserHost(config.browserHostDescriptorPath!, {
     detectCapabilities,
     expectedProfile,
@@ -618,9 +625,10 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
 }
 
 /**
- * Configure the isolated launcher/browser/tunnel inputs used by the repository DEV harness.
- * This deliberately has no Codex integration, Responses listener, or system service; the DEV
- * launcher supervises only the isolated MCP tunnel after this transaction commits.
+ * Configure the isolated launcher/browser inputs used by the repository DEV harness.
+ * This transaction installs no Codex route or system service and starts no listener itself.
+ * In Full Routing mode the DEV launcher subsequently owns the stable loopback daemon, broker,
+ * and /mcp endpoint; legacy tunnel-bearing profiles remain compatibility-only until migrated.
  */
 export async function setupDevProfile(options: SetupOptions): Promise<DevProfileSetupResult> {
   const existing = loadExistingConfig();
@@ -630,38 +638,88 @@ export async function setupDevProfile(options: SetupOptions): Promise<DevProfile
   if (!options.browserHostDescriptorPath) {
     throw new Error("DEV profile setup requires the isolated launcher browser descriptor");
   }
+  const legacyRoutingMigration = Boolean(
+    options.reuseStoredAccountCapabilities
+    && existing?.mode === "full"
+    && existing.tunnel
+    && existing.browserHost === "launcher"
+    && options.mode === "full"
+    && options.routingConnectorName?.trim(),
+  );
+  if (options.reuseStoredAccountCapabilities) {
+    if (!existing) {
+      throw new Error("DEV stored account capabilities require an existing DEV configuration");
+    }
+    if (existing.browserHost !== "managed-chrome" && !legacyRoutingMigration) {
+      throw new Error("DEV stored account capabilities are only for managed-chrome migration or explicit legacy Full-to-Routing migration");
+    }
+    const interactionMode = options.browserInteractionMode ?? existing.browserInteractionMode;
+    if (interactionMode !== "automatic") {
+      throw new Error("DEV stored account capabilities require automatic browser interaction");
+    }
+    if (options.refreshAccountCapabilities) {
+      throw new Error("Choose either --reuse-stored-account-capabilities or --refresh-account-capabilities");
+    }
+    const raw = JSON.parse(readFileSync(getConfigPath(), "utf8").replace(/^\uFEFF/, "")) as Record<string, unknown>;
+    if (typeof raw.solAvailable !== "boolean" || typeof raw.proAvailable !== "boolean") {
+      throw new Error("DEV stored account capabilities require explicitly persisted solAvailable and proAvailable values");
+    }
+  }
+
+  const persistedRoutingConnector = existing?.mode === "full"
+    && !existing.tunnel
+    && existing.browserInteractionMode === "automatic"
+    && existing.automaticAppName !== DEV_CHATGPT_CONNECTOR_NAME
+    ? existing.automaticAppName
+    : undefined;
+  const routingConnectorName = options.routingConnectorName?.trim() || persistedRoutingConnector;
+  if (options.mode === "full") {
+    if (!routingConnectorName) {
+      throw new Error("DEV Full mode requires --routing-connector-name for the existing Routing_MCP ChatGPT connector");
+    }
+    if (options.browserInteractionMode === "manual" || existing?.browserInteractionMode === "manual" && options.browserInteractionMode === undefined) {
+      throw new Error("Routing_MCP DEV Full mode requires automatic browser interaction");
+    }
+    if (options.tunnelId || options.runtimeKeyFile || options.runtimeKeyValue) {
+      throw new Error("DEV Routing_MCP mode does not accept standalone tunnel credentials");
+    }
+  } else if (options.routingConnectorName) {
+    throw new Error("--routing-connector-name is valid only with DEV --full");
+  }
+
   const config = baseConfig(existing, options, DEV_LAUNCHER_PROFILE);
   if (config.browserHost !== "launcher") {
     throw new Error("DEV profile setup requires the desktop launcher browser host");
   }
   config.purpose = DEV_CONFIG_PURPOSE;
+  if (routingConnectorName && config.mode === "full") {
+    config.browserInteractionMode = "automatic";
+    config.appName = routingConnectorName;
+    config.automaticAppName = routingConnectorName;
+    delete config.tunnel;
+    delete config.automaticTunnel;
+    delete config.manualTunnel;
+  }
   if (config.browserInteractionMode === "automatic") {
-    const capabilities = await inspectLauncherCapabilities(
-      config,
-      existing,
-      options.refreshAccountCapabilities === true,
-      DEV_LAUNCHER_PROFILE,
-    );
+    const capabilities = legacyRoutingMigration
+      ? { solAvailable: existing!.solAvailable!, proAvailable: existing!.proAvailable! }
+      : await inspectLauncherCapabilities(
+        config,
+        existing,
+        options.refreshAccountCapabilities === true,
+        DEV_LAUNCHER_PROFILE,
+        options.reuseStoredAccountCapabilities === true,
+      );
     config.solAvailable = capabilities.solAvailable;
     config.proAvailable = capabilities.solAvailable && capabilities.proAvailable;
   }
 
-  const explicitTunnelChange = Boolean(options.tunnelId || options.runtimeKeyFile || options.runtimeKeyValue);
-  await configureTunnel(config, existing, options);
-  let tunnelReady: boolean | null = null;
-  if (config.mode === "full") {
-    const profilePath = join(config.tunnel!.profileDir, `${config.tunnel!.profileName}.yaml`);
-    const needsProfile = !existsSync(profilePath);
-    if (needsProfile || tunnelWorkerRuntimeChanged(existing, config) || explicitTunnelChange) {
-      await bootstrapTunnelProfile(config);
-    }
-    tunnelReady = false;
-  }
+  if (config.mode === "browser-only") await configureTunnel(config, existing, options);
   saveConfig(config);
   return {
     mode: config.mode,
     configPath: getConfigPath(),
-    tunnelReady,
-    connectorSetupRequired: config.mode === "full",
+    tunnelReady: null,
+    connectorSetupRequired: false,
   };
 }

@@ -290,7 +290,7 @@ function validateConfig(config, descriptorPath, platform = process.platform, lau
       }
     }
   };
-  if (config.mode === "full") {
+  if (config.mode === "full" && (launcherProfile === "production" || config.tunnel)) {
     validateTunnel(config.tunnel, "tunnel");
     if (config.automaticTunnel !== undefined) validateTunnel(config.automaticTunnel, "automaticTunnel");
     if (config.manualTunnel !== undefined) validateTunnel(config.manualTunnel, "manualTunnel");
@@ -1137,7 +1137,7 @@ class RuntimeSupervisor {
     }
     let child;
     try {
-      child = this.spawnChild("daemon", this.runtimeCommand(["serve"]));
+      child = this.spawnChild("daemon", this.runtimeCommand(["serve", ...(this.launcherProfile === "development" ? ["--launcher-dev-harness"] : [])]));
       await this.waitForProxy(config);
       if (this.daemon !== child) throw new Error("Responses proxy exited immediately after becoming healthy");
       this.restartableChildren.add(child);
@@ -1188,8 +1188,8 @@ class RuntimeSupervisor {
       this.clearState();
       return { status: "not-configured" };
     }
-    const tunnelOnly = this.launcherProfile === "development";
-    if (tunnelOnly && config.mode !== "full") {
+    const legacyDevTunnelOnly = this.launcherProfile === "development" && Boolean(config.tunnel);
+    if (this.launcherProfile === "development" && config.mode !== "full") {
       const ownershipState = this.readState();
       if (runtimeOwnershipMayBeLive(ownershipState)) {
         const detail = "A DEV MCP runtime is still owned while the profile is configured as browser-only";
@@ -1199,9 +1199,9 @@ class RuntimeSupervisor {
       this.clearState();
       return { status: "ready", daemonPid: null, tunnelPid: null };
     }
-    if (!tunnelOnly && config.releaseVersion !== this.app.getVersion()) {
+    if (!legacyDevTunnelOnly && config.releaseVersion !== this.app.getVersion()) {
       const ownershipState = this.readState();
-      if ((!tunnelOnly && await this.proxyHealth(config)) || runtimeOwnershipMayBeLive(ownershipState)) {
+      if ((!legacyDevTunnelOnly && await this.proxyHealth(config)) || runtimeOwnershipMayBeLive(ownershipState)) {
         try {
           const recovered = await this.stopStaleOwnedRuntime(config);
           if (!recovered) {
@@ -1223,7 +1223,7 @@ class RuntimeSupervisor {
       return { status: "needs-setup", detail };
     }
     if (!this.daemon && !this.tunnel) {
-      const healthyRuntime = tunnelOnly ? false : await this.proxyHealth(config);
+      const healthyRuntime = legacyDevTunnelOnly ? false : await this.proxyHealth(config);
       const ownershipState = this.readState();
       if (healthyRuntime || runtimeOwnershipMayBeLive(ownershipState)) {
         try {
@@ -1249,18 +1249,18 @@ class RuntimeSupervisor {
     this.publishOperation?.({
       name: "runtime-start",
       status: "running",
-      message: tunnelOnly ? "Starting isolated DEV MCP runtime" : "Starting local runtime",
+      message: legacyDevTunnelOnly ? "Starting legacy isolated DEV Tunnel runtime" : "Starting local runtime",
     });
     try {
-      await this.startTunnel(config, "runtime-start");
-      if (!tunnelOnly) await this.startDaemon(config);
+      if (config.mode === "full" && (this.launcherProfile === "production" || config.tunnel)) await this.startTunnel(config, "runtime-start");
+      if (!legacyDevTunnelOnly) await this.startDaemon(config);
       this.restartHistory.daemon = [];
       this.restartHistory.tunnel = [];
       this.writeState("ready");
       this.publishOperation?.({
         name: "runtime-start",
         status: "completed",
-        message: tunnelOnly ? "Isolated DEV MCP runtime is ready" : "Local runtime is ready",
+        message: legacyDevTunnelOnly ? "Legacy isolated DEV Tunnel runtime is ready" : "Local runtime is ready",
       });
       return { status: "ready", daemonPid: this.daemon?.pid, tunnelPid: this.tunnel?.pid };
     } catch (error) {
@@ -1321,18 +1321,18 @@ class RuntimeSupervisor {
     const config = this.readConfig();
     if (!config) return;
     this.publishOperation?.({ name: "runtime-recovery", status: "running", message: `Restarting ${name}` });
-    const tunnelOnly = this.launcherProfile === "development";
+    const legacyDevTunnelOnly = this.launcherProfile === "development" && Boolean(config.tunnel);
     if (name === "tunnel") {
       await this.startTunnel(config, "runtime-recovery", { forceRestart: true });
     }
-    else if (tunnelOnly) throw new Error("DEV runtime cannot recover a Responses daemon");
+    else if (legacyDevTunnelOnly) throw new Error("Legacy DEV Tunnel runtime cannot recover a Responses daemon");
     else await this.startDaemon(config);
-    if (!tunnelOnly && !this.daemon) throw new Error("Responses proxy is unavailable after runtime recovery");
-    if (config.mode === "full" && !this.tunnel) {
+    if (!legacyDevTunnelOnly && !this.daemon) throw new Error("Responses proxy is unavailable after runtime recovery");
+    if (config.mode === "full" && (this.launcherProfile === "production" || config.tunnel) && !this.tunnel) {
       throw new Error("Tunnel runtime is unavailable after runtime recovery");
     }
-    if (!tunnelOnly) await this.waitForProxy(config);
-    if (config.mode === "full") {
+    if (!legacyDevTunnelOnly) await this.waitForProxy(config);
+    if (config.mode === "full" && (this.launcherProfile === "production" || config.tunnel)) {
       await this.waitForTunnel(config, TUNNEL_START_TIMEOUT_MS, "runtime-recovery");
     }
     if (!this.tryWriteState("ready")) {
@@ -1406,8 +1406,9 @@ class RuntimeSupervisor {
   }
 
   async ownedRuntimeReady(config) {
-    if (this.launcherProfile === "development") {
-      return config.mode !== "full" || Boolean(this.tunnel && await this.tunnelHealth(config));
+    if (this.launcherProfile === "development" && config.mode !== "full") return true;
+    if (this.launcherProfile === "development" && config.tunnel) {
+      return Boolean(this.tunnel && await this.tunnelHealth(config));
     }
     const daemon = this.daemon;
     if (!daemon
@@ -1418,6 +1419,7 @@ class RuntimeSupervisor {
       return false;
     }
     if (config.mode !== "full") return true;
+    if (this.launcherProfile === "development" && !config.tunnel) return true;
     return Boolean(this.tunnel && await this.tunnelHealth(config));
   }
 
@@ -1706,11 +1708,11 @@ class RuntimeSupervisor {
       this.clearState();
       return false;
     }
-    const tunnelOnly = this.launcherProfile === "development";
-    if (tunnelOnly && processRunning(state.daemonPid)) {
+    const legacyDevTunnelOnly = this.launcherProfile === "development" && Boolean(config.tunnel);
+    if (legacyDevTunnelOnly && processRunning(state.daemonPid)) {
       throw new Error("DEV launcher ownership unexpectedly contains a Responses daemon");
     }
-    const health = tunnelOnly ? null : await this.proxyHealthPayload(config);
+    const health = legacyDevTunnelOnly ? null : await this.proxyHealthPayload(config);
     const daemonRunning = health?.service === "codex-chatgpt-web"
       && health?.mode === config.mode
       && health?.version === config.releaseVersion;
@@ -1723,7 +1725,7 @@ class RuntimeSupervisor {
       );
     }
     let managedTunnelRunning = false;
-    if (config.mode === "full") {
+    if (config.mode === "full" && (this.launcherProfile === "production" || config.tunnel)) {
       const tunnelHealth = await this.waitForKnownTunnelStatus(config);
       managedTunnelRunning = !tunnelRuntimeStopped(tunnelHealth);
       if (managedTunnelRunning
@@ -1943,11 +1945,12 @@ class RuntimeSupervisor {
     let tunnelStopped = false;
     try {
       const ownershipState = this.readState();
-      const healthyRuntime = config && this.launcherProfile !== "development"
+      const healthyRuntime = config && !(this.launcherProfile === "development" && config.tunnel)
         ? await this.proxyHealth(config)
         : false;
       const runtimeMayBeLive = healthyRuntime || runtimeOwnershipMayBeLive(ownershipState);
       if (config?.mode === "full"
+        && (this.launcherProfile === "production" || config.tunnel)
         && !this.tunnel
         && (runtimeMayBeLive || !ownershipState)) {
         await this.adoptConfiguredTunnelForStop(config);

@@ -158,6 +158,41 @@ test("launcher runtime ownership cannot cross production and DEV profiles", () =
   );
 });
 
+test("DEV browser-only runtime starts neither daemon nor tunnel", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-dev-browser-only-supervisor-"));
+  const descriptorPath = path.join(root, "runtime", "launcher-browser.json");
+  fs.mkdirSync(path.dirname(descriptorPath), { recursive: true });
+  const config = launcherConfig(descriptorPath, {
+    purpose: "dev-harness",
+    mode: "browser-only",
+  });
+  fs.writeFileSync(path.join(root, "config.json"), `${JSON.stringify(config)}\n`);
+  let daemonStarts = 0;
+  let tunnelStarts = 0;
+  let proxyProbes = 0;
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => config.releaseVersion, isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root,
+    coreHome: root,
+    browserDescriptorPath: descriptorPath,
+    launcherProfile: "development",
+  });
+  supervisor.proxyHealth = async () => { proxyProbes += 1; return false; };
+  supervisor.startTunnel = async () => { tunnelStarts += 1; };
+  supervisor.startDaemon = async () => { daemonStarts += 1; };
+  try {
+    const runtime = await supervisor.startConfigured();
+    assert.deepEqual(runtime, { status: "ready", daemonPid: null, tunnelPid: null });
+    assert.equal(daemonStarts, 0);
+    assert.equal(tunnelStarts, 0);
+    assert.equal(proxyProbes, 0);
+    assert.equal(await supervisor.ownedRuntimeReady(config), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("DEV runtime supervision ignores launcher version mismatch and starts only the isolated MCP tunnel", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-dev-tunnel-supervisor-"));
   const descriptorPath = path.join(root, "runtime", "launcher-browser.json");
@@ -214,6 +249,53 @@ test("DEV runtime supervision ignores launcher version mismatch and starts only 
     assert.equal(state.tunnelPid, 123_456_789);
   } finally {
     supervisor.tunnel = null;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("DEV Routing runtime starts the stable daemon without a standalone tunnel", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-dev-routing-supervisor-"));
+  const descriptorPath = path.join(root, "runtime", "launcher-browser.json");
+  fs.mkdirSync(path.dirname(descriptorPath), { recursive: true });
+  const config = launcherConfig(descriptorPath, {
+    purpose: "dev-harness",
+    mode: "full",
+    appName: "Routing MCP APP Phase1",
+  });
+  delete config.tunnel;
+  delete config.automaticTunnel;
+  delete config.manualTunnel;
+  fs.writeFileSync(path.join(root, "config.json"), `${JSON.stringify(config)}\n`);
+  let daemonStarts = 0;
+  let tunnelStarts = 0;
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => config.releaseVersion, isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root,
+    coreHome: root,
+    browserDescriptorPath: descriptorPath,
+    launcherProfile: "development",
+  });
+  supervisor.proxyHealth = async () => false;
+  supervisor.startTunnel = async () => { tunnelStarts += 1; };
+  supervisor.startDaemon = async () => {
+    daemonStarts += 1;
+    supervisor.daemon = { pid: 123_456_788, exitCode: null, signalCode: null };
+  };
+  try {
+    const runtime = await supervisor.startConfigured();
+    assert.equal(runtime.status, "ready");
+    assert.equal(runtime.daemonPid, 123_456_788);
+    assert.equal(runtime.tunnelPid, undefined);
+    assert.equal(daemonStarts, 1);
+    assert.equal(tunnelStarts, 0);
+    supervisor.proxyHealth = async () => true;
+    assert.equal(await supervisor.ownedRuntimeReady(config), true);
+    const state = JSON.parse(fs.readFileSync(supervisor.statePath, "utf8"));
+    assert.equal(state.daemonPid, 123_456_788);
+    assert.equal(state.tunnelPid, null);
+  } finally {
+    supervisor.daemon = null;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

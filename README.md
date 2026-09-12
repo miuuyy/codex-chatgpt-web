@@ -205,9 +205,12 @@ bun run app:package
 
 `dev:launcher` starts a second launcher profile under `~/.codex-chatgpt-web-dev`: separate Electron
 state, browser cookies/login, ChatGPT account, configuration, sandboxed `CODEX_HOME`, chats,
-diagnostics, broker, and tunnel profile. It can run beside the normal launcher and never starts a
-Responses daemon or changes Codex. Optional Full setup starts and supervises only its isolated MCP
-tunnel, using the distinct ChatGPT connector name `Codex Native2 DEV`.
+diagnostics, and broker. It can run beside the normal launcher and never changes Codex. Browser-only
+mode owns no local daemon; in this deployment DEV Full mode reuses the existing Routing_MCP ChatGPT
+connector and the DEV launcher owns one stable loopback daemon at the configured port;
+that daemon exposes the Codex bridge as Streamable HTTP `/mcp` for the normal Routing_MCP Plugin
+path. Its HTTP `tools/list` omits only the SDK-emitted top-level draft-07 `$schema` declaration used
+by the unchanged stdio/Standalone contract. It does not create or require a DEV-specific Tunnel.
 
 `dev:chat` is a named, persistent synthetic outer-Codex harness. It executes the current working
 tree through that isolated launcher browser, Temporary Chat, prompt compiler, Responses parser, and
@@ -216,9 +219,10 @@ are explicit simulation receipts. Browser-only chats expose no outer tools. It d
 not open a Responses listener, change `openai_base_url`, stop the live daemon, or claim port 17841.
 Run it without a message for `/status`, `/fill 30000`, `/compact`, `/model`, and `/reset` commands.
 Sign in and initialize the profile once inside the window labelled **DEV**. Configure optional Full
-harness only for simulated tool rounds; its launcher keeps the DEV tunnel ready while named chats
-attach their broker on demand. Production credentials and the `Codex Native2` connector are never
-reused implicitly. See
+harness only for simulated tool rounds and pass the existing ChatGPT-facing Routing_MCP connector
+name to DEV setup. The DEV launcher owns the stable `/mcp` endpoint and turn broker; named chats
+attach to that broker and never create a downstream route themselves. Standalone Tunnel credentials
+are not part of the normal DEV path. See
 [DEV chat harness](docs/dev-chat.md).
 
 - [Architecture](docs/architecture.md)

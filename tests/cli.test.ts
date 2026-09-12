@@ -26,7 +26,7 @@ async function runCli(args: string[], env: Record<string, string | undefined>) {
   return { exitCode, stdout, stderr };
 }
 
-test("production and DEV setup reject the removed connector-name option before configuration", async () => {
+test("production and DEV setup still reject the retired generic connector-name option", async () => {
   const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-fixed-connector-"));
   try {
     const env = {
@@ -46,6 +46,30 @@ test("production and DEV setup reject the removed connector-name option before c
     expect(existsSync(join(root, "dev", "config.json"))).toBeFalse();
     const help = await runCli(["--help"], env);
     expect(help.stdout).not.toContain("--app-name");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("DEV Full setup requires the existing Routing connector instead of standalone tunnel arguments", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-routing-setup-"));
+  try {
+    const env = {
+      ...process.env,
+      CODEX_WEB_GPT_DEV_HOME: join(root, "dev"),
+      CODEX_CHATGPT_WEB_HOME: join(root, "prod"),
+      CODEX_HOME: join(root, "codex"),
+    };
+    const missing = await runCli(["dev", "setup", "--full", "--acknowledge-unofficial"], env);
+    expect(missing.exitCode).toBe(1);
+    expect(missing.stderr).toContain("--routing-connector-name");
+
+    const tunnel = await runCli([
+      "dev", "setup", "--full", "--tunnel-id", `tunnel_${"a".repeat(32)}`,
+      "--runtime-key-file", join(root, "runtime.key"), "--acknowledge-unofficial",
+    ], env);
+    expect(tunnel.exitCode).toBe(1);
+    expect(tunnel.stderr).toMatch(/Unknown DEV setup arguments: .*--tunnel-id/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -237,6 +261,76 @@ test("DEV status reports the isolated home without creating a Codex route", asyn
   }
 });
 
+test("DEV Routing status reports ready only from the launcher-owned Full runtime health", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-dev-routing-status-"));
+  const devHome = join(root, "dev");
+  const descriptorPath = join(devHome, "runtime", "launcher-browser.json");
+  const helperScript = join(root, "helper.cjs");
+  const health = createServer((request, response) => {
+    expect(request.url).toBe("/healthz");
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      status: "ok",
+      service: "codex-chatgpt-web",
+      mode: "full",
+      accepting_turns: true,
+    }));
+  });
+  await new Promise<void>((resolveListen, rejectListen) => {
+    health.once("error", rejectListen);
+    health.listen(0, "127.0.0.1", resolveListen);
+  });
+  try {
+    const address = health.address();
+    if (!address || typeof address === "string") throw new Error("health server has no port");
+    mkdirSync(join(devHome, "runtime"), { recursive: true });
+    writeFileSync(helperScript, "module.exports = {};\n", { mode: 0o700 });
+    const config = {
+      ...defaultConfig("full"),
+      purpose: "dev-harness" as const,
+      host: "127.0.0.1",
+      port: address.port,
+      appName: "Routing MCP APP Phase1",
+      automaticAppName: "Routing MCP APP Phase1",
+      browserHost: "launcher" as const,
+      browserHostDescriptorPath: descriptorPath,
+    };
+    delete config.tunnel;
+    delete config.automaticTunnel;
+    delete config.manualTunnel;
+    writeFileSync(join(devHome, "config.json"), `${JSON.stringify(config)}\n`, { mode: 0o600 });
+    writeFileSync(descriptorPath, `${JSON.stringify({
+      version: 3,
+      kind: "codex-web-gpt-launcher",
+      profile: "development",
+      pid: process.pid,
+      endpoint: "http://127.0.0.1:48121",
+      control: { endpoint: "http://127.0.0.1:48122", token: "dev-routing-status-token-0123456789abcdefghijklmnop" },
+      helper: { executable: process.execPath, script: helperScript },
+      partition: "persist:codex-web-gpt-dev-chatgpt",
+      idleUrl: LAUNCHER_BROWSER_IDLE_URL,
+      surfaceId: "e".repeat(32),
+      surfaceTargets: { ["e".repeat(32)]: "native-owned-target" },
+      createdAt: new Date().toISOString(),
+    })}\n`, { mode: 0o600 });
+    const result = await runCli(["dev", "status", "--json"], {
+      ...process.env,
+      CODEX_WEB_GPT_DEV_HOME: devHome,
+      CODEX_CHATGPT_WEB_HOME: join(root, "production"),
+      CODEX_HOME: join(root, "production-codex"),
+    });
+    expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" });
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      launcher: { running: true, profile: "development" },
+      config: { configured: true, mode: "full", purpose: "dev-harness" },
+      mcpRuntime: { required: true, ready: true },
+    });
+  } finally {
+    await new Promise<void>(resolveClose => health.close(() => resolveClose()));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("DEV chat explains the isolated launcher setup when its profile is empty", async () => {
   const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-dev-empty-"));
   try {
@@ -328,8 +422,8 @@ test("DEV browser-only setup persists only the isolated harness profile", async 
       CODEX_HOME: join(root, "production-codex"),
     });
     expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" });
-    expect(result.stdout).toContain("No Codex route, Responses listener, or system service was installed");
-    expect(result.stdout).toContain("DEV launcher owns the isolated MCP tunnel");
+    expect(result.stdout).toContain("Setup installed no Codex route or system service and started no listener itself");
+    expect(result.stdout).toContain("No standalone Tunnel was installed");
     expect(inspections).toBe(1);
     expect(JSON.parse(readFileSync(join(devHome, "config.json"), "utf8"))).toMatchObject({
       version: 3,
@@ -345,6 +439,217 @@ test("DEV browser-only setup persists only the isolated harness profile", async 
     expect(existsSync(join(devHome, "codex-home", "config.toml"))).toBe(false);
   } finally {
     await new Promise<void>(resolveClose => control.close(() => resolveClose()));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test("DEV setup can explicitly reuse persisted capabilities during managed-Chrome migration", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-dev-reuse-capabilities-"));
+  const devHome = join(root, "dev");
+  const descriptorPath = join(devHome, "runtime", "launcher-browser.json");
+  const helperScript = join(root, "helper.cjs");
+  const controlToken = "dev-reuse-control-token-0123456789abcdefghijklmnop";
+  let inspections = 0;
+  const control = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    inspections += 1;
+    expect(request.url).toBe("/v1/session/inspect");
+    expect(request.headers.authorization).toBe(`Bearer ${controlToken}`);
+    expect(JSON.parse(Buffer.concat(chunks).toString("utf8"))).toEqual({ detectCapabilities: false });
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      authenticated: true,
+      temporary: true,
+      url: "https://chatgpt.com/?temporary-chat=true",
+    }));
+  });
+  await new Promise<void>((resolveListen, rejectListen) => {
+    control.once("error", rejectListen);
+    control.listen(0, "127.0.0.1", resolveListen);
+  });
+  try {
+    const address = control.address();
+    if (!address || typeof address === "string") throw new Error("control server has no port");
+    mkdirSync(join(devHome, "runtime"), { recursive: true });
+    writeFileSync(helperScript, "module.exports = {};\n", { mode: 0o700 });
+    writeFileSync(descriptorPath, `${JSON.stringify({
+      version: 3,
+      kind: "codex-web-gpt-launcher",
+      profile: "development",
+      pid: process.pid,
+      endpoint: "http://127.0.0.1:48141",
+      control: { endpoint: `http://127.0.0.1:${address.port}`, token: controlToken },
+      helper: { executable: process.execPath, script: helperScript },
+      partition: "persist:codex-web-gpt-dev-chatgpt",
+      idleUrl: LAUNCHER_BROWSER_IDLE_URL,
+      surfaceId: "r".repeat(32),
+      surfaceTargets: { ["r".repeat(32)]: "native-owned-target" },
+      createdAt: new Date().toISOString(),
+    })}\n`, { mode: 0o600 });
+    mkdirSync(devHome, { recursive: true });
+    writeFileSync(join(devHome, "config.json"), `${JSON.stringify({
+      ...defaultConfig("browser-only"),
+      purpose: "dev-harness",
+      browserHost: "managed-chrome",
+      browserInteractionMode: "automatic",
+      solAvailable: true,
+      proAvailable: false,
+    }, null, 2)}\n`, { mode: 0o600 });
+    const result = await runCli([
+      "dev",
+      "setup",
+      "--browser-only",
+      "--browser-host-descriptor",
+      descriptorPath,
+      "--reuse-stored-account-capabilities",
+      "--acknowledge-unofficial",
+    ], {
+      ...process.env,
+      CODEX_WEB_GPT_DEV_HOME: devHome,
+      CODEX_CHATGPT_WEB_HOME: join(root, "production"),
+      CODEX_HOME: join(root, "production-codex"),
+    });
+    expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" });
+    expect(inspections).toBe(1);
+    expect(JSON.parse(readFileSync(join(devHome, "config.json"), "utf8"))).toMatchObject({
+      purpose: "dev-harness",
+      browserHost: "launcher",
+      browserHostDescriptorPath: descriptorPath,
+      solAvailable: true,
+      proAvailable: false,
+    });
+    expect(existsSync(join(root, "production-codex", "config.toml"))).toBe(false);
+  } finally {
+    await new Promise<void>(resolveClose => control.close(() => resolveClose()));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("DEV stored-capability reuse rejects invalid preconditions without changing normal setup", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-dev-reuse-invalid-"));
+  const devHome = join(root, "dev");
+  const descriptorPath = join(devHome, "runtime", "launcher-browser.json");
+  const env = {
+    ...process.env,
+    CODEX_WEB_GPT_DEV_HOME: devHome,
+    CODEX_CHATGPT_WEB_HOME: join(root, "production"),
+    CODEX_HOME: join(root, "production-codex"),
+  };
+  const baseArgs = [
+    "dev", "setup", "--browser-only", "--browser-host-descriptor", descriptorPath,
+    "--reuse-stored-account-capabilities", "--acknowledge-unofficial",
+  ];
+  const writeConfig = (overrides: Record<string, unknown> = {}, omitCapabilities = false) => {
+    mkdirSync(devHome, { recursive: true });
+    const value = {
+      ...defaultConfig("browser-only"),
+      purpose: "dev-harness",
+      browserHost: "managed-chrome",
+      browserInteractionMode: "automatic",
+      solAvailable: true,
+      proAvailable: false,
+      ...overrides,
+    } as Record<string, unknown>;
+    if (omitCapabilities) {
+      delete value.solAvailable;
+      delete value.proAvailable;
+    }
+    writeFileSync(join(devHome, "config.json"), `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  };
+  try {
+    let result = await runCli(baseArgs, env);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("require an existing DEV configuration");
+
+    writeConfig({}, true);
+    result = await runCli(baseArgs, env);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("require explicitly persisted solAvailable and proAvailable values");
+
+    writeConfig();
+    result = await runCli([...baseArgs, "--refresh-account-capabilities"], env);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Choose either --reuse-stored-account-capabilities or --refresh-account-capabilities");
+
+    writeConfig();
+    result = await runCli([...baseArgs, "--zero-risk-browser-interaction"], env);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("require automatic browser interaction");
+
+    writeConfig({ browserHost: "launcher", browserHostDescriptorPath: descriptorPath });
+    result = await runCli(baseArgs, env);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("only for managed-chrome migration or explicit legacy Full-to-Routing migration");
+
+    const production = await runCli([
+      "setup", "--browser-only", "--reuse-stored-account-capabilities", "--acknowledge-unofficial",
+    ], {
+      ...process.env,
+      CODEX_HOME: join(root, "prod-codex"),
+      CODEX_CHATGPT_WEB_HOME: join(root, "prod-app"),
+    });
+    expect(production.exitCode).toBe(1);
+    expect(production.stderr).toMatch(/Unknown.*arguments: --reuse-stored-account-capabilities/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("DEV legacy Full can migrate to Routing Full offline without restarting its standalone tunnel", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-dev-legacy-routing-migration-"));
+  const devHome = join(root, "dev");
+  const descriptorPath = join(devHome, "runtime", "launcher-browser.json");
+  const tunnel = {
+    binaryPath: join(root, "bin", "tunnel-client"),
+    tunnelId: `tunnel_${"a".repeat(32)}`,
+    runtimeKeyFile: join(root, "secrets", "runtime.key"),
+    profileDir: join(root, "profiles"),
+    profileName: "codex-chatgpt-web-dev",
+    alias: "codex-chatgpt-web-dev",
+  };
+  try {
+    mkdirSync(devHome, { recursive: true });
+    const config = {
+      ...defaultConfig("full"),
+      purpose: "dev-harness" as const,
+      browserHost: "launcher" as const,
+      browserHostDescriptorPath: descriptorPath,
+      browserInteractionMode: "automatic" as const,
+      solAvailable: true,
+      proAvailable: false,
+      tunnel,
+    };
+    writeFileSync(join(devHome, "config.json"), `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+    const result = await runCli([
+      "dev", "setup", "--full",
+      "--routing-connector-name", "Routing MCP APP Phase1",
+      "--browser-host-descriptor", descriptorPath,
+      "--reuse-stored-account-capabilities",
+      "--acknowledge-unofficial",
+    ], {
+      ...process.env,
+      CODEX_WEB_GPT_DEV_HOME: devHome,
+      CODEX_CHATGPT_WEB_HOME: join(root, "production"),
+      CODEX_HOME: join(root, "production-codex"),
+    });
+    expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" });
+    const migrated = JSON.parse(readFileSync(join(devHome, "config.json"), "utf8"));
+    expect(migrated).toMatchObject({
+      purpose: "dev-harness",
+      mode: "full",
+      browserHost: "launcher",
+      browserInteractionMode: "automatic",
+      appName: "Routing MCP APP Phase1",
+      automaticAppName: "Routing MCP APP Phase1",
+      solAvailable: true,
+      proAvailable: false,
+    });
+    expect(migrated.tunnel).toBeUndefined();
+    expect(migrated.automaticTunnel).toBeUndefined();
+    expect(migrated.manualTunnel).toBeUndefined();
+  } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });

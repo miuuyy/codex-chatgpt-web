@@ -12,14 +12,22 @@ usable.
 - Start the isolated launcher with `bun run dev:launcher`.
 - It skips the normal marketing onboarding and opens the setup surface directly. Sign in inside the
   window labelled **DEV**. This may be a different ChatGPT account.
-- Run its browser smoke test and initialize the DEV profile. Complete MCP setup only when testing
+- Run its browser smoke test and initialize the DEV profile. Complete Full setup only when testing
   simulated tool rounds; browser, effort, context-limit, and compaction work in browser-only mode.
-  The launcher stores any MCP credentials only in the DEV home and supervises only that isolated
-  tunnel. Create the ChatGPT connector as `Codex Native2 DEV`; keep `Codex Native2` unchanged.
+  Full setup takes the display name of the existing ChatGPT-facing Routing_MCP connector so the
+  browser can select it. That name is not the downstream Plugin identity. DEV setup does not create
+  a DEV-specific Tunnel or connector.
 
 Nothing is copied from the normal launcher. The DEV command fails closed if its own launcher,
-browser descriptor, credentials, or connector are not ready. It never falls back to the production
-profile, another model, a fake browser, or a second connector.
+browser descriptor, or configured Routing_MCP connector are not ready. It never falls back to the
+production profile, another model, a fake browser, or a second connector.
+
+When migrating an already verified automatic DEV profile from terminal-only managed Chrome to the
+DEV launcher, `dev setup` may use `--reuse-stored-account-capabilities` to keep the explicitly
+persisted `solAvailable` / `proAvailable` values while still validating the launcher-owned ChatGPT
+session and Temporary Chat surface. The option is DEV-only, cannot be combined with
+`--refresh-account-capabilities`, and is rejected for any other profile or interaction mode. Without
+the flag, launcher setup keeps the normal capability-probe behavior.
 
 ## Run
 
@@ -127,10 +135,11 @@ rate limits or a temporary account cooldown. The experiment is intentionally una
 Luna's later requests still include the accumulated transcript inside the same measured
 28,000-token browser transport budget.
 
-Browser-only chats do not advertise outer tools and never claim simulated effects. Full setup keeps
-the launcher-owned DEV tunnel ready so ChatGPT can create and validate `Codex Native2 DEV` before a
-CLI chat starts. Each named chat attaches its broker to that tunnel, while every dispatched action
-still returns an explicit simulation receipt.
+Browser-only chats do not advertise outer tools and never claim simulated effects. Full setup
+selects the existing ChatGPT-facing Routing_MCP connector. The DEV launcher owns one stable
+loopback daemon, broker, and Streamable HTTP `/mcp` endpoint; each named chat attaches remotely to
+that broker. The downstream `codex-chatgpt-web` Plugin is registered separately in Routing_MCP;
+every dispatched DEV action still returns an explicit simulation receipt.
 
 The default isolated home is:
 
@@ -140,8 +149,7 @@ The default isolated home is:
 ├── codex-home/
 ├── launcher/                 # Electron userData, cookies, login, logs, window state
 ├── chats/<name>.json
-├── runtime/
-└── tunnel/
+└── runtime/
 ```
 
 Set `CODEX_WEB_GPT_DEV_HOME` to choose another absolute DEV home. Generic `--home`,
@@ -158,15 +166,20 @@ The DEV driver:
   cookies, OAuth state, local storage, account selection, and launcher state cannot cross profiles;
 - uses an isolated sandbox `CODEX_HOME` but never writes a Codex route into it;
 - does not call setup, route connect/disconnect, service start/stop, or uninstall;
-- does not start `Bun.serve` or bind the configured Responses port;
-- rejects any attempt to start the Responses server from a `dev-harness` config;
+- never starts a Responses daemon from the named-chat CLI; in Full Routing mode the DEV launcher
+  owns the configured loopback daemon and Plugin `/mcp` endpoint;
+- rejects direct/unowned attempts to start the Responses server from a `dev-harness` config; only
+  the DEV launcher may start the stable Full Routing daemon;
 - does not edit the normal `~/.codex/config.toml` or integration journal;
 - leases an isolated DEV-launcher browser tab and runs the working-tree browser helper;
-- owns the private DEV broker socket only for the command's lifetime;
-- reuses the isolated tunnel supervised by the DEV launcher and never starts a competing alias;
-- can run beside the production launcher, Responses port, and tunnel because none of their homes,
-  browser partitions, descriptors, broker sockets, profiles, or aliases are shared;
-- refuses to run Full-mode tool rounds until the launcher-owned DEV tunnel is ready;
+- attaches named chats to the private DEV broker socket owned by the launcher; closing a chat never
+  owns or tears down that broker;
+- uses the existing ChatGPT-facing Routing_MCP connector and creates no DEV-specific Tunnel or alias;
+- keeps the downstream Routing Plugin identity separate from that connector display name;
+- can run beside the production launcher because its home, browser partition, descriptor, broker
+  socket, and loopback MCP endpoint are isolated;
+- refuses to run Full-mode tool rounds until the launcher-owned broker is ready and a non-Standalone
+  Routing connector name is configured;
 - exposes ordinary structural tools, then returns a universal receipt containing
   `simulated: true` and `side_effects_performed: false` for every dispatched action.
 

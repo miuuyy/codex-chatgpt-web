@@ -291,50 +291,111 @@ test("browser-only DEV driver runs real turns without advertising simulated tool
   }
 });
 
-test("DEV chat attaches its broker to the launcher-owned tunnel without a Responses listener", async () => {
-  const root = scratch("cgw-dev-transport");
-  const occupied = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("normal Codex route") });
+test("DEV Routing chat attaches to the launcher-owned broker without owning a listener", async () => {
+  const root = scratch("cgw-dev-routing-transport");
   const devBroker = defaultBrokerEndpoint(join(root, "dev"));
   const config = {
     ...defaultConfig("full"),
     purpose: "dev-harness" as const,
-    port: occupied.port!,
     brokerSocketPath: devBroker,
-    tunnel: {
-      binaryPath: join(root, "tunnel-client"),
-      tunnelId: `tunnel_${"a".repeat(32)}`,
-      runtimeKeyFile: join(root, "runtime.key"),
-      profileDir: join(root, "profiles"),
-      profileName: "production-profile",
-      alias: "production-alias",
-    },
+    appName: "Routing MCP",
+    automaticAppName: "Routing MCP",
   };
+  delete config.tunnel;
+  delete config.automaticTunnel;
+  delete config.manualTunnel;
+  const launcherBroker = TurnBroker.forSocket(devBroker);
+  await launcherBroker.listen();
   let transport: Awaited<ReturnType<typeof startDevChatTransport>> | undefined;
   try {
-    transport = await startDevChatTransport(config, join(root, "dev"), {
-      status: () => ({
-        ok: true,
-        processRunning: true,
-        healthy: true,
-        ready: true,
-        state: "ready",
-        detail: "launcher-owned DEV tunnel ready",
-      }),
-    });
+    transport = await startDevChatTransport(config, join(root, "dev"));
     expect(transport.config).toBe(config);
-    expect(await callTurnBroker(transport.config.brokerSocketPath, { method: "owner_status" }))
-      .toMatchObject({ protocolVersion: 5 });
-    expect(await (await fetch(`http://127.0.0.1:${occupied.port}`)).text()).toBe("normal Codex route");
+    expect(transport.broker).toBeInstanceOf(RemoteTurnBroker);
+    expect(await callTurnBroker(devBroker, { method: "owner_status" })).toMatchObject({ protocolVersion: 5 });
   } finally {
     await transport?.close();
-    await occupied.stop(true);
+    await launcherBroker.close();
   }
-  await expect(callTurnBroker(devBroker, { method: "owner_status" }))
-    .rejects.toThrow("unavailable");
+  await expect(callTurnBroker(devBroker, { method: "owner_status" })).rejects.toThrow("unavailable");
 });
 
-test("DEV chat fails closed until the launcher-owned MCP tunnel is ready", async () => {
-  const root = scratch("cgw-dev-production-owner");
+test("two DEV Routing chats share the launcher broker without cross-talk or ownership teardown", async () => {
+  const root = scratch("cgw-dev-routing-concurrent");
+  const devBroker = defaultBrokerEndpoint(join(root, "dev"));
+  const config = {
+    ...defaultConfig("full"),
+    purpose: "dev-harness" as const,
+    brokerSocketPath: devBroker,
+    appName: "Routing MCP",
+    automaticAppName: "Routing MCP",
+  };
+  delete config.tunnel;
+  delete config.automaticTunnel;
+  delete config.manualTunnel;
+  const launcherBroker = TurnBroker.forSocket(devBroker);
+  await launcherBroker.listen();
+  const first = await startDevChatTransport(config, join(root, "dev"));
+  const second = await startDevChatTransport(config, join(root, "dev"));
+  const environment = (cwd: string) => ({
+    cwd, roots: [cwd], writableRoots: [cwd],
+    sandboxPolicy: { type: "dangerFullAccess" as const },
+    tools: [{ name: "exec_command", description: "Command", parameters: { type: "object" } }],
+  });
+  try {
+    const tokenA = await first.broker.register(environment(join(root, "a")), 60_000, "routing-chat-a");
+    const tokenB = await second.broker.register(environment(join(root, "b")), 60_000, "routing-chat-b");
+    const waitA = first.broker.nextToolBatch(tokenA);
+    const waitB = second.broker.nextToolBatch(tokenB);
+    const claimedA = await callTurnBroker<{ bindingId: string }>(devBroker, {
+      method: "claim", token: tokenA, activityId: "activity_routing_chat_a_0001",
+    });
+    const claimedB = await callTurnBroker<{ bindingId: string }>(devBroker, {
+      method: "claim", token: tokenB, activityId: "activity_routing_chat_b_0001",
+    });
+    const invokeA = callTurnBroker<BrokerToolResult>(devBroker, {
+      method: "invoke", bindingId: claimedA.bindingId, wireName: "exec_command", arguments: { cmd: "echo A" },
+    }, 10_000);
+    const invokeB = callTurnBroker<BrokerToolResult>(devBroker, {
+      method: "invoke", bindingId: claimedB.bindingId, wireName: "exec_command", arguments: { cmd: "echo B" },
+    }, 10_000);
+    const [batchA, batchB] = await Promise.all([waitA, waitB]);
+    expect(batchA).toHaveLength(1);
+    expect(batchB).toHaveLength(1);
+    expect(batchA[0]!.arguments).toEqual({ cmd: "echo A" });
+    expect(batchB[0]!.arguments).toEqual({ cmd: "echo B" });
+    await first.broker.completeTool(tokenA, batchA[0]!.callId, { content: [{ type: "text", text: "A" }] });
+    await second.broker.completeTool(tokenB, batchB[0]!.callId, { content: [{ type: "text", text: "B" }] });
+    await expect(invokeA).resolves.toMatchObject({ content: [{ type: "text", text: "A" }] });
+    await expect(invokeB).resolves.toMatchObject({ content: [{ type: "text", text: "B" }] });
+    await first.close();
+    expect(await callTurnBroker(devBroker, { method: "owner_status" })).toMatchObject({ protocolVersion: 5 });
+    const tokenC = await second.broker.register(environment(join(root, "c")), 60_000, "routing-chat-c");
+    await second.broker.revoke(tokenC);
+    await first.broker.revoke(tokenA);
+    await second.broker.revoke(tokenB);
+  } finally {
+    await first.close();
+    await second.close();
+    await launcherBroker.close();
+  }
+});
+
+test("DEV Routing Full mode fails closed until an existing Routing connector name is configured", async () => {
+  const root = scratch("cgw-dev-routing-name");
+  const config = {
+    ...defaultConfig("full"),
+    purpose: "dev-harness" as const,
+    port: 0,
+  };
+  delete config.tunnel;
+  delete config.automaticTunnel;
+  delete config.manualTunnel;
+  await expect(startDevChatTransport(config, join(root, "dev")))
+    .rejects.toThrow("requires an existing Routing connector name");
+});
+
+test("legacy tunnel-bearing DEV configs remain compatibility-only until migration", async () => {
+  const root = scratch("cgw-dev-legacy-tunnel");
   const config = {
     ...defaultConfig("full"),
     purpose: "dev-harness" as const,
@@ -343,8 +404,8 @@ test("DEV chat fails closed until the launcher-owned MCP tunnel is ready", async
       tunnelId: `tunnel_${"b".repeat(32)}`,
       runtimeKeyFile: join(root, "runtime.key"),
       profileDir: join(root, "profiles"),
-      profileName: "production-profile",
-      alias: "production-alias",
+      profileName: "legacy-profile",
+      alias: "legacy-alias",
     },
   };
   await expect(startDevChatTransport(config, join(root, "dev"), {
@@ -356,7 +417,7 @@ test("DEV chat fails closed until the launcher-owned MCP tunnel is ready", async
       state: "stopped",
       detail: "stopped",
     }),
-  })).rejects.toThrow("launcher-owned DEV MCP tunnel is not ready");
+  })).rejects.toThrow("legacy launcher-owned DEV MCP tunnel is not ready");
 });
 
 test("DEV driver uses shared browser methods and its own broker while an unrelated Responses port stays occupied", async () => {
