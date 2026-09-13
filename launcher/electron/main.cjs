@@ -12,9 +12,11 @@ const {
   nativeImage,
   nativeTheme,
   screen,
+  session,
   shell,
   Tray,
 } = require("electron");
+const { resolveNativeProxyEnvironment, resolveTunnelProxyEnvironment } = require("./native-proxy.cjs");
 const { BrowserHost, navigationErrorForLog } = require("./browser-host.cjs");
 const { BrowserControlServer } = require("./control-server.cjs");
 const { getAutostart, setAutostart } = require("./autostart.cjs");
@@ -983,6 +985,8 @@ async function start() {
     browserDescriptorPath: BROWSER_DESCRIPTOR_PATH,
     launcherProfile: LAUNCHER_PROFILE.kind,
     publishOperation,
+    nativeProxyEnvironmentProvider: () => resolveNativeProxyEnvironment(session.defaultSession),
+    tunnelProxyEnvironmentProvider: () => resolveTunnelProxyEnvironment(session.defaultSession),
   });
   runtimeHost = new RuntimeHost({
     app,

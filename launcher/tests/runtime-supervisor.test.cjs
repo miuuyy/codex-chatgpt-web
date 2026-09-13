@@ -1960,3 +1960,40 @@ server.listen(config.port, config.host);
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("startDaemon passes the native proxy decision to the child process", async () => {
+  const supervisor = new RuntimeSupervisor({
+    app: { isPackaged: false }, logger: {}, sourceRoot: "/unused", coreHome: "/unused", browserDescriptorPath: "/unused/descriptor",
+    runtimeInvocationFactory: () => ({ executable: "/unused/bun", args: ["serve"] }),
+    nativeProxyEnvironmentProvider: async () => ({ CODEX_CHATGPT_WEB_NATIVE_PROXY: "http://proxy.example:8080" }),
+  });
+  let invocation;
+  supervisor.spawnChild = (name, value) => { invocation = value; const child = { pid: 123 }; supervisor[name] = child; return child; };
+  supervisor.waitForProxy = async () => {};
+  await supervisor.startDaemon({});
+  assert.deepEqual(invocation.env, { CODEX_CHATGPT_WEB_NATIVE_PROXY: "http://proxy.example:8080" });
+});
+
+test("tunnel control commands pass the PAC-derived proxy to the managed runtime process", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-tunnel-proxy-env-"));
+  const binaryPath = path.join(root, "tunnel-client");
+  const profileDir = path.join(root, "profiles");
+  fs.mkdirSync(profileDir, { recursive: true });
+  fs.writeFileSync(binaryPath, `#!/bin/sh\nprintf '%s\\n' "$HTTPS_PROXY|$NO_PROXY"\n`);
+  fs.chmodSync(binaryPath, 0o700);
+  const supervisor = new RuntimeSupervisor({
+    app: { isPackaged: false }, logger: {}, sourceRoot: root, coreHome: root,
+    browserDescriptorPath: path.join(root, "descriptor"),
+    tunnelProxyEnvironmentProvider: async () => ({
+      HTTPS_PROXY: "http://127.0.0.1:7897",
+      NO_PROXY: "localhost,127.0.0.1,::1",
+    }),
+  });
+  try {
+    const result = await supervisor.runTunnelCommand({ tunnel: { binaryPath, profileDir } }, ["status"], 5_000, "test");
+    assert.equal(result.code, 0);
+    assert.equal(result.output.trim(), "http://127.0.0.1:7897|localhost,127.0.0.1,::1");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
