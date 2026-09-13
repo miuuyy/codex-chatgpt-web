@@ -252,6 +252,18 @@ test("saved ChatGPT authentication is refreshed before setup is presented", () =
   assert.match(appSource, /browser\?\.status === "loading" \? copy\.checkingSignIn/);
 });
 
+test("pending model setup requires a Codex restart before verification", () => {
+  assert.match(appSource, /const codexRouteInstalled = snapshot\.state\.coreSetupComplete === true/);
+  assert.match(appSource, /const codexCatalogPending = codexRouteInstalled && snapshot\.state\.codexCatalogVerified !== true/);
+  assert.match(
+    appSource,
+    /action=\{codexCatalogPending[\s\S]*?copy\.awaitingCodex[\s\S]*?codexRouteInstalled[\s\S]*?copy\.install/,
+  );
+  assert.match(appSource, /disabled=\{busy[\s\S]*?\|\| codexCatalogPending\}/);
+  assert.match(appSource, /repeatable=\{snapshot\.state\.codexCatalogVerified === true\}/);
+  assert.match(appSource, /complete=\{snapshot\.state\.codexCatalogVerified === true\}/);
+});
+
 test("completed model setup remains a repeatable capability probe", () => {
   assert.match(appSource, /<SetupRow[\s\S]*?onAction=\{install\}[\s\S]*?repeatable/);
   assert.match(appSource, /complete && !repeatable/);

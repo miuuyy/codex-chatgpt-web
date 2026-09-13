@@ -1128,6 +1128,9 @@ function SetupSurface({
     }
   };
 
+  const codexRouteInstalled = snapshot.state.coreSetupComplete === true;
+  const codexCatalogPending = codexRouteInstalled && snapshot.state.codexCatalogVerified !== true;
+
   const openLogin = () => run(async () => {
     await activateBrowser();
     await api!.openLogin();
@@ -1178,15 +1181,19 @@ function SetupSurface({
           />
         </> : null}
         <SetupRow
-          action={snapshot.state.coreSetupComplete
-            ? devProfile ? copy.devReinstall : copy.reinstall
-            : devProfile ? copy.devInstall : copy.install}
+          action={codexCatalogPending
+            ? copy.awaitingCodex
+            : codexRouteInstalled
+              ? devProfile ? copy.devReinstall : copy.reinstall
+              : devProfile ? copy.devInstall : copy.install}
           complete={snapshot.state.codexCatalogVerified === true}
           description={devProfile ? copy.devStepInstallBody : copy.stepInstallBody}
-          disabled={busy || (!snapshot.smokePassed && snapshot.state.coreSetupComplete !== true)}
+          disabled={busy
+            || (!snapshot.smokePassed && !codexRouteInstalled)
+            || codexCatalogPending}
           index={manualInteraction ? 1 : 3}
           onAction={install}
-          repeatable
+          repeatable={snapshot.state.codexCatalogVerified === true}
           title={devProfile ? copy.devStepInstall : copy.stepInstall}
           titleAction={manualInteraction ? (
             <ZeroRiskModelMenu
