@@ -11,6 +11,7 @@ const read = (...parts) => fs.readFileSync(path.join(repositoryRoot, ...parts), 
 const englishReadme = read("README.md");
 const chineseReadme = read("README.zh-CN.md");
 const japaneseReadme = read("README.ja.md");
+const koreanReadme = read("README.ko.md");
 const appSource = read("launcher", "src", "App.tsx");
 
 function loadI18nModule() {
@@ -27,8 +28,8 @@ function loadI18nModule() {
 }
 
 function commandFences(source) {
-  return [...source.matchAll(/```(bash|powershell)\n([\s\S]*?)```/g)]
-    .map((match) => `${match[1]}\n${match[2].trim()}`);
+  return [...source.matchAll(/```(bash|powershell)\r?\n([\s\S]*?)```/g)]
+    .map((match) => `${match[1]}\n${match[2].replace(/\r\n/g, "\n").trim()}`);
 }
 
 function linkTargets(source) {
@@ -38,7 +39,7 @@ function linkTargets(source) {
 }
 
 test("localized READMEs preserve every command block and link target from English", () => {
-  for (const source of [chineseReadme, japaneseReadme]) {
+  for (const source of [chineseReadme, japaneseReadme, koreanReadme]) {
     assert.deepEqual(commandFences(source), commandFences(englishReadme));
     assert.deepEqual(linkTargets(source), linkTargets(englishReadme));
   }
