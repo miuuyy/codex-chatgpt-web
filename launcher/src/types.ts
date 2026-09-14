@@ -1,6 +1,7 @@
 export type Language = "en" | "zh-CN" | "ja";
 export type LauncherProfile = "production" | "development";
 export type BrowserInteractionMode = "automatic" | "manual";
+export type ProModelVersion = "5.6" | "5.5" | "6";
 export type Surface = "browser" | "setup" | "mcp" | "activity" | "settings";
 
 export interface LauncherState {
@@ -99,6 +100,7 @@ export interface LauncherSnapshot {
     userData: string;
   };
   state: LauncherState;
+  proModelVersion: ProModelVersion | null;
   browser: BrowserState | null;
   connectorName: string;
   connectorNames: Record<BrowserInteractionMode, string>;
@@ -156,6 +158,7 @@ export interface LauncherApi {
   setAutostart(enabled: boolean): Promise<{ state: LauncherState; supported: boolean; enabled: boolean }>;
   setBiggerContext(enabled: boolean): Promise<LauncherState>;
   setZeroRiskPro(enabled: boolean): Promise<LauncherState>;
+  setProModelVersion(version: ProModelVersion | null): Promise<{ proModelVersion: ProModelVersion | null }>;
   setBrowserInteractionMode(mode: BrowserInteractionMode): Promise<{
     state: LauncherState;
     credentialsRequired: boolean;

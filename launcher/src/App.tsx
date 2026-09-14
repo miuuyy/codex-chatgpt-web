@@ -20,6 +20,7 @@ import type {
   LauncherState,
   LogRecord,
   OperationState,
+  ProModelVersion,
   Surface,
 } from "./types";
 
@@ -96,6 +97,9 @@ export function App() {
         }
       : current);
   }, []);
+  const updateProModelVersion = useCallback((proModelVersion: ProModelVersion | null) => {
+    setSnapshot((current) => current ? { ...current, proModelVersion } : current);
+  }, []);
 
   if (!api) return <FatalMessage message="Launcher IPC is unavailable." />;
   if (!snapshot) return <LaunchLoading />;
@@ -130,6 +134,7 @@ export function App() {
             operation={operation}
             setError={setError}
             snapshot={snapshot}
+            updateProModelVersion={updateProModelVersion}
             updateState={updateState}
           />
         )}
@@ -330,6 +335,7 @@ function LauncherShell({
   operation,
   setError,
   snapshot,
+  updateProModelVersion,
   updateState,
 }: {
   browser: BrowserState | null;
@@ -339,6 +345,7 @@ function LauncherShell({
   operation: OperationState | null;
   setError: (error: string | null) => void;
   snapshot: LauncherSnapshot;
+  updateProModelVersion: (value: ProModelVersion | null) => void;
   updateState: (state: LauncherState) => void;
 }) {
   const interactionSetupComplete = snapshot.state.coreSetupComplete === true
@@ -697,6 +704,7 @@ function LauncherShell({
             ) : null}
             {surface === "settings" ? (
               <SettingsSurface
+                browser={browser}
                 configureInteractionMode={(mode) => {
                   setMcpTargetMode(mode);
                   setSurface("mcp");
@@ -704,8 +712,10 @@ function LauncherShell({
                 copy={copy}
                 devProfile={devProfile}
                 language={language}
+                operation={operation}
                 setError={setError}
                 snapshot={snapshot}
+                updateProModelVersion={updateProModelVersion}
                 updateState={updateState}
               />
             ) : null}
@@ -1576,26 +1586,35 @@ function ActivitySurface({
 }
 
 function SettingsSurface({
+  browser,
   configureInteractionMode,
   copy,
   devProfile,
   language,
+  operation,
   setError,
   snapshot,
+  updateProModelVersion,
   updateState,
 }: {
+  browser: BrowserState | null;
   configureInteractionMode: (mode: BrowserInteractionMode) => void;
   copy: Copy;
   devProfile: boolean;
   language: Language;
+  operation: OperationState | null;
   setError: (error: string | null) => void;
   snapshot: LauncherSnapshot;
+  updateProModelVersion: (value: ProModelVersion | null) => void;
   updateState: (state: LauncherState) => void;
 }) {
   const [doctor, setDoctor] = useState<DoctorReport | null>(null);
   const [busy, setBusy] = useState(false);
   const [turnsCancelled, setTurnsCancelled] = useState(false);
   const [integrationRemoved, setIntegrationRemoved] = useState(false);
+  const proModelBusy = busy
+    || operation?.status === "running"
+    || browser?.tabs.some((tab) => tab.status === "running") === true;
 
   const updateLanguage = async (next: Language) => {
     try {
@@ -1650,6 +1669,18 @@ function SettingsSurface({
       setBusy(false);
     }
   };
+  const setProModelVersion = async (value: ProModelVersion | null) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api!.setProModelVersion(value);
+      updateProModelVersion(result.proModelVersion);
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
   const uninstallIntegration = async () => {
     setBusy(true);
     setError(null);
@@ -1684,6 +1715,14 @@ function SettingsSurface({
           mode={snapshot.state.browserInteractionMode}
           onChange={(mode) => void setInteractionMode(mode)}
         />
+        <SettingRow body={copy.proModelVersionBody} label={copy.proModelVersion}>
+          <ProModelVersionMenu
+            copy={copy}
+            disabled={proModelBusy || snapshot.state.coreSetupComplete !== true}
+            onChange={(value) => void setProModelVersion(value)}
+            value={snapshot.proModelVersion}
+          />
+        </SettingRow>
         <SettingRow body={devProfile ? copy.devKeepRunningBody : copy.keepRunningOnCloseBody} label={copy.keepRunningOnClose}>
           <Switch
             checked={snapshot.state.keepRunningOnClose}
@@ -2349,6 +2388,35 @@ function LanguageMenu({ copy, language, onChange }: { copy: Copy; language: Lang
         </>
       ) : null}
     </div>
+  );
+}
+
+function ProModelVersionMenu({
+  copy,
+  disabled,
+  onChange,
+  value,
+}: {
+  copy: Copy;
+  disabled: boolean;
+  onChange: (value: ProModelVersion | null) => void;
+  value: ProModelVersion | null;
+}) {
+  return (
+    <select
+      aria-label={copy.proModelVersion}
+      className="settings-select"
+      disabled={disabled}
+      onChange={(event) => onChange(event.target.value === ""
+        ? null
+        : event.target.value as ProModelVersion)}
+      value={value ?? ""}
+    >
+      <option value="">{copy.proModelFollow}</option>
+      <option value="5.6">{copy.proModel56}</option>
+      <option value="5.5">{copy.proModel55}</option>
+      <option value="6">{copy.proModel6}</option>
+    </select>
   );
 }
 

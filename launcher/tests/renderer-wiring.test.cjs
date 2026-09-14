@@ -9,6 +9,7 @@ const stylesSource = fs.readFileSync(path.join(launcherRoot, "src", "styles.css"
 const electronMain = fs.readFileSync(path.join(launcherRoot, "electron", "main.cjs"), "utf8");
 const browserHostSource = fs.readFileSync(path.join(launcherRoot, "electron", "browser-host.cjs"), "utf8");
 const preloadSource = fs.readFileSync(path.join(launcherRoot, "electron", "preload.cjs"), "utf8");
+const runtimeHostSource = fs.readFileSync(path.join(launcherRoot, "electron", "runtime.cjs"), "utf8");
 
 test("embedded ChatGPT is measured only after its animated surface mounts", () => {
   assert.match(appSource, /const \[browserSlot, setBrowserSlot\] = useState<HTMLDivElement \| null>\(null\)/);
@@ -143,6 +144,44 @@ test("Bigger Context startup recommendation reuses the persisted setting and set
   assert.match(appSource, /<Switch checked=\{checked\} disabled=\{busy\} onChange=\{onChange\} \/>/);
   assert.match(stylesSource, /\.bigger-context-recommendation-backdrop\s*\{[^}]*position:\s*fixed;/s);
   assert.doesNotMatch(stylesSource, /\.bigger-context-recommendation-backdrop\s*\{[^}]*backdrop-filter:/s);
+});
+
+test("Settings wires exact Pro versions through a config-only guarded IPC", () => {
+  assert.match(appSource, /<ProModelVersionMenu[\s\S]*?value=\{snapshot\.proModelVersion\}/);
+  assert.match(appSource, /api!\.setProModelVersion\(value\)/);
+  assert.match(preloadSource, /setProModelVersion:[\s\S]*?launcher:pro-model-version/);
+  const handlerStart = electronMain.indexOf('handle("launcher:pro-model-version"');
+  const handlerEnd = electronMain.indexOf('handle("launcher:set-preference"', handlerStart);
+  const handler = electronMain.slice(handlerStart, handlerEnd);
+  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart, "Pro model version IPC must be registered");
+  assert.match(handler, /browserHost\.activeTraceId/);
+  assert.match(handler, /browserHost\.currentOperation\(\)/);
+  assert.match(handler, /runtimeHost\.setProModelVersion/);
+  const setterStart = runtimeHostSource.indexOf("async setProModelVersion(");
+  const setterEnd = runtimeHostSource.indexOf("async setZeroRiskPro(", setterStart);
+  const setter = runtimeHostSource.slice(setterStart, setterEnd);
+  assert.ok(setterStart >= 0 && setterEnd > setterStart, "Pro model version runtime setter must exist");
+  assert.match(setter, /"config",\s*"pro-model-version"/);
+  assert.doesNotMatch(setter, /"setup"|--restart-service/);
+});
+
+test("running turns lock only the Pro selector and leave cancellation actionable", () => {
+  const settings = appSource.slice(
+    appSource.indexOf("function SettingsSurface("),
+    appSource.indexOf("function ContentSurface(", appSource.indexOf("function SettingsSurface(")),
+  );
+  assert.match(settings, /const \[busy, setBusy\] = useState\(false\);/);
+  assert.match(
+    settings,
+    /const proModelBusy = busy\s*\|\| operation\?\.status === "running"\s*\|\| browser\?\.tabs\.some\(\(tab\) => tab\.status === "running"\) === true;/,
+  );
+  assert.match(settings, /<ProModelVersionMenu[\s\S]*?disabled=\{proModelBusy \|\| snapshot\.state\.coreSetupComplete !== true\}/);
+
+  const cancelButton = settings.match(
+    /<button className="diagnostic-row" disabled=\{([^}]+)\} onClick=\{\(\) => void cancelTurns\(\)\}/,
+  );
+  assert.ok(cancelButton, "Settings must keep the active-turn cancellation action");
+  assert.equal(cancelButton[1], "busy");
 });
 
 test("Zero Risk setup commits state after the runtime transaction and preserves manual inspection boundaries", () => {

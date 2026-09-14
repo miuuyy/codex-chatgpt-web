@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chatGptWebTraceId } from "../src/adapters/chatgpt-web";
+import { chatGptWebExecutionNamespace, chatGptWebTraceId } from "../src/adapters/chatgpt-web";
 import { runStructuredCompactionOnce } from "../src/adapters/chatgpt-web/compaction-handoff";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, closeTurnBrokers, RemoteTurnBroker, TurnBroker } from "../src/adapters/chatgpt-web/turn-broker";
@@ -14,6 +14,157 @@ import { compactRequest, HttpTurnCounter, responseRequest, routeChatGptWebReques
 test("DEV harness configuration cannot bind a Responses listener", () => {
   const config = { ...defaultConfig("browser-only"), purpose: "dev-harness" as const, port: 0 };
   expect(() => startServer(config)).toThrow("cannot start a Responses listener");
+});
+
+test("Responses and compact requests each freeze one live Pro model preference snapshot", async () => {
+  const config = { ...defaultConfig("browser-only"), port: 0, proAvailable: true };
+  const selected = ["5.6", "5.5"] as const;
+  let reads = 0;
+  const observed: Array<string | undefined> = [];
+  const server = startServer(config, {
+    readProModelVersion: () => selected[reads++],
+    adapterFactory: provider => {
+      observed.push(provider.chatgptWeb?.proModelVersion);
+      return {
+        name: "pro-model-snapshot-test",
+        async runTurn(parsed, _incoming, emit) {
+          emit({
+            type: "text_delta",
+            text: parsed._compactionRequest ? "Frozen compact summary" : "Frozen response",
+            phase: "final_answer",
+          });
+          emit({ type: "done", stopReason: "stop", endTurn: true });
+        },
+      };
+    },
+  });
+  const endpoint = `http://127.0.0.1:${server.port}`;
+  try {
+    const response = await fetch(`${endpoint}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "chatgpt-web/pro",
+        stream: false,
+        input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "Respond" }] }],
+      }),
+    });
+    expect(response.status).toBe(200);
+
+    const compact = await fetch(`${endpoint}/v1/responses/compact`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "chatgpt-web/pro",
+        input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "Compact" }] }],
+      }),
+    });
+    expect(compact.status).toBe(200);
+    expect(reads).toBe(2);
+    expect(observed).toEqual(["5.6", "5.5"]);
+    expect(config.proModelVersion).toBeUndefined();
+  } finally {
+    await server.stop(true);
+  }
+});
+
+test("native response and compact passthrough never read the live Pro preference", async () => {
+  const config = { ...defaultConfig("browser-only"), port: 0, proAvailable: true };
+  let reads = 0;
+  const server = startServer(config, {
+    readProModelVersion: () => {
+      reads += 1;
+      throw new Error("native passthrough must not depend on live Web GPT configuration");
+    },
+  });
+  const endpoint = `http://127.0.0.1:${server.port}`;
+  try {
+    const response = await fetch(`${endpoint}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6-sol", input: [] }),
+    });
+    expect(response.status).toBe(502);
+
+    const compact = await fetch(`${endpoint}/v1/responses/compact`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6-sol", input: [] }),
+    });
+    expect(compact.status).toBe(502);
+    expect(reads).toBe(0);
+  } finally {
+    await server.stop(true);
+  }
+});
+
+test("a Pro pin isolates Pro execution without changing non-Pro execution namespaces", async () => {
+  const captureProvider = async (model: string, proModelVersion: "5.6" | "6") => {
+    let observed: ReturnType<typeof providerConfig> | undefined;
+    const response = await responseRequest(new Request("http://127.0.0.1/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model,
+        stream: false,
+        input: [{ type: "message", role: "user", content: [{ type: "input_text", text: `${model} ${proModelVersion}` }] }],
+      }),
+    }), { ...defaultConfig("browser-only"), proAvailable: true, proModelVersion }, provider => {
+      observed = provider;
+      return {
+        name: "execution-namespace-test",
+        async runTurn(_parsed, _incoming, emit) {
+          emit({ type: "text_delta", text: "done", phase: "final_answer" });
+          emit({ type: "done", stopReason: "stop", endTurn: true });
+        },
+      };
+    });
+    expect(response.status).toBe(200);
+    expect(observed).toBeDefined();
+    return observed!;
+  };
+
+  const high56 = await captureProvider("chatgpt-web/high", "5.6");
+  const high6 = await captureProvider("chatgpt-web/high", "6");
+  expect(high56.chatgptWeb).not.toHaveProperty("proModelVersion");
+  expect(high6.chatgptWeb).not.toHaveProperty("proModelVersion");
+  expect(chatGptWebExecutionNamespace(high56)).toBe(chatGptWebExecutionNamespace(high6));
+
+  const pro56 = await captureProvider("chatgpt-web/pro", "5.6");
+  const pro6 = await captureProvider("chatgpt-web/pro", "6");
+  expect(pro56.chatgptWeb?.proModelVersion).toBe("5.6");
+  expect(pro6.chatgptWeb?.proModelVersion).toBe("6");
+  expect(chatGptWebExecutionNamespace(pro56)).not.toBe(chatGptWebExecutionNamespace(pro6));
+});
+
+test("a static server keeps the Pro model preference configured at startup", async () => {
+  const config = { ...defaultConfig("browser-only"), port: 0, proAvailable: true, proModelVersion: "6" as const };
+  let observed: string | undefined;
+  const server = startServer(config, {
+    adapterFactory: provider => ({
+      name: "static-pro-model-snapshot-test",
+      async runTurn(_parsed, _incoming, emit) {
+        observed = provider.chatgptWeb?.proModelVersion;
+        emit({ type: "text_delta", text: "Static response", phase: "final_answer" });
+        emit({ type: "done", stopReason: "stop", endTurn: true });
+      },
+    }),
+  });
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.port}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "chatgpt-web/pro",
+        stream: false,
+        input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "Respond" }] }],
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(observed).toBe("6");
+  } finally {
+    await server.stop(true);
+  }
 });
 
 async function waitForTurnCount(turns: HttpTurnCounter, expected: number): Promise<void> {

@@ -1,6 +1,14 @@
 export const CHATGPT_WEB_MODEL_PREFIX = "chatgpt-web/";
 export const CHATGPT_WEB_BACKEND_MODEL = "gpt-5.6-sol";
 export const CHATGPT_WEB_LUNA_BACKEND_MODEL = "gpt-5.6-luna";
+
+/** A pinned version for automatic Pro turns; omission preserves the existing Web selection. */
+export type ChatGptWebProModelVersion = "5.6" | "5.5" | "6";
+
+export function parseChatGptWebProModelVersion(value: unknown): ChatGptWebProModelVersion | undefined {
+  if (value === undefined || value === "5.6" || value === "5.5" || value === "6") return value;
+  throw new Error("Invalid ChatGPT Pro model version; choose 5.6, 5.5, or 6");
+}
 /** Internal adapter identity for a turn whose ChatGPT model is selected by the user in the launcher. */
 export const CHATGPT_WEB_ZERO_RISK_BACKEND_MODEL = "chatgpt-web-zero-risk";
 /** Internal adapter identity for the explicitly enabled, Pro-sized Zero Risk context profile. */

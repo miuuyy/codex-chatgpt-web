@@ -247,6 +247,99 @@ test("Zero Risk Pro transaction installs or removes only its explicit model prof
   );
 });
 
+test("Pro model version changes use the config-only launcher command", async () => {
+  const config = {
+    mode: "full",
+    browserHost: "launcher",
+    browserInteractionMode: "automatic",
+    appName: "Codex Native2",
+  };
+  const fixture = hostFor(config);
+  const invocations = [];
+  fixture.host.launcherControlEnvironment = () => ({
+    CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: "launcher-control-token",
+  });
+  fixture.host.run = async (name, args, options) => {
+    invocations.push({ name, args, options });
+    const value = args[2];
+    if (value === "follow") delete config.proModelVersion;
+    else config.proModelVersion = value;
+    return { code: 0, stdout: `${JSON.stringify({ proModelVersion: config.proModelVersion ?? null })}\n`, stderr: "" };
+  };
+
+  assert.deepEqual(await fixture.host.setProModelVersion("5.5"), { proModelVersion: "5.5" });
+  assert.deepEqual(invocations[0].args, [
+    "config",
+    "pro-model-version",
+    "5.5",
+    "--launcher-control",
+  ]);
+  assert.deepEqual(invocations[0].options.env, {
+    CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: "launcher-control-token",
+  });
+  assert.equal(invocations[0].args.includes("setup"), false);
+  assert.equal(invocations[0].args.includes("--restart-service"), false);
+
+  assert.deepEqual(await fixture.host.setProModelVersion(null), { proModelVersion: null });
+  assert.equal(invocations[1].args[2], "follow");
+});
+
+test("DEV Pro model version changes stay inside the isolated config profile", async () => {
+  const config = {
+    purpose: "dev-harness",
+    mode: "browser-only",
+    browserHost: "launcher",
+    browserInteractionMode: "automatic",
+    appName: "Codex Native2 DEV",
+  };
+  const fixture = devHostFor(config);
+  let invocation;
+  fixture.host.launcherControlEnvironment = () => ({
+    CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: "launcher-control-token",
+  });
+  fixture.host.run = async (name, args, options) => {
+    invocation = { name, args, options };
+    config.proModelVersion = "6";
+    return { code: 0, stdout: '{"proModelVersion":"6"}\n', stderr: "" };
+  };
+
+  assert.deepEqual(await fixture.host.setProModelVersion("6"), { proModelVersion: "6" });
+  assert.deepEqual(invocation.args, [
+    "dev",
+    "config",
+    "pro-model-version",
+    "6",
+    "--launcher-control",
+  ]);
+  assert.equal(invocation.options.embedded, true);
+  assert.equal(invocation.options.environment.CODEX_WEB_GPT_DEV_HOME, path.resolve("/dev"));
+});
+
+test("Pro model version settings reject invalid values and unconfigured runtimes", async () => {
+  const config = {
+    mode: "browser-only",
+    browserHost: "launcher",
+    browserInteractionMode: "automatic",
+    appName: "Codex Native2",
+    proModelVersion: "5.6",
+  };
+  const configured = hostFor(config);
+  configured.host.run = async () => assert.fail("invalid settings must not invoke the runtime");
+  await assert.rejects(configured.host.setProModelVersion("latest"), /must be follow, 5\.6, 5\.5, or 6/);
+  assert.deepEqual(await configured.host.setProModelVersion("5.6"), { proModelVersion: "5.6" });
+  await assert.rejects(hostFor(null).host.setProModelVersion("5.6"), /Install the Codex integration/);
+
+  const notPersisted = hostFor(config);
+  notPersisted.host.launcherControlEnvironment = () => ({
+    CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: "launcher-control-token",
+  });
+  notPersisted.host.run = async () => ({ code: 0, stdout: '{"proModelVersion":"5.5"}\n', stderr: "" });
+  await assert.rejects(
+    notPersisted.host.setProModelVersion("5.5"),
+    /did not persist the requested Pro model version/,
+  );
+});
+
 test("DEV setup child environment removes launcher-rebound production aliases", async () => {
   const fixture = devHostFor(null);
   assert.deepEqual(fixture.host.devSetupEnvironment({

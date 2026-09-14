@@ -26,6 +26,41 @@ async function runCli(args: string[], env: Record<string, string | undefined>) {
   return { exitCode, stdout, stderr };
 }
 
+function writeLauncherControlledConfig(
+  home: string,
+  profile: "production" | "development",
+): { configPath: string; descriptorPath: string; token: string } {
+  const descriptorPath = join(home, "runtime", "launcher-browser.json");
+  const configPath = join(home, "config.json");
+  const helperScript = join(home, "runtime", "helper.cjs");
+  const token = `launcher-pro-model-control-token-${profile}-0123456789`;
+  mkdirSync(join(home, "runtime"), { recursive: true });
+  writeFileSync(helperScript, "module.exports = {};\n");
+  writeFileSync(descriptorPath, `${JSON.stringify({
+    version: 3,
+    kind: "codex-web-gpt-launcher",
+    profile,
+    pid: process.pid,
+    endpoint: "http://127.0.0.1:48111",
+    control: { endpoint: "http://127.0.0.1:48112", token },
+    helper: { executable: process.execPath, script: helperScript },
+    partition: profile === "development"
+      ? "persist:codex-web-gpt-dev-chatgpt"
+      : "persist:codex-web-gpt-chatgpt",
+    idleUrl: LAUNCHER_BROWSER_IDLE_URL,
+    surfaceId: "b".repeat(32),
+    surfaceTargets: { ["b".repeat(32)]: "native-owned-target" },
+    createdAt: new Date().toISOString(),
+  })}\n`, { mode: 0o600 });
+  const config = defaultConfig("browser-only");
+  config.browserHost = "launcher";
+  config.browserHostDescriptorPath = descriptorPath;
+  config.port = 19001;
+  if (profile === "development") config.purpose = "dev-harness";
+  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  return { configPath, descriptorPath, token };
+}
+
 test("production and DEV setup reject the removed connector-name option before configuration", async () => {
   const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-fixed-connector-"));
   try {
@@ -110,6 +145,111 @@ test("setup browser-interaction flags are explicit and mutually exclusive", asyn
     });
     expect(profileConflict.exitCode).toBe(1);
     expect(profileConflict.stderr).toContain("Choose at most one Zero Risk model profile");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("setup does not accept Pro model pinning as an installation option", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-pro-model-version-"));
+  try {
+    const env = {
+      ...process.env,
+      CODEX_HOME: join(root, "codex"),
+      CODEX_CHATGPT_WEB_HOME: join(root, "app"),
+    };
+    const invalid = await runCli([
+      "setup",
+      "--browser-only",
+      "--pro-model-version",
+      "5.6",
+      "--acknowledge-unofficial",
+    ], env);
+    expect(invalid.exitCode).toBe(1);
+    expect(invalid.stderr).toContain("Unknown arguments: --pro-model-version 5.6");
+    expect(existsSync(join(root, "app", "config.json"))).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("launcher-controlled config atomically pins and follows the current Pro model without changing other settings", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-pro-model-config-"));
+  const home = join(root, "app");
+  const { configPath, descriptorPath, token } = writeLauncherControlledConfig(home, "production");
+  const baseEnv = {
+    ...process.env,
+    CODEX_HOME: join(root, "codex"),
+    CODEX_CHATGPT_WEB_HOME: home,
+    CODEX_CHATGPT_WEB_BROWSER_HOST_DESCRIPTOR: descriptorPath,
+  };
+  try {
+    const unauthorized = await runCli([
+      "config", "pro-model-version", "5.6", "--launcher-control",
+    ], baseEnv);
+    expect(unauthorized.exitCode).toBe(1);
+    expect(unauthorized.stderr).toContain("launcher authorization");
+    expect(JSON.parse(readFileSync(configPath, "utf8"))).not.toHaveProperty("proModelVersion");
+
+    const pinned = await runCli([
+      "config", "pro-model-version", "5.6", "--launcher-control",
+    ], { ...baseEnv, CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: token });
+    expect({ exitCode: pinned.exitCode, stderr: pinned.stderr }).toEqual({ exitCode: 0, stderr: "" });
+    expect(JSON.parse(pinned.stdout)).toEqual({ proModelVersion: "5.6" });
+    expect(JSON.parse(readFileSync(configPath, "utf8"))).toMatchObject({
+      proModelVersion: "5.6",
+      port: 19001,
+      browserHostDescriptorPath: descriptorPath,
+    });
+
+    const follow = await runCli([
+      "config", "pro-model-version", "follow", "--launcher-control",
+    ], { ...baseEnv, CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: token });
+    expect({ exitCode: follow.exitCode, stderr: follow.stderr }).toEqual({ exitCode: 0, stderr: "" });
+    expect(JSON.parse(follow.stdout)).toEqual({ proModelVersion: null });
+    const followed = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(followed).not.toHaveProperty("proModelVersion");
+    expect(followed.port).toBe(19001);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("DEV launcher config writes only the isolated profile and rejects unknown Pro versions", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-dev-pro-model-config-"));
+  const devHome = join(root, "dev");
+  const productionHome = join(root, "production");
+  const { configPath, descriptorPath, token } = writeLauncherControlledConfig(devHome, "development");
+  try {
+    const invalid = await runCli([
+      "dev", "config", "pro-model-version", "5.7", "--launcher-control",
+    ], {
+      ...process.env,
+      CODEX_WEB_GPT_DEV_HOME: devHome,
+      CODEX_CHATGPT_WEB_HOME: productionHome,
+      CODEX_CHATGPT_WEB_BROWSER_HOST_DESCRIPTOR: descriptorPath,
+      CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: token,
+    });
+    expect(invalid.exitCode).toBe(1);
+    expect(invalid.stderr).toContain("choose follow, 5.6, 5.5, or 6");
+    expect(JSON.parse(readFileSync(configPath, "utf8"))).not.toHaveProperty("proModelVersion");
+
+    const pinned = await runCli([
+      "dev", "config", "pro-model-version", "5.5", "--launcher-control",
+    ], {
+      ...process.env,
+      CODEX_WEB_GPT_DEV_HOME: devHome,
+      CODEX_CHATGPT_WEB_HOME: productionHome,
+      CODEX_CHATGPT_WEB_BROWSER_HOST_DESCRIPTOR: descriptorPath,
+      CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: token,
+    });
+    expect({ exitCode: pinned.exitCode, stderr: pinned.stderr }).toEqual({ exitCode: 0, stderr: "" });
+    expect(JSON.parse(readFileSync(configPath, "utf8"))).toMatchObject({
+      purpose: "dev-harness",
+      proModelVersion: "5.5",
+      port: 19001,
+    });
+    expect(existsSync(join(productionHome, "config.json"))).toBe(false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
