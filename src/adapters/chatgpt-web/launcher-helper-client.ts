@@ -3,6 +3,11 @@ import { existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { notifyLauncherTurn, readLauncherBrowserHostDescriptor } from "../../launcher-browser-host";
+import { CHATGPT_WEB_BACKEND_MODEL } from "../../chatgpt-web-models";
+import {
+  parseChatGptWebCompactionExecution,
+  type ChatGptWebCompactionExecution,
+} from "../../chatgpt-web-compaction-policy";
 import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError } from "./adapter-error";
 import type { CompiledChatGptWebPrompt } from "./prompt";
 import type { BrowserTurn, ResolvedBrowserConfig } from "./browser-worker";
@@ -21,6 +26,25 @@ interface PendingTurn {
   localFailure?: Error;
   progressForwarding?: AbortController;
   acknowledgedMultipartStage?: number;
+}
+
+function validateCompactionExecution(turn: BrowserTurn): ChatGptWebCompactionExecution | undefined {
+  if (turn.compactionExecution === undefined) return undefined;
+  let execution: ChatGptWebCompactionExecution;
+  try {
+    execution = parseChatGptWebCompactionExecution(turn.compactionExecution);
+  } catch {
+    throw new Error("Launcher browser compaction execution is invalid");
+  }
+  if (turn.compaction !== true
+    || turn.modelId !== CHATGPT_WEB_BACKEND_MODEL
+    || turn.reasoning !== execution.effort
+    || turn.capabilities.localToolsEnabled
+    || !turn.capabilities.solAvailable
+    || !turn.capabilities.proAvailable) {
+    throw new Error("Launcher browser compaction execution is invalid");
+  }
+  return execution;
 }
 
 type HelperMessage =
@@ -227,6 +251,18 @@ export class LauncherBrowserHelperClient {
         "Launcher browser helper does not support the MCP completion fence; update or restart the launcher",
       );
     }
+    const compactionExecution = validateCompactionExecution(turn);
+    if (compactionExecution && !this.helperFeatures.has("compaction-execution")) {
+      throw new ChatGptWebAdapterError(
+        "Launcher browser helper does not support compaction execution; update or restart the launcher",
+        {
+          status: 409,
+          errorType: "invalid_request_error",
+          code: "compaction_control_unavailable",
+          retryable: false,
+        },
+      );
+    }
     return await new Promise<string>((resolveResult, rejectResult) => {
         if (this.pending.has(turn.traceId)) {
           rejectResult(new Error(`Duplicate launcher browser turn: ${turn.traceId}`));
@@ -289,6 +325,7 @@ export class LauncherBrowserHelperClient {
             ...(turn.requireRetainedConversation ? { requireRetainedConversation: true } : {}),
             ...(turn.conversationKey ? { conversationKey: turn.conversationKey } : {}),
             ...(turn.compaction ? { compaction: true } : {}),
+            ...(compactionExecution ? { compactionExecution } : {}),
             ...(turn.captureLunaCheckpoint ? { captureLunaCheckpoint: true } : {}),
             ...(turn.externalProgress ? { externalProgress: true } : {}),
           },

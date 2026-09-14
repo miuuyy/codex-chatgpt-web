@@ -155,6 +155,12 @@ every later tool action in the same turn continues to present the current turn c
 ChatGPT status rows become reasoning summaries, while stable prose between rows becomes native
 Codex commentary.
 
+Automatic Pro compaction can optionally use a separately selected summary model. The bridge
+keeps source ownership and transaction identity tied to the original request, and passes an
+execution-only policy through the helper protocol. Explicit policies require live pre-send
+effort/family verification and prohibit Pro staging. The default and handoff timeouts are unchanged;
+see [compaction model selection](compaction-model-selection.md).
+
 ## Installation and service lifecycle
 
 Each native desktop package contains Electron, a platform-matched pinned Bun executable, the

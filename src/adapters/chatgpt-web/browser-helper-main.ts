@@ -9,6 +9,11 @@ import { createBrowserHelperPromptSelection } from "./browser-helper-prompt-sele
 import type { CompiledChatGptWebPrompt } from "./prompt";
 import { ChatGptMirroredTurnProgress } from "./turn-progress";
 import type { ChatGptExternalTurnProgressSnapshot } from "./turn-progress";
+import { CHATGPT_WEB_BACKEND_MODEL } from "../../chatgpt-web-models";
+import {
+  parseChatGptWebCompactionExecution,
+  type ChatGptWebCompactionExecution,
+} from "../../chatgpt-web-compaction-policy";
 
 interface RunMessage {
   type: "run";
@@ -31,6 +36,7 @@ interface RunMessage {
     requireRetainedConversation?: boolean;
     conversationKey?: string;
     compaction?: boolean;
+    compactionExecution?: BrowserTurn["compactionExecution"];
     captureLunaCheckpoint?: boolean;
     externalProgress?: boolean;
   };
@@ -171,6 +177,22 @@ async function run(message: RunMessage): Promise<void> {
   if (message.turn.compaction !== undefined && typeof message.turn.compaction !== "boolean") {
     throw new Error("Browser helper compaction flag is invalid");
   }
+  let compactionExecution: ChatGptWebCompactionExecution | undefined;
+  if (message.turn.compactionExecution !== undefined) {
+    try {
+      compactionExecution = parseChatGptWebCompactionExecution(message.turn.compactionExecution);
+    } catch {
+      throw new Error("Browser helper compaction execution is invalid");
+    }
+    if (message.turn.compaction !== true
+      || message.turn.modelId !== CHATGPT_WEB_BACKEND_MODEL
+      || message.turn.reasoning !== compactionExecution.effort
+      || message.turn.capabilities?.localToolsEnabled !== false
+      || message.turn.capabilities?.solAvailable !== true
+      || message.turn.capabilities?.proAvailable !== true) {
+      throw new Error("Browser helper compaction execution is invalid");
+    }
+  }
   if (message.turn.captureLunaCheckpoint !== undefined && typeof message.turn.captureLunaCheckpoint !== "boolean") {
     throw new Error("Browser helper Luna checkpoint flag is invalid");
   }
@@ -219,6 +241,7 @@ async function run(message: RunMessage): Promise<void> {
     ...(message.turn.conversationKey ? { conversationKey: message.turn.conversationKey } : {}),
     abortSignal: abortController.signal,
     ...(message.turn.compaction ? { compaction: true } : {}),
+    ...(compactionExecution ? { compactionExecution } : {}),
     ...(progress ? {
       externalProgress: progress,
       completionFence: {
@@ -517,4 +540,7 @@ process.once("SIGTERM", () => {
 });
 
 // Advertise the optional frames this helper understands so the daemon can negotiate them explicitly.
-writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack"] });
+writeProtocol({
+  type: "ready",
+  features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack", "compaction-execution"],
+});

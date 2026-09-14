@@ -175,6 +175,80 @@ test("passkey capture cannot be invoked outside the live Launcher control channe
   }
 });
 
+test("compaction model configuration requires launcher ownership before saving", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-compaction-auth-"));
+  const appHome = join(root, "app");
+  const descriptorPath = join(appHome, "runtime", "launcher-browser.json");
+  const helperScript = join(root, "helper.cjs");
+  const token = "launcher-compaction-control-token-0123456789abcdef";
+  try {
+    mkdirSync(join(appHome, "runtime"), { recursive: true });
+    writeFileSync(helperScript, "process.exit(0);\n", { mode: 0o700 });
+    writeFileSync(descriptorPath, `${JSON.stringify({
+      version: 3,
+      kind: "codex-web-gpt-launcher",
+      profile: "production",
+      pid: process.pid,
+      endpoint: "http://127.0.0.1:48201",
+      control: { endpoint: "http://127.0.0.1:48202", token },
+      helper: { executable: process.execPath, script: helperScript },
+      partition: "persist:codex-web-gpt-chatgpt",
+      idleUrl: LAUNCHER_BROWSER_IDLE_URL,
+      surfaceId: "c".repeat(32),
+      surfaceTargets: { ["c".repeat(32)]: "native-owned-target" },
+      createdAt: new Date().toISOString(),
+    })}\n`, { mode: 0o600 });
+    const config = defaultConfig("browser-only");
+    config.browserHost = "launcher";
+    config.browserHostDescriptorPath = descriptorPath;
+    writeFileSync(join(appHome, "config.json"), `${JSON.stringify(config)}\n`, { mode: 0o600 });
+
+    const unauthorized = await runCli([
+      "config", "compaction-model", "5.5-pro", "--launcher-control",
+    ], {
+      ...process.env,
+      CODEX_HOME: join(root, "codex"),
+      CODEX_CHATGPT_WEB_HOME: appHome,
+      CODEX_CHATGPT_WEB_BROWSER_HOST_DESCRIPTOR: descriptorPath,
+    });
+    expect(unauthorized.exitCode).toBe(1);
+    expect(unauthorized.stderr).toContain("requires a live launcher authorization");
+    expect(JSON.parse(readFileSync(join(appHome, "config.json"), "utf8")).compactionModel)
+      .toBeUndefined();
+
+    const authorizedEnv = {
+      ...process.env,
+      CODEX_HOME: join(root, "codex"),
+      CODEX_CHATGPT_WEB_HOME: appHome,
+      CODEX_CHATGPT_WEB_BROWSER_HOST_DESCRIPTOR: descriptorPath,
+      CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: token,
+    };
+    const selected = await runCli([
+      "config", "compaction-model", "5.5-pro", "--launcher-control",
+    ], authorizedEnv);
+    expect(selected).toEqual({
+      exitCode: 0,
+      stdout: `${JSON.stringify({ compactionModel: "5.5-pro" })}\n`,
+      stderr: "",
+    });
+    expect(JSON.parse(readFileSync(join(appHome, "config.json"), "utf8")).compactionModel)
+      .toBe("5.5-pro");
+
+    const follow = await runCli([
+      "config", "compaction-model", "follow", "--launcher-control",
+    ], authorizedEnv);
+    expect(follow).toEqual({
+      exitCode: 0,
+      stdout: `${JSON.stringify({ compactionModel: null })}\n`,
+      stderr: "",
+    });
+    expect(JSON.parse(readFileSync(join(appHome, "config.json"), "utf8"))).not
+      .toHaveProperty("compactionModel");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("DEV chat list works without starting launcher, broker, or Responses services", async () => {
   const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-dev-list-"));
   try {

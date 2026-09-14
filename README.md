@@ -163,6 +163,10 @@ that option clicks **Allow once**, never a permanent grant.
 
 Use **Activity** for safe local diagnostics and **Settings → Run doctor** for end-to-end health.
 Settings can also cancel a retained browser turn or remove the Codex integration before uninstall.
+**Settings → Pro compaction model** optionally uses Extra High, GPT-5.6 Pro, or GPT-5.5 Pro
+for automatic Pro summaries while leaving ordinary task turns unchanged. The default follows the
+main task. Model availability and account limits still apply; see
+[compaction model selection](docs/compaction-model-selection.md).
 Set `CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1` only when every browser checkpoint needs a screenshot.
 
 New installs use **Compatibility V1** for cross-backend subagents. **Native** preserves Codex's own

@@ -15,6 +15,7 @@ import {
 } from "../../config";
 import { estimateTokens } from "../../lib/token-estimate";
 import type { CodexProviderConfig } from "../../types";
+import { parseChatGptWebCompactionExecution, type ChatGptWebCompactionExecution } from "../../chatgpt-web-compaction-policy";
 import { parseDataUrl } from "../image";
 import {
   ChatGptMarkdownBuffer,
@@ -27,6 +28,7 @@ import {
   resolveChatGptWebModelMode,
   type ChatGptWebCapabilities,
   type ChatGptWebModelMode,
+  type ChatGptWebCompactionModelVersion,
 } from "./model";
 import {
   CHATGPT_LUNA_BROWSER_INPUT_TOKEN_BUDGET,
@@ -204,6 +206,75 @@ function chatGptModelControlUnavailableAdapterError(diagnostic: string): ChatGpt
       cause: new Error(diagnostic),
     },
   );
+}
+
+function chatGptPinnedModelError(version: ChatGptWebCompactionModelVersion, cause?: unknown): ChatGptWebAdapterError {
+  return new ChatGptWebAdapterError(
+    `ChatGPT model version ${version} could not be selected and verified. The pending prompt was not sent; check that this version is available in ChatGPT.`,
+    { status: 400, errorType: "invalid_request_error", code: "model_version_unavailable", retryable: false, cause },
+  );
+}
+
+function chatGptProModelOptionName(version: ChatGptWebCompactionModelVersion): RegExp {
+  if (version === "5.6") return /^GPT[-\s]?5\.6\s+Sol(?:\s+Pro)?$/i;
+  if (version === "5.5") return /^GPT[-\s]?5\.5(?:\s+Pro)?$/i;
+  throw new Error("Unsupported ChatGPT compaction model family");
+}
+
+function chatGptModelStateMatches(
+  descriptions: readonly string[],
+  version: ChatGptWebCompactionModelVersion | undefined,
+  requirePro: boolean,
+  expectedEffort?: ChatGptWebModelMode["effort"],
+): boolean {
+  // Parse each state independently before applying the pin. Filtering by the requested
+  // family first would hide contradictory state nodes (for example both 5.6 Pro and 6 Pro).
+  const statePrefix = /^(?:GPT[-\s]?)?(\d+(?:\.\d+)?)(?:\s+(Sol|Astra))?\s+(Instant|Medium|Extra High|High|即时|中|极高|高|Pro)(?=\s*(?:[,，]|$))/i;
+  const states = descriptions.flatMap(description => {
+    const state = statePrefix.exec(description.replace(/\s+/g, " ").trim());
+    return state ? [{ version: state[1]!, family: state[2]?.toLowerCase(), effort: state[3]!.toLowerCase() }] : [];
+  });
+  const labels: Record<ChatGptWebModelMode["effort"], readonly string[]> = {
+    low: ["instant", "即时"], medium: ["medium", "中"], high: ["high", "高"],
+    xhigh: ["extra high", "极高"], max: ["pro"],
+  };
+  return states.length > 0 && states.every(state => {
+    if (!["5.5", "5.6", "6"].includes(state.version)) return false;
+    if (version !== undefined && state.version !== version) return false;
+    if (state.family && state.family !== (state.version === "5.6" ? "sol" : state.version === "6" ? "astra" : undefined)) return false;
+    if (expectedEffort !== undefined) return labels[expectedEffort].includes(state.effort);
+    return !requirePro || state.effort === "pro";
+  });
+}
+
+async function assertChatGptSelectedModelVersion(
+  page: Page,
+  slider: Locator,
+  version: ChatGptWebCompactionModelVersion | undefined,
+  requirePro = false,
+  expectedEffort?: ChatGptWebModelMode["effort"],
+  settleMs = 0,
+): Promise<void> {
+  // The numeric slider is aria-hidden. Its keyboard menuitem owns the live spoken
+  // version/effort through aria-describedby, not aria-valuetext on the slider.
+  const deadline = Date.now() + settleMs;
+  for (;;) {
+    const keyboardControl = slider.locator("xpath=ancestor::*[@role='menuitem'][1]");
+    const descriptionIds = (await keyboardControl.getAttribute("aria-describedby"))?.trim().split(/\s+/).filter(Boolean) ?? [];
+    const descriptions = await page.evaluate(
+      ids => ids
+        .map(id => document.getElementById(id)?.textContent?.trim() ?? "")
+        .filter(Boolean),
+      descriptionIds,
+    );
+    if (chatGptModelStateMatches(descriptions, version, requirePro, expectedEffort)) return;
+    if (Date.now() >= deadline) break;
+    await new Promise(resolveSettle => setTimeout(resolveSettle, 50));
+  }
+  // Version and Pro must come from the same described state node: unrelated instructions
+  // mentioning Pro are not proof that the selected effort is actually Pro.
+  if (version) throw chatGptPinnedModelError(version);
+  throw chatGptModelControlUnavailableAdapterError("The live selector does not prove the requested summary effort");
 }
 
 export type ChatGptPersonalizationPreflight = "already-personalized" | "enabled";
@@ -966,6 +1037,7 @@ export function resolveChatGptWebMultipartStagingMode(
   capabilities: ChatGptWebCapabilities,
   maxStageMessageTokens: number,
   maxStageChars: number,
+  allowProStaging = true,
 ): ChatGptWebModelMode {
   if (modelId === CHATGPT_WEB_LUNA_MODEL_ID || !capabilities.solAvailable) {
     throw new ChatGptWebAdapterError(
@@ -976,7 +1048,7 @@ export function resolveChatGptWebMultipartStagingMode(
   if (modelId !== CHATGPT_WEB_MODEL_ID) {
     throw new Error(`ChatGPT Bigger Context staging mode is not defined for model: ${modelId}`);
   }
-  const efforts: readonly ChatGptWebModelMode["effort"][] = capabilities.proAvailable
+  const efforts: readonly ChatGptWebModelMode["effort"][] = capabilities.proAvailable && allowProStaging
     ? ["low", "medium", "max"]
     : ["low", "medium"];
   for (const effort of efforts) {
@@ -1172,6 +1244,8 @@ export interface BrowserTurn {
   };
   /** Allow one clean pre-submit composer retry for isolated history compaction only. */
   compaction?: boolean;
+  /** An explicitly selected, read-only summary execution (never an ordinary work turn). */
+  compactionExecution?: ChatGptWebCompactionExecution;
   /** Require and remove the private Luna checkpoint tail from the visible Markdown stream. */
   captureLunaCheckpoint?: boolean;
   onLunaCheckpoint?: (captured: CapturedChatGptLunaCheckpoint) => void;
@@ -2321,8 +2395,9 @@ export class ChatGptBrowserWorker {
     reasoning: string | undefined,
     capabilities: ChatGptWebCapabilities,
     captureDiagnostic?: (checkpoint: string) => Promise<void>,
+    stageModelVersion?: ChatGptWebCompactionModelVersion,
   ): Promise<ChatGptWebModelMode> {
-    const mode = resolveChatGptWebModelMode(modelId, reasoning, capabilities);
+    const mode = resolveChatGptWebModelMode(modelId, reasoning, capabilities, stageModelVersion);
     const composer = await this.activeComposer(page);
     const composerForm = composer.locator("xpath=ancestor::form[1]");
     const uiEffortIndex = mode.uiEffortIndex;
@@ -2361,7 +2436,46 @@ export class ChatGptBrowserWorker {
     await throwIfChatGptRateLimitDialog(page);
     await captureDiagnostic?.("effort-control-ready");
     await throwIfChatGptRateLimitDialog(page);
-    const activation = await activateChatGptEffortMenu(page, currentEffort);
+    let activation = await activateChatGptEffortMenu(page, currentEffort);
+    // Multipart preparation uses a lower effort, but must stay on the parent's pinned version.
+    const modelVersion = stageModelVersion ?? mode.modelVersion;
+    if (modelVersion) {
+      try {
+        const modelName = chatGptProModelOptionName(modelVersion);
+        // A rendered 5.6 label is not a pin: Latest also renders 5.6 at lower efforts,
+        // then switches to 6 at Pro. Only the owned exact radio's checked state proves
+        // the selected family. Hidden attached radios remain authoritative for reads.
+        let option = activation.menu.getByRole("menuitemradio", { name: modelName, exact: true, includeHidden: true });
+        const optionCount = await option.count();
+        if (optionCount > 1) throw chatGptPinnedModelError(modelVersion);
+        const familyPinned = optionCount === 1 && await option.getAttribute("aria-checked") === "true";
+        if (!familyPinned) {
+          // Collapsed advanced-view rows still have visible geometry, but are inert.
+          // Respect the owned trigger's state before relying on row visibility.
+          const modelTrigger = activation.menu.getByLabel(/^(?:Select model|Choose model|选择模型|モデルを選択)$/);
+          const modelMenuCollapsed = await modelTrigger.count() === 1
+            && await modelTrigger.getAttribute("aria-expanded") === "false";
+          if (modelMenuCollapsed || !await option.isVisible().catch(() => false)) {
+            await modelTrigger.click({ timeout: 5_000 });
+          }
+          await option.waitFor({ state: "visible", timeout: 5_000 });
+          await option.click({ timeout: 5_000 });
+          await page.keyboard.press("Escape");
+          activation = await activateChatGptEffortMenu(page, currentEffort);
+          option = activation.menu.getByRole("menuitemradio", { name: modelName, exact: true, includeHidden: true });
+          const pinDeadline = Date.now() + 1_000;
+          for (;;) {
+            const count = await option.count();
+            if (count > 1) throw chatGptPinnedModelError(modelVersion);
+            if (count === 1 && await option.getAttribute("aria-checked") === "true") break;
+            if (Date.now() >= pinDeadline) throw chatGptPinnedModelError(modelVersion);
+            await new Promise(resolveSettle => setTimeout(resolveSettle, 50));
+          }
+        }
+      } catch (error) {
+        throw chatGptPinnedModelError(modelVersion, error);
+      }
+    }
     if (activation.method === "pointerdown") {
       await captureDiagnostic?.("effort-menu-pointerdown-fallback");
     }
@@ -2402,6 +2516,12 @@ export class ChatGptBrowserWorker {
     }
     const targetValue = sliderState.min + uiEffortIndex;
     if (targetValue > sliderState.max) {
+      if (modelVersion && mode.effort === "max") {
+        throw new ChatGptWebAdapterError(
+          `ChatGPT currently exposes only ${sliderState.max - sliderState.min + 1} effort levels for model ${modelVersion}; Pro is not available in this picker. The pending prompt was not sent, and no other model was substituted.`,
+          { status: 400, errorType: "invalid_request_error", code: "model_version_unavailable", retryable: false },
+        );
+      }
       const proUsageLimitHint = uiEffortIndex === 4 && sliderState.min === 0 && sliderState.max === 3
         ? " If you have made many Pro requests recently, ChatGPT may have temporarily hidden Pro because you reached its usage limit."
         : "";
@@ -2439,6 +2559,11 @@ export class ChatGptBrowserWorker {
           + ` (before=${previousValue}; after=${sliderState.value})`,
         );
       }
+    }
+    if (modelVersion) {
+      // React can update the numeric slider before its described state. Read until both
+      // the requested family and effort are proved; never re-click or send to repair it.
+      await assertChatGptSelectedModelVersion(page, effortSlider, modelVersion, mode.effort === "max", mode.effort, 1_000);
     }
     await captureDiagnostic?.("effort-selected");
     await page.keyboard.press("Escape");
@@ -3349,6 +3474,7 @@ export class ChatGptBrowserWorker {
     submissionLifecycle?: Pick<BrowserTurn, "onSendActivated" | "onSubmitted">,
     completionTracker?: ChatGptCompletionTracker,
     recoverObservation?: ChatGptObservationRecovery,
+    expectedMode?: ChatGptWebModelMode & { verifyEffortBeforeSend?: boolean },
   ): Promise<ChatGptSubmissionEvidence> {
     const composer = await this.activeComposer(page);
     const sendButton = composer
@@ -3370,6 +3496,38 @@ export class ChatGptBrowserWorker {
       await settleChatGptUi();
     }
     await captureDiagnostic?.("send-ready");
+    if (expectedMode?.modelVersion || expectedMode?.verifyEffortBeforeSend) {
+      // Connector attachment, file handling or a user action can reset the picker after selection.
+      // Recheck immediately before the irreversible send, without choosing a fallback model.
+      const control = composer.locator("xpath=ancestor::form[1]").locator(CHATGPT_EFFORT_CONTROL_SELECTOR).last();
+      let verificationError: ChatGptWebAdapterError | undefined;
+      try {
+        const { slider } = await activateChatGptEffortMenu(page, control);
+        await assertChatGptSelectedModelVersion(page, slider, expectedMode.modelVersion, expectedMode.effort === "max",
+          expectedMode.verifyEffortBeforeSend ? expectedMode.effort : undefined);
+        const state = parseChatGptEffortSliderState(
+          await slider.getAttribute("aria-valuemin"), await slider.getAttribute("aria-valuemax"),
+          await slider.getAttribute("aria-valuenow"),
+        );
+        if (!state || expectedMode.uiEffortIndex === null || state.value !== state.min + expectedMode.uiEffortIndex) {
+          if (expectedMode.modelVersion) throw chatGptPinnedModelError(expectedMode.modelVersion);
+          throw chatGptModelControlUnavailableAdapterError("The live effort position changed before summary submission");
+        }
+      } catch (error) {
+        verificationError = expectedMode.modelVersion ? chatGptPinnedModelError(expectedMode.modelVersion, error)
+          : chatGptModelControlUnavailableAdapterError("Could not verify the requested summary effort before submission");
+        throw verificationError;
+      } finally {
+        try {
+          await page.keyboard.press("Escape");
+        } catch (cleanupError) {
+          // Preserve a safety-relevant model mismatch instead of replacing it with cleanup noise.
+          // After successful verification, however, a menu that cannot be closed still fails closed.
+          if (!verificationError) throw cleanupError;
+        }
+      }
+      if (abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
+    }
     const initialToolBatchRevision = externalProgress?.snapshot().lastToolBatchRevision ?? 0;
     await submissionLifecycle?.onSendActivated?.();
     await sendButton.press("Enter", {
@@ -4285,7 +4443,22 @@ export class ChatGptBrowserWorker {
     const browserCapabilities = turn.nativeConnector
       ? { ...turn.capabilities, localToolsEnabled: true }
       : turn.capabilities;
-    const requestedMode = resolveChatGptWebModelMode(turn.modelId, turn.reasoning, browserCapabilities);
+    if (turn.compactionExecution !== undefined) {
+      let execution: ChatGptWebCompactionExecution;
+      try {
+        execution = parseChatGptWebCompactionExecution(turn.compactionExecution);
+      } catch (error) {
+        throw new Error("Explicit compaction execution has an invalid model/effort combination", { cause: error });
+      }
+      if (turn.compaction !== true || turn.capabilities.localToolsEnabled
+        || turn.modelId !== CHATGPT_WEB_MODEL_ID || !turn.capabilities.proAvailable
+        || turn.reasoning !== execution.effort) {
+        throw new Error("Explicit compaction execution requires a read-only summary with matching effort and an available model");
+      }
+    }
+    const requestedMode = resolveChatGptWebModelMode(
+      turn.modelId, turn.reasoning, browserCapabilities, turn.compactionExecution?.modelVersion,
+    );
     const prepare = reuseConversation ? turn.prepareResume : turn.prepare;
     if (!prepare) throw new Error("The retained ChatGPT conversation has no continuation prompt");
     const prepared = await prepare();
@@ -4328,6 +4501,7 @@ export class ChatGptBrowserWorker {
           browserCapabilities,
           maxStageMessageTokens!,
           maxStageChars!,
+          !turn.compactionExecution,
         )
         : requestedMode;
       if (prepared.multipart) {
@@ -4523,6 +4697,7 @@ export class ChatGptBrowserWorker {
           stagingMode.effort,
           browserCapabilities,
           checkpoint => diagnostics.capture(page, checkpoint),
+          requestedMode.modelVersion,
         )
       ));
       await diagnostics.capture(page, "effort-selection-complete");
@@ -4566,6 +4741,7 @@ export class ChatGptBrowserWorker {
                   return recovered;
                 }
                 : undefined,
+              turn.compactionExecution ? { ...mode, verifyEffortBeforeSend: true } : undefined,
             ),
           );
           console.info(
@@ -4623,6 +4799,7 @@ export class ChatGptBrowserWorker {
               requestedMode.effort,
               browserCapabilities,
               checkpoint => diagnostics.capture(page, `final-part-${checkpoint}`),
+              requestedMode.modelVersion,
             ),
           );
           await diagnostics.capture(page, "final-part-effort-selected");
@@ -4679,8 +4856,9 @@ export class ChatGptBrowserWorker {
                 page,
                 turn.modelId,
                 turn.reasoning,
-                turn.capabilities,
+                turn.compactionExecution ? browserCapabilities : turn.capabilities,
                 checkpoint => diagnostics.capture(page, checkpoint),
+                requestedMode.modelVersion,
               );
               submissionBaseline = await this.captureSubmissionBaseline(page);
             },
@@ -4715,6 +4893,7 @@ export class ChatGptBrowserWorker {
               return recovered;
             }
             : undefined,
+          turn.compactionExecution ? { ...requestedMode, verifyEffortBeforeSend: true } : undefined,
         ),
       );
       console.info(`[chatgpt-web] browser turn ${turn.traceId} submission accepted evidence=${finalSubmissionEvidence}`);

@@ -408,6 +408,13 @@ function validateBrowserInteractionMode(value) {
   return value;
 }
 
+function validateCompactionModel(value) {
+  if (value !== null && value !== "extra-high" && value !== "5.6-pro" && value !== "5.5-pro") {
+    throw new Error("Compaction model must be follow, extra-high, 5.6-pro, or 5.5-pro");
+  }
+  return value;
+}
+
 function validateBounds(value) {
   if (!value || typeof value !== "object") throw new Error("Browser bounds are required");
   for (const key of ["x", "y", "width", "height"]) {
@@ -430,6 +437,7 @@ function registerIpc({ logger, stateStore }) {
       userData: launcherUserData,
     },
     state: stateStore.read(),
+    compactionModel: runtimeHost.compactionModel(),
     browser: browserHost?.snapshot() ?? null,
     connectorName: runtimeHost.browserConnectorName(),
     connectorNames: {
@@ -818,6 +826,10 @@ function registerIpc({ logger, stateStore }) {
     send("launcher:browser-state", browserHost.snapshot());
     if (!IS_DEV_PROFILE && result.configured) startCatalogVerificationMonitor({ logger, stateStore });
     return { state, credentialsRequired: false, targetMode: mode };
+  });
+  handle("launcher:compaction-model", async (_event, rawModel) => {
+    // Config-only: active turns and an already-started compaction keep their pinned model.
+    return runtimeHost.setCompactionModel(validateCompactionModel(rawModel));
   });
   handle("launcher:set-preference", (_event, key, value) => {
     const ordinary = key === "keepRunningOnClose" || key === "showBrowserDuringTurns";

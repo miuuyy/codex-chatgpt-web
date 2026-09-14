@@ -6,6 +6,7 @@ import type {
 } from "../../types";
 import { extractChatGptCompactionSourceRevision } from "./environment";
 import type { ChatGptBrowserWorker } from "./browser-worker";
+import type { ChatGptWebCompactionExecution } from "../../chatgpt-web-compaction-policy";
 import { ChatGptCompactionHandoffAccepted } from "./adapter-error";
 import type { CompactionTransactionHandle } from "./compaction-transaction";
 import type { ChatGptWebCapabilities } from "./model";
@@ -283,6 +284,7 @@ export async function requestRetainedCompactionHandoff(
   traceId: string,
   signal?: AbortSignal,
   timeoutMs = MAX_COMPACTION_HANDOFF_TIMEOUT_MS,
+  compactionExecution?: ChatGptWebCompactionExecution,
 ): Promise<string> {
   const conversationKey = source.conversationKey();
   if (!conversationKey) throw new Error("The completed ChatGPT source has no retained conversation identity");
@@ -320,6 +322,7 @@ export async function requestRetainedCompactionHandoff(
       // not receive an ordinary Codex tool environment for this checkpoint message.
       capabilities: { ...capabilities, localToolsEnabled: false },
       nativeConnector: true,
+      ...(compactionExecution ? { compaction: true, compactionExecution } : {}),
       prepare,
       prepareResume: prepare,
       conversationKey,

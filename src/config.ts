@@ -7,6 +7,10 @@ import {
   CHATGPT_WEB_ZERO_RISK_BACKEND_MODEL,
   CHATGPT_WEB_ZERO_RISK_PRO_BACKEND_MODEL,
 } from "./chatgpt-web-models";
+import {
+  parseChatGptWebCompactionModel,
+  type ChatGptWebCompactionModel,
+} from "./chatgpt-web-compaction-policy";
 import type { CodexProviderConfig } from "./types";
 import { VERSION } from "./version";
 
@@ -83,6 +87,8 @@ export interface AppConfig {
   headed: boolean;
   solAvailable: boolean;
   proAvailable: boolean;
+  /** Optional model used only when an eligible automatic Pro turn compacts its history. */
+  compactionModel?: ChatGptWebCompactionModel;
   experimentalBiggerContext: boolean;
   /** Explicitly install the additional Pro-sized model row while Zero Risk is active. */
   zeroRiskProEnabled: boolean;
@@ -483,6 +489,12 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (parsed.proAvailable !== undefined && typeof parsed.proAvailable !== "boolean") {
     throw new Error(`Invalid proAvailable in ${path}`);
   }
+  let compactionModel: ChatGptWebCompactionModel | undefined;
+  try {
+    compactionModel = parseChatGptWebCompactionModel(parsed.compactionModel);
+  } catch {
+    throw new Error(`Invalid compactionModel in ${path}`);
+  }
   if (parsed.solAvailable !== undefined && typeof parsed.solAvailable !== "boolean") {
     throw new Error(`Invalid solAvailable in ${path}`);
   }
@@ -516,6 +528,7 @@ function parseConfig(value: unknown, path: string): AppConfig {
     subagentProtocol,
     solAvailable,
     proAvailable,
+    compactionModel,
     experimentalBiggerContext,
     zeroRiskProEnabled,
   } as AppConfig;
@@ -570,6 +583,9 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       localToolsEnabled: config.mode === "full",
       solAvailable: manual ? false : config.solAvailable,
       proAvailable: manual ? false : config.proAvailable,
+      ...(!manual && config.compactionModel !== undefined
+        ? { compactionModel: config.compactionModel }
+        : {}),
       experimentalBiggerContext: manual ? false : config.experimentalBiggerContext,
       ...(config.stallTimeoutSec !== undefined ? { stallTimeoutSec: config.stallTimeoutSec } : {}),
       autoApproveToolCalls: manual ? false : config.autoApproveToolCalls,

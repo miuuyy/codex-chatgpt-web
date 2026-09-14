@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
-import { ChatGptCompactionHandoffAccepted, chatGptRetainedConversationUnavailableError } from "../src/adapters/chatgpt-web/adapter-error";
+import {
+  ChatGptCompactionHandoffAccepted,
+  ChatGptWebAdapterError,
+  chatGptRetainedConversationUnavailableError,
+} from "../src/adapters/chatgpt-web/adapter-error";
 import {
   MAX_COMPACTION_HANDOFF_TIMEOUT_MS,
   cancelAllStructuredCompactions,
@@ -1014,7 +1018,16 @@ test("retained compaction can close its browser epoch while preserving an ordina
   sessions.clear();
 });
 
-test("adapter compact returns one same-agent handoff and preserves a pre-existing ordinary final", async () => {
+test.each([
+  [undefined, "max", undefined],
+  ["extra-high", "xhigh", { effort: "xhigh", modelVersion: "5.6" }],
+  ["5.6-pro", "max", { effort: "max", modelVersion: "5.6" }],
+  ["5.5-pro", "max", { effort: "max", modelVersion: "5.5" }],
+] as const)("retained Pro compaction dispatches policy %p without losing its source", async (
+  compactionModel,
+  reasoning,
+  execution,
+) => {
   const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-adapter-retained-compact-"));
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
@@ -1027,12 +1040,14 @@ test("adapter compact returns one same-agent handoff and preserves a pre-existin
       localToolsEnabled: true,
       solAvailable: true,
       proAvailable: true,
+      ...(compactionModel ? { compactionModel } : {}),
     },
   };
   const broker = TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!);
   const worker = ChatGptBrowserWorker.forProvider(provider);
   const originalRun = worker.run.bind(worker);
   const sourceRequest = request(false);
+  sourceRequest.options.reasoning = "max";
   const namespace = chatGptWebExecutionNamespace(provider);
   const sourceKey = `${namespace}:${chatGptTurnExecutionKey(sourceRequest)}`;
   const conversationKey = chatGptConversationKey(sourceRequest, namespace)!;
@@ -1055,6 +1070,9 @@ test("adapter compact returns one same-agent handoff and preserves a pre-existin
     const binding = controlBinding(prepared.text);
     expect(turn.nativeConnector).toBeTrue();
     expect(turn.capabilities.localToolsEnabled).toBeFalse();
+    expect(turn.compaction).toBe(execution ? true : undefined);
+    expect(turn.reasoning).toBe(reasoning);
+    expect(turn.compactionExecution).toEqual(execution);
     prepared.release();
     await callTurnBroker(provider.chatgptWeb!.brokerSocketPath!, {
       method: "submit_compaction_handoff",
@@ -1105,6 +1123,115 @@ test("adapter compact returns one same-agent handoff and preserves a pre-existin
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
     chatGptTurnSessions.clear();
     await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("explicit compaction preserves an old-helper protocol failure before any prompt is accepted", async () => {
+  const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-old-helper-compaction-"));
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://old-helper-compaction-${Date.now()}`,
+    chatgptWeb: {
+      browserHost: "launcher",
+      browserHostDescriptorPath: join(root, "launcher.json"),
+      browserDiagnosticsPath: join(root, "diagnostics"),
+      brokerSocketPath: defaultBrokerEndpoint(root),
+      localToolsEnabled: true,
+      solAvailable: true,
+      proAvailable: true,
+      compactionModel: "5.6-pro",
+    },
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async () => {
+    throw new ChatGptWebAdapterError(
+      "Launcher browser helper does not support compaction execution; update or restart the launcher",
+      {
+        status: 409,
+        errorType: "invalid_request_error",
+        code: "compaction_control_unavailable",
+        retryable: false,
+      },
+    );
+  };
+  const compact = request(true);
+  compact.options.reasoning = "max";
+  const events: AdapterEvent[] = [];
+  try {
+    await createChatGptWebAdapter(provider).runTurn!(
+      compact,
+      { headers: new Headers() },
+      event => events.push(event),
+    );
+    expect(events.filter(event => event.type === "error")).toEqual([{
+      type: "error",
+      message: "Launcher browser helper does not support compaction execution; update or restart the launcher",
+      status: 409,
+      errorType: "invalid_request_error",
+      code: "compaction_control_unavailable",
+      retryable: false,
+    }]);
+    expect(events.some(event => event.type === "done")).toBeFalse();
+  } finally {
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    chatGptTurnSessions.clear();
+    await TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!).close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test.each([
+  ["extra-high", "xhigh", { effort: "xhigh", modelVersion: "5.6" }],
+  ["5.6-pro", "max", { effort: "max", modelVersion: "5.6" }],
+  ["5.5-pro", "max", { effort: "max", modelVersion: "5.5" }],
+] as const)("fresh browser-only Pro compaction dispatches %s", async (compactionModel, reasoning, execution) => {
+  const root = mkdtempSync(join(shortSocketTempRoot(), `cgw-read-only-${compactionModel}-`));
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://read-only-${compactionModel}-${Date.now()}`,
+    chatgptWeb: {
+      browserDiagnosticsPath: join(root, "diagnostics"),
+      brokerSocketPath: defaultBrokerEndpoint(root),
+      localToolsEnabled: false,
+      solAvailable: true,
+      proAvailable: true,
+      compactionModel,
+    },
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  let browserStarts = 0;
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    browserStarts += 1;
+    expect(turn.reasoning).toBe(reasoning);
+    expect(turn.compaction).toBeTrue();
+    expect(turn.capabilities.localToolsEnabled).toBeFalse();
+    expect(turn.compactionExecution).toEqual(execution);
+    const prepared = await turn.prepare();
+    prepared.release();
+    turn.onTextDelta("Independent-model checkpoint");
+    return "Independent-model checkpoint";
+  };
+  const compact = request(true);
+  compact.options.reasoning = "max";
+  const events: AdapterEvent[] = [];
+  try {
+    await createChatGptWebAdapter(provider).runTurn!(
+      compact,
+      { headers: new Headers() },
+      event => events.push(event),
+    );
+    expect(compact.options.reasoning).toBe("max");
+    expect(browserStarts).toBe(1);
+    expect(events.some(event => event.type === "text_delta"
+      && event.text.includes("Independent-model checkpoint"))).toBeTrue();
+    expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+  } finally {
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    chatGptTurnSessions.clear();
+    await TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!).close();
     rmSync(root, { recursive: true, force: true });
   }
 });

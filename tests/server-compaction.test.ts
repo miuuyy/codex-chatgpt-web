@@ -98,6 +98,58 @@ test("compacts a Pro task with Pro effort", async () => {
   expect(response.status).toBe(200);
 });
 
+test("an eligible Pro compaction snapshots the live model preference once without changing normal turns", async () => {
+  const config = defaultConfig("browser-only");
+  config.proAvailable = true;
+  config.compactionModel = "5.5-pro";
+  let liveModel: "extra-high" | "5.6-pro" = "extra-high";
+  let reads = 0;
+  const options = {
+    rememberState: false,
+    readCompactionModel: () => {
+      reads += 1;
+      return liveModel;
+    },
+  };
+  let compactProvider: CodexProviderConfig | undefined;
+  const compact = await compactRequest(new Request("http://127.0.0.1/v1/responses/compact", {
+    method: "POST",
+    body: JSON.stringify({
+      model: "chatgpt-web/pro",
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "Compact" }] }],
+    }),
+  }), config, provider => {
+    compactProvider = structuredClone(provider);
+    liveModel = "5.6-pro";
+    return {
+      name: "live-compaction-model",
+      async runTurn(_parsed, _incoming, emit) {
+        expect(provider.chatgptWeb?.compactionModel).toBe("extra-high");
+        emit({ type: "text_delta", text: summary, phase: "final_answer" });
+        emit({ type: "done", stopReason: "stop", endTurn: true });
+      },
+    };
+  }, options);
+  expect(compact.status).toBe(200);
+  expect(reads).toBe(1);
+  expect(compactProvider?.chatgptWeb?.compactionModel).toBe("extra-high");
+  expect(config.compactionModel).toBe("5.5-pro");
+
+  const normal = await responseRequest(new Request("http://127.0.0.1/v1/responses", {
+    method: "POST",
+    body: JSON.stringify({ model: "chatgpt-web/pro", input: "Normal turn", stream: false }),
+  }), config, provider => ({
+    name: "normal-main-model",
+    async runTurn(_parsed, _incoming, emit) {
+      expect(provider.chatgptWeb?.compactionModel).toBe("5.5-pro");
+      emit({ type: "text_delta", text: "Normal response", phase: "final_answer" });
+      emit({ type: "done", stopReason: "stop", endTurn: true });
+    },
+  }), options);
+  expect(normal.status).toBe(200);
+  expect(reads).toBe(1);
+});
+
 test("preserves canonical Codex turn metadata from the compact endpoint header", async () => {
   const turnMetadata = { thread_id: "thread_compact", turn_id: "turn_compact" };
   const response = await compactRequest(new Request("http://127.0.0.1:17841/v1/responses/compact", {

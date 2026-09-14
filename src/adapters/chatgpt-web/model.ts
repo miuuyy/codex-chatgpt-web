@@ -12,7 +12,11 @@ export interface ChatGptWebCapabilities {
   proAvailable: boolean;
 }
 
+export type ChatGptWebCompactionModelVersion = "5.5" | "5.6";
+
 export interface ChatGptWebModelMode {
+  /** Explicit compaction-only model family; ordinary model resolution is unchanged. */
+  modelVersion?: ChatGptWebCompactionModelVersion;
   modelId: string;
   effort: "low" | "medium" | "high" | "xhigh" | "max";
   displayLabel: "Luna" | "Think" | "Instant" | "Medium" | "High" | "Extra High" | "Pro";
@@ -21,7 +25,7 @@ export interface ChatGptWebModelMode {
   localTools: boolean;
 }
 
-export function resolveChatGptWebModelMode(
+function resolveBaseChatGptWebModelMode(
   modelId: string,
   reasoning: string | undefined,
   capabilities: ChatGptWebCapabilities,
@@ -67,4 +71,20 @@ export function resolveChatGptWebModelMode(
     default:
       throw new Error(`ChatGPT web effort is not supported: ${effort}`);
   }
+}
+
+/** A compaction family pin also applies to its lower-effort multipart stages. */
+export function resolveChatGptWebModelMode(
+  modelId: string,
+  reasoning: string | undefined,
+  capabilities: ChatGptWebCapabilities,
+  modelVersionOverride?: ChatGptWebCompactionModelVersion,
+): ChatGptWebModelMode {
+  const mode = resolveBaseChatGptWebModelMode(modelId, reasoning, capabilities);
+  if (modelVersionOverride === undefined) return mode;
+  if (modelId !== CHATGPT_WEB_MODEL_ID) throw new Error("Only the ChatGPT model selector supports a pinned model family");
+  if (modelVersionOverride !== "5.5" && modelVersionOverride !== "5.6") {
+    throw new Error("Unsupported ChatGPT compaction model family");
+  }
+  return { ...mode, modelVersion: modelVersionOverride };
 }

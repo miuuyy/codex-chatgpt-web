@@ -3,6 +3,11 @@ import { resolve } from "node:path";
 import { isChatGptWebZeroRiskBackendModel } from "../../chatgpt-web-models";
 import { defaultBrokerEndpoint, expandUserPath, resolveBrokerEndpoint } from "../../config";
 import {
+  parseChatGptWebCompactionModel,
+  resolveChatGptWebCompactionPlan,
+  type ChatGptWebCompactionExecution,
+} from "../../chatgpt-web-compaction-policy";
+import {
   cancelLauncherManualTurn,
   endLauncherManualTurn,
   LauncherBrowserTurnCancelledError,
@@ -193,9 +198,12 @@ function safeManualTerminalError(status: "cancelled" | "failed"): ChatGptWebAdap
 }
 
 export function chatGptWebExecutionNamespace(provider: CodexProviderConfig): string {
+  // Changing the next summary's model must not orphan the source conversation or permit
+  // a second owner for the same compaction round.
+  const { compactionModel: _summaryOnlyModel, ...identityConfig } = provider.chatgptWeb ?? {};
   return createHash("sha256").update(JSON.stringify({
     baseUrl: provider.baseUrl,
-    chatgptWeb: provider.chatgptWeb ?? {},
+    chatgptWeb: identityConfig,
   })).digest("hex");
 }
 
@@ -349,6 +357,7 @@ export function createChatGptWebAdapter(
   const structuredBroker = broker instanceof TurnBroker ? broker : undefined;
   const timeoutMs = provider.chatgptWeb?.turnTimeoutMs;
   const experimentalBiggerContext = provider.chatgptWeb?.experimentalBiggerContext;
+  const compactionModel = parseChatGptWebCompactionModel(provider.chatgptWeb?.compactionModel);
   if (experimentalBiggerContext !== undefined && typeof experimentalBiggerContext !== "boolean") {
     throw new Error("ChatGPT Bigger Context preference must be a boolean");
   }
@@ -392,7 +401,10 @@ export function createChatGptWebAdapter(
     environment: ReturnType<typeof extractChatGptTurnEnvironment> | undefined,
     traceId: string,
     turnCapabilities: ChatGptWebCapabilities,
-    hooks: { onCompactionProgress?: () => void } = {},
+    hooks: {
+      onCompactionProgress?: () => void;
+      compactionExecution?: ChatGptWebCompactionExecution;
+    } = {},
   ): ChatGptTurnRuntime => {
     const manualRequest = isChatGptWebZeroRiskBackendModel(parsed.modelId);
     if (manualRequest !== manualInteraction) {
@@ -685,6 +697,7 @@ export function createChatGptWebAdapter(
         }),
         abortSignal: browserAbort.signal,
         ...(parsed._compactionRequest ? { compaction: true } : {}),
+        ...(hooks.compactionExecution ? { compactionExecution: hooks.compactionExecution } : {}),
         ...submissionLifecycle,
         ...multipartProgressLifecycle,
         onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),
@@ -849,6 +862,9 @@ export function createChatGptWebAdapter(
             throw error;
           }
         }
+        // Only the summary's execution copy changes. All source, ownership, retry and retirement
+        // keys below intentionally continue to use the original parsed Pro request.
+        const compactionPlan = resolveChatGptWebCompactionPlan(parsed, compactionModel, turnCapabilities);
         if (parsed._compactionRequest) {
           const structuredCompactionRequired = parsed.modelId !== CHATGPT_WEB_LUNA_MODEL_ID
             && configuredCapabilities.localToolsEnabled;
@@ -931,11 +947,16 @@ export function createChatGptWebAdapter(
                     // transport time cannot consume the model-generation window.
                     armHandoffDeadline();
                     const fallbackRuntime = startRuntime(
-                      parsed,
+                      compactionPlan.execution,
                       manualRequest ? environment : undefined,
                       `${handoffTraceId}_fallback`,
                       turnCapabilities,
-                      { onCompactionProgress: armHandoffDeadline },
+                      {
+                        onCompactionProgress: armHandoffDeadline,
+                        ...(compactionPlan.compactionExecution
+                          ? { compactionExecution: compactionPlan.compactionExecution }
+                          : {}),
+                      },
                     );
                     retainOwnershipUntil(fallbackRuntime.physicalSettlement);
                     try {
@@ -1002,13 +1023,14 @@ export function createChatGptWebAdapter(
                       preserveFinalResponse = !settlement.compactionInstructionDelivered;
                       rawSummary = await requestRetainedCompactionHandoff(
                         worker,
-                        parsed,
+                        compactionPlan.execution,
                         source,
                         structuredBroker!,
                         configuredCapabilities,
                         handoffTraceId,
                         operationSignal,
                         handoffTimeoutMs,
+                        compactionPlan.compactionExecution,
                       );
                     } else {
                       if (source.isActive()) {
@@ -1019,13 +1041,14 @@ export function createChatGptWebAdapter(
                       }
                       rawSummary = await requestRetainedCompactionHandoff(
                         worker,
-                        parsed,
+                        compactionPlan.execution,
                         source,
                         structuredBroker!,
                         configuredCapabilities,
                         handoffTraceId,
                         operationSignal,
                         handoffTimeoutMs,
+                        compactionPlan.compactionExecution,
                       );
                     }
                     const summary = canonicalizeCompactionHandoff(parsed, rawSummary);
@@ -1085,6 +1108,17 @@ export function createChatGptWebAdapter(
               }
               const handoffError = error instanceof Error ? error : new Error(String(error));
               console.error("[chatgpt-web] structured context handoff failed:", handoffError);
+              if (compactionPlan.compactionExecution && handoffError instanceof ChatGptWebAdapterError) {
+                emit({
+                  type: "error",
+                  message: handoffError.message,
+                  status: handoffError.status,
+                  errorType: handoffError.errorType,
+                  code: handoffError.code,
+                  retryable: false,
+                });
+                return;
+              }
               emit({
                 type: "error",
                 message: "ChatGPT did not complete the context handoff. Retry the task.",
@@ -1120,7 +1154,15 @@ export function createChatGptWebAdapter(
         const session = await chatGptTurnSessions.getOrCreateAfterOwnerRetirement(
           executionKey,
           ownerKey,
-          () => startRuntime(parsed, environment, traceId, turnCapabilities),
+          () => startRuntime(
+            compactionPlan.execution,
+            environment,
+            traceId,
+            turnCapabilities,
+            compactionPlan.compactionExecution
+              ? { compactionExecution: compactionPlan.compactionExecution }
+              : {},
+          ),
           traceId,
           incoming.abortSignal,
           nativeTurnId,

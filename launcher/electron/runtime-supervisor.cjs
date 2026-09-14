@@ -255,6 +255,12 @@ function validateConfig(config, descriptorPath, platform = process.platform, lau
     && typeof config.experimentalBiggerContext !== "boolean") {
     throw new Error("Runtime configuration has an invalid experimentalBiggerContext");
   }
+  if (config.compactionModel !== undefined
+    && config.compactionModel !== "extra-high"
+    && config.compactionModel !== "5.6-pro"
+    && config.compactionModel !== "5.5-pro") {
+    throw new Error("Runtime configuration has an invalid compactionModel");
+  }
   if (config.stallTimeoutSec !== undefined
     && (!Number.isFinite(config.stallTimeoutSec) || config.stallTimeoutSec <= 0)) {
     throw new Error("Runtime configuration has an invalid stallTimeoutSec");

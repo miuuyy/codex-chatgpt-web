@@ -147,6 +147,10 @@ bun run app
 
 ## 日常操作
 
+**设置 → Pro 任务压缩模型** 可为自动 Pro 任务的摘要单独选择 Extra High、GPT-5.6 Pro 或
+GPT-5.5 Pro，普通任务回合保持原模型。默认跟随主任务，仍受模型可用性和账户额度限制；详见
+[压缩模型选择](docs/compaction-model-selection.md)。
+
 使用 **活动** 页面查看安全的本地诊断，并通过 **设置 → 运行诊断** 执行端到端健康检查。设置页还可
 取消保留的浏览器任务，或在卸载前移除 Codex 集成。仅在需要为每个浏览器检查点保存截图时设置
 `CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1`。

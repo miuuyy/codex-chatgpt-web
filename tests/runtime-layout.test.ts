@@ -99,6 +99,36 @@ test("default setup uses the fixed production connector identities", () => {
   expect(defaultConfig("full").subagentProtocol).toBe("compatibility-v1");
   expect(defaultConfig("full").browserInteractionMode).toBe("automatic");
   expect(defaultConfig("full").zeroRiskProEnabled).toBe(false);
+  expect(defaultConfig("full").compactionModel).toBeUndefined();
+});
+
+test.each(["extra-high", "5.6-pro", "5.5-pro"] as const)(
+  "configuration accepts and forwards the explicit %s compaction model",
+  compactionModel => {
+    const root = join(tmpdir(), `codex-chatgpt-web-compaction-model-${process.pid}-${compactionModel}`);
+    roots.push(root);
+    process.env.CODEX_CHATGPT_WEB_HOME = root;
+    mkdirSync(root, { recursive: true });
+    const config = { ...defaultConfig("browser-only"), compactionModel };
+    writeFileSync(join(root, "config.json"), `${JSON.stringify(config)}\n`);
+
+    const loaded = loadConfig();
+    expect(loaded.compactionModel).toBe(compactionModel);
+    expect(providerConfig(loaded).chatgptWeb?.compactionModel).toBe(compactionModel);
+  },
+);
+
+test("configuration rejects an unknown compaction model", () => {
+  const root = join(tmpdir(), `codex-chatgpt-web-compaction-model-invalid-${process.pid}`);
+  roots.push(root);
+  process.env.CODEX_CHATGPT_WEB_HOME = root;
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, "config.json"), `${JSON.stringify({
+    ...defaultConfig("browser-only"),
+    compactionModel: "latest-pro",
+  })}\n`);
+
+  expect(() => loadConfig()).toThrow("Invalid compactionModel");
 });
 
 test.each([
@@ -253,6 +283,7 @@ test("manual provider configuration preserves a distinct backend without guessin
   config.browserInteractionMode = "manual";
   config.solAvailable = true;
   config.proAvailable = true;
+  config.compactionModel = "5.6-pro";
   const provider = providerConfig(config);
 
   expect(provider.models).toEqual([CHATGPT_WEB_ZERO_RISK_BACKEND_MODEL]);
@@ -267,6 +298,7 @@ test("manual provider configuration preserves a distinct backend without guessin
     proAvailable: false,
     experimentalBiggerContext: false,
   });
+  expect(provider.chatgptWeb?.compactionModel).toBeUndefined();
 
   config.zeroRiskProEnabled = true;
   const proProvider = providerConfig(config);

@@ -1096,6 +1096,43 @@ class RuntimeHost {
     return { ...result, mode, enabled: enabled === true };
   }
 
+  compactionModel() {
+    return this.runtimeConfigSnapshot().config?.compactionModel ?? null;
+  }
+
+  async setCompactionModel(value) {
+    if (value !== null && value !== "extra-high" && value !== "5.6-pro" && value !== "5.5-pro") {
+      throw new Error("Compaction model must be follow, extra-high, 5.6-pro, or 5.5-pro");
+    }
+    const current = this.runtimeConfigSnapshot();
+    if (!current.configured) {
+      throw new Error("Install the Codex integration before changing the compaction model");
+    }
+    if ((current.config?.compactionModel ?? null) === value) return { compactionModel: value };
+    const args = [
+      ...(this.launcherProfile === "development" ? ["dev"] : []),
+      "config",
+      "compaction-model",
+      value ?? "follow",
+      "--launcher-control",
+    ];
+    await this.run("compaction-model", args, {
+      ...(this.launcherProfile === "development" ? {
+        embedded: true,
+        environment: this.devSetupEnvironment(),
+      } : {}),
+      env: this.launcherControlEnvironment(),
+      message: "Saving the Pro compaction model",
+      successMessage: "Pro compaction model saved for the next compaction",
+      timeoutMs: CORE_SETUP_TIMEOUT_MS,
+    });
+    const saved = this.compactionModel();
+    if (saved !== value) {
+      throw new Error("Runtime configuration did not persist the requested compaction model");
+    }
+    return { compactionModel: saved };
+  }
+
   async setZeroRiskPro(enabled) {
     const current = this.runtimeConfigSnapshot();
     if (!current.configured) {

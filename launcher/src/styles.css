@@ -1915,6 +1915,28 @@ code {
   padding: 12px 0;
 }
 
+.settings-select {
+  max-width: 100%;
+  min-width: 160px;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-background-control);
+  color: var(--color-text-secondary);
+  font: var(--text-sm) var(--font-ui);
+  -webkit-app-region: no-drag;
+}
+
+.settings-select:focus-visible {
+  outline: 1px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+.settings-select:disabled {
+  opacity: 0.38;
+}
+
 .language-menu {
   position: relative;
   z-index: 1;

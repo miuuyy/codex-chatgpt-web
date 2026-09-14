@@ -14,6 +14,7 @@ import { Icon, type IconName } from "./icons";
 import type {
   BrowserInteractionMode,
   BrowserState,
+  CompactionModel,
   DoctorReport,
   Language,
   LauncherSnapshot,
@@ -97,6 +98,10 @@ export function App() {
       : current);
   }, []);
 
+  const updateCompactionModel = useCallback((compactionModel: CompactionModel) => {
+    setSnapshot((current) => current ? { ...current, compactionModel } : current);
+  }, []);
+
   if (!api) return <FatalMessage message="Launcher IPC is unavailable." />;
   if (!snapshot) return <LaunchLoading />;
 
@@ -130,6 +135,7 @@ export function App() {
             operation={operation}
             setError={setError}
             snapshot={snapshot}
+            updateCompactionModel={updateCompactionModel}
             updateState={updateState}
           />
         )}
@@ -330,6 +336,7 @@ function LauncherShell({
   operation,
   setError,
   snapshot,
+  updateCompactionModel,
   updateState,
 }: {
   browser: BrowserState | null;
@@ -339,6 +346,7 @@ function LauncherShell({
   operation: OperationState | null;
   setError: (error: string | null) => void;
   snapshot: LauncherSnapshot;
+  updateCompactionModel: (value: CompactionModel) => void;
   updateState: (state: LauncherState) => void;
 }) {
   const interactionSetupComplete = snapshot.state.coreSetupComplete === true
@@ -706,6 +714,7 @@ function LauncherShell({
                 language={language}
                 setError={setError}
                 snapshot={snapshot}
+                updateCompactionModel={updateCompactionModel}
                 updateState={updateState}
               />
             ) : null}
@@ -1582,6 +1591,7 @@ function SettingsSurface({
   language,
   setError,
   snapshot,
+  updateCompactionModel,
   updateState,
 }: {
   configureInteractionMode: (mode: BrowserInteractionMode) => void;
@@ -1590,6 +1600,7 @@ function SettingsSurface({
   language: Language;
   setError: (error: string | null) => void;
   snapshot: LauncherSnapshot;
+  updateCompactionModel: (value: CompactionModel) => void;
   updateState: (state: LauncherState) => void;
 }) {
   const [doctor, setDoctor] = useState<DoctorReport | null>(null);
@@ -1650,6 +1661,18 @@ function SettingsSurface({
       setBusy(false);
     }
   };
+  const setCompactionModel = async (value: CompactionModel) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api!.setCompactionModel(value);
+      updateCompactionModel(result.compactionModel);
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
   const uninstallIntegration = async () => {
     setBusy(true);
     setError(null);
@@ -1684,6 +1707,14 @@ function SettingsSurface({
           mode={snapshot.state.browserInteractionMode}
           onChange={(mode) => void setInteractionMode(mode)}
         />
+        <SettingRow body={devProfile ? copy.devCompactionModelBody : copy.compactionModelBody} label={copy.compactionModel}>
+          <CompactionModelMenu
+            copy={copy}
+            disabled={busy || snapshot.state.coreSetupComplete !== true || snapshot.state.browserInteractionMode === "manual"}
+            onChange={(value) => void setCompactionModel(value)}
+            value={snapshot.compactionModel}
+          />
+        </SettingRow>
         <SettingRow body={devProfile ? copy.devKeepRunningBody : copy.keepRunningOnCloseBody} label={copy.keepRunningOnClose}>
           <Switch
             checked={snapshot.state.keepRunningOnClose}
@@ -2349,6 +2380,33 @@ function LanguageMenu({ copy, language, onChange }: { copy: Copy; language: Lang
         </>
       ) : null}
     </div>
+  );
+}
+
+function CompactionModelMenu({
+  copy,
+  disabled,
+  onChange,
+  value,
+}: {
+  copy: Copy;
+  disabled: boolean;
+  onChange: (value: CompactionModel) => void;
+  value: CompactionModel;
+}) {
+  return (
+    <select
+      aria-label={copy.compactionModel}
+      className="settings-select"
+      disabled={disabled}
+      onChange={(event) => onChange(event.target.value === "" ? null : event.target.value as CompactionModel)}
+      value={value ?? ""}
+    >
+      <option value="">{copy.compactionModelFollow}</option>
+      <option value="extra-high">{copy.compactionModelExtraHigh}</option>
+      <option value="5.6-pro">{copy.compactionModel56Pro}</option>
+      <option value="5.5-pro">{copy.compactionModel55Pro}</option>
+    </select>
   );
 }
 

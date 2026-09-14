@@ -158,6 +158,18 @@ test("launcher runtime ownership cannot cross production and DEV profiles", () =
   );
 });
 
+test("launcher accepts only the supported persisted compaction model choices", () => {
+  const descriptorPath = path.join(os.tmpdir(), "launcher-compaction-model.json");
+  const config = launcherConfig(descriptorPath, { solAvailable: true });
+  assert.equal(validateConfig(config, descriptorPath).compactionModel, undefined);
+  for (const compactionModel of ["extra-high", "5.6-pro", "5.5-pro"]) {
+    assert.deepEqual(validateConfig({ ...config, compactionModel }, descriptorPath), { ...config, compactionModel });
+  }
+  for (const compactionModel of [null, "follow", "xhigh", "pro", "6-pro", 1]) {
+    assert.throws(() => validateConfig({ ...config, compactionModel }, descriptorPath), /invalid compactionModel/);
+  }
+});
+
 test("DEV runtime supervision ignores launcher version mismatch and starts only the isolated MCP tunnel", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-dev-tunnel-supervisor-"));
   const descriptorPath = path.join(root, "runtime", "launcher-browser.json");

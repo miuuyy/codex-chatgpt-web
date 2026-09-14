@@ -2,6 +2,9 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
+import { once } from "node:events";
 import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-error";
 import { LauncherBrowserHelperClient } from "../src/adapters/chatgpt-web/launcher-helper-client";
 import type { BrowserTurn, ResolvedBrowserConfig } from "../src/adapters/chatgpt-web/browser-worker";
@@ -221,7 +224,7 @@ test("accepted compaction retires through the helper as completed without hiding
   }
 });
 
-test("launcher helper protocol preserves multipart context and the compaction flag", async () => {
+test("launcher helper protocol preserves multipart context and the compaction execution", async () => {
   const sent: Record<string, unknown>[] = [];
   const client = new LauncherBrowserHelperClient({
     appName: "Codex Native2 DEV",
@@ -243,6 +246,7 @@ test("launcher helper protocol preserves multipart context and the compaction fl
   };
   const child = {};
   internal.child = child;
+  (internal as unknown as { helperFeatures: Set<string> }).helperFeatures = new Set(["compaction-execution"]);
   internal.ensureChild = async () => {};
   internal.send = async message => {
     sent.push(message);
@@ -266,9 +270,10 @@ test("launcher helper protocol preserves multipart context and the compaction fl
   await expect(client.run({
     traceId: "multipart-123",
     modelId: "gpt-5.6-sol",
-    reasoning: "high",
+    reasoning: "max",
     capabilities: { localToolsEnabled: false, solAvailable: true, proAvailable: true },
     compaction: true,
+    compactionExecution: { effort: "max", modelVersion: "5.5" },
     prepare: async () => ({
       text: "commit",
       images: [],
@@ -283,6 +288,7 @@ test("launcher helper protocol preserves multipart context and the compaction fl
     type: "run",
     turn: {
       compaction: true,
+      compactionExecution: { effort: "max", modelVersion: "5.5" },
     },
   });
   expect(sent[1]).toMatchObject({
@@ -293,6 +299,130 @@ test("launcher helper protocol preserves multipart context and the compaction fl
         trimmedCompactionMessages: 4,
     },
   });
+});
+
+test("an old launcher helper rejects explicit compaction execution before dispatch", async () => {
+  const sent: unknown[] = [];
+  const client = new LauncherBrowserHelperClient({
+    appName: "Codex Native2",
+    browserHost: "launcher",
+    browserHostDescriptorPath: "/durable/launcher.json",
+    storageStatePath: "/durable/unused-state.json",
+    chromeExecutablePath: "/durable/unused-chrome",
+    headed: true,
+    autoApproveToolCalls: false,
+  });
+  const internal = client as unknown as {
+    ensureChild(): Promise<void>;
+    send(message: unknown): Promise<void>;
+  };
+  internal.ensureChild = async () => {};
+  internal.send = async message => { sent.push(message); };
+
+  const error = await client.run({
+    traceId: "old-helper-123",
+    modelId: "gpt-5.6-sol",
+    reasoning: "max",
+    capabilities: { localToolsEnabled: false, solAvailable: true, proAvailable: true },
+    compaction: true,
+    compactionExecution: { effort: "max", modelVersion: "5.6" },
+    prepare: async () => ({ text: "compact", images: [], release() {} }),
+    onTextDelta() {},
+  }).then(() => undefined, failure => failure);
+  expect(error).toBeInstanceOf(ChatGptWebAdapterError);
+  expect(error).toMatchObject({
+    message: expect.stringContaining("does not support compaction execution"),
+    status: 409,
+    errorType: "invalid_request_error",
+    code: "compaction_control_unavailable",
+    retryable: false,
+  });
+  expect(sent).toEqual([]);
+});
+
+test.each([
+  ["missing family", { reasoning: "max", compaction: true, compactionExecution: { effort: "max" } }],
+  ["mismatched effort", { reasoning: "xhigh", compaction: true, compactionExecution: { effort: "max", modelVersion: "5.6" } }],
+  ["ordinary turn", { reasoning: "max", compaction: false, compactionExecution: { effort: "max", modelVersion: "5.6" } }],
+  ["tool-capable turn", { reasoning: "max", compaction: true, compactionExecution: { effort: "max", modelVersion: "5.6" }, localToolsEnabled: true }],
+  ["unavailable Pro", { reasoning: "max", compaction: true, compactionExecution: { effort: "max", modelVersion: "5.6" }, proAvailable: false }],
+] as const)("daemon rejects invalid compaction execution: %s", async (_label, override) => {
+  const client = new LauncherBrowserHelperClient({
+    appName: "Codex Native2",
+    browserHost: "launcher",
+    browserHostDescriptorPath: "/durable/launcher.json",
+    storageStatePath: "/durable/unused-state.json",
+    chromeExecutablePath: "/durable/unused-chrome",
+    headed: true,
+    autoApproveToolCalls: false,
+  });
+  const internal = client as unknown as {
+    helperFeatures: Set<string>;
+    ensureChild(): Promise<void>;
+    send(message: unknown): Promise<void>;
+  };
+  internal.helperFeatures = new Set(["compaction-execution"]);
+  internal.ensureChild = async () => {};
+  internal.send = async () => { throw new Error("invalid execution reached the wire"); };
+  const localToolsEnabled = "localToolsEnabled" in override ? override.localToolsEnabled : false;
+  const proAvailable = "proAvailable" in override ? override.proAvailable : true;
+
+  await expect(client.run({
+    traceId: `invalid-${_label.replaceAll(" ", "-")}`,
+    modelId: "gpt-5.6-sol",
+    reasoning: override.reasoning,
+    capabilities: { localToolsEnabled, solAvailable: true, proAvailable },
+    compaction: override.compaction,
+    compactionExecution: override.compactionExecution,
+    prepare: async () => ({ text: "compact", images: [], release() {} }),
+    onTextDelta() {},
+  } as BrowserTurn)).rejects.toThrow("compaction execution is invalid");
+});
+
+test("browser helper rejects a malformed compaction execution from raw IPC", async () => {
+  const child = spawn(process.execPath, [
+    new URL("../src/adapters/chatgpt-web/browser-helper-main.ts", import.meta.url).pathname,
+  ], {
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: "1",
+      CODEX_CHATGPT_WEB_BROWSER_HELPER_PROCESS: "1",
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+  try {
+    const ready = JSON.parse((await lines.next()).value as string) as Record<string, unknown>;
+    expect(ready).toMatchObject({ type: "ready" });
+    expect(ready.features).toContain("compaction-execution");
+    child.stdin.write(`${JSON.stringify({
+      type: "run",
+      id: "malformed-compaction-123",
+      config: {
+        appName: "Codex Native2",
+        browserHostDescriptorPath: "/durable/launcher.json",
+        turnTimeoutMs: 60_000,
+        autoApproveToolCalls: false,
+      },
+      turn: {
+        traceId: "malformed-compaction-123",
+        modelId: "gpt-5.6-sol",
+        reasoning: "max",
+        capabilities: { localToolsEnabled: false, solAvailable: true, proAvailable: true },
+        compaction: true,
+        compactionExecution: { effort: "max" },
+      },
+    })}\n`);
+    const rejected = JSON.parse((await lines.next()).value as string) as Record<string, unknown>;
+    expect(rejected).toMatchObject({
+      type: "error",
+      id: "malformed-compaction-123",
+      message: "Browser helper compaction execution is invalid",
+    });
+  } finally {
+    child.stdin.end(`${JSON.stringify({ type: "shutdown" })}\n`);
+    await once(child, "exit");
+  }
 });
 
 test("an abort dispatched during run submission cannot overtake the run frame", async () => {
