@@ -75,6 +75,76 @@ test("Japanese launcher runtime messages localize connector verification and doc
   );
 });
 
+test("Korean launcher runtime messages localize connector verification and doctor success checks", () => {
+  const { copyFor, localizeRuntimeMessage } = loadI18nModule();
+  const copy = copyFor("ko");
+
+  assert.equal(
+    localizeRuntimeMessage(copy, "Checking ChatGPT connector", undefined, "ko"),
+    "ChatGPT 커넥터 확인 중",
+  );
+
+  assert.equal(
+    localizeRuntimeMessage(
+      copy,
+      "Responses proxy is healthy on 127.0.0.1:7841",
+      "proxy",
+      "ko",
+    ),
+    "Responses 프록시가 127.0.0.1:7841에서 정상적으로 작동 중입니다",
+  );
+
+  assert.equal(
+    localizeRuntimeMessage(
+      copy,
+      "Pinned openai/tunnel-client binary is installed",
+      "tunnel-binary",
+      "ko",
+    ),
+    "고정 버전의 openai/tunnel-client 바이너리가 설치되어 있습니다",
+  );
+
+  assert.equal(
+    localizeRuntimeMessage(
+      copy,
+      "Tunnel runtime key is stored privately",
+      "tunnel-key",
+      "ko",
+    ),
+    "터널 런타임 키가 비공개로 저장되어 있습니다",
+  );
+
+  assert.equal(
+    localizeRuntimeMessage(
+      copy,
+      "Launcher owns the tunnel runtime",
+      "tunnel-service",
+      "ko",
+    ),
+    "런처가 터널 런타임을 관리하고 있습니다",
+  );
+
+  assert.equal(
+    localizeRuntimeMessage(
+      copy,
+      "Tunnel runtime reports healthy and ready",
+      "tunnel-runtime",
+      "ko",
+    ),
+    "터널 런타임이 정상이며 사용할 준비가 되었습니다",
+  );
+
+  assert.equal(
+    localizeRuntimeMessage(
+      copy,
+      'ChatGPT connector "Codex Native2" is available',
+      "connector",
+      "ko",
+    ),
+    'ChatGPT 커넥터 "Codex Native2" 사용이 가능합니다',
+  );
+});
+
 for (const language of ["ja", "zh-CN"]) test(`${language} runtime localization preserves literal connector names and endpoints`, () => {
   const { copyFor, localizeRuntimeMessage } = loadI18nModule();
   const copy = copyFor(language);

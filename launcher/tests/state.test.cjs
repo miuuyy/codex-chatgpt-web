@@ -88,6 +88,17 @@ test("Japanese is preserved as a supported persisted launcher language", () => {
   }
 });
 
+test("Korean is preserved as a supported persisted launcher language", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-ko-state-"));
+  const file = path.join(root, "state.json");
+  try {
+    fs.writeFileSync(file, JSON.stringify({ version: 1, language: "ko" }));
+    assert.equal(createStateStore(file).read().language, "ko");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("persisted sidebar corruption is repaired without changing the rest of launcher state", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-sidebar-state-"));
   const file = path.join(root, "state.json");

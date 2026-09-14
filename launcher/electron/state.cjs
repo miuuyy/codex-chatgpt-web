@@ -35,7 +35,12 @@ function readState(filePath) {
     if (!parsed || parsed.version !== 1) return { ...DEFAULT_STATE };
     const state = { ...DEFAULT_STATE, ...parsed };
     delete state.bridgeEnabled;
-    if (state.language !== null && state.language !== "en" && state.language !== "zh-CN" && state.language !== "ja") {
+    if (state.language !== null
+      && state.language !== "en"
+      && state.language !== "zh-CN"
+      && state.language !== "ja"
+      && state.language !== "ko"
+    ) {
       state.language = DEFAULT_STATE.language;
     }
     for (const key of [

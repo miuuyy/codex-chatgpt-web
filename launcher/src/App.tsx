@@ -259,6 +259,13 @@ function Onboarding({
                 marker="日"
                 onClick={() => setSelectedLanguage("ja")}
               />
+              <WelcomeOption
+                active={selectedLanguage === "ko"}
+                detail={localized.korean}
+                label={localized.korean}
+                marker="KO"
+                onClick={() => setSelectedLanguage("ko")}
+              />
             </div>
           ) : isInteraction ? (
             <InteractionModePicker
@@ -2300,6 +2307,7 @@ function LanguageMenu({ copy, language, onChange }: { copy: Copy; language: Lang
     { label: copy.english, value: "en" },
     { label: copy.chinese, value: "zh-CN" },
     { label: copy.japanese, value: "ja" },
+    { label: copy.korean, value: "ko" },
   ];
   const selected = options.find((option) => option.value === language) ?? options[0];
 
@@ -2556,9 +2564,18 @@ function formatTime(value: string, language: Language): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
     ? value
-    : date.toLocaleTimeString(language === "ja" ? "ja-JP" : language === "zh-CN" ? "zh-CN" : "en", {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      });
+    : date.toLocaleTimeString(
+        language === "ja"
+          ? "ja-JP"
+          : language === "zh-CN"
+            ? "zh-CN"
+            : language === "ko"
+              ? "ko-KR"
+              : "en",
+        {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        },
+      );
 }

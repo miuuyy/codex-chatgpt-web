@@ -221,6 +221,16 @@ const NATIVE_COPY = Object.freeze({
     removeMessage: "Codex から ChatGPT Web モデルを削除し、以前のモデルルートを復元しますか？",
     removeDetail: "ランチャーの ChatGPT ログインプロファイルは保持されます。Codex を一度再起動する必要があります。",
   }),
+  ko: Object.freeze({
+    openLauncher: "Codex Web GPT 열기",
+    quit: "종료",
+    exportDiagnostics: "개인정보가 보호된 진단 정보 내보내기",
+    cancel: "취소",
+    remove: "제거",
+    removeTitle: "Codex Web GPT 제거",
+    removeMessage: "Codex에서 ChatGPT Web 모델을 제거하고 이전 모델 경로를 복원할까요?",
+    removeDetail: "런처의 ChatGPT 로그인 프로필은 유지됩니다. Codex를 한 번 다시 시작해야 합니다.",
+}),
 });
 
 function nativeCopyFor(language) {
@@ -395,8 +405,8 @@ async function loadRenderer(window) {
 }
 
 function validateLanguage(value) {
-  if (value !== "en" && value !== "zh-CN" && value !== "ja") {
-    throw new Error("Language must be en, zh-CN, or ja");
+  if (value !== "en" && value !== "zh-CN" && value !== "ja" && value !== "ko") {
+    throw new Error("Language must be en, zh-CN, ja, or ko");
   }
   return value;
 }
