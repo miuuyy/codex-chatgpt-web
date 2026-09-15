@@ -1,5 +1,5 @@
 import { chatGptWebTraceId, createChatGptWebAdapter } from "./adapters/chatgpt-web";
-import { closeChatGptBrowserWorkers } from "./adapters/chatgpt-web/browser-worker";
+import { closeChatGptBrowserWorkers, validateChatGptWebInputImage } from "./adapters/chatgpt-web/browser-worker";
 import { closeTurnBrokers, TurnBroker } from "./adapters/chatgpt-web/turn-broker";
 import { timingSafeEqual } from "node:crypto";
 import { chatGptTurnSessions } from "./adapters/chatgpt-web/turn-execution";
@@ -427,8 +427,27 @@ async function nativeImagesRequest(
   }
 }
 
-function toolBridgeMaps(parsed: CodexParsedRequest): {
-  toolNsMap: Map<string, { namespace: string; name: string }>;
+/**
+ * Fail fast at the HTTP boundary: every image part in a Web-routed turn must
+ * already satisfy the browser worker's attachment constraint, otherwise the
+ * turn would die mid-flight with an adapter error instead of a retryable 400.
+ */
+function findInvalidChatGptWebInputImage(parsed: CodexParsedRequest): string | undefined {
+  for (const [index, message] of parsed.context.messages.entries()) {
+    if (typeof message.content === "string") continue;
+    for (const part of message.content) {
+      if (part.type !== "image") continue;
+      const invalid = validateChatGptWebInputImage(part.imageUrl);
+      if (invalid) {
+        return `ChatGPT web input image in ${message.role} message ${index + 1} ${invalid}. `
+          + "Inline the image bytes as a base64 data URL (png, jpeg, gif, or webp) before retrying.";
+      }
+    }
+  }
+  return undefined;
+}
+
+function toolBridgeMaps(parsed: CodexParsedRequest): {  toolNsMap: Map<string, { namespace: string; name: string }>;
   freeformToolNames: Set<string>;
   toolSearchToolNames: Set<string>;
 } {
@@ -493,6 +512,10 @@ export async function responseRequest(
     }
   } catch (error) {
     return formatErrorResponse(400, "invalid_request_error", error instanceof Error ? error.message : String(error));
+  }
+  const invalidWebImage = findInvalidChatGptWebInputImage(parsed);
+  if (invalidWebImage) {
+    return formatErrorResponse(400, "invalid_request_error", invalidWebImage);
   }
   if (parsed._opaqueMultiAgentV2Payload) {
     return formatErrorResponse(

@@ -179,6 +179,11 @@ codex-chatgpt-web subagents native
 
 - This is unofficial browser automation, not an OpenAI API. ChatGPT UI changes can break selectors;
   drift fails explicitly instead of silently switching model or transport.
+- ChatGPT Web models accept images only as inline base64 data URLs (png, jpeg, gif, webp). Remote
+  URLs and file references are rejected with an explicit HTTP 400 instead of failing mid-turn.
+- Sampling controls (`temperature`, `top_p`, `max_output_tokens`, stop sequences, penalties,
+  `service_tier`) are accepted for compatibility but have no effect on ChatGPT Web models; only
+  reasoning effort, verbosity, and the text output format are honored.
 - Browser state is a sensitive login artifact, and the loopback listener is reachable by processes
   running as the same local user. Never share the launcher profile; use a trusted workstation.
 - Release packages currently target macOS 13+ (arm64/x64), Windows x64, and Linux x64. Runtime,

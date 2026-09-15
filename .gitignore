@@ -17,3 +17,4 @@ launcher/artifacts/
 .playwright-cli/
 output/
 notes.md
+graphify-out/
