@@ -802,6 +802,7 @@ export async function runChatGptMcpServer(options: {
           namespace: tool.namespace ?? null,
           description: browserToolDescription(tool),
           kind: tool.freeform ? "freeform" : tool.toolSearch ? "tool_search" : "function",
+          invocation: tool.freeform ? "codex_tool_call.input" : "codex_tool_call.arguments",
           ...(include_schema ? { parameters: browserToolParameters(tool) } : {}),
         }));
         let nestedTotal = 0;
@@ -830,6 +831,7 @@ export async function runChatGptMcpServer(options: {
             namespace: null,
             description: gatewayToolDescription(tool),
             kind: "gateway",
+            invocation: "codex_tool_call.arguments or codex_tool_call.input, according to the nested tool declaration",
             ...(include_schema ? {
               parameters: {
                 type: "object",

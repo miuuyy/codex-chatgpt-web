@@ -500,6 +500,9 @@ export function compileChatGptWebPrompt(
     : mode.localTools
     ? [
       "For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.",
+      "Use codex_exec as the general local read and execution entry: it can inspect text files including TeX and CSV, run parsers and tests, and invoke installed compilers or build systems through the outer Codex command tool.",
+      "Use codex_apply_patch to create or edit local text files through the outer Codex patch tool. Before claiming that local read, write, or compilation access is unavailable, check these bridge tools and codex_tool_inventory for the exact current-turn capabilities.",
+      "Before the first codex_tool_call for an unfamiliar discovered tool, query its exact codex_tool_inventory entry with include_schema=true, follow its invocation field and parameter schema, and honor any declared timeout range. Function and tool-search entries use codex_tool_call.arguments; freeform entries use codex_tool_call.input.",
       "Call a Codex Native tool only when the latest active request requires a local effect or fresh local evidence that is not already present in the supplied context; otherwise answer the request directly without a tool call.",
       "Use actual Codex Native results as evidence for local observations and effects.",
       "A Codex Native MCP tool result may require context compaction. If it does, follow the compaction instructions in that result exactly.",

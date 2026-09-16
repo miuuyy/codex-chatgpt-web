@@ -75,7 +75,13 @@ test("Full-mode Pro prompts pass one stable turn token directly to native action
   expect(transportOnly).toContain("Write the user-facing final answer only after the last required tool result has settled.");
   expect(transportOnly).toContain(`The task context is complete. Pass turn_token ${token} unchanged to every Codex Native call in this response, including continuations after tool results; do not expose it in the answer. Execute the latest active user request now.`);
   expect(transportOnly).not.toMatch(/codex_bind_turn|binding_id|outer_tool_gateway|command_tool/);
-  expect(transportOnly).not.toMatch(/codex_exec|codex_write_stdin|codex_apply_patch|codex_view_image|codex_tool_inventory|codex\.control\.turn_complete/);
+  // Native2 guidance explains real capabilities without introducing
+  // another binding protocol or a synthetic completion tool.
+  expect(transportOnly).toContain("Use codex_exec as the general local read and execution entry");
+  expect(transportOnly).toContain("Use codex_apply_patch to create or edit local text files");
+  expect(transportOnly).toContain("codex_tool_inventory entry with include_schema=true");
+  expect(transportOnly).toContain("Function and tool-search entries use codex_tool_call.arguments; freeform entries use codex_tool_call.input.");
+  expect(transportOnly).not.toMatch(/codex_bind_turn|codex\.control\.turn_complete/);
   expect(transportOnly).not.toMatch(/expired|invalid|revoked|blocked|safety|security layer|permission gate/i);
   expect(compiled.text).not.toContain("CODEX_INTERNAL_CONTEXT_COMPACT");
   expect(compiled.text).not.toContain("internally compacts this response");

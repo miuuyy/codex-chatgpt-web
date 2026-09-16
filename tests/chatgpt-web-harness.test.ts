@@ -1475,6 +1475,12 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(compiled.text).toContain('"attachment_ref":"codex-input-image-1"');
     expect(compiled.text).toContain('"version":3');
     expect(compiled.text).toContain("use the attached Codex Native tools directly according to their declared descriptions and schemas");
+    expect(compiled.text).toContain("codex_exec as the general local read and execution entry");
+    expect(compiled.text).toContain("including TeX and CSV");
+    expect(compiled.text).toContain("codex_apply_patch to create or edit local text files");
+    expect(compiled.text).toContain("check these bridge tools and codex_tool_inventory");
+    expect(compiled.text).toContain("query its exact codex_tool_inventory entry with include_schema=true");
+    expect(compiled.text).toContain("Function and tool-search entries use codex_tool_call.arguments");
     expect(compiled.text).toContain("Use actual Codex Native results as evidence");
     expect(compiled.text).toContain("Write the user-facing final answer only after the last required tool result has settled");
     expect(compiled.text.match(/turn_123456789012345678901234/g)).toHaveLength(1);
@@ -2577,11 +2583,56 @@ describe("ChatGPT outer-native harness v4", () => {
       { name: "multi_agent_v2__wait_agent", args: { targets: [{ agent_id: "agent_test" }], timeout_ms: 30_000 }, result: { statuses: {} }, direct: false },
       { name: "collaboration__wait_agent", args: { timeout_ms: 30_000 }, result: { message: "Wait timed out.", timed_out: true }, direct: true },
     ];
+    const responsesLiteDynamicTools = parseRequest({
+      model: "chatgpt-web/luna",
+      input: [{
+        type: "additional_tools",
+        role: "developer",
+        tools: [{
+          type: "tool_search",
+          description: "Discover deferred tools",
+          parameters: {
+            type: "object",
+            properties: {
+              query: { type: "string" },
+              limit: { type: "number" },
+            },
+            required: ["query"],
+            additionalProperties: false,
+          },
+        }],
+      }, {
+        type: "tool_search_call",
+        call_id: "call_dynamic_search",
+        arguments: { query: "issue tools" },
+      }, {
+        type: "tool_search_output",
+        call_id: "call_dynamic_search",
+        status: "completed",
+        tools: [{
+          type: "namespace",
+          name: "mcp__dynamic_catalog",
+          description: "Dynamically loaded catalog tools",
+          tools: [{
+            type: "function",
+            name: "lookup_issue",
+            description: "Look up one issue",
+            parameters: {
+              type: "object",
+              properties: { issue_id: { type: "string" } },
+              required: ["issue_id"],
+              additionalProperties: false,
+            },
+          }],
+        }],
+      }],
+    }).context.tools ?? [];
     const gatewayOnlyEnvironment = extractChatGptTurnEnvironment(parsed(environmentXml));
     gatewayOnlyEnvironment.tools = [
       { name: "exec", description: "Run nested Codex tools, including exec_command", parameters: {}, freeform: true },
       { name: "wait", description: "Wait for an exec cell", parameters: { type: "object" } },
       { name: "request_user_input", description: "Request user input", parameters: { type: "object" } },
+      ...responsesLiteDynamicTools,
       {
         name: "wait_agent",
         namespace: "multi_agent_v1",
@@ -2782,6 +2833,99 @@ describe("ChatGPT outer-native harness v4", () => {
         next_offset: null,
       });
 
+      const toolSearchInventory = await inventoryThroughGateway("tool_search", true, ["exec"]);
+      expect(toolSearchInventory.structuredContent).toEqual({
+        tools: [{
+          wire_name: "tool_search",
+          name: "tool_search",
+          namespace: null,
+          description: "Discover deferred tools",
+          kind: "tool_search",
+          invocation: "codex_tool_call.arguments",
+          parameters: {
+            type: "object",
+            properties: {
+              query: { type: "string" },
+              limit: { type: "number" },
+            },
+            required: ["query"],
+            additionalProperties: false,
+          },
+        }],
+        total: 1,
+        next_offset: null,
+      });
+      const toolSearchWireName = (toolSearchInventory.structuredContent as {
+        tools: Array<{ wire_name: string }>;
+      }).tools[0]!.wire_name;
+      const toolSearchArguments = { query: "GitHub issue", limit: 5 };
+      const toolSearchCall = call("codex_tool_call", {
+        turn_token: token,
+        wire_name: toolSearchWireName,
+        arguments: toolSearchArguments,
+      });
+      const toolSearchRequests = await broker.nextToolBatch(token);
+      expect(toolSearchRequests).toHaveLength(1);
+      expect(toolSearchRequests[0]).toMatchObject({
+        wireName: "tool_search",
+        freeform: false,
+        arguments: toolSearchArguments,
+      });
+      expect(toolSearchRequests[0]!.input).toBeUndefined();
+      broker.completeTool(token, toolSearchRequests[0]!.callId, toolResult({ status: "completed" }));
+      expect((await toolSearchCall).structuredContent).toEqual({ status: "completed" });
+
+      const namespacedInventory = await inventoryThroughGateway(
+        "mcp__dynamic_catalog__lookup_issue",
+        true,
+        ["exec"],
+      );
+      expect(namespacedInventory.structuredContent).toEqual({
+        tools: [{
+          wire_name: "mcp__dynamic_catalog__lookup_issue",
+          name: "lookup_issue",
+          namespace: "mcp__dynamic_catalog",
+          description: "Look up one issue",
+          kind: "function",
+          invocation: "codex_tool_call.arguments",
+          parameters: {
+            type: "object",
+            properties: { issue_id: { type: "string" } },
+            required: ["issue_id"],
+            additionalProperties: false,
+          },
+        }],
+        total: 1,
+        next_offset: null,
+      });
+      const namespacedWireName = (namespacedInventory.structuredContent as {
+        tools: Array<{ wire_name: string }>;
+      }).tools[0]!.wire_name;
+      const rejectedNamespacedInput = await call("codex_tool_call", {
+        turn_token: token,
+        wire_name: namespacedWireName,
+        input: "issue_id=42",
+      });
+      expect(rejectedNamespacedInput.isError).toBeTrue();
+      expect(JSON.stringify(rejectedNamespacedInput.content)).toContain("does not accept freeform input");
+
+      const namespacedArguments = { issue_id: "42" };
+      const namespacedCall = call("codex_tool_call", {
+        turn_token: token,
+        wire_name: namespacedWireName,
+        arguments: namespacedArguments,
+      });
+      const namespacedRequests = await broker.nextToolBatch(token);
+      expect(namespacedRequests).toHaveLength(1);
+      expect(namespacedRequests[0]).toMatchObject({
+        wireName: "mcp__dynamic_catalog__lookup_issue",
+        freeform: false,
+        arguments: namespacedArguments,
+      });
+      expect(namespacedRequests[0]!.input).toBeUndefined();
+      broker.completeTool(token, namespacedRequests[0]!.callId, toolResult({ issue_id: "42" }));
+      expect((await namespacedCall).structuredContent).toEqual({ issue_id: "42" });
+
       const rawGatewayInventory = await inventoryThroughGateway(
         "Run nested Codex tools",
         false,
@@ -2792,6 +2936,7 @@ describe("ChatGPT outer-native harness v4", () => {
           wire_name: "exec",
           name: "exec",
           kind: "freeform",
+          invocation: "codex_tool_call.input",
           description: expect.stringContaining("enforced for wait_agent calls made inside exec"),
         }],
         total: 1,
@@ -2879,6 +3024,7 @@ describe("ChatGPT outer-native harness v4", () => {
           name: "web__run",
           namespace: null,
           kind: "gateway",
+          invocation: "codex_tool_call.arguments or codex_tool_call.input, according to the nested tool declaration",
           description: "web__run test tool",
           parameters: { type: "object", additionalProperties: true },
         }],
@@ -3067,7 +3213,11 @@ describe("ChatGPT outer-native harness v4", () => {
       });
       expect(inventory.structuredContent).toMatchObject({
         total: 1,
-        tools: [{ wire_name: "exec_command", kind: "function" }],
+        tools: [{
+          wire_name: "exec_command",
+          kind: "function",
+          invocation: "codex_tool_call.arguments",
+        }],
       });
       expect(JSON.stringify(inventory)).not.toContain("binding_");
       // A fully local inventory lookup still crosses the broker's activity fence even though it
