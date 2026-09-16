@@ -38,6 +38,8 @@ export type CodexMessage =
 export interface CodexUserMessage {
   role: "user";
   content: string | CodexContentPart[];
+  /** Server-owned Codex context that arrives on the Responses wire with role=user. */
+  origin?: "codex_skill";
   timestamp: number;
 }
 

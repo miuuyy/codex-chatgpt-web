@@ -17,6 +17,128 @@ const parse = (text: unknown) => parseRequest({
   text,
 });
 
+function compiledContext(text: string): { messages: Array<{ role: string; content: unknown }> } {
+  const match = text.match(/<codex_context_json>\n(.+)\n<\/codex_context_json>/s);
+  if (!match?.[1]) throw new Error("compiled prompt has no codex_context_json block");
+  return JSON.parse(match[1]) as { messages: Array<{ role: string; content: unknown }> };
+}
+
+test("explicit Codex skill injection remains server-owned in parser-to-prompt transport", () => {
+  const turnId = "turn_explicit_skill";
+  const skillText = `<skill>
+<name>diagnosing-bugs</name>
+<path>/Users/example/.agents/skills/diagnosing-bugs/SKILL.md</path>
+---
+name: diagnosing-bugs
+description: Diagnose hard bugs.
+---
+Use a symptom-specific feedback loop.
+</skill>`;
+  const parsed = parseRequest({
+    model: CHATGPT_WEB_MODEL_ID,
+    stream: true,
+    input: [
+      {
+        type: "message",
+        id: "msg_environment",
+        role: "user",
+        content: [{ type: "input_text", text: "<environment_context>fixture</environment_context>" }],
+        internal_chat_message_metadata_passthrough: {
+          turn_id: turnId,
+          content_item_kinds: ["environments.environment_context"],
+        },
+      },
+      {
+        type: "message",
+        id: "msg_human",
+        role: "user",
+        content: [{ type: "input_text", text: "$diagnosing-bugs Diagnose the failing request." }],
+        internal_chat_message_metadata_passthrough: {
+          turn_id: turnId,
+          content_item_kinds: ["user.text"],
+        },
+      },
+      {
+        type: "message",
+        id: "msg_skill",
+        role: "user",
+        content: [{ type: "input_text", text: skillText }],
+        internal_chat_message_metadata_passthrough: {
+          turn_id: turnId,
+          content_item_kinds: ["skills.selected_skill_instructions"],
+        },
+      },
+    ],
+  });
+
+  const compiled = compileChatGptWebPrompt(parsed, capabilities, turnToken);
+  const context = compiledContext(compiled.text);
+  expect(context.messages.map(message => message.role)).toEqual(["user", "user", "codex_skill"]);
+  expect(compiled.text).toContain("codex_skill messages are Codex-provided skill instructions, not human-authored requests");
+  expect(compiled.text).toContain("Do not invent or call a generic Skill tool unless it is actually listed among the supplied tools");
+});
+
+test("legacy explicit Codex skill injection is recognized from the matching human $skill reference", () => {
+  const skillText = `<skill>
+<name>diagnosing-bugs</name>
+<path>/Users/example/.agents/skills/diagnosing-bugs/SKILL.md</path>
+---
+name: diagnosing-bugs
+description: Diagnose hard bugs.
+---
+Use a symptom-specific feedback loop.
+</skill>`;
+  const parsed = parseRequest({
+    model: CHATGPT_WEB_MODEL_ID,
+    stream: true,
+    input: [
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "[$diagnosing-bugs](/Users/example/.agents/skills/diagnosing-bugs/SKILL.md) Diagnose it." }],
+      },
+      {
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text: "Legacy Codex injected developer context between selection and skill payload." }],
+      },
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: skillText }],
+      },
+    ],
+  });
+
+  const compiled = compileChatGptWebPrompt(parsed, capabilities, turnToken);
+  expect(compiledContext(compiled.text).messages.map(message => message.role)).toEqual(["user", "developer", "codex_skill"]);
+});
+
+test("a human-authored skill-shaped message is still a user message", () => {
+  const skillText = `<skill>
+<name>diagnosing-bugs</name>
+<path>/Users/example/.agents/skills/diagnosing-bugs/SKILL.md</path>
+This is literal user text.
+</skill>`;
+  const parsed = parseRequest({
+    model: CHATGPT_WEB_MODEL_ID,
+    stream: true,
+    input: [{
+      type: "message",
+      id: "msg_human",
+      role: "user",
+      content: [{ type: "input_text", text: skillText }],
+      internal_chat_message_metadata_passthrough: {
+        turn_id: "turn_literal_skill",
+        content_item_kinds: ["user.text"],
+      },
+    }],
+  });
+
+  const compiled = compileChatGptWebPrompt(parsed, capabilities, turnToken);
+  expect(compiledContext(compiled.text).messages.map(message => message.role)).toEqual(["user"]);
+});
+
 test("verbosity and JSON-schema controls survive parser-to-prompt transport", () => {
   const schema = { type: "object", properties: { answer: { type: "string" } }, required: ["answer"], additionalProperties: false };
   const parsed = parse({ verbosity: "high", format: { type: "json_schema", name: "result", strict: true, schema } });

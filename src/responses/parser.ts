@@ -21,6 +21,84 @@ function isObj(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+function rawInputItems(body: unknown): unknown[] {
+  return isObj(body) && Array.isArray(body.input) ? body.input : [];
+}
+
+function rawItemTurnId(value: unknown): string | undefined {
+  if (!isObj(value)) return undefined;
+  const metadata = value.internal_chat_message_metadata_passthrough;
+  if (!isObj(metadata)) return undefined;
+  return typeof metadata.turn_id === "string" && metadata.turn_id.length > 0
+    ? metadata.turn_id
+    : undefined;
+}
+
+function rawMessageText(value: unknown): string {
+  if (!isObj(value)) return "";
+  if (typeof value.content === "string") return value.content;
+  if (!Array.isArray(value.content)) return "";
+  return value.content
+    .map(part => isObj(part) && typeof part.text === "string" ? part.text : "")
+    .filter(Boolean)
+    .join("\n");
+}
+
+function rawItemContentKinds(value: unknown): string[] {
+  if (!isObj(value)) return [];
+  const metadata = value.internal_chat_message_metadata_passthrough;
+  if (!isObj(metadata) || !Array.isArray(metadata.content_item_kinds)) return [];
+  return metadata.content_item_kinds.filter((kind): kind is string => typeof kind === "string");
+}
+
+function codexSkillEnvelope(value: unknown): { name: string; path: string } | undefined {
+  const text = rawMessageText(value).trim();
+  const match = text.match(
+    /^<skill>\s*<name>([^<\r\n]+)<\/name>\s*<path>([^<\r\n]+)<\/path>[\s\S]*<\/skill>$/i,
+  );
+  if (!match?.[1] || !match[2]) return undefined;
+  const name = match[1].trim();
+  const path = match[2].trim();
+  if (!name || !/(?:^|\/)SKILL\.md$/i.test(path)) return undefined;
+  return { name, path };
+}
+
+function precedingExplicitSkillReference(input: unknown[], skillIndex: number, name: string): boolean {
+  const selected = `$${name}`;
+  for (let index = skillIndex - 1; index >= 0; index -= 1) {
+    const item = input[index];
+    if (!isObj(item)) continue;
+    const effectiveType = item.type ?? ("role" in item ? "message" : undefined);
+    if (effectiveType === "message" && item.role === "assistant") return false;
+    if (effectiveType === "function_call" || effectiveType === "reasoning" || effectiveType === "compaction") {
+      return false;
+    }
+    if (effectiveType !== "message" || item.role !== "user") continue;
+    if (rawMessageText(item).includes(selected)) return true;
+  }
+  return false;
+}
+
+function explicitCodexSkillInputIndices(body: unknown): Set<number> {
+  const input = rawInputItems(body);
+  const indices = new Set<number>();
+  for (let index = 0; index < input.length; index += 1) {
+    const item = input[index];
+    if (!isObj(item) || (item.type !== undefined && item.type !== "message") || item.role !== "user") continue;
+    const envelope = codexSkillEnvelope(item);
+    if (!envelope) continue;
+    // Current Codex marks selected-skill payloads explicitly. Older Codex builds did not carry
+    // content_item_kinds, so retain a narrow compatibility path tied to the human's `$skill`
+    // selection in the same unfinished turn. This avoids treating arbitrary pasted <skill> XML as
+    // server-owned context merely because a Responses item has an id or turn_id.
+    if (rawItemContentKinds(item).includes("skills.selected_skill_instructions")
+      || precedingExplicitSkillReference(input, index, envelope.name)) {
+      indices.add(index);
+    }
+  }
+  return indices;
+}
+
 type InputBlock =
   | { type: "input_text"; text: string }
   | { type: "text"; text: string }
@@ -283,6 +361,7 @@ export function parseRequest(body: unknown): CodexParsedRequest {
     throw new Error(`responses parse error: ${parsed.error.message}`);
   }
   const data = parsed.data;
+  const codexSkillInputIndices = explicitCodexSkillInputIndices(body);
   const now = Date.now();
   const messages: CodexMessage[] = [];
   const systemPrompt: string[] = [];
@@ -313,7 +392,7 @@ export function parseRequest(body: unknown): CodexParsedRequest {
   if (typeof data.input === "string") {
     messages.push({ role: "user", content: data.input, timestamp: now });
   } else if (data.input) {
-    for (const item of data.input) {
+    for (const [inputIndex, item] of data.input.entries()) {
       const effectiveType = (item as { type?: string }).type ?? ("role" in item ? "message" : undefined);
 
       if (effectiveType === "compaction_trigger") {
@@ -394,7 +473,14 @@ export function parseRequest(body: unknown): CodexParsedRequest {
           case "developer": {
             pendingReasoning.length = 0;
             const content = inputContentParts(msg.content as unknown[] | string | undefined);
-            messages.push({ role: msg.role, content, timestamp: now });
+            messages.push({
+              role: msg.role,
+              content,
+              ...(msg.role === "user" && codexSkillInputIndices.has(inputIndex)
+                ? { origin: "codex_skill" as const }
+                : {}),
+              timestamp: now,
+            });
             break;
           }
           case "assistant": {
