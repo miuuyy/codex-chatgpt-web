@@ -248,7 +248,12 @@ export function getCodexHome(): string {
 }
 
 export function getCodexConfigPath(): string {
-  return join(getCodexHome(), "config.toml");
+  // `codex -p gpt` layers this file over the user's base config. Connecting or
+  // restarting the Web launcher must never reroute ordinary Codex sessions.
+  const developmentHome = process.env.CODEX_WEB_GPT_DEV_HOME?.trim();
+  const isolatedDevelopment = developmentHome
+    && resolve(expandUserPath(developmentHome)) === getConfigDir();
+  return join(getCodexHome(), isolatedDevelopment ? "config.toml" : "gpt.config.toml");
 }
 
 export function getCodexModelsCachePath(): string {

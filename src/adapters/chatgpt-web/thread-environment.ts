@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { atomicWriteFile } from "../../config";
 import { getCodexHome } from "../../codex-integration-shared";
 import type { CodexParsedRequest } from "../../types";
@@ -61,6 +61,14 @@ function absolutePaths(value: unknown, field: string): string[] {
     if (!unique.has(pathIdentity(path))) unique.set(pathIdentity(path), path);
   }
   return [...unique.values()];
+}
+
+export function registeredCodexHomes(statePath?: string): string[] {
+  const homesPath = statePath ? join(dirname(statePath), "codex-homes.json") : undefined;
+  if (!homesPath || !existsSync(homesPath)) return [];
+  const registration = record(JSON.parse(readFileSync(homesPath, "utf8")));
+  if (registration?.version !== 1) throw new Error("Invalid registered Codex homes version");
+  return absolutePaths(registration.homes, "homes");
 }
 
 function sandboxPolicy(value: unknown, roots: string[], writableRoots: string[]): ChatGptSandboxPolicy {
@@ -167,8 +175,12 @@ export class ChatGptThreadEnvironmentStore {
       const compactionSourceTurnId = parsed._compactionRequest
         ? extractChatGptCompactionSourceRevision(parsed).turnId : undefined;
       if (rolloutIdentity && identity.turnId) {
+        // The launcher and Orca can use separate CODEX_HOME directories. Only locally
+        // registered homes may supply a rollout; request metadata cannot register one.
+        const additionalCodexHomes = registeredCodexHomes(this.path);
         const rolloutEnvironment = resolveCurrentCodexRolloutEnvironment({
           codexHome: this.codexHome,
+          additionalCodexHomes,
           ...(this.sqliteHome ? { sqliteHome: this.sqliteHome } : {}),
           lineage: rolloutIdentity,
           turnId: identity.turnId,

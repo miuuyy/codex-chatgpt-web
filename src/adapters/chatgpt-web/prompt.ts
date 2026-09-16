@@ -501,6 +501,11 @@ export function compileChatGptWebPrompt(
     ? [
       "For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.",
       "Call a Codex Native tool only when the latest active request requires a local effect or fresh local evidence that is not already present in the supplied context; otherwise answer the request directly without a tool call.",
+      "For file exploration, start in the smallest task-relevant directory: discover filenames with rg --files, locate relevant content with scoped rg searches, then read only the needed line ranges. Avoid starting with whole-repository or home-directory content dumps.",
+      "Batch only independent, related reads. As a starting budget, inspect 2-3 files and roughly 200-300 output lines across the entire batch, including parallel calls. Inspect the results before expanding the scope when the task requires more evidence.",
+      "Limit actual filesystem access with explicit paths, file patterns, search terms, and line ranges. max_output_tokens limits returned output; it does not narrow what a command reads.",
+      "Reuse relevant context and earlier tool results instead of rereading unchanged content. If a path is missing, locate it within the relevant directory before trying another guessed path.",
+      "Distinguish output-size failures from approval or audit denials: narrow oversized reads, and address the stated denial reason before retrying. Do not disguise a denied operation to bypass the decision.",
       "Use actual Codex Native results as evidence for local observations and effects.",
       "A Codex Native MCP tool result may require context compaction. If it does, follow the compaction instructions in that result exactly.",
       "After a deterministic tool failure, update the working hypothesis from that result and inspect the relevant repository or environment before choosing a different next action; do not repeat the same call unless its inputs or observable state changed.",

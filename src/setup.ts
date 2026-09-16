@@ -41,6 +41,7 @@ import {
 import { connectTunnel, createTunnelConfig, installRuntimeKey, installRuntimeKeyBytes, installTunnelClient, managedRuntimeKeyPath, stopTunnel, waitForTunnelReady } from "./tunnel";
 import { getTunnelServiceStatus, installTunnelService, restartTunnelService, stopTunnelService, tunnelServiceDefinitionMatches, uninstallTunnelService } from "./tunnel-service";
 import { VERSION } from "./version";
+import { syncCodexProfileCatalogs } from "./codex-model-catalog-sync";
 
 export interface SetupOptions {
   mode: RuntimeMode;
@@ -616,6 +617,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   installCodexIntegration(config, {
     replaceExistingRoute: options.replaceCodexRoute,
   });
+  syncCodexProfileCatalogs(config);
 
   return {
     mode: config.mode,

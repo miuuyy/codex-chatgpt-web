@@ -94,6 +94,30 @@ function routedSubagentVersion(template: JsonObject, config: AppConfig): string 
   return typeof template.multi_agent_version === "string" ? template.multi_agent_version : undefined;
 }
 
+function contextFields(route: ChatGptWebModelRoute, config: AppConfig): JsonObject {
+  const limits = resolveChatGptWebContextLimits(route.backendModel, route.adapterEffort, config);
+  return {
+    context_window: limits.contextWindow,
+    max_context_window: limits.contextWindow,
+    effective_context_window_percent: limits.effectiveContextWindowPercent,
+    auto_compact_token_limit: limits.autoCompactTokenLimit,
+  };
+}
+
+/** Refresh only context metadata; preserve native rows, ordering, and user customizations. */
+export function refreshChatGptWebCatalogContext(value: unknown, config: AppConfig): JsonObject {
+  const catalog = object(value, "Codex model catalog");
+  if (!Array.isArray(catalog.models)) throw new Error("Codex model catalog is missing a models array");
+  const routes = new Map(availableChatGptWebModelRoutes(config).map(route => [route.slug, route]));
+  return {
+    ...catalog,
+    models: catalog.models.map(model => {
+      const route = routes.get(slug(model) ?? "");
+      return route ? { ...object(model, "Web model"), ...contextFields(route, config) } : model;
+    }),
+  };
+}
+
 export function buildChatGptWebModel(
   templateValue: unknown,
   route: ChatGptWebModelRoute,
@@ -104,7 +128,6 @@ export function buildChatGptWebModel(
   if (!templateSlug || templateSlug.startsWith(CHATGPT_WEB_MODEL_PREFIX)) {
     throw new Error("ChatGPT Web model template must be a native Codex model");
   }
-  const limits = resolveChatGptWebContextLimits(route.backendModel, route.adapterEffort, config);
   const multiAgentVersion = routedSubagentVersion(template, config);
   const priority = routedModelPriority(template, route, config);
   const model: JsonObject = {
@@ -133,10 +156,7 @@ export function buildChatGptWebModel(
     upgrade: null,
     default_reasoning_level: route.codexEffort,
     supported_reasoning_levels: [reasoningLevel(template, route.codexEffort, route.displayName)],
-    context_window: limits.contextWindow,
-    max_context_window: limits.contextWindow,
-    effective_context_window_percent: limits.effectiveContextWindowPercent,
-    auto_compact_token_limit: limits.autoCompactTokenLimit,
+    ...contextFields(route, config),
     // ChatGPT Web has no Codex service tier. Never inherit the native template's Fast tiers.
     additional_speed_tiers: [],
     service_tiers: [],

@@ -1,0 +1,118 @@
+.help-content {
+  container-type: inline-size;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.help-content > section,
+.help-content > footer {
+  padding: 24px 0;
+  border-top: 1px solid var(--color-border);
+}
+
+:lang(ko) .help-content {
+  word-break: keep-all;
+}
+
+.help-content h2 {
+  margin: 0 0 16px;
+  color: var(--color-text-primary);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.help-content h3 {
+  margin: 18px 0 5px;
+  color: var(--color-text-primary);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.help-content p {
+  margin: 0 0 12px;
+}
+
+.help-steps {
+  display: grid;
+  gap: 18px;
+  margin: 0 0 20px;
+  padding: 0;
+  list-style: none;
+}
+
+.help-steps li {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 14px;
+}
+
+.help-steps h3,
+.help-client-grid h3 {
+  margin-top: 0;
+}
+
+.help-steps p {
+  margin-bottom: 0;
+}
+
+.help-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.help-client-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 22px;
+}
+
+.help-client-grid article {
+  padding: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.help-content pre {
+  margin: 14px 0 0;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  background: var(--color-background-button-secondary);
+  color: var(--color-text-primary);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.help-content .help-note {
+  padding-left: 12px;
+  border-left: 2px solid var(--color-border-heavy);
+  color: var(--color-text-tertiary);
+}
+
+.help-content details {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.help-content summary {
+  padding: 12px 0;
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+
+.help-content summary:focus-visible {
+  outline: 1px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+.help-content details + .help-actions {
+  margin-top: 16px;
+}
+
+@container (max-width: 520px) {
+  .help-client-grid {
+    grid-template-columns: 1fr;
+  }
+}

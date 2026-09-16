@@ -112,7 +112,13 @@ export async function activateChatGptEffortMenu(
 
   const settleMs = options.settleMs ?? 3_000;
   await clearGhostEffortState(page, control);
-  await control.click({ force: true, timeout: Math.max(1, settleMs) });
+  try {
+    await control.click({ force: true, timeout: Math.max(1, settleMs) });
+  } catch (error) {
+    // Launcher maintenance can use a 1x1 hidden viewport. Its control still owns
+    // the menu, but a coordinate click cannot reach it; use the proven event below.
+    if (!(error instanceof Error) || !error.message.includes("Element is outside of the viewport")) throw error;
+  }
   const clickedSurface = await waitForEffortSurface(page, control, settleMs);
   if (clickedSurface) return { method: "click", ...clickedSurface };
 
@@ -214,12 +220,8 @@ export async function detectChatGptAccountCapabilities(
     }
     await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
   }
-  const menu = page.locator(CHATGPT_EFFORT_MENU_SELECTOR).last();
-  const menuVisible = await menu.isVisible().catch(() => false);
-  const menuExpanded = await effortButton.getAttribute("aria-expanded").catch(() => null);
-  if (!menuVisible && menuExpanded !== "true") await effortButton.press("Enter");
   try {
-    const { sliderContainer, slider } = chatGptEffortSlider(page);
+    const { sliderContainer, slider } = await activateChatGptEffortMenu(page, effortButton);
     const timeout = options.selectorTimeoutMs ?? 70_000;
     // Model radio rows can hydrate before the effort control. They carry no evidence
     // of the account's reasoning range, so an absent slider must fail, not cache false.

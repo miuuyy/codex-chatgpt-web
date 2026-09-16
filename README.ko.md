@@ -36,7 +36,7 @@ Full harness 모드는 MCP를 통해 ChatGPT를 현재 작업의 파일, 터미�
 
 1. **런처 설치**: 위에서 운영체제에 맞는 다운로드 버튼을 선택하세요.
 2. **ChatGPT 로그인**: 내장 브라우저에서 로그인하고 브라우저 smoke test를 실행하세요.
-3. **모델 설치**: Codex를 한 번 다시 시작한 뒤 **ChatGPT Web — …** 모델을 선택하세요.
+3. **모델 설치**: `codex --profile gpt`로 시작한 뒤 **ChatGPT Web — …** 모델을 선택하세요. 기본 설정 보존과 Orca 계정별 경로는 [프로필 설정 안내](README.md#codex-profiles-and-orca)를 참고하세요.
 4. **도구를 사용해 개발하려면**: 런처의 **MCP**를 열고 아래의 Full harness 설정을 완료하세요.
 
 브라우저와 런타임이 앱에 포함되어 있습니다. Chrome, Node, Bun을 따로 설치할 필요가 없습니다.
@@ -188,6 +188,32 @@ bun run app:package
 `dev:launcher`는 `~/.codex-chatgpt-web-dev`의 별도 프로필과 계정을 사용합니다. `dev:chat`은 실제 브라우저와 compaction 경로를 사용하며, 도구 결과는 명시적인 시뮬레이션입니다. 일반 Codex 경로는 변경하지 않습니다. 설정과 명령은 [DEV chat harness](docs/dev-chat.md)를 참고하세요.
 
 </details>
+
+## Codex 프로필과 Orca
+
+기본 `config.toml`은 보존하고 Web 라우팅은 `gpt.config.toml`에 설정합니다. AI 설치 에이전트도 아래 명령을 Codex를 실행할 Orca 터미널에서 실행해 현재 계정의 경로를 확인해야 합니다. 다른 PC의 홈 경로나 계정 ID를 복사하지 마세요.
+
+```bash
+printf '%s\n' "${CODEX_HOME:-$HOME/.codex}"
+```
+
+Windows PowerShell:
+
+```powershell
+$codexTargetHome = if ([string]::IsNullOrWhiteSpace($env:CODEX_HOME)) {
+    Join-Path $env:USERPROFILE '.codex'
+} else {
+    $env:CODEX_HOME
+}
+$codexTargetHome
+```
+
+프로필 설치, 세션 재개용 홈 등록, 이전 설치의 마이그레이션은 위의 프로필 설정 안내를 따르세요. 경로는 현재 PC에서 해석한 절대경로로 저장합니다. 구현 참고:
+[profile path selection](src/codex-integration-shared.ts),
+[launcher home selection](launcher/electron/profile.cjs),
+[journal validation](src/codex-integration-journal.ts),
+[registered rollout homes](src/adapters/chatgpt-web/thread-environment.ts).
+
 
 ## Star History
 

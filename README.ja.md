@@ -36,7 +36,7 @@ Full ハーネスモードでは、MCP を通じて ChatGPT を現在のタス�
 
 1. **ランチャーをインストール**：上のボタンから、お使いの OS 向けのアプリをダウンロードします。
 2. **ChatGPT にサインイン**：内蔵ブラウザーでログインし、ブラウザーのスモークテストを実行します。
-3. **モデルをインストール**：Codex を一度再起動し、**ChatGPT Web — …** モデルを選択します。
+3. **モデルをインストール**：`codex --profile gpt` で起動し、**ChatGPT Web — …** モデルを選択します。基本設定の保持と Orca のアカウント別パスについては [設定手順](README.md#codex-profiles-and-orca) を参照してください。
 4. **ツールを使って開発する場合**：ランチャーの **MCP** を開き、下記の Full ハーネス設定を完了します。
 
 ブラウザーとランタイムはアプリに含まれています。Chrome、Node、Bun の別途インストールは不要です。
@@ -185,6 +185,32 @@ bun run app:package
 `dev:launcher` は `~/.codex-chatgpt-web-dev` 内の独立したプロファイルとアカウントを使います。`dev:chat` は実際のブラウザーとコンパクション処理を使い、ツールの結果は明示的にシミュレーションします。通常の Codex のルートは変更しません。設定とコマンドは [DEV chat ハーネス](docs/dev-chat.md)を参照してください。
 
 </details>
+
+## Codex プロファイルと Orca
+
+基本の `config.toml` を保持し、Web ルーティングは `gpt.config.toml` に設定します。AI インストーラーも、Codex を起動する Orca ターミナルで次のコマンドを実行し、選択中のアカウントのパスを確認してください。別の PC のホームパスやアカウント ID をコピーしないでください。
+
+```bash
+printf '%s\n' "${CODEX_HOME:-$HOME/.codex}"
+```
+
+Windows PowerShell:
+
+```powershell
+$codexTargetHome = if ([string]::IsNullOrWhiteSpace($env:CODEX_HOME)) {
+    Join-Path $env:USERPROFILE '.codex'
+} else {
+    $env:CODEX_HOME
+}
+$codexTargetHome
+```
+
+プロファイルのインストール、セッション再開用ホームの登録、既存環境の移行は上記の設定手順に従ってください。パスには現在の PC で解決した絶対パスを保存します。実装の参照:
+[profile path selection](src/codex-integration-shared.ts),
+[launcher home selection](launcher/electron/profile.cjs),
+[journal validation](src/codex-integration-journal.ts),
+[registered rollout homes](src/adapters/chatgpt-web/thread-environment.ts).
+
 
 ## Star の履歴
 

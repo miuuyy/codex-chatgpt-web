@@ -2,6 +2,7 @@ import type { Language } from "./types";
 
 const en = {
   product: "Codex Web GPT",
+  help: "Help",
   devBadge: "DEV",
   devSetupTitle: "Set up the isolated DEV profile",
   devSetupSubtitle: "This browser, account, configuration, and runtime data stay separate from the normal launcher and Codex.",
@@ -201,6 +202,7 @@ const en = {
 
 const zh: Record<keyof typeof en, string> = {
   product: "Codex Web GPT",
+  help: "帮助",
   devBadge: "DEV",
   devSetupTitle: "设置隔离的 DEV 配置",
   devSetupSubtitle: "此浏览器、账户、配置和运行数据与普通启动器及 Codex 完全分离。",
@@ -400,6 +402,7 @@ const zh: Record<keyof typeof en, string> = {
 
 const ja: Record<keyof typeof en, string> = {
   product: "Codex Web GPT",
+  help: "ヘルプ",
   devBadge: "DEV",
   devSetupTitle: "隔離された DEV プロファイルをセットアップ",
   devSetupSubtitle: "このブラウザー、アカウント、設定、ランタイムデータは、通常のランチャーおよび Codex から完全に分離されます。",
@@ -599,6 +602,7 @@ const ja: Record<keyof typeof en, string> = {
 
 const ko: Record<keyof typeof en, string> = {
   product: "Codex Web GPT",
+  help: "도움말",
   devBadge: "DEV",
   devSetupTitle: "격리된 DEV 프로필 설정",
   devSetupSubtitle: "이 브라우저, 계정, 구성 및 런타임 데이터는 일반 런처와 Codex로부터 완전히 분리됩니다.",
@@ -798,6 +802,7 @@ const ko: Record<keyof typeof en, string> = {
 
 const zhTW: Record<keyof typeof en, string> = {
   product: "Codex Web GPT",
+  help: "說明",
   devBadge: "DEV",
   devSetupTitle: "設定隔離的 DEV 設定檔",
   devSetupSubtitle: "此瀏覽器、帳戶、設定與執行階段資料，會與一般啟動器及 Codex 完全分離。",

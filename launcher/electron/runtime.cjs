@@ -470,11 +470,13 @@ class RuntimeHost {
     }
     const coreHome = this.supervisor.coreHome
       || path.dirname(this.supervisor.configPath);
+    const codexConfigPath = path.join(this.codexHome,
+      this.launcherProfile === "development" ? "config.toml" : "gpt.config.toml");
     const paths = new Set([
       this.supervisor.configPath,
       path.join(coreHome, "codex", "integration-journal.json"),
       path.join(coreHome, "codex", "integration-journal.recovery.json"),
-      path.join(this.codexHome, "config.toml"),
+      codexConfigPath,
       path.join(this.codexHome, "models_cache.json"),
       path.join(coreHome, "secrets", "tunnel-runtime.key"),
       path.join(coreHome, "secrets", "tunnel-runtime-automatic.key"),
@@ -506,7 +508,7 @@ class RuntimeHost {
       }
     }
     return [...paths].map(filePath => captureRegularFile(filePath, {
-      followSymlink: filePath === path.join(this.codexHome, "config.toml"),
+      followSymlink: filePath === codexConfigPath,
     }));
   }
 
@@ -735,12 +737,14 @@ class RuntimeHost {
         throw new Error(detail);
       }
       this.logger.info("runtime.operation_completed", { name });
-      this.publishOperation?.({ name, status: "completed", message: options.successMessage || "Completed" });
+      if (!options.deferCompletion) {
+        this.publishOperation?.({ name, status: "completed", message: options.successMessage || "Completed" });
+      }
       return result;
     } catch (error) {
       const message = redactText(error instanceof Error ? error.message : String(error));
       this.logger.error("runtime.operation_failed", { name, message });
-      this.publishOperation?.({ name, status: "failed", message });
+      if (!options.deferCompletion) this.publishOperation?.({ name, status: "failed", message });
       throw new Error(message);
     } finally {
       this.active = null;
@@ -1346,6 +1350,7 @@ class RuntimeHost {
       if (this.launcherProfile === "production") {
         await this.run(name, [...args, "--preflight-only"], {
           ...options,
+          deferCompletion: true,
           message: "Validating Codex configuration before changing the runtime",
           successMessage: "Codex configuration is ready for setup",
           timeoutMs: Math.min(options.timeoutMs || 15_000, 15_000),
@@ -1355,12 +1360,14 @@ class RuntimeHost {
       if (previousRuntime.owner === "external") this.supervisor.prepareExternalMigration();
       else await this.supervisor.stopForSetup();
       setupCommandStarted = true;
-      const result = await this.run(name, args, options);
+      // The setup transaction owns completion, including runtime startup and rollback.
+      const result = await this.run(name, args, { ...options, deferCompletion: true });
       const runtime = await this.supervisor.startIfConfigured();
       if (runtime.status !== "ready") {
         throw new Error(`Setup completed, but the launcher-owned runtime is ${runtime.status}: ${runtime.detail || "not ready"}`);
       }
       await options.afterRuntimeReady?.();
+      this.publishOperation?.({ name, status: "completed", message: options.successMessage || "Completed" });
       return result;
     } catch (error) {
       const primary = error instanceof Error ? error.message : String(error);

@@ -8,7 +8,8 @@ export interface CodexParsedRequest {
   /** Number of leading raw input items restored from local previous_response_id state. */
   _replayPrefixLen?: number;
   /**
-   * True when the input carried `{type:"compaction_trigger"}` — Codex remote compaction v2 asking
+   * True for a native local compaction normalized by the server, or when the input carried
+   * `{type:"compaction_trigger"}` — Codex remote compaction v2 asking
    * this turn to produce a `{type:"compaction"}` output item. Routed adapters can't natively;
    * the server runs the model as a summarizer and the bridge emits a synthetic compaction item
    * (see src/responses/compaction.ts).

@@ -12,6 +12,7 @@ import {
 import { createPortal } from "react-dom";
 import { copyFor, localizeRuntimeMessage, type Copy } from "./i18n";
 import { Icon, type IconName } from "./icons";
+import { HelpContent, helpCopyFor } from "./HelpContent";
 import type {
   BrowserInteractionMode,
   BrowserState,
@@ -566,6 +567,16 @@ function LauncherShell({
                   label="X"
                   onClick={() => void api!.openExternal(snapshot.urls.x).catch((cause) => setError(messageOf(cause)))}
                 />
+                <button
+                  aria-current={surface === "help" ? "page" : undefined}
+                  aria-label={copy.help}
+                  className="icon-button"
+                  onClick={() => navigateSurface("help")}
+                  title={copy.help}
+                  type="button"
+                >
+                  <Icon name="help" />
+                </button>
               </div>
             </div>
 
@@ -684,6 +695,16 @@ function LauncherShell({
             ) : null}
             {surface === "activity" ? (
               <ActivitySurface copy={copy} language={language} logs={logs} setError={setError} />
+            ) : null}
+            {surface === "help" ? (
+              <ContentSurface title={copy.help} subtitle={helpCopyFor(language).intro}>
+                <HelpContent
+                  copy={copy}
+                  language={language}
+                  navigate={navigateSurface}
+                  openDocument={(file) => void api!.openExternal(`${snapshot.urls.github}/blob/main/${file}`).catch((cause) => setError(messageOf(cause)))}
+                />
+              </ContentSurface>
             ) : null}
             {surface === "settings" ? (
               <SettingsSurface

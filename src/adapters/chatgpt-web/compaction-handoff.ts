@@ -6,7 +6,7 @@ import type {
 } from "../../types";
 import { extractChatGptCompactionSourceRevision } from "./environment";
 import type { ChatGptBrowserWorker } from "./browser-worker";
-import { ChatGptCompactionHandoffAccepted } from "./adapter-error";
+import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError } from "./adapter-error";
 import type { CompactionTransactionHandle } from "./compaction-transaction";
 import type { ChatGptWebCapabilities } from "./model";
 import {
@@ -328,7 +328,9 @@ export async function requestRetainedCompactionHandoff(
       onTextDelta: () => {},
     });
     const browserFailure = browser.then<never>(
-      () => new Promise<never>(() => {}),
+      () => { throw new ChatGptWebAdapterError("Retained ChatGPT response ended without its structured compaction handoff", {
+        status: 409, errorType: "invalid_request_error", code: "compaction_handoff_missing", retryable: false,
+      }); },
       error => { throw error; },
     );
     const summary = await withCompactionAbort(

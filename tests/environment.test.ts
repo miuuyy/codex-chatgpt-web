@@ -821,6 +821,59 @@ describe("trusted Codex task environment continuity", () => {
     });
   });
 
+  function registeredHomeFixture() {
+    const fixture = resumedRootFixture();
+    const launcherHome = mkdtempSync(join(tmpdir(), "codex-launcher-home-"));
+    temporaryRoots.push(launcherHome);
+    const statePath = join(launcherHome, "runtime", "thread-environments.json");
+    mkdirSync(dirname(statePath), { recursive: true });
+    const registrationPath = join(dirname(statePath), "codex-homes.json");
+    const store = () => new ChatGptThreadEnvironmentStore(statePath, Date.now, launcherHome);
+    const body = fixture.request._rawBody as { input: Array<Record<string, unknown>> };
+    delete body.input[0]!.internal_chat_message_metadata_passthrough;
+    body.input.unshift(
+      { type: "message", role: "user", id: "old_environment", content: [{ type: "input_text", text: environmentXml }] },
+      { type: "message", role: "user", id: "old_prompt", content: [{ type: "input_text", text: "Hello" }] },
+      { type: "message", role: "assistant", id: "old_answer", content: [{ type: "output_text", text: "Hello" }] },
+    );
+    return { ...fixture, registrationPath, store };
+  }
+
+  test("follow-ups recover their current rollout from a registered Orca home when wire turn tags are absent", () => {
+    const { codexHome, request, registrationPath, store } = registeredHomeFixture();
+    expect(() => store().resolve(request)).toThrow("missing cwd");
+    writeFileSync(registrationPath, JSON.stringify({ version: 1, homes: [codexHome] }));
+    const tools: CodexTool[] = [{ name: "current_tool", description: "current", parameters: { type: "object" } }];
+    request.context.tools = tools;
+    expect(store().resolve(request)).toEqual({
+      cwd: root, roots: [root], writableRoots: [root], sandboxPolicy: { type: "dangerFullAccess" },
+      tools,
+    });
+  });
+
+  test("registered homes cannot make an older rollout turn authoritative", () => {
+    const { codexHome, request, registrationPath, store, rolloutPath } = registeredHomeFixture();
+    writeFileSync(registrationPath, JSON.stringify({ version: 1, homes: [codexHome] }));
+    writeFileSync(rolloutPath, [
+      JSON.stringify({ type: "session_meta", payload: { id: rolloutThreadId, source: "vscode" } }),
+      JSON.stringify(childTurnContext("01a06c66-0000-75c6-a0df-318f890ef6de")),
+    ].join("\n") + "\n");
+    expect(() => store().resolve(request)).toThrow("current turn");
+  });
+
+  test("rejects ambiguous thread ownership across registered homes", () => {
+    const first = registeredHomeFixture();
+    const second = resumedRootFixture();
+    writeFileSync(first.registrationPath, JSON.stringify({ version: 1, homes: [first.codexHome, second.codexHome] }));
+    expect(() => first.store().resolve(first.request)).toThrow("multiple registered Codex homes");
+  });
+
+  test("registered homes require absolute local paths", () => {
+    const { request, registrationPath, store } = registeredHomeFixture();
+    writeFileSync(registrationPath, JSON.stringify({ version: 1, homes: ["../another-home"] }));
+    expect(() => store().resolve(request)).toThrow("homes");
+  });
+
   test.skipIf(process.platform !== "win32")("resumed Windows tasks accept the same indexed rollout with either path namespace", () => {
     for (const namespaceHome of [false, true]) for (const namespaceRollout of [false, true]) {
       const { codexHome, request, rolloutPath } = resumedRootFixture();

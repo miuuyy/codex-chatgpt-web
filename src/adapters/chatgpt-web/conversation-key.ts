@@ -16,14 +16,19 @@ function messageText(item: Record<string, unknown>): string | undefined {
 
 /** Native compaction remains part of the exact identity of a replayed Codex turn. */
 function compactionEpoch(input: unknown[] | undefined): unknown {
-  return input?.findLast(item => {
+  const epoch = input?.findLast(item => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return false;
     const record = item as Record<string, unknown>;
     return record.type === "compaction"
       || record.type === "compaction_summary"
       || record.type === "context_compaction"
       || (record.role === "user" && messageText(record)?.startsWith(`${SUMMARY_PREFIX}\n`));
-  }) ?? null;
+  });
+  if (!epoch) return null;
+  // Codex omits wire provenance on local requests. Restoring that tag must not detach the
+  // same retained browser epoch before its in-flight tool result can be consumed.
+  const { internal_chat_message_metadata_passthrough: _provenance, ...identity } = epoch as Record<string, unknown>;
+  return identity;
 }
 
 export function chatGptConversationKey(

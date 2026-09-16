@@ -36,7 +36,7 @@
 
 1. **安装启动器**：点击上方对应系统的下载按钮。
 2. **登录 ChatGPT**：在内置浏览器中登录并运行浏览器冒烟测试。
-3. **安装模型**：重启一次 Codex，然后选择 **ChatGPT Web — …** 模型。
+3. **安装模型**：通过 `codex --profile gpt` 启动，然后选择 **ChatGPT Web — …** 模型。基础配置保留和 Orca 账户路径解析见[配置说明](README.md#codex-profiles-and-orca)。
 4. **需要使用工具编程时**：打开启动器中的 **MCP**，完成下方的完整 harness 设置。
 
 应用已包含浏览器和运行时，无需另外安装 Chrome、Node 或 Bun。
@@ -182,6 +182,32 @@ bun run app:package
 `dev:launcher` 在 `~/.codex-chatgpt-web-dev` 下使用独立配置和账户。`dev:chat` 使用真实浏览器与压缩流程，并提供明确的模拟工具结果，不改变正常 Codex 路由。设置和命令请参阅 [DEV chat harness](docs/dev-chat.md)。
 
 </details>
+
+## Codex 配置与 Orca
+
+保留基础 `config.toml`，将 Web 路由写入 `gpt.config.toml`。AI 安装代理也必须在将要启动 Codex 的 Orca 终端中运行以下命令，确认当前账户的路径。不要复制其他电脑的用户目录或账户 ID。
+
+```bash
+printf '%s\n' "${CODEX_HOME:-$HOME/.codex}"
+```
+
+Windows PowerShell：
+
+```powershell
+$codexTargetHome = if ([string]::IsNullOrWhiteSpace($env:CODEX_HOME)) {
+    Join-Path $env:USERPROFILE '.codex'
+} else {
+    $env:CODEX_HOME
+}
+$codexTargetHome
+```
+
+配置安装、会话恢复所需的目录注册和旧版本迁移请遵循上方的配置说明。使用当前电脑上解析出的绝对路径。实现参考：
+[profile path selection](src/codex-integration-shared.ts),
+[launcher home selection](launcher/electron/profile.cjs),
+[journal validation](src/codex-integration-journal.ts),
+[registered rollout homes](src/adapters/chatgpt-web/thread-environment.ts).
+
 
 ## Star History
 

@@ -194,7 +194,7 @@ function firstRolloutRecord(fd: number, size: number): Record<string, unknown> {
   throw new Error("Codex rollout has no complete session metadata record");
 }
 
-function latestTurnContext(fd: number, size: number): Record<string, unknown> | undefined {
+function* rolloutRecordsNewestFirst(fd: number, size: number): Generator<Record<string, unknown>> {
   let position = size;
   let carry = Buffer.alloc(0);
   let firstSegmentAtEof = true;
@@ -223,16 +223,21 @@ function latestTurnContext(fd: number, size: number): Record<string, unknown> | 
         throw new Error("Codex rollout JSONL record exceeds the bounded record size");
       }
       const item = parseJsonLine(line);
-      if (item.type === "turn_context") return record(item.payload);
+      yield item;
     }
     carry = Buffer.from(data.subarray(0, lineEnd));
     if (carry.length > MAX_ROLLOUT_JSON_LINE_BYTES) {
       throw new Error("Codex rollout JSONL record exceeds the bounded record size");
     }
   }
-  if (carry.length === 0) return undefined;
-  const item = parseJsonLine(carry);
-  return item.type === "turn_context" ? record(item.payload) : undefined;
+  if (carry.length > 0) yield parseJsonLine(carry);
+}
+
+function latestTurnContext(fd: number, size: number): Record<string, unknown> | undefined {
+  for (const item of rolloutRecordsNewestFirst(fd, size)) {
+    if (item.type === "turn_context") return record(item.payload);
+  }
+  return undefined;
 }
 
 function verifyHistoricalEnvironmentMessages(
@@ -603,8 +608,87 @@ function validateMetadataConsistency(
   }
 }
 
+function rolloutOwner(options: {
+  codexHome: string;
+  additionalCodexHomes?: readonly string[];
+  sqliteHome?: string;
+  lineage: RolloutIdentity;
+}) {
+  const { codexHome, lineage } = options;
+  const homes = [...new Set([codexHome, ...(options.additionalCodexHomes ?? [])].map(home => resolve(home)))];
+  const owners = homes.map(home => {
+    const indexed = indexedRollout(configuredSqliteHome(home, home === resolve(codexHome) ? options.sqliteHome : undefined), lineage);
+    const candidates = indexed.kind === "found"
+      ? [indexed.path]
+      : scanCanonicalRollouts(home, lineage.threadId);
+    return { home, indexed, candidates };
+  }).filter(owner => owner.candidates.length > 0);
+  if (owners.length > 1) throw new Error("Codex thread belongs to multiple registered Codex homes");
+  return owners[0];
+}
+
+/** Restore tags only after matching each user item against this thread's canonical rollout. */
+export function restoreCodexCompactionProvenance(options: {
+  codexHome: string;
+  additionalCodexHomes?: readonly string[];
+  lineage: RolloutIdentity;
+  input: Array<Record<string, unknown>>;
+}): Array<Record<string, unknown>> {
+  if (!CODEX_ID.test(options.lineage.threadId)) {
+    throw new Error("Local Codex compaction requires a native thread id");
+  }
+  const owner = rolloutOwner(options);
+  if (!owner || owner.candidates.length !== 1) {
+    throw new Error("Local Codex compaction requires one canonical source rollout");
+  }
+  const pending = new Map<string, Record<string, unknown>>();
+  for (const item of options.input) {
+    if (item.type !== "message" || item.role !== "user" || typeof item.id !== "string") continue;
+    if (pending.has(item.id)) throw new Error("Local Codex compaction repeats a user message id");
+    pending.set(item.id, item);
+  }
+  const tags = new Map<string, string>();
+  const path = validateRolloutPath(owner.home, owner.candidates[0]!, options.lineage.threadId);
+  const fd = openSync(path, "r");
+  try {
+    const size = fstatSync(fd).size;
+    validateSessionMeta(firstRolloutRecord(fd, size), options.lineage);
+    for (const item of rolloutRecordsNewestFirst(fd, size)) {
+      const payload = record(item.payload);
+      // Local compaction assigns fresh ids to retained user messages and the summary, storing
+      // them inside replacement_history rather than as standalone response_item records.
+      const messages = item.type === "response_item" ? [payload]
+        : item.type === "compacted" && Array.isArray(payload?.replacement_history)
+          ? payload.replacement_history.map(record) : [];
+      for (const message of messages) {
+        if (typeof message?.id !== "string") continue;
+        const claimed = pending.get(message.id);
+        if (!claimed) continue;
+        const turnId = record(message.internal_chat_message_metadata_passthrough)?.turn_id;
+        const claimedTurnId = record(claimed.internal_chat_message_metadata_passthrough)?.turn_id;
+        if (message.type !== "message" || message.role !== "user"
+          || typeof turnId !== "string" || !CODEX_ID.test(turnId)
+          || (claimedTurnId !== undefined && claimedTurnId !== turnId)
+          || !isDeepStrictEqual(message.content, claimed.content)) {
+          throw new Error("Local Codex compaction message conflicts with its native record");
+        }
+        tags.set(message.id, turnId);
+        pending.delete(message.id);
+      }
+      if (pending.size === 0) break;
+    }
+  } finally {
+    closeSync(fd);
+  }
+  if (pending.size > 0) throw new Error("Local Codex compaction contains an unauthenticated user message");
+  return options.input.map(item => typeof item.id === "string" && tags.has(item.id) ? {
+    ...item, internal_chat_message_metadata_passthrough: { turn_id: tags.get(item.id)! },
+  } : item);
+}
+
 export function resolveCurrentCodexRolloutEnvironment(options: {
   codexHome: string;
+  additionalCodexHomes?: readonly string[];
   sqliteHome?: string;
   lineage: RolloutIdentity;
   turnId: string;
@@ -621,18 +705,15 @@ export function resolveCurrentCodexRolloutEnvironment(options: {
     throw new Error("Codex thread metadata contains an invalid native identifier");
   }
 
-  const indexed = indexedRollout(configuredSqliteHome(codexHome, options.sqliteHome), lineage);
-  const candidates = indexed.kind === "found"
-    ? [indexed.path]
-    : scanCanonicalRollouts(codexHome, lineage.threadId);
-  if (candidates.length === 0) {
+  const owner = rolloutOwner(options);
+  if (!owner) {
     if (!("parentThreadId" in lineage)) return undefined;
     throw new Error("Codex has no canonical rollout for the requested subagent thread");
   }
 
   const matching: ChatGptTurnEnvironment[] = [];
-  for (const candidate of candidates) {
-    const rolloutPath = validateRolloutPath(codexHome, candidate, lineage.threadId);
+  for (const candidate of owner.candidates) {
+    const rolloutPath = validateRolloutPath(owner.home, candidate, lineage.threadId);
     const fd = openSync(rolloutPath, "r");
     try {
       const size = fstatSync(fd).size;
@@ -641,7 +722,7 @@ export function resolveCurrentCodexRolloutEnvironment(options: {
       const latest = latestTurnContext(fd, size);
       if (!latest) throw new Error("Codex rollout has no complete turn context");
       if (latest.turn_id !== turnId && (compactionSourceTurnId === undefined || latest.turn_id !== compactionSourceTurnId)) {
-        if (indexed.kind === "found") {
+        if (owner.indexed.kind === "found") {
           throw new Error("Latest Codex rollout turn context does not belong to the requested turn");
         }
         continue;

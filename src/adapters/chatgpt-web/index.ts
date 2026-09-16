@@ -1062,8 +1062,9 @@ export function createChatGptWebAdapter(
                       );
                     }
                     if (handoffError instanceof ChatGptWebAdapterError
-                      && handoffError.code === "compaction_source_unavailable") {
-                      return await runFreshCompactionFallback("source_disappeared_before_handoff");
+                      && (handoffError.code === "compaction_source_unavailable" || handoffError.code === "compaction_handoff_missing")) {
+                      return await runFreshCompactionFallback(handoffError.code === "compaction_handoff_missing"
+                        ? "source_completed_without_handoff" : "source_disappeared_before_handoff");
                     }
                     throw handoffError;
                   } finally {

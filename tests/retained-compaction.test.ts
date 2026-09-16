@@ -1439,7 +1439,7 @@ test("a timed-out fresh compaction retains its owner until helper cleanup comple
   }
 });
 
-test("structured compact rebuilds canonical context when its retained browser disappeared", async () => {
+test.each(["disappeared", "missing_control"])("structured compact rebuilds canonical context after retained handoff failure (%s)", async failure => {
   const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-stale-retained-compact-"));
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
@@ -1473,7 +1473,10 @@ test("structured compact rebuilds canonical context when its retained browser di
   let browserStarts = 0;
   (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
     browserStarts += 1;
-    if (turn.requireRetainedConversation) throw chatGptRetainedConversationUnavailableError();
+    if (turn.requireRetainedConversation) {
+      if (failure === "missing_control") return "Unsubmitted summary must not be accepted";
+      throw chatGptRetainedConversationUnavailableError();
+    }
     const prepared = await turn.prepare();
     expect(prepared.text).toContain("Original task");
     prepared.release();
@@ -1487,6 +1490,8 @@ test("structured compact rebuilds canonical context when its retained browser di
       event => events.push(event),
     );
     expect(browserStarts).toBe(2);
+    expect(events.some(event => event.type === "text_delta"
+      && event.text.includes("Unsubmitted summary"))).toBeFalse();
     expect(events.some(event => event.type === "text_delta"
       && event.text.includes("Fallback checkpoint after retained browser loss"))).toBeTrue();
     expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });

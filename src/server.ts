@@ -1,3 +1,4 @@
+import { normalizeLocalCompactionRequest } from "./adapters/chatgpt-web/local-compaction";
 import { chatGptWebTraceId, createChatGptWebAdapter } from "./adapters/chatgpt-web";
 import { closeChatGptBrowserWorkers } from "./adapters/chatgpt-web/browser-worker";
 import { closeTurnBrokers, TurnBroker } from "./adapters/chatgpt-web/turn-broker";
@@ -484,8 +485,11 @@ export async function responseRequest(
   const expanded = expandPreviousResponseInput(raw);
   let parsed: CodexParsedRequest;
   let route: ChatGptWebModelRoute;
+  const provider = providerConfig(config);
+  let localCompaction = false;
   try {
     parsed = parseRequest(expanded);
+    localCompaction = normalizeLocalCompactionRequest(parsed, provider.chatgptWeb?.threadEnvironmentStatePath);
     route = routeChatGptWebRequest(parsed, config);
     const identity = extractChatGptTurnIdentity(parsed);
     if (identity.threadId && identity.turnId) {
@@ -520,8 +524,13 @@ export async function responseRequest(
     const identity = extractChatGptTurnIdentity(parsed);
     if (!identity.threadId || !identity.turnId || !Array.isArray(response.output) || response.output.length !== 1) return;
     const item = response.output[0];
-    if (item?.type !== "compaction" || typeof item.encrypted_content !== "string") return;
-    const summary = decodeCompactionSummary(item.encrypted_content);
+    const summary = localCompaction
+      ? item?.type === "message" && item.role === "assistant" && Array.isArray(item.content)
+        ? item.content.filter((part: { type: string; text?: string }) => part.type === "output_text")
+          .map((part: { text: string }) => part.text).join("")
+        : undefined
+      : item?.type === "compaction" && typeof item.encrypted_content === "string"
+        ? decodeCompactionSummary(item.encrypted_content) : undefined;
     if (!summary) return;
     const source = extractChatGptCompactionSourceRevision(parsed);
     const body = parsed._rawBody as { input?: unknown[] };
@@ -550,7 +559,6 @@ export async function responseRequest(
     parsed.context.messages.push({ role: "user", content: COMPACT_PROMPT, timestamp: Date.now() });
   }
 
-  const provider = providerConfig(config);
   let traceId: string | undefined;
   try {
     traceId = chatGptWebTraceId(provider, parsed);
@@ -623,7 +631,7 @@ export async function responseRequest(
         ...(provider.chatgptWeb?.stallTimeoutSec !== undefined
           ? { stallTimeoutSec: provider.chatgptWeb.stallTimeoutSec }
           : {}),
-        ...(compaction ? { compaction: true } : {}),
+        ...(compaction && !localCompaction ? { compaction: true } : {}),
         onCompletedResponse: rememberCompletedResponse,
       },
     );
@@ -644,7 +652,7 @@ export async function responseRequest(
     toolNsMap: maps.toolNsMap,
     freeformToolNames: maps.freeformToolNames,
     toolSearchToolNames: maps.toolSearchToolNames,
-    ...(compaction ? { compaction: true } : {}),
+    ...(compaction && !localCompaction ? { compaction: true } : {}),
   });
   rememberCompletedResponse(json);
   return Response.json(json);

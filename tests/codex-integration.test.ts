@@ -62,12 +62,25 @@ afterEach(() => {
 });
 
 describe("reversible native Codex route integration", () => {
+  test("production integration keeps the base config intact and manages the gpt profile", () => {
+    const { codexHome } = fixture();
+    const basePath = join(codexHome, "config.toml");
+    const original = 'model = "gpt-5.6-sol"\nmodel_provider = "openai"\n';
+    writeFileSync(basePath, original);
+    const config = nativeConfig("browser-only");
+    installCodexIntegration(config);
+    expect(readFileSync(basePath, "utf8")).toBe(original);
+    expect(readFileSync(join(codexHome, "gpt.config.toml"), "utf8"))
+      .toContain(`openai_base_url = "http://${config.host}:${config.port}/v1"`);
+    expect(inspectCodexIntegration().errors).toEqual([]);
+  });
+
   test("route install, update, switching and removal preserve a symlinked shared Codex config", () => {
     const { root, codexHome } = fixture();
     const shared = join(root, "shared");
     mkdirSync(shared, { mode: 0o750 });
     const target = join(shared, "config.toml");
-    const alias = join(codexHome, "config.toml");
+    const alias = join(codexHome, "gpt.config.toml");
     const original = 'model = "gpt-5.6-sol"\n\n[features]\ngoals = true\n';
     writeFileSync(target, original, { mode: 0o640 });
     symlinkSync(join("..", "shared", "config.toml"), alias);
@@ -98,7 +111,7 @@ describe("reversible native Codex route integration", () => {
 
   test("config compensation preserves the link and refuses redirected or invalid targets", () => {
     const { root, codexHome } = fixture();
-    const alias = join(codexHome, "config.toml");
+    const alias = join(codexHome, "gpt.config.toml");
     const target = join(root, "shared.toml");
     const other = join(root, "other.toml");
     const directory = join(root, "directory");
@@ -137,7 +150,7 @@ describe("reversible native Codex route integration", () => {
   test("reads an explicit native context override without requiring a selected model", () => {
     const { codexHome } = fixture();
     writeFileSync(
-      join(codexHome, "config.toml"),
+      join(codexHome, "gpt.config.toml"),
       [
         "model_context_window = 1_000_000 # explicit override",
         "model_auto_compact_token_limit = 900_000",
@@ -152,7 +165,7 @@ describe("reversible native Codex route integration", () => {
 
   test("keeps the built-in openai provider without changing native feature defaults", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const original = `model = "gpt-5.6-sol"\n\n[features]\nmulti_agent = false # user choice\ngoals = true\n`;
     writeFileSync(configPath, original);
 
@@ -181,7 +194,7 @@ describe("reversible native Codex route integration", () => {
 
   test("routes Codex without changing native compact or multi-agent feature flags", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const original = [
       'model = "gpt-5.6-sol"',
       "",
@@ -210,7 +223,7 @@ describe("reversible native Codex route integration", () => {
 
   test("Compatibility V1 owns both subagent feature flags and restores the exact user lines", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const original = [
       'model = "gpt-5.6-sol"',
       "",
@@ -246,7 +259,7 @@ describe("reversible native Codex route integration", () => {
 
   test("Compatibility V1 preserves a structured multi_agent_v2 table", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const original = [
       'model = "gpt-5.6-sol"',
       "",
@@ -276,7 +289,7 @@ describe("reversible native Codex route integration", () => {
 
   test("Compatibility V1 preserves a multi_agent_v2 inline table byte-for-byte", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const original = [
       'model = "gpt-5.6-sol"',
       "",
@@ -309,7 +322,7 @@ describe("reversible native Codex route integration", () => {
 
   test("Compatibility V1 adds enabled only inside an inline multi_agent_v2 table", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const original = [
       'model = "gpt-5.6-sol"',
       "",
@@ -329,7 +342,7 @@ describe("reversible native Codex route integration", () => {
 
   test("Compatibility V1 rejects a non-boolean inline multi_agent_v2 enabled value", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     writeFileSync(configPath, "[features]\nmulti_agent_v2 = { enabled = \"false\" }\n");
     expect(() => installCodexIntegration(compatibilityV1Config("browser-only")))
       .toThrow("enabled in Codex [features].multi_agent_v2 inline table must be a boolean");
@@ -337,7 +350,7 @@ describe("reversible native Codex route integration", () => {
 
   test("explicit replacement adopts a Codex-migrated inline multi_agent_v2 value", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     writeFileSync(
       configPath,
       'model = "gpt-5.6-sol"\n\n[features]\nmulti_agent_v2 = true # prior native choice\n',
@@ -368,7 +381,7 @@ describe("reversible native Codex route integration", () => {
 
   test("switching an installed route back to native restores feature ownership", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const original = 'model = "gpt-5.6-sol"\n\n[features]\nmulti_agent_v2 = true # native choice\n';
     writeFileSync(configPath, original);
     installCodexIntegration(compatibilityV1Config("browser-only"));
@@ -385,7 +398,7 @@ describe("reversible native Codex route integration", () => {
 
   test("the explicit subagent protocol control switches an active installation both ways", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const original = 'model = "gpt-5.6-sol"\n\n[features]\nmulti_agent_v2 = true # native choice\n';
     writeFileSync(configPath, original);
     const config = nativeConfig("browser-only");
@@ -408,7 +421,7 @@ describe("reversible native Codex route integration", () => {
 
   test("Compatibility V1 refuses to overwrite a newer agent depth edit", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     writeFileSync(configPath, 'model = "gpt-5.6-sol"\n');
     installCodexIntegration(compatibilityV1Config("browser-only"));
     const edited = readFileSync(configPath, "utf8").replace(
@@ -423,7 +436,7 @@ describe("reversible native Codex route integration", () => {
 
   test("restores a missing primary journal from its exact recovery copy", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     writeFileSync(configPath, 'model = "gpt-5.6-sol"\n');
     installCodexIntegration(nativeConfig("browser-only"));
     const recovery = readFileSync(getCodexJournalRecoveryPath(), "utf8");
@@ -435,7 +448,7 @@ describe("reversible native Codex route integration", () => {
 
   test("refuses different journal baselines when both match the same config", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     writeFileSync(configPath, 'model = "gpt-5.6-sol"\n');
     installCodexIntegration(nativeConfig("browser-only"));
     const recovery = JSON.parse(readFileSync(getCodexJournalRecoveryPath(), "utf8"));
@@ -447,7 +460,7 @@ describe("reversible native Codex route integration", () => {
 
   test("reconciles either side of a crash between recovery intent, config, and primary commit", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     writeFileSync(configPath, 'model = "gpt-5.6-sol"\n');
     installCodexIntegration(nativeConfig("browser-only"));
     const activeConfig = readFileSync(configPath, "utf8");
@@ -473,7 +486,7 @@ describe("reversible native Codex route integration", () => {
 
   test("accepts an explicitly persisted built-in openai provider and restores it exactly", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const original = 'model = "gpt-5.6-sol"\nmodel_provider = "openai" # explicit built-in default\n';
     writeFileSync(configPath, original);
 
@@ -489,7 +502,7 @@ describe("reversible native Codex route integration", () => {
 
   test("preserves an explicit remote_compaction_v2 setting byte-for-byte", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const original = 'model = "gpt-5.6-sol"\n\n[features]\nremote_compaction_v2 = true # user choice\ngoals = true\n';
     writeFileSync(configPath, original);
 
@@ -503,7 +516,7 @@ describe("reversible native Codex route integration", () => {
 
   test("preserves an explicit multi_agent setting byte-for-byte", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const original = 'model = "gpt-5.6-sol"\n\n[features]\nmulti_agent = false # user choice\ngoals = true\n';
     writeFileSync(configPath, original);
 
@@ -517,7 +530,7 @@ describe("reversible native Codex route integration", () => {
 
   test("preserves an explicit multi_agent_v2 setting byte-for-byte", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const original = 'model = "gpt-5.6-sol"\n\n[features]\nmulti_agent_v2 = true # user choice\ngoals = true\n';
     writeFileSync(configPath, original);
 
@@ -531,7 +544,7 @@ describe("reversible native Codex route integration", () => {
 
   test("preserves the structured multi_agent_v2 feature table", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const original = [
       'model = "gpt-5.6-sol"',
       "",
@@ -557,7 +570,7 @@ describe("reversible native Codex route integration", () => {
   test("routes Voice call creation separately and preserves every supported line ending", () => {
     for (const lineEnding of ["\n", "\r\n", "\r"] as const) {
       const { codexHome } = fixture();
-      const configPath = join(codexHome, "config.toml");
+      const configPath = join(codexHome, "gpt.config.toml");
       const original = ['model = "gpt-5.6-sol"', 'approval_policy = "never"', ""].join(lineEnding);
       writeFileSync(configPath, original);
 
@@ -584,7 +597,7 @@ describe("reversible native Codex route integration", () => {
 
   test("adopts an identical explicit Voice route and restores its exact source line", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const priorVoiceLine = `experimental_realtime_webrtc_call_base_url = '${CODEX_REALTIME_WEBRTC_CALL_BASE_URL}' # user choice`;
     const original = `model = "gpt-5.6-sol"\n${priorVoiceLine}\n`;
     writeFileSync(configPath, original);
@@ -603,7 +616,7 @@ describe("reversible native Codex route integration", () => {
 
   test("refuses a different Voice route unless replacement is explicit and reversible", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const original = 'model = "gpt-5.6-sol"\nexperimental_realtime_webrtc_call_base_url = "https://voice.example/v1" # external owner\n';
     writeFileSync(configPath, original);
 
@@ -621,7 +634,7 @@ describe("reversible native Codex route integration", () => {
 
   test("refuses Voice route drift while connected or disconnected", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     writeFileSync(configPath, 'model = "gpt-5.6-sol"\n');
     installCodexIntegration(nativeConfig("browser-only"));
 
@@ -640,7 +653,7 @@ describe("reversible native Codex route integration", () => {
 
   test("invalidates Codex's provider-agnostic model cache on install and uninstall", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const cachePath = getCodexModelsCachePath();
     writeFileSync(configPath, 'model = "gpt-5.6-sol"\n');
     writeFileSync(cachePath, '{"models":["native-only"]}\n');
@@ -655,7 +668,7 @@ describe("reversible native Codex route integration", () => {
 
   test("requires explicit replacement and preserves every non-port route assignment", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const original = `model = "gpt-5.6-sol"\nmodel_provider = "existing-provider"\nopenai_base_url = "http://127.0.0.1:9999/v1"\nmodel_catalog_json = "/tmp/native.json"\n\n[features]\ngoals = true\n`;
     writeFileSync(configPath, original);
     const config = nativeConfig("full");
@@ -675,7 +688,7 @@ describe("reversible native Codex route integration", () => {
     for (const ending of ["\n", "\r\n"]) {
       for (const keepRoute of [true, false]) {
         const { codexHome } = fixture();
-        const configPath = join(codexHome, "config.toml");
+        const configPath = join(codexHome, "gpt.config.toml");
         const original = [
           'model = "gpt-5.6-sol"',
           `experimental_realtime_webrtc_call_base_url = "${CODEX_REALTIME_WEBRTC_CALL_BASE_URL}"`,
@@ -719,7 +732,7 @@ describe("reversible native Codex route integration", () => {
 
   test("explicit setup still refuses changed hooks, partial removal and invalid config", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const original = 'model = "gpt-5.6-sol"\n';
     writeFileSync(configPath, original);
     const config = nativeConfig("full");
@@ -749,7 +762,7 @@ describe("reversible native Codex route integration", () => {
 
   test("owns only openai_base_url while active", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const original = [
       'model = "gpt-5.6-sol"',
       'model_provider = "first-provider"',
@@ -779,7 +792,7 @@ describe("reversible native Codex route integration", () => {
 
   test("preflight detects route conflicts without changing Codex or creating a journal", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const original = 'model = "gpt-5.6-sol"\nopenai_base_url = "http://127.0.0.1:9999/v1"\n';
     writeFileSync(configPath, original);
 
@@ -791,7 +804,7 @@ describe("reversible native Codex route integration", () => {
 
   test("updates its own route idempotently without changing the preserved baseline", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     writeFileSync(configPath, 'model = "gpt-5.6-sol"\n');
     const first = nativeConfig("browser-only");
     installCodexIntegration(first);
@@ -805,7 +818,7 @@ describe("reversible native Codex route integration", () => {
 
   test("upgrades the released v9 route by adding the trusted Interrupt lifecycle hook", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const original = 'model = "gpt-5.6-sol"\n';
     writeFileSync(configPath, original);
     installCodexIntegration(nativeConfig("browser-only"));
@@ -831,7 +844,7 @@ describe("reversible native Codex route integration", () => {
 
   test("disconnects and reconnects the bridge without losing the prior route or journal", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const original = 'model = "gpt-5.6-sol"\napproval_policy = "never"\nopenai_base_url = "https://native.example/v1"\n';
     writeFileSync(configPath, original);
 
@@ -856,7 +869,7 @@ describe("reversible native Codex route integration", () => {
 
   test("Compatibility V1 reconnect ignores unrelated keys added to a previously absent agents table", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const original = 'model = "gpt-5.6-sol"\n';
     const disconnected = `${original}\n[agents]\nenabled = true\n`;
     writeFileSync(configPath, original);
@@ -879,7 +892,7 @@ describe("reversible native Codex route integration", () => {
 
   test("Compatibility V1 reconnect ignores unrelated keys added to a previously absent features table", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const original = 'model = "gpt-5.6-sol"\n';
     const disconnected = `${original}\n[features]\nresponses_websockets_v2 = true\n`;
     writeFileSync(configPath, original);
@@ -902,7 +915,7 @@ describe("reversible native Codex route integration", () => {
 
   test("keeps a disconnected bridge disabled across process-style journal reloads", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     writeFileSync(configPath, 'model = "gpt-5.6-sol"\n');
     installCodexIntegration(nativeConfig("browser-only"));
     deactivateCodexIntegration();
@@ -917,7 +930,7 @@ describe("reversible native Codex route integration", () => {
 
   test("migrates v8 without silently taking ownership of a conflicting Voice route", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const customVoiceLine = 'experimental_realtime_webrtc_call_base_url = "https://voice.example/v1" # external owner';
     const original = `model = "gpt-5.6-sol"\n${customVoiceLine}\n`;
     writeFileSync(configPath, original);
@@ -953,7 +966,7 @@ describe("reversible native Codex route integration", () => {
 
   test("reconciles either side of a crash during the v8-to-v9 route upgrade", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     writeFileSync(configPath, 'model = "gpt-5.6-sol"\n');
     installCodexIntegration(nativeConfig("browser-only"));
     const currentConfig = readFileSync(configPath, "utf8");
@@ -987,7 +1000,7 @@ describe("reversible native Codex route integration", () => {
 
   test("upgrades an existing v3 route journal when it is disconnected for the first time", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     const original = 'model = "gpt-5.6-sol"\n\n[features]\ngoals = true\n';
     writeFileSync(configPath, original);
     installCodexIntegration(nativeConfig("browser-only"));
@@ -1023,7 +1036,7 @@ describe("reversible native Codex route integration", () => {
 
   test("upgrades an active v4 route journal without changing native features", () => {
     const { codexHome } = fixture();
-    const configPath = join(codexHome, "config.toml");
+    const configPath = join(codexHome, "gpt.config.toml");
     writeFileSync(configPath, 'model = "gpt-5.6-sol"\n\n[features]\ngoals = true\n');
     installCodexIntegration(nativeConfig("browser-only"));
     const legacy = JSON.parse(readFileSync(getCodexJournalPath(), "utf8"));

@@ -281,7 +281,7 @@ code {
   min-height: 44px;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 6px;
   padding: 6px 8px;
   color: var(--color-text-primary);
 }
@@ -296,7 +296,7 @@ code {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 9px;
+  gap: 6px;
 }
 
 .sidebar-brand-identity strong {
@@ -314,12 +314,13 @@ code {
 
 .sidebar-brand-actions {
   display: flex;
+  flex: none;
   align-items: center;
   gap: 2px;
 }
 
 .sidebar-brand-actions .icon-button {
-  width: 28px;
+  width: 24px;
   height: 28px;
   color: var(--color-icon-tertiary);
 }
@@ -332,6 +333,11 @@ code {
 .sidebar-brand-actions .icon-button:hover {
   background: transparent;
   color: var(--color-icon-primary);
+}
+
+.sidebar-brand-actions .icon-button[aria-current="page"] {
+  color: var(--color-icon-primary);
+  background: var(--color-background-button-secondary);
 }
 
 .sidebar-nav {

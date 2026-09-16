@@ -153,6 +153,27 @@ test("effort activation fails closed when neither event exposes a structural sur
     .rejects.toThrow("did not expose its owned menu or structural slider");
 });
 
+test("effort activation uses the verified pointer surface when a hidden viewport rejects clicks", async () => {
+  let opened = false;
+  const surface = {
+    filter() { return this; }, last() { return this; }, locator() { return this; },
+    isVisible: async () => opened,
+  };
+  const control = {
+    getAttribute: async (name: string) => name === "aria-expanded" ? String(opened) : null,
+    click: async () => { throw new Error("locator.click: Element is outside of the viewport"); },
+    dispatchEvent: async () => { opened = true; },
+  };
+  const page = { locator: () => surface, keyboard: { press: async () => {} } };
+  const activation = await activateChatGptEffortMenu(page as never, control as never, { settleMs: 0 });
+  expect(activation.method).toBe("pointerdown");
+  expect(opened).toBe(true);
+  control.click = async () => { throw new Error("browser disconnected"); };
+  opened = false;
+  await expect(activateChatGptEffortMenu(page as never, control as never, { settleMs: 0 }))
+    .rejects.toThrow("browser disconnected");
+});
+
 test("a complete authenticated composer with no effort selector is Luna-only", async () => {
   const effortButton = {
     last() { return this; },
@@ -211,8 +232,10 @@ test("a transient effort control does not turn a Luna-only account into Sol", as
   expect(visibilityReads).toBe(2);
 });
 
-function reasoningPicker(options: { max?: string; delay?: number; missing?: boolean } = {}) {
+function reasoningPicker(options: { max?: string; delay?: number; missing?: boolean; closed?: boolean } = {}) {
   let value = 0;
+  let opened = !options.closed;
+  let clicks = 0;
   const keys: string[] = [];
   const hidden = {
     filter() { return this; }, last() { return this; }, getByText() { return this; },
@@ -232,20 +255,23 @@ function reasoningPicker(options: { max?: string; delay?: number; missing?: bool
   const container = {
     filter() { return this; }, last() { return this; },
     locator: () => slider,
-    isVisible: async () => true,
+    isVisible: async () => opened,
     waitFor: async ({ state }: { state: string }) => {
       expect(state).toBe("visible");
+      if (!opened) throw new Error("effort menu did not open");
       if (options.missing) throw new Error("effort container never hydrated");
       if (options.delay) await new Promise(resolve => setTimeout(resolve, options.delay));
     },
   };
   const control = {
     last() { return this; }, waitFor: async () => {}, isVisible: async () => true,
-    getAttribute: async (name: string) => name === "aria-expanded" ? "true" : null,
+    getAttribute: async (name: string) => name === "aria-expanded" ? String(opened) : null,
+    press: async () => {}, // Enter can leave the live ChatGPT menu closed.
+    click: async () => { clicks++; opened = true; },
   };
   const composer = { filter() { return this; }, last() { return this; }, locator: () => ({ locator: () => control }) };
   const modelRows = { count: async () => 3, first() { return this; }, waitFor: async () => {}, nth: () => { throw new Error("Model rows are not effort choices"); } };
-  const menu = { filter() { return this; }, last() { return this; }, isVisible: async () => true, locator: () => modelRows };
+  const menu = { filter() { return this; }, last() { return this; }, isVisible: async () => opened, locator: () => modelRows };
   const page = {
     locator: (selector: string) => {
       if (selector === CHATGPT_COMPOSER_SELECTOR) return composer;
@@ -253,10 +279,18 @@ function reasoningPicker(options: { max?: string; delay?: number; missing?: bool
       if (selector === CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR) return container;
       return hidden;
     },
-    keyboard: { press: async () => {} },
+    keyboard: { press: async () => { opened = false; } },
   };
-  return { page, composer, keys, value: () => value };
+  return { page, composer, keys, value: () => value, clicks: () => clicks, opened: () => opened };
 }
+
+test("account capability detection opens a picker that ignores Enter and closes it afterwards", async () => {
+  const fixture = reasoningPicker({ closed: true });
+  await expect(detectChatGptAccountCapabilities(fixture.page as never))
+    .resolves.toEqual({ solAvailable: true, extraHighAvailable: true, proAvailable: true });
+  expect(fixture.clicks()).toBe(1);
+  expect(fixture.opened()).toBe(false);
+});
 
 test.each([0, 50])("capabilities wait for the visible container and read its hidden semantic input (delay=%s)", async delay => {
   const fixture = reasoningPicker({ delay });

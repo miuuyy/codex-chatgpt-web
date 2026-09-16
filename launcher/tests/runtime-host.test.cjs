@@ -784,7 +784,7 @@ test("failed first-time setup removes its route before restoring the unconfigure
   const journalPath = path.join(coreHome, "codex", "integration-journal.json");
   const recoveryJournalPath = path.join(coreHome, "codex", "integration-journal.recovery.json");
   const configPath = path.join(root, "config.json");
-  const codexConfigPath = path.join(codexHome, "config.toml");
+  const codexConfigPath = path.join(codexHome, "gpt.config.toml");
   const codexModelsCachePath = path.join(codexHome, "models_cache.json");
   fs.mkdirSync(codexHome, { recursive: true });
   fs.writeFileSync(codexConfigPath, "original codex config\n");
@@ -1010,7 +1010,7 @@ test("failed launcher update restores every mutable setup file before restarting
   const keyPath = path.join(coreHome, "secrets", "tunnel-runtime.key");
   const profileDir = path.join(coreHome, "tunnel", "profiles");
   const profilePath = path.join(profileDir, "custom.yaml");
-  const codexConfigPath = path.join(codexHome, "config.toml");
+  const codexConfigPath = path.join(codexHome, "gpt.config.toml");
   const sharedDirectory = path.join(root, "shared");
   const sharedConfigPath = path.join(sharedDirectory, "config.toml");
   const codexModelsCachePath = path.join(codexHome, "models_cache.json");
