@@ -2586,6 +2586,22 @@ test("the Japanese ChatGPT rate-limit dialog is acknowledged and returns a struc
   expect(fixture.pressed).toEqual(["Enter"]);
 });
 
+test("the Korean ChatGPT rate-limit dialog is acknowledged and returns a structured 429", async () => {
+  const fixture = dialogPage(
+    "요청을 너무 빠르게 보내고 있습니다. 잠시 후 다시 시도해 주세요.",
+    "알겠습니다",
+  );
+
+  await expect(throwIfChatGptRateLimitDialog(fixture.page)).rejects.toMatchObject({
+    name: "ChatGptWebAdapterError",
+    status: 429,
+    errorType: "rate_limit_error",
+    code: "rate_limit_exceeded",
+    retryable: true,
+  });
+  expect(fixture.pressed).toEqual(["Enter"]);
+});
+
 test("unrelated ChatGPT dialogs are left untouched", async () => {
   const fixture = dialogPage("Confirm another action");
 
