@@ -394,18 +394,20 @@ async function configureTunnel(config: AppConfig, existing: AppConfig | undefine
   else delete config.manualTunnel;
 }
 
-async function bootstrapTunnelProfile(config: AppConfig): Promise<void> {
+async function bootstrapTunnelProfile(config: AppConfig, keepRuntime = false): Promise<void> {
   let bootstrapError: unknown;
   try {
     // `runtimes connect` writes the native profile and returns once its managed runtime is healthy.
     // Readiness follows after a successful control-plane poll, so setup proves it separately before
-    // stopping the validation runtime. The launcher supervisor reconnects the committed profile.
+    // handing the runtime to its owner. Launcher-owned setup keeps this process alive; external
+    // service setup stops the validation process before handing the profile to that service.
     connectTunnel(config);
     const status = await waitForTunnelReady(config);
     if (!status.ok) throw new Error(`Tunnel runtime did not become healthy and ready: ${status.detail}`);
   } catch (error) {
     bootstrapError = error;
   }
+  if (keepRuntime && !bootstrapError) return;
   try {
     stopTunnel(config);
   } catch (stopError) {
@@ -595,14 +597,14 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     if (launcherOwned) {
       if (tunnelService.installed || tunnelService.loaded) await uninstallTunnelService();
       if (needsProfile || refreshTunnelWorker || explicitTunnelChange) {
-        await bootstrapTunnelProfile(config);
+        await bootstrapTunnelProfile(config, launcherOwned);
       }
     } else {
       const needsOwnershipMigration = !tunnelService.installed || !tunnelService.loaded || !tunnelServiceDefinitionMatches(config);
       if (needsOwnershipMigration || needsProfile) {
         await assertServiceIdle(config);
         if (tunnelService.loaded) await stopTunnelService();
-        await bootstrapTunnelProfile(config);
+        await bootstrapTunnelProfile(config, launcherOwned);
         installTunnelService(config);
       } else if (refreshTunnelWorker) {
         await assertServiceIdle(config);
@@ -675,7 +677,7 @@ export async function setupDevProfile(options: SetupOptions): Promise<DevProfile
     const profilePath = join(config.tunnel!.profileDir, `${config.tunnel!.profileName}.yaml`);
     const needsProfile = !existsSync(profilePath);
     if (needsProfile || tunnelWorkerRuntimeChanged(existing, config) || explicitTunnelChange) {
-      await bootstrapTunnelProfile(config);
+      await bootstrapTunnelProfile(config, true);
     }
     tunnelReady = false;
   }
