@@ -27,7 +27,7 @@ test("forwards native Codex requests verbatim to the official backend", async ()
     });
   });
 
-  expect(upstreamUrl).toBe("https://chatgpt.com/backend-api/codex/responses");
+  expect(upstreamUrl).toBe("https://prism.openai.com/responses");
   expect(upstreamRequest).toBeDefined();
   expect(upstreamRequest!.headers.get("authorization")).toBe("Bearer codex-oauth-token");
   expect(upstreamRequest!.headers.get("host")).toBeNull();
@@ -59,7 +59,7 @@ test("forwards native Codex compaction requests to the official compact endpoint
     return Response.json({ output: [] }, { status: 200 });
   });
 
-  expect(upstreamUrl).toBe("https://chatgpt.com/backend-api/codex/responses/compact");
+  expect(upstreamUrl).toBe("https://prism.openai.com/responses/compact");
   expect(upstreamRequest!.headers.get("authorization")).toBe("Bearer codex-oauth-token");
   expect(Buffer.from(await upstreamRequest!.arrayBuffer())).toEqual(Buffer.from(originalBody));
   expect(response.status).toBe(200);
@@ -120,7 +120,7 @@ test("forwards standalone Web Search through the authenticated native Codex rout
     return Response.json({ results: [{ title: "result" }] });
   });
 
-  expect(upstreamRequest!.url).toBe("https://chatgpt.com/backend-api/codex/alpha/search?locale=en");
+  expect(upstreamRequest!.url).toBe("https://prism.openai.com/alpha/search?locale=en");
   expect(upstreamRequest!.method).toBe("POST");
   expect(upstreamRequest!.headers.get("authorization")).toBe("Bearer codex-oauth-token");
   expect(upstreamRequest!.headers.get("host")).toBeNull();
@@ -318,7 +318,7 @@ test("forwards native model discovery as GET and preserves the client version qu
     upstreamRequest = input;
     return Response.json({ models: [] });
   });
-  expect(upstreamRequest!.url).toBe("https://chatgpt.com/backend-api/codex/models?client_version=0.99.0");
+  expect(upstreamRequest!.url).toBe("https://prism.openai.com/models?client_version=0.99.0");
   expect(upstreamRequest!.method).toBe("GET");
   expect(upstreamRequest!.headers.get("if-none-match")).toBeNull();
 });
@@ -335,7 +335,7 @@ test("repairs a missing models client_version from an exact first-party Codex us
     upstreamRequest = input;
     return Response.json({ models: [] });
   });
-  expect(upstreamRequest!.url).toBe("https://chatgpt.com/backend-api/codex/models?client_version=0.151.0");
+  expect(upstreamRequest!.url).toBe("https://prism.openai.com/models?client_version=0.151.0");
 });
 
 test("does not invent a models client version from an unrelated user agent", async () => {
@@ -350,7 +350,7 @@ test("does not invent a models client version from an unrelated user agent", asy
     upstreamRequest = input;
     return Response.json({ models: [] });
   });
-  expect(upstreamRequest!.url).toBe("https://chatgpt.com/backend-api/codex/models");
+  expect(upstreamRequest!.url).toBe("https://prism.openai.com/models");
 });
 
 /** A reset after `data: [DONE]` is a completed stream, while a reset before it is a truncation. */

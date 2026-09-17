@@ -1172,7 +1172,7 @@ test("server exposes authenticated standalone Web Search on the routed v1 base U
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ results: ["native-search-result"] });
-    expect(upstreamRequest!.url).toBe("https://chatgpt.com/backend-api/codex/alpha/search");
+    expect(upstreamRequest!.url).toBe("https://prism.openai.com/alpha/search");
     expect(upstreamRequest!.headers.get("authorization")).toBe("Bearer test-codex-session");
     expect(await upstreamRequest!.json()).toEqual({ query: "bridge route" });
   } finally {
@@ -1226,7 +1226,7 @@ test("standalone native image generation and edits preserve their upstream proto
       expect(response.headers.get("content-encoding")).toBeNull();
       expect(response.headers.get("x-codex-imagegen-request-id")).toBe("native-image-request");
       const upstream = requests.at(-1)!;
-      expect(upstream.url).toBe(`https://chatgpt.com/backend-api/codex/images/${operation}?fixture=1`);
+      expect(upstream.url).toBe(`https://prism.openai.com/images/${operation}?fixture=1`);
       expect(upstream.method).toBe("POST");
       expect(upstream.redirect).toBe("manual");
       expect(upstream.headers.get("authorization")).toBe("Bearer test-codex-session");

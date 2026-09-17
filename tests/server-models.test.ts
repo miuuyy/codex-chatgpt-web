@@ -35,7 +35,7 @@ test("proxies official /models auth and query, then appends the fixed ChatGPT We
     }, { headers: { etag: "native-etag" } });
   }, () => ({ contextWindow: 371_851 }));
 
-  expect(upstream!.url).toBe("https://chatgpt.com/backend-api/codex/models?client_version=1.2.3");
+  expect(upstream!.url).toBe("https://prism.openai.com/models?client_version=1.2.3");
   expect(upstream!.method).toBe("GET");
   expect(upstream!.headers.get("authorization")).toBe("Bearer codex-oauth-token");
   expect(upstream!.headers.get("if-none-match")).toBeNull();

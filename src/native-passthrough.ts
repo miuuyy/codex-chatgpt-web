@@ -7,7 +7,7 @@ import {
 import { BRIDGE_REASONING_PREFIX } from "./responses/reasoning-envelope";
 import { fetchNativeCodex } from "./native-network";
 
-const CODEX_BACKEND = "https://chatgpt.com/backend-api/codex";
+const CODEX_BACKEND = "https://prism.openai.com";
 const FIRST_PARTY_CODEX_ORIGINATORS = new Set([
   "codex_cli_rs",
   "codex-tui",
