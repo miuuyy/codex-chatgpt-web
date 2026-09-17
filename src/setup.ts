@@ -54,6 +54,7 @@ export interface SetupOptions {
   autoApproveToolCalls?: boolean;
   experimentalBiggerContext?: boolean;
   experimentalSkillAttachments?: boolean;
+  experimentalFreshConversationPerTurn?: boolean;
   zeroRiskProEnabled?: boolean;
   replaceCodexRoute?: boolean;
   restartService?: boolean;
@@ -146,6 +147,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     proAvailable: before.proAvailable,
     experimentalBiggerContext: before.experimentalBiggerContext,
     experimentalSkillAttachments: before.experimentalSkillAttachments,
+    experimentalFreshConversationPerTurn: before.experimentalFreshConversationPerTurn,
     zeroRiskProEnabled: before.zeroRiskProEnabled,
     autoApproveToolCalls: before.autoApproveToolCalls,
     controlToken: before.controlToken,
@@ -175,6 +177,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     proAvailable: after.proAvailable,
     experimentalBiggerContext: after.experimentalBiggerContext,
     experimentalSkillAttachments: after.experimentalSkillAttachments,
+    experimentalFreshConversationPerTurn: after.experimentalFreshConversationPerTurn,
     zeroRiskProEnabled: after.zeroRiskProEnabled,
     autoApproveToolCalls: after.autoApproveToolCalls,
     controlToken: after.controlToken,
@@ -275,6 +278,9 @@ function baseConfig(
   }
   if (options.experimentalBiggerContext !== undefined) {
     config.experimentalBiggerContext = options.experimentalBiggerContext;
+  }
+  if (options.experimentalFreshConversationPerTurn !== undefined) {
+    config.experimentalFreshConversationPerTurn = options.experimentalFreshConversationPerTurn;
   }
   if (options.zeroRiskProEnabled !== undefined) {
     if (config.browserInteractionMode !== "manual") {

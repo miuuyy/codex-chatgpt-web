@@ -143,6 +143,18 @@ test("manual setup rejects capability refresh and Bigger Context", async () => {
     expect(bigger.exitCode).toBe(1);
     expect(bigger.stderr).toContain("does not support Bigger Context");
 
+    // Fresh-conversation isolation is opt-in and mutually exclusive with the
+    // default retained mode, so a caller cannot ask for both at once.
+    const bothConversationModes = await runCli([
+      "setup",
+      "--full",
+      "--fresh-conversation",
+      "--retained-conversation",
+      "--acknowledge-unofficial",
+    ], env);
+    expect(bothConversationModes.exitCode).toBe(1);
+    expect(bothConversationModes.stderr).toContain("Choose at most one conversation mode");
+
     const browserOnly = await runCli([
       "setup",
       "--browser-only",

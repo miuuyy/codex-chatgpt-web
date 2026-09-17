@@ -308,3 +308,32 @@ test("skill attachments config defaults off, reaches the adapter, and rejects in
   persist();
   expect(() => loadConfig()).toThrow("Zero Risk does not support Skills as files");
 });
+
+// Retained reuse is the default: a follow-up turn reuses the open Temporary Chat and
+// sends only the suffix after the last assistant reply. The opt-out must not alter the
+// stored provider object while it is off, because the execution namespace hashes it.
+test("fresh-conversation config defaults off, leaves the provider untouched, and reaches the adapter", () => {
+  const root = join(tmpdir(), `codex-fresh-conversation-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  process.env.CODEX_CHATGPT_WEB_HOME = root;
+  mkdirSync(root, { recursive: true });
+  const config: Record<string, unknown> = { ...defaultConfig("full") };
+  config.browserHost = "launcher";
+  config.browserHostDescriptorPath = join(root, "launcher.json");
+  config.tunnel = { binaryPath: join(root, "tunnel"), runtimeKeyFile: join(root, "key"),
+    profileDir: root, tunnelId: `tunnel_${"a".repeat(32)}`, profileName: "test", alias: "test" };
+  expect(config.experimentalFreshConversationPerTurn).toBe(false);
+  const persist = () => writeFileSync(join(root, "config.json"), JSON.stringify(config));
+  delete config.experimentalFreshConversationPerTurn;
+  persist();
+  expect(loadConfig()!.experimentalFreshConversationPerTurn).toBe(false);
+  // Off must leave no trace in the provider: createChatGptWebAdapter hashes this object
+  // into the execution namespace, so an added key would rotate every existing conversation key.
+  expect(providerConfig(loadConfig()!).chatgptWeb!).not.toHaveProperty("experimentalFreshConversationPerTurn");
+  config.experimentalFreshConversationPerTurn = true;
+  persist();
+  expect(providerConfig(loadConfig()!).chatgptWeb!.experimentalFreshConversationPerTurn).toBe(true);
+  config.experimentalFreshConversationPerTurn = "true";
+  persist();
+  expect(() => loadConfig()).toThrow("experimentalFreshConversationPerTurn");
+});
