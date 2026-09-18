@@ -2580,6 +2580,16 @@ describe("ChatGPT outer-native harness v4", () => {
     const gatewayOnlyEnvironment = extractChatGptTurnEnvironment(parsed(environmentXml));
     gatewayOnlyEnvironment.tools = [
       { name: "exec", description: "Run nested Codex tools, including exec_command", parameters: {}, freeform: true },
+      {
+        name: "tool_search",
+        description: "Search deferred tool metadata, including subagents and extra MCP tools.",
+        parameters: {
+          type: "object",
+          properties: { query: { type: "string" }, limit: { type: "number" } },
+          required: ["query"],
+        },
+        toolSearch: true,
+      },
       { name: "wait", description: "Wait for an exec cell", parameters: { type: "object" } },
       { name: "request_user_input", description: "Request user input", parameters: { type: "object" } },
       {
@@ -2769,16 +2779,23 @@ describe("ChatGPT outer-native harness v4", () => {
         return await pending;
       };
 
-      // Even an empty inventory query crosses the broker through the native exec gateway. The
-      // browser therefore observes a real tool boundary before the model plans its next call.
-      const emptyGatewayInventory = await inventoryThroughGateway(
-        "clink opencode pal",
+      // A query with no loaded-tool match still crosses the native exec gateway. When deferred
+      // discovery is available, inventory returns tool_search instead of inviting a false-negative
+      // capability conclusion from an empty result.
+      const deferredGatewayFallback = await inventoryThroughGateway(
+        "subagent spawn teammate",
         false,
         ["exec", "web__run", "multi_agent_v1__wait_agent"],
       );
-      expect(emptyGatewayInventory.structuredContent).toEqual({
-        tools: [],
-        total: 0,
+      expect(deferredGatewayFallback.structuredContent).toEqual({
+        tools: [{
+          wire_name: "tool_search",
+          name: "tool_search",
+          namespace: null,
+          description: "Search deferred tool metadata, including subagents and extra MCP tools.",
+          kind: "tool_search",
+        }],
+        total: 1,
         next_offset: null,
       });
 

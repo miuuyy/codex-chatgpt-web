@@ -790,7 +790,8 @@ export async function runChatGptMcpServer(options: {
         const { query, offset, limit, include_schema } = input;
         const bound = claimed.environment;
         const needle = query?.trim().toLowerCase();
-        const directMatches = safeVisibleTools(bound, contract).filter(tool => !needle || [
+        const visibleTools = safeVisibleTools(bound, contract);
+        const directMatches = visibleTools.filter(tool => !needle || [
           wireName(tool),
           tool.name,
           tool.namespace ?? "",
@@ -839,8 +840,22 @@ export async function runChatGptMcpServer(options: {
             } : {}),
           }));
         }
-        const page = [...directPage, ...nestedPage];
-        const total = directMatches.length + nestedTotal;
+        let page = [...directPage, ...nestedPage];
+        let total = directMatches.length + nestedTotal;
+        if (needle && total === 0) {
+          const deferredSearch = visibleTools.find(tool => tool.toolSearch);
+          if (deferredSearch) {
+            total = 1;
+            page = offset === 0 ? [{
+              wire_name: wireName(deferredSearch),
+              name: deferredSearch.name,
+              namespace: deferredSearch.namespace ?? null,
+              description: browserToolDescription(deferredSearch),
+              kind: "tool_search",
+              ...(include_schema ? { parameters: browserToolParameters(deferredSearch) } : {}),
+            }] : [];
+          }
+        }
         return result({
           tools: page,
           total,
