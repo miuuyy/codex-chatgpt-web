@@ -75,12 +75,15 @@ export interface DoctorCheck {
   status: "ok" | "warning" | "error";
   message: string;
   detail?: string;
+  unprovenLocally?: boolean;
 }
 
 export interface DoctorReport {
   ok: boolean;
   mode?: "browser-only" | "full";
   checks: DoctorCheck[];
+  /** Runtime-produced reports include locally unproven checks; launcher-synthesized reports may not. */
+  unproven?: string[];
 }
 
 export interface OperationState {

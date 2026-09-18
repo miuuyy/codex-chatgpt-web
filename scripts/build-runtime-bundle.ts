@@ -195,6 +195,17 @@ function bundleIdFor(files: RuntimeManifestFile[]): string {
   return digest.digest("hex");
 }
 
+function buildStamp(): { commit: string; dirty: boolean; builtAt: string } {
+  const builtAt = new Date().toISOString();
+  const run = (args: string[]): string | undefined => {
+    const result = Bun.spawnSync(["git", ...args], { cwd: root, stdout: "pipe", stderr: "pipe" });
+    return result.exitCode === 0 ? result.stdout.toString().trim() : undefined;
+  };
+  const commit = run(["rev-parse", "--short=12", "HEAD"]);
+  if (!commit) return { commit: "unknown", dirty: false, builtAt };
+  return { commit, dirty: (run(["status", "--porcelain"]) ?? "") !== "", builtAt };
+}
+
 const playwrightPackage = join(appDir, "node_modules", "playwright-core", "package.json");
 const files = runtimeManifestFiles();
 writeFileSync(join(output, "manifest.json"), `${JSON.stringify({
@@ -207,6 +218,7 @@ writeFileSync(join(output, "manifest.json"), `${JSON.stringify({
   launcher: `bin/${launcherName}`,
   entrypoint: "app/cli.js",
   playwright: JSON.parse(readFileSync(playwrightPackage, "utf8")).version,
+  build: buildStamp(),
   files,
 }, null, 2)}\n`);
 
