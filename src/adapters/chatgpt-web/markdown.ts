@@ -71,6 +71,13 @@ function preserveObsidianWikiLinks(markdown: string): string {
   return markdown.replace(/\\\[\\\[([^\r\n]*?)\\\]\\\]/g, "[[$1]]");
 }
 
+function preserveCodexPlanBlockTags(markdown: string): string {
+  // Turndown escapes the underscore in literal text, but Codex recognizes a plan block only when
+  // `<proposed_plan>` / `</proposed_plan>` appear verbatim on their own lines; `\_` hides the plan
+  // and its Implement action. Only the standalone marker lines are restored.
+  return markdown.replace(/^([ \t]*)<(\/?)proposed\\_plan>([ \t]*)$/gm, "$1<$2proposed_plan>$3");
+}
+
 function obsidianWikiLink(value: string): string | undefined {
   const separator = value.indexOf("|");
   const target = (separator >= 0 ? value.slice(0, separator) : value).trim();
@@ -131,7 +138,7 @@ function linkObsidianWikiLinks(markdown: string): string {
 
 export function chatGptHtmlToMarkdown(html: string): string {
   if (!html.trim()) return "";
-  return linkObsidianWikiLinks(preserveObsidianWikiLinks(turndown.turndown(html))).trim();
+  return linkObsidianWikiLinks(preserveCodexPlanBlockTags(preserveObsidianWikiLinks(turndown.turndown(html)))).trim();
 }
 
 export interface ChatGptMarkdownSegment {

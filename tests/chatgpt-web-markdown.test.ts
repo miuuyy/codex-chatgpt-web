@@ -78,3 +78,28 @@ test("converts Obsidian aliases and headings but preserves code examples and emb
     "````",
   ].join("\n"));
 });
+
+test("keeps Codex plan block markers verbatim so the client can render the plan", () => {
+  // ChatGPT renders the literal markers as text; Turndown would escape them to `<proposed\_plan>`.
+  const markdown = chatGptHtmlToMarkdown([
+    "<p>&lt;proposed_plan&gt;</p>",
+    "<h1>Collapse to the built-in display</h1>",
+    "<p>Keep snake_case names unchanged.</p>",
+    "<p>&lt;/proposed_plan&gt;</p>",
+  ].join(""));
+
+  expect(markdown).toBe([
+    "<proposed_plan>",
+    "",
+    "# Collapse to the built-in display",
+    "",
+    "Keep snake\\_case names unchanged.",
+    "",
+    "</proposed_plan>",
+  ].join("\n"));
+});
+
+test("does not rewrite plan markers that are only mentioned inside a sentence", () => {
+  expect(chatGptHtmlToMarkdown("<p>Wrap it in a &lt;proposed_plan&gt; block.</p>"))
+    .toBe("Wrap it in a <proposed\\_plan> block.");
+});
