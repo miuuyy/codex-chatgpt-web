@@ -42,6 +42,37 @@ export function activeCompactionToolResultInstruction(): string {
 }
 
 /**
+ * Stop instruction for local (Grok CLI) compaction, where the checkpoint is written outside
+ * ChatGPT. The tool call is intercepted for the same reason as above, but this conversation gets no
+ * structured handoff request afterwards, so it is told not to wait for one or write a checkpoint.
+ */
+export function localCompactionToolResultInstruction(): string {
+  return [
+    `<${CODEX_ACTIVE_COMPACTION_REQUEST_MARKER}>`,
+    "Codex reached its context limit before this newly requested tool could be sent for execution. The tool was not executed.",
+    "Stop ordinary task work now, call no more tools, and end this Web response normally.",
+    "Do not create or submit a checkpoint. Codex is compacting its own history locally; this conversation will receive no compaction request and closes once this response settles.",
+    `</${CODEX_ACTIVE_COMPACTION_REQUEST_MARKER}>`,
+  ].join("\n");
+}
+
+/** Zero Risk version of the local compaction stop instruction, delivered on the same response. */
+export function zeroRiskLocalCompactionToolResultInstruction(toolExecuted: boolean): string {
+  return [
+    `<${CODEX_ACTIVE_COMPACTION_REQUEST_MARKER}>`,
+    toolExecuted
+      ? "Codex reached its context limit while this Web response was waiting for the tool result above."
+      : "Codex reached its context limit before the requested tool could be sent for execution. The tool was not executed.",
+    toolExecuted
+      ? "Consume that canonical result, stop ordinary task work now, and do not call any more work tools."
+      : "Stop ordinary task work now and do not call any more work tools.",
+    "Do not produce a checkpoint summary. Codex is compacting its own history locally.",
+    "End this response now with codex_turn_complete, reporting only what was already established.",
+    `</${CODEX_ACTIVE_COMPACTION_REQUEST_MARKER}>`,
+  ].join("\n");
+}
+
+/**
  * Zero Risk cannot submit a second browser message automatically. When Codex compacts at an
  * already-visible native tool boundary, the same manually submitted response returns the
  * checkpoint through the same Zero Risk request instead.

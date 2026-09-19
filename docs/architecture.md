@@ -157,6 +157,28 @@ every later tool action in the same turn continues to present the current turn c
 ChatGPT status rows become reasoning summaries, while stable prose between rows becomes native
 Codex commentary.
 
+### Local compaction backend
+
+Codex holds the full task history locally, so the retained ChatGPT conversation does not have to
+write the checkpoint. With `chatgptWeb.grokCompaction.enabled` (or
+`CODEX_CHATGPT_WEB_GROK_COMPACTION=1`) a local `grok` CLI writes it. The history is rendered as one
+headless, tool-free summarization prompt under the same COMPACT_PROMPT contract, and the CLI's
+stdout becomes the native compaction item Codex expects. The retained chat is not asked to
+summarize. If a Web response is still running, the tool results Codex already supplied are delivered
+so it can end normally, and a newly requested tool is answered with a stop instruction. The
+conversation is then retired the same way as after a ChatGPT checkpoint, and the next turn opens a
+fresh Temporary Chat from the compacted history. The checkpoint costs no ChatGPT Web message, and
+the largest payload the bridge would otherwise send stays out of the composer. The send preflight is
+unchanged and still refuses oversized ChatGPT messages at the same boundary.
+
+The backend fails closed. The CLI is looked up before the retained conversation is touched, so a
+machine without it keeps its live epoch and can retry after installing the CLI. A non-zero exit, a
+timeout, or an empty or very short reply is a terminal compaction error. The same-chat ChatGPT
+handoff is used as a fallback only when `allowChatGptFallback` is set. Configurable fields are
+`command`, `args` (must contain the `{prompt_file}` placeholder), `model`, `cwd`, `timeoutMs`,
+`maxPromptChars`, and `allowChatGptFallback`. Every field except `args` has a
+`CODEX_CHATGPT_WEB_GROK_COMPACTION_*` override.
+
 ## Installation and service lifecycle
 
 Each native desktop package contains Electron, a platform-matched pinned Bun executable, the
