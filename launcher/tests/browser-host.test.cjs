@@ -1115,6 +1115,16 @@ test("launcher quit remains gated through an active embedded-browser operation",
   );
 });
 
+test("packaged smoke does not wait for the embedded ChatGPT browser", () => {
+  const source = fs.readFileSync(require.resolve("../electron/main.cjs"), "utf8");
+  assert.match(source, /if \(!launcherSmokeTest\) await browserHost\.ready\(\);/);
+  assert.ok(
+    source.indexOf('const launcherSmokeTest = process.argv.includes("--launcher-smoke-test")')
+      < source.indexOf("await browserHost.ready()"),
+    "smoke mode must be known before browser readiness is awaited",
+  );
+});
+
 test("logout clears only the owned ChatGPT session and returns to the sign-in surface", async () => {
   const calls = [];
   let currentUrl = "https://chatgpt.com/?temporary-chat=true";

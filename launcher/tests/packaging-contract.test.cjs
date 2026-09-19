@@ -97,9 +97,6 @@ test("release installers resolve checksummed native launcher assets", () => {
   assert.match(windowsInstaller, /Get-ItemPropertyValue[\s\S]*InstallLocation/);
   assert.ok(windowsInstaller.includes(`Join-Path $InstallLocation "${manifest.build.productName}.exe"`));
   assert.match(windowsInstaller, /-ArgumentList "\/S", "\/currentuser"/);
-  const packageSmoke = fs.readFileSync(path.join(launcherRoot, "scripts", "smoke-package.cjs"), "utf8");
-  assert.match(packageSmoke, /run\(installer, \["\/S", "\/currentuser"\]/);
-  assert.match(packageSmoke, /reg\.exe[\s\S]*InstallLocation/);
 });
 
 test("packaged launcher owns a detached checksummed updater for every release platform", () => {
@@ -225,6 +222,31 @@ test("macOS package smoke unregisters its staged app from LaunchServices", () =>
   assert.ok(
     smoke.indexOf('["-u", macAppBundle]') < smoke.indexOf("fs.rmSync(scratch"),
     "the staged app must be unregistered before its bundle is deleted",
+  );
+});
+
+test("package smoke retries transient Windows cleanup locks", () => {
+  const smoke = fs.readFileSync(path.join(launcherRoot, "scripts", "smoke-package.cjs"), "utf8");
+  assert.match(
+    smoke,
+    /fs\.rmSync\(scratch, \{ recursive: true, force: true, maxRetries: [1-9][0-9]*, retryDelay: [1-9][0-9]* \}\)/,
+  );
+  assert.match(smoke, /\["EPERM", "EBUSY", "ENOTEMPTY"\]\.includes\(error\?\.code\)/);
+  assert.match(smoke, /process\.platform === "win32"/);
+});
+
+test("the Windows launcher smoke budget leaves room for durable runtime materialization", () => {
+  const smoke = fs.readFileSync(path.join(launcherRoot, "scripts", "smoke-package.cjs"), "utf8");
+  const declared = smoke.match(/const WINDOWS_LAUNCHER_SMOKE_TIMEOUT_MS = ([0-9_]+);/);
+  assert.ok(declared, "the Windows launcher smoke budget must be a named constant");
+  const budget = Number(declared[1].replace(/_/g, ""));
+  assert.ok(
+    budget >= 120_000,
+    `the packaged launcher materializes a large runtime before writing its marker; ${budget}ms leaves no headroom`,
+  );
+  assert.match(
+    smoke,
+    /run\(command, args, \{ env, timeout: WINDOWS_LAUNCHER_SMOKE_TIMEOUT_MS \}\)/,
   );
 });
 

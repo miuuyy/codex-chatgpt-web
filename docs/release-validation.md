@@ -11,6 +11,11 @@ Record the release version, operating-system version, install path (`clean` or `
 plan, Codex version, result of each check, and a redacted Activity log for every failure. Never
 capture cookies, tunnel IDs, API keys, bearer tokens, or prompt contents.
 
+Windows package smoke extracts the NSIS application payload into a temporary directory and
+launches it with isolated launcher, runtime, and Codex profiles. It never executes the installer
+or looks up the live installation in the registry. Test installer upgrade/uninstall behavior only
+on a disposable Windows VM; the machine running an active bridge must not be that test target.
+
 ## Windows 11 gate
 
 Run this list on a maintained Windows 11 x64 machine with a real ChatGPT account:
