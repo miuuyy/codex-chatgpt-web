@@ -1161,6 +1161,8 @@ export function remainingStageBudgetMs(
 
 export const CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS = 5_000;
 export const MAX_CHATGPT_BROWSER_PAGE_REBINDS = 2;
+/** Waits between re-probes while broker activity proves an accepted turn is still running. */
+export const CHATGPT_LIVE_PROBE_BACKOFF_MS = Object.freeze([1_000, 2_000, 5_000]);
 
 export class ChatGptBrowserObservationTimeoutError extends Error {
   constructor(timeoutMs: number) {
@@ -2705,6 +2707,33 @@ export class ChatGptBrowserWorker {
     }), { timeout: timeoutMs, attributeFilter: [...CHATGPT_DOM_REVISION_ATTRIBUTES] });
   }
 
+  /**
+   * A probe that timed out while broker activity shows the turn is alive is not evidence of a dead
+   * page: ChatGPT is often busy rendering (e.g. a very large prompt or a tool call). Wait for new
+   * external progress or a short backoff instead of tearing down the CDP transport. The page itself
+   * is not touched, so no further evaluates pile up in a busy renderer.
+   */
+  private async waitForLiveProbeRetry(
+    externalProgress: ChatGptTurnProgressReader | undefined,
+    afterProgressRevision: number,
+    attempt: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const delay = CHATGPT_LIVE_PROBE_BACKOFF_MS[Math.min(attempt, CHATGPT_LIVE_PROBE_BACKOFF_MS.length - 1)]!;
+    const waitAbort = new AbortController();
+    const waitSignal = signal ? AbortSignal.any([waitAbort.signal, signal]) : waitAbort.signal;
+    try {
+      await withBrowserTurnAbort(Promise.race([
+        ...(externalProgress
+          ? [externalProgress.waitForChange(afterProgressRevision, waitSignal).then(() => undefined, () => undefined)]
+          : []),
+        new Promise<void>(resolveDelay => setTimeout(resolveDelay, delay)),
+      ]), signal);
+    } finally {
+      waitAbort.abort();
+    }
+  }
+
   private async waitForTurnDomOrExternalProgress(
     page: Page,
     afterProgressRevision: number,
@@ -2931,6 +2960,8 @@ export class ChatGptBrowserWorker {
     let observationPage = page;
     let observationBaseline = baseline;
     let recoveryAttempts = 0;
+    let liveProbeWaits = 0;
+    const observingSince = Date.now();
     let responseDeadline = Math.min(
       deadline ?? Number.POSITIVE_INFINITY,
       Date.now() + graceMs,
@@ -2959,6 +2990,22 @@ export class ChatGptBrowserWorker {
         );
       } catch (error) {
         const latestProgress = externalProgress?.snapshot();
+        // ChatGPT already proved this submission is running. Right after acceptance the page is often
+        // busy rendering the (possibly very large) prompt, so a stalled probe inside the DOM grace
+        // window is treated like live broker activity: wait and re-probe rather than rebind.
+        const recentlyAccepted = Date.now() - observingSince < graceMs;
+        if (error instanceof ChatGptBrowserObservationTimeoutError
+          && (recentlyAccepted
+            || (externalProgress && chatGptExternalProgressSuppressesDomHealth(latestProgress, Date.now())))) {
+          console.warn(
+            `[chatgpt-web] submission DOM probe timed out while the turn is live`
+            + ` (${recentlyAccepted ? "recently accepted" : "broker activity"}); waiting instead of rebinding`
+            + ` (attempt ${liveProbeWaits + 1})`,
+          );
+          await this.waitForLiveProbeRetry(externalProgress, latestProgress?.revision ?? 0, liveProbeWaits, signal);
+          liveProbeWaits += 1;
+          continue;
+        }
         if (error instanceof ChatGptBrowserObservationTimeoutError && recoverObservation) {
           recoveryAttempts += 1;
           if (recoveryAttempts > MAX_CHATGPT_BROWSER_PAGE_REBINDS) {
@@ -2987,6 +3034,7 @@ export class ChatGptBrowserWorker {
         continue;
       }
       recoveryAttempts = 0;
+      liveProbeWaits = 0;
       // A tool batch can arrive while the DOM probe is in flight. Read progress again before
       // acknowledging its boundary; the pre-probe snapshot can otherwise leave the broker waiting
       // despite this exact iteration having successfully observed the page.
@@ -4980,6 +5028,7 @@ export class ChatGptBrowserWorker {
       const domHealthTracker = new ChatGptTurnDomHealthTracker();
       const responseDomCache: ChatGptResponseDomCache = {};
       let consecutiveObservationRebinds = 0;
+      let consecutiveLiveProbeWaits = 0;
       let internalObservationFaults = 0;
       let observedThisIteration = false;
       let completionFenceRevision: number | undefined;
@@ -5038,6 +5087,21 @@ export class ChatGptBrowserWorker {
             }
           } catch (error) {
             if (!(error instanceof ChatGptBrowserObservationTimeoutError) || !launcherSurfaceId) throw error;
+            const liveProgress = turn.externalProgress?.snapshot();
+            if (turn.externalProgress && chatGptExternalProgressSuppressesDomHealth(liveProgress, Date.now())) {
+              console.warn(
+                `[chatgpt-web] browser turn ${turn.traceId} response DOM probe timed out while broker activity is live;`
+                + ` waiting instead of rebinding (attempt ${consecutiveLiveProbeWaits + 1})`,
+              );
+              await this.waitForLiveProbeRetry(
+                turn.externalProgress,
+                liveProgress?.revision ?? 0,
+                consecutiveLiveProbeWaits,
+                turn.abortSignal,
+              );
+              consecutiveLiveProbeWaits += 1;
+              continue;
+            }
             consecutiveObservationRebinds += 1;
             if (consecutiveObservationRebinds > MAX_CHATGPT_BROWSER_PAGE_REBINDS) {
               throw new Error(
@@ -5063,7 +5127,10 @@ export class ChatGptBrowserWorker {
           }
         }
         if (snapshot.stoppedThinkingVisible) throw chatGptStoppedThinkingError();
-        if (snapshot.responsePresent) consecutiveObservationRebinds = 0;
+        if (snapshot.responsePresent) {
+          consecutiveObservationRebinds = 0;
+          consecutiveLiveProbeWaits = 0;
+        }
         // The page was read successfully, so the fault budget is genuinely consecutive even when
         // this iteration goes on to `continue` for a rebind, confirmation, or liveness pause.
         internalObservationFaults = 0;
