@@ -9,6 +9,7 @@ const repositoryRoot = path.resolve(launcherRoot, "..");
 const read = (...parts) => fs.readFileSync(path.join(repositoryRoot, ...parts), "utf8");
 
 const englishReadme = read("README.md");
+const russianReadme = read("README.ru.md");
 const chineseReadme = read("README.zh-CN.md");
 const japaneseReadme = read("README.ja.md");
 const koreanReadme = read("README.ko.md");
@@ -40,7 +41,7 @@ function linkTargets(source) {
 }
 
 test("localized READMEs preserve every command block and link target from English", () => {
-  for (const source of [chineseReadme, japaneseReadme, koreanReadme]) {
+  for (const source of [russianReadme, chineseReadme, japaneseReadme, koreanReadme]) {
     assert.deepEqual(commandFences(source), commandFences(englishReadme));
     assert.deepEqual(linkTargets(source), linkTargets(englishReadme));
   }
@@ -181,5 +182,6 @@ test("all locales translate known doctor success checks without changing literal
     assert.equal(localizeRuntimeMessage(copy, "Unexpected connector diagnostic", "connector", language), "Unexpected connector diagnostic");
   }
   assert.equal(copyFor("ko").install, "모델 설치");
+  assert.equal(copyFor("ru").install, "Установить модели");
   assert.equal(copyFor("zh-TW").install, "安裝模型");
 });
