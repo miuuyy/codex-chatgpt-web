@@ -113,6 +113,34 @@ After updating, if `codex_exec` still does not expose `sandbox_permissions`, `ju
 These fields only forward a permission request to Codex; its sandbox and approval policy still
 decide whether the command can run. Ordinary commands do not require these optional fields.
 
+### Windows: `unable to verify the first certificate`
+
+If **Connect harness** fails with `unable to verify the first certificate`, and the Activity log also
+shows the same error for `launcher.update_check_failed`, first confirm that Windows itself trusts the
+connection:
+
+```powershell
+curl.exe -Iv https://api.openai.com/
+```
+
+If `curl.exe` reports `schannel`, establishes the TLS connection, and then receives any HTTP
+response, Windows has accepted the certificate chain. Quit **Codex Web GPT**, then start the launcher
+from PowerShell with Node's system CA support enabled:
+
+```powershell
+$env:NODE_USE_SYSTEM_CA="1"
+$install = (Get-ItemProperty "HKCU:\Software\d1a6026a-6210-588e-9a2b-da3936f94e02").InstallLocation
+Start-Process (Join-Path $install "Codex Web GPT.exe")
+```
+
+Retry **Connect harness** once. `NODE_USE_SYSTEM_CA=1` adds certificates from the operating system
+trust store to Node's trusted CAs; it does not disable certificate verification. Do not work around
+this error with `NODE_TLS_REJECT_UNAUTHORIZED=0`.
+
+If the launcher still reports the certificate error, export a fresh safe log and include whether the
+same URL succeeds with Windows `curl.exe`; the remaining cause may require an explicit proxy or CA
+configuration rather than another MCP setup attempt.
+
 ### ChatGPT shows `Error creating connector`
 
 1. Confirm that the Tunnel ID and the regular API key used by the launcher were created under the
