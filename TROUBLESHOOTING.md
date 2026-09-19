@@ -54,6 +54,36 @@ Do not hand-edit the launcher's route journal. It exists so setup and removal ca
 of silently destroying another provider's configuration. First-class external-router composition is
 tracked in [#205](https://github.com/miuuyy/codex-chatgpt-web/issues/205), but is not supported today.
 
+## Encrypted content cannot be verified after switching models
+
+A same-task switch from ChatGPT Web to a native Codex model can fail with
+`The encrypted content for item cmp_... could not be verified` or
+`Encrypted content could not be decrypted or parsed` when bridge-owned history reaches the native
+backend unchanged. These errors alone do not establish which component forwarded the request.
+
+ChatGPT Web writes `ocx1:` continuation summaries and `ocxr1:` reasoning envelopes. They use the
+Responses `encrypted_content` field for round-trip storage, but are not OpenAI-issued ciphertext.
+The bridge's native passthrough converts its summaries to readable context and removes its private
+reasoning envelope before forwarding. Genuine native encrypted payloads are not decoded.
+
+Check which program owns the native request path:
+
+- With the launcher-owned route, update to the latest release and retry once. If it still fails,
+  export an Activity safe log and report the model switch and whether it followed compaction.
+- With an external router, Web requests may reach the launcher while native requests bypass its
+  passthrough entirely. That router needs compatible history normalization on `/responses`,
+  `/responses/compact`, and `/responses` requests ending in `compaction_trigger`. Updating this
+  launcher cannot repair a path that does not pass through it. External-router composition remains
+  unsupported here; see [#205](https://github.com/miuuyy/codex-chatgpt-web/issues/205).
+
+Do not run **Install models** merely to repair another router's history conversion; it changes the
+route owner. Do not delete compaction items or strip every `encrypted_content` field: doing so can
+lose task context or damage valid native history. To continue without a routing fix, return to
+ChatGPT Web, request a readable task summary, and copy it into a new task using the native model.
+
+For a report, include launcher/Codex versions, source and destination models, route owner, and the
+exact error with item IDs redacted. Never attach raw conversation history or decoded envelopes.
+
 ## ChatGPT sign-in does not complete
 
 The launcher must own the ChatGPT session used for model turns. Signing in to an unrelated browser
