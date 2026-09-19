@@ -68,6 +68,8 @@
   "devDependencies": {
     "@types/bun": "1.4.0",
     "@types/turndown": "5.0.5",
+    "micromark": "4.0.2",
+    "micromark-extension-gfm-autolink-literal": "2.1.0",
     "typescript": "5.9.3"
   },
   "engines": {

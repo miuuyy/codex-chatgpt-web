@@ -1,3 +1,4 @@
+import { installAutolinkRenderCompatibility } from "./autolink-render-compat";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -4497,6 +4498,7 @@ export class ChatGptBrowserWorker {
     let turnConnection: Browser | undefined;
     let managedPage: Page | undefined;
     let diagnosticPage: Page | undefined;
+    let releaseRenderCompatibility: (() => Promise<void>) | undefined;
     const submissionRejection = new ChatGptSubmissionRejectionObserver();
     try {
       if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
@@ -4593,6 +4595,10 @@ export class ChatGptBrowserWorker {
       });
       if (!maintenancePage && !launcherSurfaceId) managedPage = page;
       diagnosticPage = page;
+      releaseRenderCompatibility = await this.runStage(
+        turn.traceId, "renderer_compatibility", browserStageTimeouts.browserPage,
+        () => installAutolinkRenderCompatibility(page),
+      );
       const rebindLauncherPage = async (
         attempt: number,
         cause: Error,
@@ -4878,6 +4884,8 @@ export class ChatGptBrowserWorker {
             "connector_catalog_refresh",
             browserStageTimeouts.temporaryChatPreparation,
             async () => {
+              await releaseRenderCompatibility?.();
+              releaseRenderCompatibility = await installAutolinkRenderCompatibility(page, { nextDocument: true });
               await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
               await this.prepareTemporaryChatSurface(
                 page,
@@ -5260,6 +5268,9 @@ export class ChatGptBrowserWorker {
       }
       throw error;
     } finally {
+      if (releaseRenderCompatibility) {
+        await withChatGptBrowserObservationTimeout(releaseRenderCompatibility(), 5_000).catch(() => {});
+      }
       submissionRejection.dispose();
       prepared.release();
       if (turnConnection) {
