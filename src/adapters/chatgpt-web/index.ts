@@ -359,6 +359,10 @@ export function createChatGptWebAdapter(
   if (experimentalBiggerContext !== undefined && typeof experimentalBiggerContext !== "boolean") {
     throw new Error("ChatGPT Bigger Context preference must be a boolean");
   }
+  const freshConversationPerTurn = provider.chatgptWeb?.experimentalFreshConversationPerTurn;
+  if (freshConversationPerTurn !== undefined && typeof freshConversationPerTurn !== "boolean") {
+    throw new Error("ChatGPT fresh-conversation preference must be a boolean");
+  }
   const configuredCapabilities: ChatGptWebCapabilities = {
     localToolsEnabled: provider.chatgptWeb?.localToolsEnabled === true,
     solAvailable: provider.chatgptWeb?.solAvailable !== false,
@@ -420,7 +424,10 @@ export function createChatGptWebAdapter(
     const checkpointInput = captureLunaCheckpoint
       ? lunaCheckpointStore.apply(parsed)
       : { parsed, applied: false };
+    // Withholding the key opts out of retained reuse: the Launcher cannot match an
+    // existing tab, so every turn opens a fresh chat and receives the full prompt.
     const conversationKey = !parsed._compactionRequest
+      && !freshConversationPerTurn
       && parsed.modelId !== CHATGPT_WEB_LUNA_MODEL_ID
       && mode.localTools
       && retainedLauncherDescriptor

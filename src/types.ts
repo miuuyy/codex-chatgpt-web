@@ -307,5 +307,7 @@ export interface CodexProviderConfig {
     /** DEV-only experimental transport: adapt one context across one, two, or three ChatGPT messages. */
     experimentalBiggerContext?: boolean;
     experimentalSkillAttachments?: boolean;
+    /** Experimental isolation: start a fresh ChatGPT conversation for every Codex turn. */
+    experimentalFreshConversationPerTurn?: boolean;
   };
 }

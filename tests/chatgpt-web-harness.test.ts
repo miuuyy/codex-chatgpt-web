@@ -453,6 +453,93 @@ describe("ChatGPT outer-native harness v4", () => {
       await TurnBroker.forSocket(socketPath).close();
     }
   });
+  test("fresh-conversation isolation withholds the key so every turn sends the full prompt", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-fresh-conversation-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: `browser://chatgpt-fresh-conversation-${Date.now()}`,
+      chatgptWeb: {
+        browserHost: "launcher",
+        browserHostDescriptorPath: join(tempRoot, "fresh-launcher.json"),
+        brokerSocketPath: socketPath,
+        localToolsEnabled: true,
+        experimentalFreshConversationPerTurn: true,
+        solAvailable: true,
+        extraHighAvailable: true, proAvailable: true,
+      },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    const preparedPrompts: string[] = [];
+    const tokens: string[] = [];
+    let browserMessages = 0;
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+      expect(turn.prepareResume).toBeUndefined();
+      expect(turn.conversationKey).toBeUndefined();
+      expect(turn.retainConversation).toBeFalsy();
+      const prepared = await turn.prepare();
+      preparedPrompts.push(prepared.text);
+
+      const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
+      if (!token) throw new Error("retained message prompt has no current turn token");
+      tokens.push(token);
+      prepared.release();
+      browserMessages += 1;
+      const answer = browserMessages === 1 ? "First retained answer" : "Second retained answer";
+      turn.onTextDelta(answer);
+      return answer;
+    };
+
+    const first = rawWireRequest(environmentXml);
+    const second = parsed();
+    second.context.messages = [
+      { role: "user", content: "Inspect the project", timestamp: 2 },
+      { role: "assistant", content: [{ type: "text", text: "First retained answer" }], timestamp: 3 },
+      { role: "user", content: "Continue in the same repository", timestamp: 4 },
+    ];
+    const firstRaw = first._rawBody as { input: unknown[] };
+    second._rawBody = {
+      prompt_cache_key: "thread_test_123",
+      client_metadata: {
+        "x-codex-turn-metadata": JSON.stringify({
+          thread_id: "thread_test_123",
+          turn_id: "turn_test_456",
+        }),
+      },
+      input: [
+        ...structuredClone(firstRaw.input),
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "First retained answer" }],
+        },
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Continue in the same repository" }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn_test_456" },
+        },
+      ],
+    };
+
+    try {
+      const adapter = createChatGptWebAdapter(provider);
+      await adapter.runTurn!(first, { headers: new Headers() }, () => {});
+      await adapter.runTurn!(second, { headers: new Headers() }, () => {});
+
+      expect(browserMessages).toBe(2);
+      expect(tokens[1]).not.toBe(tokens[0]);
+      expect(preparedPrompts[0]).toContain("Inspect the project");
+      expect(preparedPrompts[1]).toContain("Continue in the same repository");
+      // The whole point of the opt-out: turn two carries the full compiled prompt,
+      // including the earlier exchange and the environment block, not just the suffix.
+      expect(preparedPrompts[1]).toContain("First retained answer");
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      chatGptTurnSessions.clear();
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
 
   test("closing a browser trace terminates the active adapter turn and blocks tab resurrection", async () => {
     const socketPath = brokerTestEndpoint(`cgw-close-trace-${process.pid}-${Date.now()}`);

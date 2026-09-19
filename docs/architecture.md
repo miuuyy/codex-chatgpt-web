@@ -120,6 +120,13 @@ the selected text to the system clipboard. The user has thirty seconds to paste,
 ChatGPT model, effort, and Zero Risk connector, send, and confirm Sent; a manual compaction handoff
 allows two minutes. Sent ends that confirmation deadline. Waiting for the first MCP bind is part of
 the live turn, which remains subject to explicit cancellation and runtime-owner cleanup.
+
+A retained epoch is an optimisation: the browser conversation already holds the earlier turns, so
+only the suffix travels. When that assumption does not hold the follow-up turn can lose context it
+needs. `experimentalFreshConversationPerTurn` (CLI `--fresh-conversation`) opts out by withholding
+the conversation key, so every Codex turn opens a fresh Temporary Chat and receives the complete
+compiled prompt. It is off by default; `--retained-conversation` restores the default explicitly.
+The trade-off is size: each turn resends the full context instead of a suffix.
 The pasted task carries one opaque `request_id` for routing concurrent requests. Start/completion
 sequencing lives in the Zero Risk MCP server metadata, not in user-authored imperative text; the
 per-tab nonce used to validate the Launcher confirmation never leaves the local runtime.
