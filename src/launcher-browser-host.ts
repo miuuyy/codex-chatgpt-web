@@ -207,12 +207,50 @@ export async function inspectLauncherBrowserHostLiveness(
   return descriptor;
 }
 
+/** Per-page bound for reading native target ownership during page selection. */
+export const LAUNCHER_PAGE_INSPECTION_TIMEOUT_MS = 2_000;
+
+async function inspectLauncherCandidateTarget(
+  context: BrowserContext,
+  page: Page,
+  timeoutMs: number,
+): Promise<string | undefined> {
+  let expired = false;
+  const inspection = (async () => {
+    const session = await context.newCDPSession(page).catch(() => undefined);
+    if (!session) return undefined;
+    try {
+      if (expired) return undefined;
+      const { targetInfo } = await session.send("Target.getTargetInfo");
+      return targetInfo.targetId as string;
+    } catch {
+      return undefined;
+    } finally {
+      // A late session from an expired inspection is released as soon as it arrives.
+      await session.detach().catch(() => {});
+    }
+  })();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expiry = new Promise<undefined>(resolveExpiry => {
+    timer = setTimeout(() => {
+      expired = true;
+      resolveExpiry(undefined);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([inspection, expiry]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function selectLauncherPage(
   browser: Browser,
   descriptor: LauncherBrowserHostDescriptor,
   timeoutMs: number,
   surfaceId = descriptor.surfaceId,
   abortSignal?: AbortSignal,
+  inspectionTimeoutMs = LAUNCHER_PAGE_INSPECTION_TIMEOUT_MS,
 ): Promise<{ context: BrowserContext; page: Page }> {
   if (abortSignal?.aborted) {
     throw new DOMException("Launcher browser connection aborted", "AbortError");
@@ -227,18 +265,13 @@ export async function selectLauncherPage(
     const candidates = browser.contexts().flatMap(context => context.pages().map(page => ({ context, page })));
     // Target metadata belongs to the browser process. Evaluating every page here makes an
     // unrelated busy/paused renderer block acquisition of an already-responsive owned page.
-    const inspected = await Promise.all(candidates.map(async candidate => {
-      const session = await candidate.context.newCDPSession(candidate.page).catch(() => undefined);
-      if (!session) return { ...candidate, targetId: undefined };
-      try {
-        const { targetInfo } = await session.send("Target.getTargetInfo");
-        return { ...candidate, targetId: targetInfo.targetId };
-      } catch {
-        return { ...candidate, targetId: undefined };
-      } finally {
-        await session.detach().catch(() => {});
-      }
-    }));
+    // Attaching a session can still wait on a renderer that is busy with another turn, so each
+    // candidate gets its own bound: a page that cannot answer in time is simply not the owned one
+    // on this pass, and the loop retries until the overall deadline.
+    const inspected = await Promise.all(candidates.map(async candidate => ({
+      ...candidate,
+      targetId: await inspectLauncherCandidateTarget(candidate.context, candidate.page, inspectionTimeoutMs),
+    })));
     const owned = inspected.filter(candidate => candidate.targetId === targetId);
     if (owned.length === 1) {
       return { context: owned[0].context, page: owned[0].page };

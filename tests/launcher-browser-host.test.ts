@@ -388,6 +388,35 @@ test("launcher page selection uses native ownership without evaluating unrelated
   });
 });
 
+test("launcher page selection is not blocked by an unrelated page whose CDP session never attaches", async () => {
+  const descriptor = readLauncherBrowserHostDescriptor(descriptorFile());
+  const busyPage = { url: () => "https://chatgpt.com/?temporary-chat=true" } as unknown as Page;
+  const ownedPage = { url: () => LAUNCHER_BROWSER_IDLE_URL } as unknown as Page;
+  let lateDetaches = 0;
+  const context = {
+    pages: () => [busyPage, ownedPage],
+    newCDPSession: (page: Page) => page === busyPage
+      ? new Promise(resolveLate => setTimeout(() => resolveLate({
+        send: async () => ({ targetInfo: { targetId: "native-other-target" } }),
+        detach: async () => { lateDetaches += 1; },
+      }), 200))
+      : Promise.resolve({
+        send: async () => ({ targetInfo: { targetId: "native-owned-target" } }),
+        detach: async () => {},
+      }),
+  } as unknown as BrowserContext;
+  const browser = { contexts: () => [context] } as unknown as Browser;
+
+  const startedAt = Date.now();
+  expect(await selectLauncherPage(browser, descriptor, 5_000, undefined, undefined, 30)).toEqual({
+    context,
+    page: ownedPage,
+  });
+  expect(Date.now() - startedAt).toBeLessThan(150);
+  await new Promise(resolve => setTimeout(resolve, 250));
+  expect(lateDetaches).toBe(1);
+});
+
 test("launcher page selection rejects duplicated native target ownership", async () => {
   const descriptor = readLauncherBrowserHostDescriptor(descriptorFile());
   const page = () => ({
