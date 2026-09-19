@@ -267,6 +267,9 @@ export function chatGptCompactionSourceExecutionKey(parsed: CodexParsedRequest):
   });
 }
 
+/** A tool batch unanswered this long, with no client activity, belongs to a client that went away. */
+export const CHATGPT_DETACHED_TOOL_RESULT_TIMEOUT_MS = 30 * 60_000;
+
 export class ChatGptTurnSession {
   supersededError?: Error;
   readonly createdAt = Date.now();
@@ -278,6 +281,7 @@ export class ChatGptTurnSession {
   private outstandingReasoning: string[] = [];
   private finalReasoning: string[] = [];
   private outstandingPrelude: AdapterEvent[] = [];
+  private outstandingSinceAt?: number;
   private finalPrelude: AdapterEvent[] = [];
   private settledBrowserOutcome?: ChatGptBrowserOutcome;
   private settledPhysical = false;
@@ -369,6 +373,12 @@ export class ChatGptTurnSession {
     }
     this.outstandingReasoning = [...reasoning];
     this.outstandingPrelude = [...prelude];
+    if (requests.length > 0) this.outstandingSinceAt = Date.now();
+  }
+
+  /** When the unresolved tool batch was handed to Codex, or undefined when none is outstanding. */
+  outstandingSince(): number | undefined {
+    return this.outstandingSinceAt;
   }
 
   hasOutstanding(callId: string): boolean {
@@ -381,6 +391,7 @@ export class ChatGptTurnSession {
     if (this.outstandingById.size === 0) {
       this.outstandingReasoning = [];
       this.outstandingPrelude = [];
+      this.outstandingSinceAt = undefined;
     }
   }
 
@@ -503,7 +514,30 @@ export class ChatGptTurnSessions {
   constructor(
     private readonly ttlMs = 30 * 60_000,
     private readonly maxEntries = 256,
+    private readonly detachedToolResultTimeoutMs = CHATGPT_DETACHED_TOOL_RESULT_TIMEOUT_MS,
   ) {}
+
+  /**
+   * Retire browser turns whose tool batch Codex never answered. Codex returns every tool result in
+   * a new request that touches the session, and a single native tool call rarely exceeds minutes,
+   * so a batch outstanding past the timeout with no client activity at all means the client went
+   * away. Without this, the observer waits on in-flight tools forever and keeps its tab.
+   */
+  reapDetachedToolTurns(now = Date.now()): number {
+    let reaped = 0;
+    for (const [key, session] of this.entries) {
+      const since = session.outstandingSince();
+      if (!session.isActive() || since === undefined) continue;
+      if (now - since < this.detachedToolResultTimeoutMs) continue;
+      if (now - session.lastUsedAt() < this.detachedToolResultTimeoutMs) continue;
+      console.warn(
+        `[chatgpt-web] retiring browser turn ${session.traceId ?? key}: tool results outstanding for`
+        + ` ${Math.round((now - since) / 60_000)} min with no client activity`,
+      );
+      if (this.retire(key, session)) reaped += 1;
+    }
+    return reaped;
+  }
 
   getOrCreate(
     key: string,
@@ -789,6 +823,7 @@ export class ChatGptTurnSessions {
   }
 
   private prune(): void {
+    this.reapDetachedToolTurns();
     const cutoff = Date.now() - this.ttlMs;
     for (const [key, session] of this.entries) {
       if (session.isActive() || session.lastUsedAt() >= cutoff) continue;
@@ -848,3 +883,5 @@ export class ChatGptTurnSessions {
 }
 
 export const chatGptTurnSessions = new ChatGptTurnSessions();
+// Reap abandoned tool waits even when no new request arrives to trigger pruning.
+setInterval(() => chatGptTurnSessions.reapDetachedToolTurns(), 60_000).unref?.();

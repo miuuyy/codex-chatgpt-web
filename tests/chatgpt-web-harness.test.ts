@@ -976,6 +976,39 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(cancelled).toEqual(["old"]);
   });
 
+  test("reaps an active turn whose tool batch Codex never answered, but not one with client activity", () => {
+    const sessions = new ChatGptTurnSessions(30 * 60_000, 256, 1_000);
+    const cancelled: string[] = [];
+    const runtime = (name: string) => ({
+      mode: "read-only" as const,
+      browser: new Promise<string>(() => {}),
+      physicalSettlement: new Promise<void>(() => {}),
+      trace: new ChatGptTraceFeed(),
+      text: new ChatGptTextFeed(),
+      cancel: () => { cancelled.push(name); },
+    });
+    const abandoned = sessions.getOrCreate("abandoned", () => runtime("abandoned"), "abandoned-trace");
+    const active = sessions.getOrCreate("active", () => runtime("active"), "active-trace");
+    sessions.getOrCreate("idle", () => runtime("idle"), "idle-trace");
+    type Batch = Parameters<typeof abandoned.setOutstanding>[0];
+    abandoned.setOutstanding([{ callId: "call_abandoned" }] as unknown as Batch);
+    active.setOutstanding([{ callId: "call_active" }] as unknown as Batch);
+    const now = Date.now();
+    // Codex has just come back for the active turn (e.g. while its tool is still running).
+    active.lastUsedAt = () => now + 1_400;
+
+    expect(sessions.reapDetachedToolTurns(now + 500)).toBe(0);
+    expect(sessions.reapDetachedToolTurns(now + 1_500)).toBe(1);
+    expect(cancelled).toEqual(["abandoned"]);
+    expect(sessions.find("abandoned")).toBeUndefined();
+    expect(sessions.find("active")?.traceId).toBe("active-trace");
+    expect(sessions.find("idle")?.traceId).toBe("idle-trace");
+
+    active.markResultDelivered("call_active");
+    expect(active.outstandingSince()).toBeUndefined();
+    expect(sessions.reapDetachedToolTurns(now + 60_000)).toBe(0);
+  });
+
   test("retires a failed session so the next native retry starts a new browser turn", async () => {
     const sessions = new ChatGptTurnSessions();
     let starts = 0;
