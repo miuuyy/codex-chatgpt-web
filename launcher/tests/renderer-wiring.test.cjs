@@ -24,6 +24,18 @@ test("native clicks reach browser tabs instead of the window drag region", () =>
   assert.match(appSource, /className="browser-tab-drag draggable"/);
 });
 
+test("Windows browser chrome clears the native titlebar overlay", () => {
+  assert.match(
+    stylesSource,
+    /\.app-root\[data-platform="win32"\] \.browser-tab-strip\s*\{[^}]*height:\s*var\(--height-titlebar\);[^}]*flex-basis:\s*var\(--height-titlebar\);[^}]*padding-right:\s*calc\(var\(--height-titlebar\) \* 3 \+ 8px\);[^}]*border-bottom:\s*0;/s,
+  );
+  assert.match(
+    stylesSource,
+    /\.app-root\[data-platform="win32"\] \.browser-toolbar\s*\{[^}]*border-top:\s*1px solid var\(--color-border-light\);/s,
+  );
+  assert.match(electronMain, /titleBarOverlay:\s*\{[^}]*height:\s*46,/s);
+});
+
 test("renderer zoom scales the shell without moving or zooming the native ChatGPT surface", () => {
   assert.match(
     electronMain,

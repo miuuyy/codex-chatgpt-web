@@ -551,6 +551,17 @@ code {
   padding-left: 112px;
 }
 
+.app-root[data-platform="win32"] .browser-tab-strip {
+  height: var(--height-titlebar);
+  flex-basis: var(--height-titlebar);
+  padding-right: calc(var(--height-titlebar) * 3 + 8px);
+  border-bottom: 0;
+}
+
+.app-root[data-platform="win32"] .browser-toolbar {
+  border-top: 1px solid var(--color-border-light);
+}
+
 .browser-tab {
   position: relative;
   display: flex;
