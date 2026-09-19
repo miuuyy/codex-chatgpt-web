@@ -107,6 +107,12 @@ export interface AppConfig {
   stallTimeoutSec?: number;
   /** Write compaction checkpoints with a local Grok CLI instead of the retained ChatGPT chat. */
   grokCompaction?: GrokCompactionConfig;
+  /**
+   * Raised task-level auto-compaction threshold for automatic Sol models. One ChatGPT message keeps
+   * its measured boundary and only the point where Codex compacts the task moves. Requires
+   * grokCompaction. Cannot be combined with Bigger Context, which splits context into messages.
+   */
+  autoCompactTokenLimit?: number;
   autoApproveToolCalls: boolean;
   controlToken: string;
   runtimeCommand: string[];
@@ -550,6 +556,20 @@ function parseConfig(value: unknown, path: string): AppConfig {
     throw new Error(`Invalid stallTimeoutSec in ${path}`);
   }
   validateGrokCompaction(parsed.grokCompaction, path);
+  if (parsed.autoCompactTokenLimit !== undefined) {
+    if (!Number.isSafeInteger(parsed.autoCompactTokenLimit) || parsed.autoCompactTokenLimit <= 0) {
+      throw new Error(`Invalid autoCompactTokenLimit in ${path}`);
+    }
+    if (parsed.grokCompaction?.enabled !== true) {
+      throw new Error(`autoCompactTokenLimit requires grokCompaction.enabled in ${path}`);
+    }
+    if (parsed.experimentalBiggerContext === true) {
+      throw new Error(`autoCompactTokenLimit cannot be combined with experimentalBiggerContext in ${path}`);
+    }
+    if (browserInteractionMode === "manual") {
+      throw new Error(`Zero Risk does not support autoCompactTokenLimit in ${path}`);
+    }
+  }
   const solAvailable = parsed.solAvailable !== false;
   const proAvailable = parsed.proAvailable === true;
   if (parsed.experimentalSkillAttachments !== undefined && typeof parsed.experimentalSkillAttachments !== "boolean") {
@@ -639,6 +659,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       experimentalSkillAttachments: manual ? false : config.experimentalSkillAttachments,
       ...(config.stallTimeoutSec !== undefined ? { stallTimeoutSec: config.stallTimeoutSec } : {}),
       ...(config.grokCompaction !== undefined ? { grokCompaction: config.grokCompaction } : {}),
+      ...(config.autoCompactTokenLimit !== undefined ? { autoCompactTokenLimit: config.autoCompactTokenLimit } : {}),
       autoApproveToolCalls: manual ? false : config.autoApproveToolCalls,
     },
   };

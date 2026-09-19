@@ -372,6 +372,9 @@ export function createChatGptWebAdapter(
     solAvailable: provider.chatgptWeb?.solAvailable !== false,
     extraHighAvailable: provider.chatgptWeb?.extraHighAvailable === true,
     proAvailable: provider.chatgptWeb?.proAvailable === true,
+    ...(provider.chatgptWeb?.autoCompactTokenLimit !== undefined
+      ? { autoCompactTokenLimit: provider.chatgptWeb.autoCompactTokenLimit }
+      : {}),
   };
   const manualInteraction = provider.chatgptWeb?.browserInteractionMode === "manual";
   // Set when a local CLI writes the compaction checkpoint from the Codex history the bridge holds.

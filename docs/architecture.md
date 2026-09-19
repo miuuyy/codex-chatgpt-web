@@ -179,6 +179,10 @@ handoff is used as a fallback only when `allowChatGptFallback` is set. Configura
 `maxPromptChars`, and `allowChatGptFallback`. Every field except `args` has a
 `CODEX_CHATGPT_WEB_GROK_COMPACTION_*` override.
 
+`chatgptWeb.autoCompactTokenLimit` optionally raises the point where Codex compacts a task on
+automatic Sol reasoning efforts. It requires the local backend and cannot be combined with Bigger
+Context or Zero Risk. The one-message boundary does not move, and Instant keeps its measured window.
+
 ## Installation and service lifecycle
 
 Each native desktop package contains Electron, a platform-matched pinned Bun executable, the

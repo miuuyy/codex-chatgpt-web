@@ -3,7 +3,14 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
-import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
+import { ChatGptBrowserWorker, assertChatGptWebInputWithinLimits } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
+import {
+  CHATGPT_WEB_BACKEND_MODEL,
+  resolveChatGptWebContextLimits,
+  resolveChatGptWebMessageTokenBudget,
+  resolveChatGptWebTransportLimits,
+} from "../src/chatgpt-web-models";
 import {
   DEFAULT_GROK_COMPACTION_ARGS,
   DEFAULT_GROK_COMPACTION_COMMAND,
@@ -406,4 +413,50 @@ test("a missing Grok CLI fails the compact instead of falling back to ChatGPT", 
     await broker.close();
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a raised auto-compaction threshold moves the task window and leaves the one-message boundary alone", () => {
+  const pro = { solAvailable: true, extraHighAvailable: true, proAvailable: true };
+  const raised = { ...pro, autoCompactTokenLimit: 240_000 };
+  // Instant chats have a much smaller ChatGPT context than reasoning chats, so they keep their window.
+  expect(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, "low", raised))
+    .toEqual(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, "low", pro));
+  for (const effort of ["medium", "high", "max"] as const) {
+    const base = resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, effort, pro);
+    const limits = resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, effort, raised);
+    expect(base.autoCompactTokenLimit).toBe(95_000);
+    expect(limits.autoCompactTokenLimit).toBe(240_000);
+    expect(limits.effectiveContextWindowPercent).toBe(base.effectiveContextWindowPercent);
+    expect(limits.contextWindow).toBeGreaterThan(240_000);
+    // One ChatGPT message may carry the same amount with and without the raised threshold.
+    expect(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, effort, raised))
+      .toEqual(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, effort, pro));
+    expect(resolveChatGptWebMessageTokenBudget(CHATGPT_WEB_BACKEND_MODEL, effort, raised))
+      .toBe(resolveChatGptWebMessageTokenBudget(CHATGPT_WEB_BACKEND_MODEL, effort, pro));
+  }
+  expect(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, "max", raised).browserMessageTokenLimit)
+    .toBe(104_000);
+  // A value at or below the measured threshold changes nothing, and Bigger Context rejects it.
+  expect(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, "high", { ...pro, autoCompactTokenLimit: 50_000 }))
+    .toEqual(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, "high", pro));
+  expect(() => resolveChatGptWebContextLimits(
+    CHATGPT_WEB_BACKEND_MODEL,
+    "high",
+    { ...raised, experimentalBiggerContext: true },
+  )).toThrow(/Bigger Context/);
+});
+
+test("a task above one message still passes preflight when only its new suffix is sent", () => {
+  const raised = {
+    localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true,
+    autoCompactTokenLimit: 240_000,
+  };
+  // 180k-token task, 12k-token physical message: passes only because the task window was raised.
+  expect(() => assertChatGptWebInputWithinLimits(180_000, 12_000, CHATGPT_WEB_MODEL_ID, "high", raised)).not.toThrow();
+  expect(() => assertChatGptWebInputWithinLimits(
+    180_000, 12_000, CHATGPT_WEB_MODEL_ID, "high", { ...raised, autoCompactTokenLimit: undefined },
+  )).toThrow(/context window/);
+  // A cold rebuild that would need one oversized message is still refused and is not split.
+  expect(() => assertChatGptWebInputWithinLimits(180_000, 180_000, CHATGPT_WEB_MODEL_ID, "high", raised))
+    .toThrow(/browser message boundary/);
 });

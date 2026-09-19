@@ -285,6 +285,12 @@ export interface CodexProviderConfig {
     /** Persisted exact-parent rolling checkpoints used only by Free/Luna turns. */
     lunaCheckpointStatePath?: string;
     /**
+     * Raise the task-level auto-compaction threshold above the one-message boundary. Requires
+     * `grokCompaction`, because a ChatGPT-written checkpoint of a task this large would have to be
+     * pasted through that boundary.
+     */
+    autoCompactTokenLimit?: number;
+    /**
      * Write the compaction checkpoint with a local Grok CLI instead of the retained ChatGPT
      * conversation. Codex holds the full history locally, so the checkpoint costs no ChatGPT Web
      * message and does not go through the composer. Off unless `enabled` is true. Failure handling
