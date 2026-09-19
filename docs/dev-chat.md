@@ -82,6 +82,21 @@ it to exercise the one-message composer budget and multi-chunk prompt insertion 
 history growth. The normal model-specific browser preflight still applies and fails closed above
 the measured transport limit.
 
+## Local compaction backend
+
+To exercise the local Grok checkpoint path, set the override for the DEV run (or add
+`"grokCompaction": { "enabled": true }` to the DEV `config.json`):
+
+```bash
+CODEX_CHATGPT_WEB_GROK_COMPACTION=1 bun run dev:chat compaction-lab
+```
+
+Then send one live message, `/fill` past the threshold, and `/compact`. The local `grok` process
+answers the compaction. The launcher should not open a new ChatGPT message or type a summarize
+prompt into the retained tab. The old chat is retired, and the next message opens a fresh Temporary
+Chat whose prompt contains the Grok checkpoint. `grok` must be on `PATH`. Without it the compact
+fails with `grok_compaction_unavailable` and the retained chat is left intact.
+
 ## Skills as files experiment
 
 **Settings → Skills as files (experimental)** is off by default in both launcher profiles.

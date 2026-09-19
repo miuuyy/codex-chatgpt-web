@@ -13,6 +13,7 @@ import {
   activeCompactionToolResultInstruction,
   structuredCompactionHandoffInstruction,
   zeroRiskActiveCompactionToolResultInstruction,
+  zeroRiskLocalCompactionToolResultInstruction,
 } from "./native-compaction-control";
 import type { BrokerToolResult, TurnBroker, TurnBrokerOwner } from "./turn-broker";
 import type { ChatGptTurnSession } from "./turn-execution";
@@ -51,32 +52,23 @@ function toolResult(message: CodexToolResultMessage): BrokerToolResult {
   };
 }
 
-function interruptedByActiveCompaction(): BrokerToolResult {
+function interruptedByActiveCompaction(instruction: string): BrokerToolResult {
   return {
-    content: [{ type: "text", text: activeCompactionToolResultInstruction() }],
+    content: [{ type: "text", text: instruction }],
     isError: true,
   };
 }
 
-function withZeroRiskCompactionInstruction(result: BrokerToolResult): BrokerToolResult {
+function withZeroRiskCompactionInstruction(result: BrokerToolResult, instruction: string): BrokerToolResult {
   return {
     ...result,
-    content: [
-      ...result.content,
-      {
-        type: "text",
-        text: zeroRiskActiveCompactionToolResultInstruction(true),
-      },
-    ],
+    content: [...result.content, { type: "text", text: instruction }],
   };
 }
 
-function interruptedByZeroRiskCompaction(): BrokerToolResult {
+function interruptedByZeroRiskCompaction(instruction: string): BrokerToolResult {
   return {
-    content: [{
-      type: "text",
-      text: zeroRiskActiveCompactionToolResultInstruction(false),
-    }],
+    content: [{ type: "text", text: instruction }],
     isError: true,
   };
 }
@@ -159,11 +151,19 @@ function withCompactionAbort<T>(promise: Promise<T>, signal?: AbortSignal): Prom
   });
 }
 
+/**
+ * Deliver the tool results Codex supplied for the active response and let it end normally.
+ *
+ * `instruction` is what a later tool call gets back in place of execution. The default announces
+ * the structured checkpoint request the retained chat receives next. A local compaction backend
+ * passes its own text because that request is never sent.
+ */
 export async function settleActiveCompactionSource(
   parsed: CodexParsedRequest,
   source: ChatGptTurnSession,
   broker: TurnBroker,
   signal?: AbortSignal,
+  instruction: string = activeCompactionToolResultInstruction(),
 ): Promise<{ answer: string; compactionInstructionDelivered: boolean }> {
   return source.runExclusive(async () => {
     if (signal?.aborted) {
@@ -183,7 +183,7 @@ export async function settleActiveCompactionSource(
     let token: string | undefined;
     try {
       token = await source.runtime.token;
-      broker.requestCompaction(token, interruptedByActiveCompaction());
+      broker.requestCompaction(token, interruptedByActiveCompaction(instruction));
       for (const request of outstanding) {
         const result = results.get(request.callId)!;
         await broker.completeTool(
@@ -215,12 +215,25 @@ export async function settleActiveCompactionSource(
   });
 }
 
-export async function settleActiveZeroRiskCompactionSource(
+/**
+ * Settle the active Zero Risk response at its visible native tool boundary.
+ *
+ * `mode` says who writes the checkpoint. With `"chatgpt-summary"` the same manually submitted
+ * response returns it. With `"local"` the response is only told to stop, a local backend writes
+ * the checkpoint, and no summary is returned.
+ */
+async function settleActiveZeroRiskSource(
   parsed: CodexParsedRequest,
   source: ChatGptTurnSession,
   broker: TurnBrokerOwner,
-  signal?: AbortSignal,
-): Promise<string | undefined> {
+  signal: AbortSignal | undefined,
+  mode: "chatgpt-summary" | "local",
+): Promise<{ summary?: string; instructionDelivered: boolean }> {
+  const stopInstruction = (toolExecuted: boolean): string => (
+    mode === "local"
+      ? zeroRiskLocalCompactionToolResultInstruction(toolExecuted)
+      : zeroRiskActiveCompactionToolResultInstruction(toolExecuted)
+  );
   return source.runExclusive(async () => {
     if (signal?.aborted) {
       source.cancel(abortReason(signal));
@@ -241,7 +254,7 @@ export async function settleActiveZeroRiskCompactionSource(
       token = await source.runtime.token;
       const interruptedQueued = await broker.requestCompaction(
         token,
-        interruptedByZeroRiskCompaction(),
+        interruptedByZeroRiskCompaction(stopInstruction(false)),
       );
       for (const [index, request] of outstanding.entries()) {
         const result = results.get(request.callId)!;
@@ -250,7 +263,7 @@ export async function settleActiveZeroRiskCompactionSource(
           token,
           request.callId,
           interruptedQueued === 0 && index === outstanding.length - 1
-            ? withZeroRiskCompactionInstruction(canonical)
+            ? withZeroRiskCompactionInstruction(canonical, stopInstruction(true))
             : canonical,
         );
         source.runtime.externalProgress.recordToolResult();
@@ -261,10 +274,10 @@ export async function settleActiveZeroRiskCompactionSource(
       await withCompactionAbort(source.physicalSettlement, signal);
       const instructionDelivered = outstanding.length > 0
         || await broker.compactionDeliveryCount(token) > 0;
-      if (!instructionDelivered) return undefined;
+      if (!instructionDelivered || mode === "local") return { instructionDelivered };
       const summary = browserOutcome.answer.trim();
       if (!summary) throw new Error("The active Zero Risk response returned an empty compaction summary");
-      return summary;
+      return { summary, instructionDelivered };
     } catch (error) {
       if (signal?.aborted) source.cancel(abortReason(signal));
       throw error;
@@ -272,6 +285,31 @@ export async function settleActiveZeroRiskCompactionSource(
       if (token) await broker.revoke(token);
     }
   });
+}
+
+export async function settleActiveZeroRiskCompactionSource(
+  parsed: CodexParsedRequest,
+  source: ChatGptTurnSession,
+  broker: TurnBrokerOwner,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  return (await settleActiveZeroRiskSource(parsed, source, broker, signal, "chatgpt-summary")).summary;
+}
+
+/**
+ * Stop the active Zero Risk response for a local compaction backend.
+ *
+ * `instructionDelivered` is false when the response settled before it saw the stop instruction.
+ * In that case its answer is an ordinary result and can still be published.
+ */
+export async function settleActiveZeroRiskCompactionSourceForLocalHandoff(
+  parsed: CodexParsedRequest,
+  source: ChatGptTurnSession,
+  broker: TurnBrokerOwner,
+  signal?: AbortSignal,
+): Promise<{ instructionDelivered: boolean }> {
+  const settled = await settleActiveZeroRiskSource(parsed, source, broker, signal, "local");
+  return { instructionDelivered: settled.instructionDelivered };
 }
 
 export async function requestRetainedCompactionHandoff(

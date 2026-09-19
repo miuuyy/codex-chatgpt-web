@@ -157,6 +157,27 @@ export function resolveChatGptWebContextLimits(
   } else {
     throw new Error(`ChatGPT Plus context limit is not defined for unavailable effort: ${effort}`);
   }
+  const raised = capabilities.autoCompactTokenLimit;
+  if (raised !== undefined) {
+    if (capabilities.experimentalBiggerContext) {
+      throw new Error("autoCompactTokenLimit cannot be combined with Bigger Context");
+    }
+    if (!Number.isSafeInteger(raised) || raised <= 0) {
+      throw new Error("autoCompactTokenLimit must be a positive integer");
+    }
+    // The measured limits above describe one ChatGPT message. A retained conversation only
+    // receives the new suffix of a task, and tool rounds stay inside one response, so the task can
+    // grow past one message. The compaction headroom ratio is kept, and the per-message boundary
+    // is enforced separately. Instant keeps its measured window because ChatGPT gives
+    // non-reasoning chats a much smaller total context (128K on Pro) than reasoning chats (400K on
+    // Pro).
+    if (effort !== "low" && raised > limits.autoCompactTokenLimit) {
+      return contextLimits(
+        Math.ceil(raised * (limits.contextWindow / limits.autoCompactTokenLimit)),
+        raised,
+      );
+    }
+  }
   if (!capabilities.experimentalBiggerContext) return limits;
   return contextLimits(
     limits.contextWindow * CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER,
@@ -210,8 +231,9 @@ export function resolveChatGptWebMessageTokenBudget(
   capabilities: ChatGptWebAccountCapabilities,
   imageTokens = 0,
 ): number {
+  // One message is bounded by the measured base window. A raised task threshold does not apply.
   const { contextWindow } = resolveChatGptWebContextLimits(
-    backendModel, effort, { ...capabilities, experimentalBiggerContext: false },
+    backendModel, effort, { ...capabilities, experimentalBiggerContext: false, autoCompactTokenLimit: undefined },
   );
   const { browserMessageTokenLimit } = resolveChatGptWebTransportLimits(backendModel, effort, capabilities);
   return Math.max(0, Math.min(
@@ -250,6 +272,12 @@ export interface ChatGptWebAccountCapabilities {
   extraHighAvailable?: boolean;
   proAvailable: boolean;
   experimentalBiggerContext?: boolean;
+  /**
+   * Raises the task-level auto-compaction threshold for automatic Sol models. How much one ChatGPT
+   * message may carry stays the same. Meant for use with a local compaction backend; see
+   * `resolveChatGptWebContextLimits`.
+   */
+  autoCompactTokenLimit?: number;
   browserInteractionMode?: "automatic" | "manual";
   zeroRiskProEnabled?: boolean;
 }

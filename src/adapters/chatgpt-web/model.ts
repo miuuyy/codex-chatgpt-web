@@ -11,6 +11,8 @@ export interface ChatGptWebCapabilities {
   solAvailable: boolean;
   extraHighAvailable: boolean;
   proAvailable: boolean;
+  /** Raised task-level auto-compaction threshold. The one-message boundary is unaffected. */
+  autoCompactTokenLimit?: number;
 }
 
 export interface ChatGptWebModelMode {

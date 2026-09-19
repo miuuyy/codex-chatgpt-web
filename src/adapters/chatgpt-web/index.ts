@@ -44,7 +44,15 @@ import {
   runStructuredCompactionOnce,
   settleActiveCompactionSource,
   settleActiveZeroRiskCompactionSource,
+  settleActiveZeroRiskCompactionSourceForLocalHandoff,
 } from "./compaction-handoff";
+import { localCompactionToolResultInstruction } from "./native-compaction-control";
+import {
+  assertGrokCompactionAvailable,
+  resolveGrokCompactionSettings,
+  runGrokCompaction,
+  type GrokCompactionSettings,
+} from "./grok-compaction";
 import {
   chatGptConversationKey,
   retainedConversationResumeRequest,
@@ -364,8 +372,14 @@ export function createChatGptWebAdapter(
     solAvailable: provider.chatgptWeb?.solAvailable !== false,
     extraHighAvailable: provider.chatgptWeb?.extraHighAvailable === true,
     proAvailable: provider.chatgptWeb?.proAvailable === true,
+    ...(provider.chatgptWeb?.autoCompactTokenLimit !== undefined
+      ? { autoCompactTokenLimit: provider.chatgptWeb.autoCompactTokenLimit }
+      : {}),
   };
   const manualInteraction = provider.chatgptWeb?.browserInteractionMode === "manual";
+  // Set when a local CLI writes the compaction checkpoint from the Codex history the bridge holds.
+  // The retained ChatGPT conversation is then stopped and retired without being asked to summarize.
+  const grokCompaction = resolveGrokCompactionSettings(provider);
   const executionNamespace = chatGptWebExecutionNamespace(provider);
   const retainedLauncherDescriptor = provider.chatgptWeb?.browserHost === "launcher"
     && provider.chatgptWeb.browserHostDescriptorPath
@@ -805,6 +819,110 @@ export function createChatGptWebAdapter(
     };
   };
 
+  /**
+   * Write the compaction checkpoint locally and retire the retained ChatGPT epoch.
+   *
+   * ChatGPT is not asked to summarize. An active response is settled first: the tool results Codex
+   * already has are delivered so it can end normally, and a newly requested tool gets a stop
+   * instruction. The conversation is then retired the same way as after a ChatGPT checkpoint, and
+   * the next turn opens a fresh Temporary Chat from the compacted history. A failure is terminal
+   * unless `allowChatGptFallback` is set.
+   */
+  const runLocalStructuredCompaction = async (
+    parsed: CodexParsedRequest,
+    settings: GrokCompactionSettings,
+    context: {
+      manualRequest: boolean;
+      sourceConversationKey: string | undefined;
+      compactedSourceExecutionKey: string;
+      traceId: string;
+      operationSignal: AbortSignal;
+      onProgress: () => void;
+    },
+  ): Promise<string> => {
+    // Check for the CLI first. Without it the compaction cannot succeed, and the live ChatGPT
+    // epoch should be left alone.
+    assertGrokCompactionAvailable(settings);
+    const { operationSignal } = context;
+    let source: ChatGptTurnSession | undefined;
+    let preserveFinalResponse = false;
+    const retire = async (): Promise<void> => {
+      const retainedKey = source?.conversationKey();
+      if (!retainedKey) return;
+      await (preserveFinalResponse
+        ? chatGptTurnSessions.retireConversationPreservingFinalResponse(
+          retainedKey,
+          source!,
+          context.compactedSourceExecutionKey,
+        )
+        : chatGptTurnSessions.retireConversationAndWait(retainedKey));
+    };
+    try {
+      if (context.sourceConversationKey) {
+        await chatGptTurnSessions.waitForConversationRetirement(
+          context.sourceConversationKey,
+          operationSignal,
+        );
+      }
+      source = context.sourceConversationKey
+        ? chatGptTurnSessions.findConversationHead(context.sourceConversationKey)
+        : undefined;
+      if (source?.isActive() && source.runtime.mode === "tools") {
+        if (context.manualRequest) {
+          const settled = await settleActiveZeroRiskCompactionSourceForLocalHandoff(
+            parsed,
+            source,
+            broker,
+            operationSignal,
+          );
+          preserveFinalResponse = !settled.instructionDelivered;
+        } else {
+          if (!structuredBroker) {
+            throw new Error("Local compaction requires the structured turn broker to settle an active ChatGPT tool round");
+          }
+          const settlement = await settleActiveCompactionSource(
+            parsed,
+            source,
+            structuredBroker,
+            operationSignal,
+            localCompactionToolResultInstruction(),
+          );
+          preserveFinalResponse = !settlement.compactionInstructionDelivered;
+        }
+      } else if (source?.isActive()) {
+        const outcome = await withAbort(source.browserOutcome, operationSignal);
+        if (outcome.type === "error") throw outcome.error;
+        await withAbort(source.physicalSettlement, operationSignal);
+        preserveFinalResponse = true;
+      } else if (source) {
+        preserveFinalResponse = source.settledOutcome()?.type === "final";
+      }
+      context.onProgress();
+      const summary = canonicalizeCompactionHandoff(parsed, await runGrokCompaction(parsed, settings, {
+        signal: operationSignal,
+        traceId: context.traceId,
+        onProgress: context.onProgress,
+      }));
+      await withAbort(retire(), operationSignal);
+      return summary;
+    } catch (error) {
+      let handoffError = error instanceof Error ? error : new Error(String(error));
+      // A failed local compaction retires its epoch like a failed ChatGPT handoff does. With
+      // `allowChatGptFallback` the epoch stays, because the legacy handoff needs that conversation.
+      if (!settings.allowChatGptFallback) {
+        try {
+          await retire();
+        } catch (retirementError) {
+          handoffError = new AggregateError(
+            [handoffError, retirementError instanceof Error ? retirementError : new Error(String(retirementError))],
+            "Local compaction failed and its retained conversation could not be retired",
+          );
+        }
+      }
+      throw handoffError;
+    }
+  };
+
   return {
     name: "chatgpt-web",
     async runTurn(parsed, incoming, emit) {
@@ -906,10 +1024,15 @@ export function createChatGptWebAdapter(
                     : {}),
                 },
                 async (operatorSignal, retainOwnershipUntil) => {
-                  const handoffTimeoutMs = Math.min(
-                    timeoutMs ?? MAX_COMPACTION_HANDOFF_TIMEOUT_MS,
-                    MAX_COMPACTION_HANDOFF_TIMEOUT_MS,
-                  );
+                  // The five-minute ceiling fits a ChatGPT response. A local backend reads the
+                  // whole history and can take longer, so it gets its configured timeout plus a
+                  // margin.
+                  const handoffTimeoutMs = grokCompaction
+                    ? Math.max(MAX_COMPACTION_HANDOFF_TIMEOUT_MS, grokCompaction.timeoutMs + 30_000)
+                    : Math.min(
+                      timeoutMs ?? MAX_COMPACTION_HANDOFF_TIMEOUT_MS,
+                      MAX_COMPACTION_HANDOFF_TIMEOUT_MS,
+                    );
                   const handoffDeadline = new AbortController();
                   const handoffTimeoutError = new ChatGptWebAdapterError(
                     `ChatGPT compaction did not fully settle within ${handoffTimeoutMs}ms`,
@@ -933,6 +1056,25 @@ export function createChatGptWebAdapter(
                   armHandoffDeadline();
                   const operationSignal = AbortSignal.any([operatorSignal, handoffDeadline.signal]);
                   const sourceConversationKey = chatGptConversationKey(parsed, executionNamespace);
+                  if (grokCompaction) {
+                    try {
+                      return await runLocalStructuredCompaction(parsed, grokCompaction, {
+                        manualRequest,
+                        sourceConversationKey,
+                        compactedSourceExecutionKey,
+                        traceId: compactionTraceId,
+                        operationSignal,
+                        onProgress: armHandoffDeadline,
+                      });
+                    } catch (error) {
+                      if (!grokCompaction.allowChatGptFallback || operationSignal.aborted) throw error;
+                      console.warn(
+                        "[chatgpt-web] local compaction failed; the explicit ChatGPT fallback is enabled: "
+                        + (error instanceof Error ? error.message : String(error)),
+                      );
+                      armHandoffDeadline();
+                    }
+                  }
                   const runFreshCompactionFallback = async (reason: string): Promise<string> => {
                     console.warn(`[chatgpt-web] retained compaction fallback=${reason}`);
                     // The fallback is a new bounded phase. Each exact multipart acknowledgement

@@ -284,6 +284,31 @@ export interface CodexProviderConfig {
     threadEnvironmentStatePath?: string;
     /** Persisted exact-parent rolling checkpoints used only by Free/Luna turns. */
     lunaCheckpointStatePath?: string;
+    /**
+     * Raise the task-level auto-compaction threshold above the one-message boundary. Requires
+     * `grokCompaction`, because a ChatGPT-written checkpoint of a task this large would have to be
+     * pasted through that boundary.
+     */
+    autoCompactTokenLimit?: number;
+    /**
+     * Write the compaction checkpoint with a local Grok CLI instead of the retained ChatGPT
+     * conversation. Codex holds the full history locally, so the checkpoint costs no ChatGPT Web
+     * message and does not go through the composer. Off unless `enabled` is true. Failure handling
+     * is described in grok-compaction.ts.
+     */
+    grokCompaction?: {
+      enabled?: boolean;
+      /** Executable name or absolute path; resolved against PATH. Defaults to `grok`. */
+      command?: string;
+      /** Full argument vector; must contain the `{prompt_file}` placeholder. */
+      args?: string[];
+      model?: string;
+      cwd?: string;
+      timeoutMs?: number;
+      maxPromptChars?: number;
+      /** Allow the same-chat ChatGPT compaction when the local run fails. */
+      allowChatGptFallback?: boolean;
+    };
     /** Optional explicit safety ceiling. Browser turns have no absolute deadline by default. */
     turnTimeoutMs?: number;
     /**
