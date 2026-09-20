@@ -4746,6 +4746,24 @@ export class ChatGptBrowserWorker {
       let finalPrompt = prepared.text;
       if (prepared.multipart && multipartStages && multipartTransactionId && multipartFinalPrompt) {
         for (let index = 0; index < multipartStages.length; index += 1) {
+          // ChatGPT may rewrite the closed effort-control label after accepting a staged message,
+          // even though its semantic slider value is unchanged. Re-prove the actual slider state
+          // between parts instead of trusting the label captured before the first submission.
+          if (index > 0) {
+            mode = await this.runStage(
+              turn.traceId,
+              `multipart_stage_${index + 1}_effort_selection`,
+              browserStageTimeouts.effortSelection,
+              () => this.selectModelAndEffort(
+                page,
+                turn.modelId,
+                stagingMode.effort,
+                browserCapabilities,
+                checkpoint => diagnostics.capture(page, `multipart-${index + 1}-${checkpoint}`),
+              ),
+            );
+            await diagnostics.capture(page, `multipart-stage-${index + 1}-effort-selected`);
+          }
           const stage = multipartStages[index]!;
           let stageBaseline = await this.captureSubmissionBaseline(page);
           await this.runStage(

@@ -104,7 +104,10 @@ test.each([[true, false, true], [false, false, true], [true, true, true], [true,
     expect(actions).toEqual([
       ...(multipart ? [
         "effort:low",
-        ...Array.from({ length: 5 }, () => ["attach:plain", "send", "observe", "ack"]).flat(),
+        ...Array.from({ length: 5 }, (_, index) => [
+          ...(index > 0 ? ["effort:low"] : []),
+          "attach:plain", "send", "observe", "ack",
+        ]).flat(),
       ] : []),
       `effort:${effort}`,
       tools ? "attach:tools" : "attach:plain", "files", "send", "observe",
