@@ -1150,7 +1150,7 @@ describe("ChatGPT outer-native harness v4", () => {
           type: "error",
           code: "chatgpt_submission_ambiguous",
           retryable: false,
-          message: "ChatGPT did not confirm that the prompt was sent. Check the ChatGPT tab before continuing.",
+          message: "ChatGPT did not confirm that the prompt was sent. Check the ChatGPT tab before continuing. Reason: submission evidence disappeared after Send activation",
         });
       }
       expect(browserStarts).toBe(1);
@@ -1224,6 +1224,52 @@ describe("ChatGPT outer-native harness v4", () => {
       expect(JSON.stringify(response)).toContain("usage limit may have been reached");
       expect(browserStarts).toBe(1);
       expect(events.some(event => event.type === "done")).toBeFalse();
+    } finally {
+      worker.run = originalRun;
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
+
+  test("an accepted prompt is not resent after a permanent observation failure", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-submitted-retry-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web", baseUrl: `browser://submitted-retry-${Date.now()}`,
+      chatgptWeb: {
+        browserHost: "launcher",
+        browserHostDescriptorPath: join(tempRoot, "submitted-retry-launcher.json"),
+        brokerSocketPath: socketPath,
+        localToolsEnabled: true,
+        solAvailable: true,
+        extraHighAvailable: true,
+        proAvailable: true,
+      },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run;
+    let browserStarts = 0;
+    worker.run = async turn => {
+      browserStarts += 1;
+      turn.onSubmitted?.();
+      throw new Error("browser transport reset after recovery\nturn_sensitive_test_token_123456789");
+    };
+    try {
+      const events: AdapterEvent[] = [];
+      await createChatGptWebAdapter(provider).runTurn!(rawWireRequest(environmentXml),
+        { headers: new Headers() }, event => events.push(event));
+      expect(events.at(-1)).toMatchObject({
+        type: "error",
+        code: "chatgpt_submitted_turn_failed",
+        status: 502,
+        retryable: false,
+      });
+      const error = events.at(-1) as Extract<AdapterEvent, { type: "error" }>;
+      expect(error.message).toContain("Reason: browser transport reset after recovery turn_[redacted]");
+      expect(error.message).not.toContain("turn_sensitive_test_token_123456789");
+      const replay: AdapterEvent[] = [];
+      await createChatGptWebAdapter(provider).runTurn!(rawWireRequest(environmentXml),
+        { headers: new Headers() }, event => replay.push(event));
+      expect(replay.at(-1)).toEqual(error);
+      expect(browserStarts).toBe(1);
     } finally {
       worker.run = originalRun;
       await TurnBroker.forSocket(socketPath).close();

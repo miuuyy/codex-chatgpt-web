@@ -29,6 +29,24 @@ export interface DoctorReport {
   checks: DoctorCheck[];
 }
 
+export async function launcherBrowserFailureCheck(descriptorPath: string, error: unknown): Promise<DoctorCheck> {
+  let detail = error instanceof Error ? error.message : String(error);
+  if (/^Launcher ChatGPT session could not be verified: ChatGPT browser is running Codex turn \S+$/.test(detail)) {
+    try {
+      await inspectLauncherBrowserHostLiveness(descriptorPath, { timeoutMs: 5_000 });
+      return {
+        id: "browser-host",
+        status: "warning",
+        message: "Embedded launcher browser is busy running a Codex task",
+        detail: "Browser is reachable. Session verification is deferred until the active task finishes; run doctor again then.",
+      };
+    } catch (livenessError) {
+      detail = livenessError instanceof Error ? livenessError.message : String(livenessError);
+    }
+  }
+  return { id: "browser-host", status: "error", message: "Embedded launcher browser is unavailable", detail };
+}
+
 function secureFile(path: string): boolean {
   if (process.platform === "win32") return true;
   return (statSync(path).mode & 0o077) === 0;
@@ -124,12 +142,7 @@ export async function runDoctor(): Promise<DoctorReport> {
           : `Embedded launcher browser is authenticated and reachable (pid ${descriptor.pid})`,
       });
     } catch (error) {
-      checks.push({
-        id: "browser-host",
-        status: "error",
-        message: "Embedded launcher browser is unavailable",
-        detail: error instanceof Error ? error.message : String(error),
-      });
+      checks.push(await launcherBrowserFailureCheck(config.browserHostDescriptorPath!, error));
     }
   } else {
     if (!existsSync(config.chromeExecutablePath)) {

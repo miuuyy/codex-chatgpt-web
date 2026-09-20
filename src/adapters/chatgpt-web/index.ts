@@ -21,7 +21,8 @@ import { namespacedToolName, type AdapterEvent, type CodexContentPart, type Code
 import type { ProviderAdapter } from "../base";
 import { parseDataUrl } from "../image";
 import { ChatGptWebAdapterError } from "./adapter-error";
-import { ChatGptBrowserWorker } from "./browser-worker";
+import { ChatGptBrowserWorker, redactChatGptUiDiagnostic } from "./browser-worker";
+import { chatGptWebErrorLogFields, logChatGptWeb } from "./debug-log";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt";
@@ -300,14 +301,19 @@ function submittedTurnFailure(session: ChatGptTurnSession, error: unknown): Erro
   const phase = session.runtime.submission?.phase;
   if (!phase || phase === "prepared") return normalized;
   const ambiguous = phase === "send_activated";
+  const reason = redactChatGptUiDiagnostic(normalized.message).replace(/\s+/g, " ").trim().slice(0, 400);
+  const message = ambiguous
+    ? "ChatGPT did not confirm that the prompt was sent. Check the ChatGPT tab before continuing."
+    : "ChatGPT stopped responding after the task started. Check the ChatGPT tab before continuing.";
   return new ChatGptWebAdapterError(
-    ambiguous
-      ? "ChatGPT did not confirm that the prompt was sent. Check the ChatGPT tab before continuing."
-      : "ChatGPT stopped responding after the task started. Check the ChatGPT tab before continuing.",
+    reason ? `${message} Reason: ${reason}` : message,
     {
       status: 502,
       errorType: "server_error",
       code: ambiguous ? "chatgpt_submission_ambiguous" : "chatgpt_submitted_turn_failed",
+      // A conversation key is not proof of resumability: the launcher retains completed turns
+      // only. Recover transient reads inside the worker, where the accepted response still lives.
+      // Replaying this terminal failure could submit the original task and its tool actions again.
       retryable: false,
       cause: normalized,
     },
@@ -512,6 +518,9 @@ export function createChatGptWebAdapter(
     const multipartProgressLifecycle = hooks.onCompactionProgress
       ? { onMultipartStageAcknowledged: hooks.onCompactionProgress }
       : {};
+    const compactionHeartbeatLifecycle = hooks.onCompactionProgress
+      ? { onHeartbeat: hooks.onCompactionProgress }
+      : {};
     if (manualRequest) {
       if (!environment) throw new Error("ChatGPT Zero Risk requires a trusted Codex environment");
       if (!retainedLauncherDescriptor) throw new Error("ChatGPT Zero Risk requires the Launcher browser host");
@@ -696,6 +705,7 @@ export function createChatGptWebAdapter(
         ...(parsed._compactionRequest ? { compaction: true } : {}),
         ...submissionLifecycle,
         ...multipartProgressLifecycle,
+        ...compactionHeartbeatLifecycle,
         onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),
         onCommentary: (text, continuation) => trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) }),
         onTextDelta: delta => text.push(delta),
@@ -760,6 +770,7 @@ export function createChatGptWebAdapter(
       ...(parsed._compactionRequest ? { compaction: true } : {}),
       ...submissionLifecycle,
       ...multipartProgressLifecycle,
+      ...compactionHeartbeatLifecycle,
       onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),
       onCommentary: (text, continuation) => trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) }),
       onTextDelta: delta => text.push(delta),
@@ -1093,7 +1104,7 @@ export function createChatGptWebAdapter(
                 throw error;
               }
               const handoffError = error instanceof Error ? error : new Error(String(error));
-              console.error("[chatgpt-web] structured context handoff failed:", handoffError);
+              logChatGptWeb("error", "compaction_handoff_failed", chatGptWebErrorLogFields(handoffError));
               const upstreamError = handoffError instanceof ChatGptWebAdapterError ? handoffError : undefined;
               emit({
                 type: "error",

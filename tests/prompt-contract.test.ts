@@ -7,6 +7,7 @@ import {
   compileChatGptWebPrompt,
   formatChatGptWebMultipartCommit,
   formatChatGptWebMultipartStage,
+  isAcceptableMultipartAcknowledgement,
   withoutRetiredTurnHandles,
 } from "../src/adapters/chatgpt-web/prompt";
 import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
@@ -157,6 +158,11 @@ test("Bigger Context sends six semantic record envelopes and starts work from th
     expect(stage.acknowledgement).toBe(
       `CODEX_MULTIPART_ACK ${transactionId} ${index + 1}/6 ${stage.sha256}`,
     );
+    expect(isAcceptableMultipartAcknowledgement(stage.acknowledgement, stage.acknowledgement)).toBe(true);
+    expect(isAcceptableMultipartAcknowledgement(`ok\n${stage.acknowledgement}`, stage.acknowledgement)).toBe(true);
+    expect(isAcceptableMultipartAcknowledgement("Got it.", stage.acknowledgement)).toBe(true);
+    expect(isAcceptableMultipartAcknowledgement("Thinking failed", stage.acknowledgement)).toBe(false);
+    expect(isAcceptableMultipartAcknowledgement("x".repeat(241), stage.acknowledgement)).toBe(false);
     expect(stage.text).toContain("```json\n");
     expect(stage.text).toContain("<codex_multipart_stage_end>");
     expect(stage.text).toEndWith("</codex_multipart_stage_end>");

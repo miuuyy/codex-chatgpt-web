@@ -111,7 +111,30 @@ export function resolveBiggerContextMultipartParts(
       < contextWindow * Math.min(messages.length, CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER);
   };
   if (initialParts === undefined && fits(inline)) return undefined;
-  return fits(compile(2)) ? 2 : CHATGPT_BIGGER_CONTEXT_PARTS;
+  const two = compile(2);
+  if (!fits(two)) return CHATGPT_BIGGER_CONTEXT_PARTS;
+  const six = compile(CHATGPT_BIGGER_CONTEXT_PARTS);
+  if (fits(six) && finerMultipartSplitReducesThinkingRisk(two, six)) {
+    return CHATGPT_BIGGER_CONTEXT_PARTS;
+  }
+  return 2;
+}
+
+/** Prefer six smaller stages when two-part transport still leaves a huge ChatGPT message. */
+export const CHATGPT_THINKING_RISK_MESSAGE_CHARS = 180_000;
+
+function maxCompiledMessageChars(compiled: CompiledChatGptWebPrompt): number {
+  return Math.max(0, ...compiledChatGptWebMessages(compiled).map(text => text.length));
+}
+
+function finerMultipartSplitReducesThinkingRisk(
+  twoPart: CompiledChatGptWebPrompt,
+  sixPart: CompiledChatGptWebPrompt,
+): boolean {
+  const twoMax = maxCompiledMessageChars(twoPart);
+  if (twoMax < CHATGPT_THINKING_RISK_MESSAGE_CHARS) return false;
+  const sixMax = maxCompiledMessageChars(sixPart);
+  return sixMax + 32_000 < twoMax;
 }
 
 export function biggerContextPartCount(

@@ -288,11 +288,15 @@ export async function requestRetainedCompactionHandoff(
   if (!conversationKey) throw new Error("The completed ChatGPT source has no retained conversation identity");
   const operationTimeoutMs = boundedCompactionTimeout(timeoutMs);
   const deadline = new AbortController();
-  const deadlineTimer = setTimeout(
-    () => deadline.abort(new Error(`ChatGPT compaction handoff timed out after ${operationTimeoutMs}ms`)),
-    operationTimeoutMs,
-  );
-  deadlineTimer.unref?.();
+  const timeoutError = new Error(`ChatGPT compaction handoff timed out after ${operationTimeoutMs}ms`);
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  const armDeadline = (): void => {
+    if (deadline.signal.aborted) return;
+    if (deadlineTimer) clearTimeout(deadlineTimer);
+    deadlineTimer = setTimeout(() => deadline.abort(timeoutError), operationTimeoutMs);
+    deadlineTimer.unref?.();
+  };
+  armDeadline();
   const operationSignal = signal
     ? AbortSignal.any([signal, deadline.signal])
     : deadline.signal;
@@ -325,6 +329,8 @@ export async function requestRetainedCompactionHandoff(
       conversationKey,
       requireRetainedConversation: true,
       abortSignal: browserAbort.signal,
+      onHeartbeat: armDeadline,
+      onSubmitted: armDeadline,
       onTextDelta: () => {},
     });
     const browserFailure = browser.then<never>(

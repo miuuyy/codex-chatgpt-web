@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { mock } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
@@ -290,6 +290,10 @@ test("active compaction drains an MCP call already queued without an outer Codex
 
 test("a completed retained agent returns an exact checkpoint and its browser is physically retired", async () => {
   expect(MAX_COMPACTION_HANDOFF_TIMEOUT_MS).toBe(5 * 60_000);
+  const adapterSource = readFileSync(new URL("../src/adapters/chatgpt-web/index.ts", import.meta.url), "utf8");
+  expect(adapterSource).toContain("onHeartbeat: hooks.onCompactionProgress");
+  const handoffSource = readFileSync(new URL("../src/adapters/chatgpt-web/compaction-handoff.ts", import.meta.url), "utf8");
+  expect(handoffSource).toContain("onHeartbeat: armDeadline");
   const sourceRequest = request(false);
   const conversationKey = chatGptConversationKey(sourceRequest, "provider")!;
   const source = new ChatGptTurnSession({

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { estimateChatGptWebInputTokens, resolveBiggerContextMultipartParts } from "../src/adapters/chatgpt-web/usage";
+import { estimateChatGptWebInputTokens, resolveBiggerContextMultipartParts, CHATGPT_THINKING_RISK_MESSAGE_CHARS } from "../src/adapters/chatgpt-web/usage";
 import { compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
 import { compiledChatGptWebMessages, estimateChatGptWebImageTokens, estimateCompiledChatGptWebInputTokens } from "../src/adapters/chatgpt-web/input-tokens";
 import { assertChatGptWebMultipartInputWithinLimits, resolveChatGptWebMultipartStagingMode } from "../src/adapters/chatgpt-web/browser-worker";
@@ -29,7 +29,7 @@ test("multipart selection accounts for whole-record and composer fit before subm
   for (const [contents, expected] of [
     [["small task"], undefined],
     [[50_000, 40_000, 50_000, 5_000].map(n => "word ".repeat(n)), 6],
-    [Array.from({ length: 3 }, () => " ".repeat(450_000)), 2],
+    [Array.from({ length: 3 }, () => " ".repeat(450_000)), 6],
   ] as const) {
     const parsed = request("");
     parsed.context.messages = contents.map((content, index) => ({ role: "user", content, timestamp: index + 1 }));
@@ -54,6 +54,23 @@ test("multipart selection accounts for whole-record and composer fit before subm
     "gpt-5.6-sol", capabilities, estimateTokens(proMessages[0]!), proMessages[0]!.length,
   ).effort).toBe("max");
 }, 60_000);
+
+test("six-part transport is preferred when it shrinks a thinking-risk two-part message", () => {
+  const plus = { ...capabilities, extraHighAvailable: false, proAvailable: false };
+  const parsed = request("");
+  parsed.context.messages = Array.from({ length: 8 }, (_, index) => ({
+    role: "user" as const,
+    content: `record ${index}: ${"word ".repeat(12_000)}`,
+    timestamp: index + 1,
+  }));
+  const two = compileChatGptWebPrompt(parsed, plus, undefined, { experimentalMultipartParts: 2 });
+  const six = compileChatGptWebPrompt(parsed, plus, undefined, { experimentalMultipartParts: 6 });
+  const twoMax = Math.max(...compiledChatGptWebMessages(two).map(text => text.length));
+  const sixMax = Math.max(...compiledChatGptWebMessages(six).map(text => text.length));
+  expect(twoMax).toBeGreaterThanOrEqual(CHATGPT_THINKING_RISK_MESSAGE_CHARS);
+  expect(sixMax + 32_000).toBeLessThan(twoMax);
+  expect(resolveBiggerContextMultipartParts(parsed, plus)).toBe(6);
+}, 30_000);
 
 test("Bigger Context compaction selects six parts before the legacy inline byte budget", () => {
   const parsed = request("x".repeat(160_000));

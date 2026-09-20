@@ -69,3 +69,33 @@ export function resolveChatGptWebModelMode(
       throw new Error(`ChatGPT web effort is not supported: ${effort}`);
   }
 }
+
+const CHATGPT_WEB_EFFORT_FALLBACK: Record<
+  ChatGptWebModelMode["effort"],
+  ChatGptWebModelMode["effort"] | undefined
+> = {
+  max: "xhigh",
+  xhigh: "high",
+  high: "medium",
+  medium: "low",
+  low: undefined,
+};
+
+/** Next cheaper Sol effort that this account can actually select. */
+export function nextChatGptWebFallbackEffort(
+  effort: ChatGptWebModelMode["effort"],
+  capabilities: ChatGptWebCapabilities,
+  modelId = CHATGPT_WEB_MODEL_ID,
+): ChatGptWebModelMode["effort"] | undefined {
+  if (modelId !== CHATGPT_WEB_MODEL_ID) return undefined;
+  let next = CHATGPT_WEB_EFFORT_FALLBACK[effort];
+  while (next) {
+    try {
+      resolveChatGptWebModelMode(modelId, next, capabilities);
+      return next;
+    } catch {
+      next = CHATGPT_WEB_EFFORT_FALLBACK[next];
+    }
+  }
+  return undefined;
+}

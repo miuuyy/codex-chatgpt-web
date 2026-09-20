@@ -71,6 +71,15 @@ function assertMultipartTransactionId(transactionId: string): void {
   }
 }
 
+/** Instant often paraphrases the handshake instead of echoing CODEX_MULTIPART_ACK. */
+export function isAcceptableMultipartAcknowledgement(actual: string, expected: string): boolean {
+  const trimmed = actual.trim();
+  if (!trimmed || !expected) return false;
+  if (trimmed === expected || trimmed.includes(expected)) return true;
+  if (/something went wrong|thinking failed/i.test(trimmed)) return false;
+  return trimmed.length <= 240;
+}
+
 export function formatChatGptWebMultipartStage(
   payload: string,
   transactionId: string,

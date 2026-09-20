@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID, resolveChatGptWebModelMode } from "../src/adapters/chatgpt-web/model";
+import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID, nextChatGptWebFallbackEffort, resolveChatGptWebModelMode } from "../src/adapters/chatgpt-web/model";
 
 test("the browser adapter maps fixed routed efforts to the visible ChatGPT modes", () => {
   const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true };
@@ -24,6 +24,19 @@ test("the browser adapter maps fixed routed efforts to the visible ChatGPT modes
     uiEffortIndex: 4,
     localTools: true,
   });
+});
+
+test("a failing reasoning mode steps down to the next account-visible effort", () => {
+  const pro = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true };
+  expect(nextChatGptWebFallbackEffort("max", pro)).toBe("xhigh");
+  expect(nextChatGptWebFallbackEffort("xhigh", pro)).toBe("high");
+  expect(nextChatGptWebFallbackEffort("high", pro)).toBe("medium");
+  expect(nextChatGptWebFallbackEffort("medium", pro)).toBe("low");
+  expect(nextChatGptWebFallbackEffort("low", pro)).toBeUndefined();
+  expect(nextChatGptWebFallbackEffort("max", {
+    localToolsEnabled: true, solAvailable: true, extraHighAvailable: false, proAvailable: true,
+  })).toBe("high");
+  expect(nextChatGptWebFallbackEffort("low", pro, CHATGPT_WEB_LUNA_MODEL_ID)).toBeUndefined();
 });
 
 test("capabilities gate tools and Pro-only efforts explicitly without changing the selected model", () => {

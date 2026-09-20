@@ -56,3 +56,16 @@ test("Darwin SSE remains decodable through Bun.serve under sustained chunking", 
     await server.stop(true);
   }
 });
+
+test("local model controls failures are not rewritten as selected model capacity", async () => {
+  async function* events(): AsyncGenerator<AdapterEvent> {
+    yield {
+      type: "error", message: "ChatGPT model controls are unavailable. Reload ChatGPT and retry the task.",
+      status: 502, errorType: "server_error", code: "chatgpt_model_control_unavailable", retryable: false,
+    };
+  }
+  const body = await new Response(bridgeToResponsesSSE(events(), "chatgpt-web/extra-high")).text();
+  expect(body).toContain('"code":"chatgpt_model_control_unavailable"');
+  expect(body).toContain('"retryable":false');
+  expect(body).not.toContain("server_is_overloaded");
+});
