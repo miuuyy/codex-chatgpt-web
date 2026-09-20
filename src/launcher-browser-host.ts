@@ -207,6 +207,52 @@ export async function inspectLauncherBrowserHostLiveness(
   return descriptor;
 }
 
+export const LAUNCHER_PAGE_TARGET_INSPECT_TIMEOUT_MS = 250;
+
+async function inspectPageTargetId(
+  context: BrowserContext,
+  page: Page,
+  timeoutMs: number,
+  abortSignal?: AbortSignal,
+): Promise<string | undefined> {
+  if (abortSignal?.aborted || timeoutMs <= 0) return undefined;
+  const sessionPromise = context.newCDPSession(page).then(session => session, () => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const session = await Promise.race([
+    sessionPromise,
+    new Promise<undefined>(resolve => {
+      timer = setTimeout(() => resolve(undefined), timeoutMs);
+      abortSignal?.addEventListener("abort", () => {
+        if (timer) clearTimeout(timer);
+        resolve(undefined);
+      }, { once: true });
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  if (!session) {
+    void sessionPromise.then(opened => opened?.detach().catch(() => {}));
+    return undefined;
+  }
+  try {
+    const { targetInfo } = await session.send("Target.getTargetInfo");
+    return targetInfo.targetId;
+  } catch {
+    return undefined;
+  } finally {
+    await session.detach().catch(() => {});
+  }
+}
+
+export async function pingLauncherOwnedTarget(page: Page, abortSignal?: AbortSignal, timeoutMs = 1_000): Promise<void> {
+  abortSignal?.throwIfAborted();
+  const targetId = await inspectPageTargetId(page.context(), page, timeoutMs, abortSignal);
+  abortSignal?.throwIfAborted();
+  if (page.context().browser()?.isConnected() === false) {
+    throw new Error("Browser connection closed");
+  }
+  if (!targetId) throw new Error("Browser connection closed");
+}
+
 export async function selectLauncherPage(
   browser: Browser,
   descriptor: LauncherBrowserHostDescriptor,
@@ -225,20 +271,12 @@ export async function selectLauncherPage(
       throw new DOMException("Launcher browser connection aborted", "AbortError");
     }
     const candidates = browser.contexts().flatMap(context => context.pages().map(page => ({ context, page })));
-    // Target metadata belongs to the browser process. Evaluating every page here makes an
-    // unrelated busy/paused renderer block acquisition of an already-responsive owned page.
-    const inspected = await Promise.all(candidates.map(async candidate => {
-      const session = await candidate.context.newCDPSession(candidate.page).catch(() => undefined);
-      if (!session) return { ...candidate, targetId: undefined };
-      try {
-        const { targetInfo } = await session.send("Target.getTargetInfo");
-        return { ...candidate, targetId: targetInfo.targetId };
-      } catch {
-        return { ...candidate, targetId: undefined };
-      } finally {
-        await session.detach().catch(() => {});
-      }
-    }));
+    // Bound each CDP attach so a busy peer renderer cannot consume the whole acquisition budget.
+    const inspectTimeoutMs = Math.max(1, Math.min(LAUNCHER_PAGE_TARGET_INSPECT_TIMEOUT_MS, deadline - Date.now()));
+    const inspected = await Promise.all(candidates.map(async candidate => ({
+      ...candidate,
+      targetId: await inspectPageTargetId(candidate.context, candidate.page, inspectTimeoutMs, abortSignal),
+    })));
     const owned = inspected.filter(candidate => candidate.targetId === targetId);
     if (owned.length === 1) {
       return { context: owned[0].context, page: owned[0].page };

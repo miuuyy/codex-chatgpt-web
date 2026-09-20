@@ -22,6 +22,31 @@ import {
   waitForLauncherManualTerminal,
 } from "../src/launcher-browser-host";
 import type { Browser, BrowserContext, Page } from "playwright-core";
+import { launcherBrowserFailureCheck } from "../src/doctor";
+
+test("doctor distinguishes an active task from an unreachable or unauthenticated browser", async () => {
+  let reachable = true;
+  const server = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    fetch: () => reachable
+      ? Response.json({ webSocketDebuggerUrl: "ws://127.0.0.1:39110/devtools/browser/test" })
+      : new Response("unavailable", { status: 503 }),
+  });
+  try {
+    const path = descriptorFile(undefined, "production", `http://127.0.0.1:${server.port}`);
+    const busy = new Error("Launcher ChatGPT session could not be verified: ChatGPT browser is running Codex turn abc123");
+    const check = await launcherBrowserFailureCheck(path, busy);
+    expect(check.status).toBe("warning");
+    expect(check.message).toContain("busy running a Codex task");
+    reachable = false;
+    expect((await launcherBrowserFailureCheck(path, busy)).status).toBe("error");
+    reachable = true;
+    const unauthenticated = new Error("Launcher ChatGPT session could not be verified: login required");
+    expect((await launcherBrowserFailureCheck(path, unauthenticated)).status).toBe("error");
+  } finally {
+    server.stop(true);
+  }
+});
 
 const roots: string[] = [];
 
@@ -365,6 +390,37 @@ function nativeTargetContext(pages: Page[], targetId: (page: Page) => string): B
     }),
   } as unknown as BrowserContext;
 }
+
+test("launcher page selection does not wait on a hung peer renderer", async () => {
+  const descriptor = readLauncherBrowserHostDescriptor(descriptorFile());
+  const hungPage = {
+    url: () => "https://chatgpt.com/?temporary-chat=true",
+    evaluate: () => { throw new Error("Do not evaluate a hung renderer"); },
+  } as unknown as Page;
+  const ownedPage = {
+    url: () => LAUNCHER_BROWSER_IDLE_URL,
+    evaluate: () => { throw new Error("Ownership comes from the native target"); },
+  } as unknown as Page;
+  const context = {
+    pages: () => [hungPage, ownedPage],
+    newCDPSession: async (page: Page) => {
+      if (page === hungPage) return new Promise(() => {});
+      return {
+        send: async (method: string) => {
+          expect(method).toBe("Target.getTargetInfo");
+          return { targetInfo: { targetId: "native-owned-target" } };
+        },
+        detach: async () => {},
+      };
+    },
+  } as unknown as BrowserContext;
+  const browser = { contexts: () => [context] } as unknown as Browser;
+
+  expect(await selectLauncherPage(browser, descriptor, 400)).toEqual({
+    context,
+    page: ownedPage,
+  });
+});
 
 test("launcher page selection uses native ownership without evaluating unrelated renderers", async () => {
   const descriptor = readLauncherBrowserHostDescriptor(descriptorFile());
