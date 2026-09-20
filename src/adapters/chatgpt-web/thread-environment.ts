@@ -157,14 +157,16 @@ export class ChatGptThreadEnvironmentStore {
       if (!(error instanceof MissingTrustedCodexEnvironmentError) || !identity.threadId) throw error;
       const hasCurrentContext = hasCurrentChatGptEnvironmentContext(parsed);
       const lineage = extractChatGptThreadSpawnLineage(parsed);
+      const rolloutIdentity = lineage ?? extractChatGptRootThreadMetadata(parsed);
       const currentCompaction = hasCurrentContext && isChatGptCompactionContinuation(parsed);
-      const historicalMessages = hasCurrentContext && !currentCompaction && lineage
+      // Sparse root resumes can carry the same untagged history as spawned tasks. In either
+      // case, only exact messages recorded before this native turn may be treated as history.
+      const historicalMessages = hasCurrentContext && !currentCompaction && rolloutIdentity
         ? unattributedChatGptEnvironmentMessages(parsed) : undefined;
       const steeringClaim = hasCurrentContext && !currentCompaction
         ? extractChatGptSteeringEnvironmentClaim(parsed) : undefined;
       if (hasCurrentContext && !currentCompaction && !historicalMessages && !steeringClaim) throw error;
       const currentClaim = currentCompaction ? extractChatGptContinuationEnvironmentClaim(parsed) : steeringClaim;
-      const rolloutIdentity = lineage ?? extractChatGptRootThreadMetadata(parsed);
       // Automatic compaction has a current turn_context; standalone compaction has only its
       // source turn_context. Either must be the latest native record, never an arbitrary ancestor.
       const compactionSourceTurnId = parsed._compactionRequest

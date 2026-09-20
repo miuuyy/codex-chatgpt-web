@@ -999,6 +999,43 @@ describe("trusted Codex task environment continuity", () => {
     expect(new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request).cwd).toBe(root);
   });
 
+  test("a sparse root resume authenticates untagged history before using the current rollout", () => {
+    const { codexHome, request, rolloutPath } = resumedRootFixture();
+    const session = { type: "session_meta", payload: { id: rolloutThreadId, source: "vscode" } };
+    const inherited = {
+      type: "message", role: "user", id: "msg_root_historical_environment",
+      content: [{ type: "input_text", text: environmentXml.replaceAll(root, resolve(root, "..", "old-workspace")) }],
+    };
+    const history = { type: "response_item", payload: inherited };
+    const boundary = { type: "event_msg", payload: { type: "task_started", turn_id: rolloutTurnId } };
+    const writeRollout = (records: unknown[]) => writeFileSync(rolloutPath,
+      records.map(record => JSON.stringify(record)).join("\n") + "\n");
+    writeRollout([session, history, boundary, childTurnContext()]);
+    const body = request._rawBody as { input: Array<Record<string, unknown>> };
+    body.input.unshift(structuredClone(inherited), {
+      type: "message", role: "user", id: "msg_old_root_prompt",
+      content: [{ type: "input_text", text: "Previous instruction without an assistant reply" }],
+    });
+    request.context.tools = [{ name: "current_tool", description: "current", parameters: { type: "object" } }];
+    const store = new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome);
+    expect(store.resolve(request)).toMatchObject({ cwd: root, roots: [root], tools: request.context.tools });
+
+    body.input[0] = { ...inherited, content: [{ type: "input_text", text: "<environment_context>changed</environment_context>" }] };
+    expect(() => store.resolve(request)).toThrow("differs from its native Codex record");
+    body.input[0] = { ...inherited, id: "msg_unrecorded_environment" };
+    expect(() => store.resolve(request)).toThrow("does not authenticate");
+    body.input[0] = { ...inherited, internal_chat_message_metadata_passthrough: { turn_id: rolloutTurnId } };
+    expect(() => store.resolve(request)).toThrow("missing cwd");
+    body.input[0] = structuredClone(inherited);
+    writeRollout([session, boundary, history, childTurnContext()]);
+    expect(() => store.resolve(request)).toThrow("does not authenticate");
+    writeRollout([session, history, childTurnContext()]);
+    expect(() => store.resolve(request)).toThrow("no current task boundary");
+    rmSync(rolloutPath);
+    // A previously populated cache cannot replace missing proof of the historical message.
+    expect(() => store.resolve(request)).toThrow("missing cwd");
+  });
+
   test("a resumed root cannot borrow a child rollout or an earlier turn's authority", () => {
     const { codexHome, request, rolloutPath } = resumedRootFixture();
     writeFileSync(rolloutPath, [JSON.stringify(childSessionMeta()), JSON.stringify(childTurnContext())].join("\n") + "\n");
@@ -1025,7 +1062,9 @@ describe("trusted Codex task environment continuity", () => {
       { type: "message", role: "user", id: "invalid_current_context",
         content: [{ type: "input_text", text: "<environment_context><cwd/></environment_context>" }] },
     );
-    expect(() => new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request)).toThrow("missing cwd");
+    // Untagged XML must now prove that it predates this task; this claim has no such proof.
+    expect(() => new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request))
+      .toThrow("no current task boundary");
   });
 
   test("root rollout lookup authenticates the indexed owner and current sandbox", () => {

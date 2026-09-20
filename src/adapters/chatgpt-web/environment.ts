@@ -2,6 +2,8 @@ import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isReadableCompactionSummaryText, OPAQUE_COMPACTION_NOTE } from "../../responses/compaction";
 import type { CodexContentPart, CodexParsedRequest, CodexTool } from "../../types";
+import { getCodexHome } from "../../codex-integration-shared";
+import { isCodexFailedTurnContinuation } from "./codex-rollout-environment";
 import { isAcceptedCompactionContinuation } from "./compaction-continuation";
 
 export type ChatGptSandboxPolicy =
@@ -216,21 +218,31 @@ export function priorChatGptAbortedTurnIds(parsed: CodexParsedRequest): string[]
  * installs the replacement history, the immediate continuation starts a fresh browser response
  * under the same logical task revision.
  */
-export function extractChatGptTurnUserRevision(parsed: CodexParsedRequest): unknown {
+export function extractChatGptTurnUserRevision(parsed: CodexParsedRequest, codexHome = getCodexHome()): unknown {
   const identity = extractChatGptTurnIdentity(parsed);
   const turnId = identity.turnId;
   if (!turnId) throw new Error("ChatGPT web requires native Codex turn_id metadata for browser-session replay");
   const revision = latestChatGptTurnUserRevision(parsed, turnId);
   if (!revision) throw new Error("ChatGPT web requires a current-turn user message for browser-session replay");
   // A pre-turn compact may summarize an earlier user message before native Codex continues
-  // under its new turn id without adding a new human message. Accept only our exact completed
-  // checkpoint; an arbitrary older prompt is still not a new instruction or a valid handoff.
+  // under its new turn id without adding a new human message. A setup-failure retry can do the
+  // same. Require an exact completed checkpoint or native proof of an unexecuted failed
+  // instruction; arbitrary historical prompts and interrupted work remain invalid.
   if (revision.turnId !== undefined && revision.turnId !== turnId
     && (priorChatGptAbortedTurnIds(parsed).includes(revision.turnId)
-      || !isAcceptedCompactionContinuation(parsed, identity, revision))) {
+      || (!isAcceptedCompactionContinuation(parsed, identity, revision)
+        && !isFailedTurnContinuation(parsed, revision, codexHome)))) {
     throw new Error(CHATGPT_TURN_REVISION_CONFLICT_MESSAGE);
   }
   return revision.content;
+}
+
+function isFailedTurnContinuation(parsed: CodexParsedRequest, source: ChatGptTurnUserRevision, codexHome: string): boolean {
+  const identity = extractChatGptTurnIdentity(parsed);
+  const lineage = extractChatGptThreadSpawnLineage(parsed) ?? extractChatGptRootThreadMetadata(parsed);
+  return !!lineage && !!identity.turnId && isCodexFailedTurnContinuation({
+    codexHome, lineage, turnId: identity.turnId, source,
+  });
 }
 
 function latestChatGptTurnUserRevision(parsed: CodexParsedRequest, expectedTurnId?: string): ChatGptTurnUserRevision | undefined {

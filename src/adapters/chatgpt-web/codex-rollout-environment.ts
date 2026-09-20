@@ -20,6 +20,7 @@ import type {
   ChatGptThreadSpawnLineage,
   ChatGptTurnEnvironment,
   ChatGptUnattributedEnvironmentMessage,
+  ChatGptTurnUserRevision,
 } from "./environment";
 
 type RolloutIdentity = ChatGptRootThreadMetadata | ChatGptThreadSpawnLineage;
@@ -194,7 +195,7 @@ function firstRolloutRecord(fd: number, size: number): Record<string, unknown> {
   throw new Error("Codex rollout has no complete session metadata record");
 }
 
-function latestTurnContext(fd: number, size: number): Record<string, unknown> | undefined {
+function* reverseRolloutRecords(fd: number, size: number): Generator<Record<string, unknown>> {
   let position = size;
   let carry = Buffer.alloc(0);
   let firstSegmentAtEof = true;
@@ -223,16 +224,21 @@ function latestTurnContext(fd: number, size: number): Record<string, unknown> | 
         throw new Error("Codex rollout JSONL record exceeds the bounded record size");
       }
       const item = parseJsonLine(line);
-      if (item.type === "turn_context") return record(item.payload);
+      yield item;
     }
     carry = Buffer.from(data.subarray(0, lineEnd));
     if (carry.length > MAX_ROLLOUT_JSON_LINE_BYTES) {
       throw new Error("Codex rollout JSONL record exceeds the bounded record size");
     }
   }
-  if (carry.length === 0) return undefined;
-  const item = parseJsonLine(carry);
-  return item.type === "turn_context" ? record(item.payload) : undefined;
+  if (carry.length > 0) yield parseJsonLine(carry);
+}
+
+function latestTurnContext(fd: number, size: number): Record<string, unknown> | undefined {
+  for (const item of reverseRolloutRecords(fd, size)) {
+    if (item.type === "turn_context") return record(item.payload);
+  }
+  return undefined;
 }
 
 function verifyHistoricalEnvironmentMessages(
@@ -663,4 +669,67 @@ export function resolveCurrentCodexRolloutEnvironment(options: {
     throw new Error("Codex has multiple canonical rollouts for the requested current turn");
   }
   return matching[0]!;
+}
+
+
+/** Accept only an exact, unexecuted instruction retried after a native recorded setup failure. */
+export function isCodexFailedTurnContinuation(options: {
+  codexHome: string;
+  lineage: RolloutIdentity;
+  turnId: string;
+  source: ChatGptTurnUserRevision;
+}): boolean {
+  const { codexHome, lineage, turnId, source } = options;
+  if (!CODEX_ID.test(lineage.threadId) || !CODEX_ID.test(turnId)
+    || !source.turnId || !CODEX_ID.test(source.turnId) || !source.itemId) return false;
+  try {
+    const indexed = indexedRollout(configuredSqliteHome(codexHome), lineage);
+    const candidates = indexed.kind === "found" ? [indexed.path] : scanCanonicalRollouts(codexHome, lineage.threadId);
+    if (candidates.length !== 1) return false;
+    const fd = openSync(validateRolloutPath(codexHome, candidates[0]!, lineage.threadId), "r");
+    try {
+      const size = fstatSync(fd).size;
+      validateSessionMeta(firstRolloutRecord(fd, size), lineage);
+      if (latestTurnContext(fd, size)?.turn_id !== turnId) return false;
+      const failed = new Set<string>();
+      let currentStarted = false;
+      let inspected = 0;
+      for (const item of reverseRolloutRecords(fd, size)) {
+        if (++inspected > 4096) return false;
+        const payload = record(item.payload);
+        if (!payload) continue;
+        if (item.type === "event_msg") {
+          if (payload.type === "turn_aborted") return false;
+          if (payload.type === "task_complete") {
+            const error = record(payload.error);
+            const message = typeof error?.message === "string" ? error.message : "";
+            if (payload.turn_id === turnId || typeof payload.turn_id !== "string" || !error
+              || !(error.codex_error_info === "server_overloaded"
+                || message.includes("at capacity")
+                || message.includes("ChatGPT model controls are unavailable")
+                || message.includes("current user message conflicts with native Codex turn_id metadata"))) return false;
+            failed.add(payload.turn_id);
+          }
+          if (payload.type === "task_started") {
+            if (payload.turn_id === turnId) currentStarted = true;
+            else if (typeof payload.turn_id !== "string" || !failed.has(payload.turn_id)) return false;
+          }
+        }
+        if (item.type !== "response_item") continue;
+        // No assistant output or tool side effects may be replayed by this narrow recovery.
+        if (payload.type !== "message" || payload.role === "assistant") return false;
+        if (payload.role !== "user") continue;
+        return currentStarted && failed.has(source.turnId)
+          && payload.id === source.itemId
+          && record(payload.internal_chat_message_metadata_passthrough)?.turn_id === source.turnId
+          && isDeepStrictEqual(payload.content, source.content);
+      }
+      return false;
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    // Missing, changing, or unverifiable native history supplies no recovery authority.
+    return false;
+  }
 }
