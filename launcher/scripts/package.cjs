@@ -28,6 +28,10 @@ if (target !== nativeTarget) {
 }
 
 const env = { ...process.env };
+if (target === "--linux") {
+  const { resolvePreparedAppImageTools } = require("./prepare-linux-appimage-tools.cjs");
+  env.APPIMAGE_TOOLS_PATH = resolvePreparedAppImageTools(env);
+}
 if (!env.CSC_LINK && !env.CSC_NAME) env.CSC_IDENTITY_AUTO_DISCOVERY = "false";
 const builderArgs = [
   electronBuilderCli,
@@ -89,6 +93,12 @@ try {
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
   if (target === "--mac") verifySignedMacArchive();
+
+  if (target === "--linux") {
+    const images = fs.readdirSync(staging).filter(name => name.endsWith(".AppImage"));
+    if (images.length !== 1) throw new Error(`Expected exactly one Linux AppImage; found ${images.length}`);
+    runChecked("sh", [path.join(__dirname, "smoke-linux-appimage-symbols.sh"), path.join(staging, images[0])]);
+  }
 
   fs.mkdirSync(artifactsDirectory, { recursive: true });
   for (const entry of fs.readdirSync(artifactsDirectory, { withFileTypes: true })) {

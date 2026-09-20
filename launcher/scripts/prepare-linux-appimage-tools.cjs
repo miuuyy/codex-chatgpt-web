@@ -46,6 +46,19 @@ function replaceToolsetLibnotify(toolsetRoot, source) {
   return libraryLink;
 }
 
+function resolvePreparedAppImageTools(env = process.env, defaultRoot = path.join(__dirname, "..", "build", "appimage-tools")) {
+  const toolsetRoot = path.resolve(env.APPIMAGE_TOOLS_PATH?.trim() || defaultRoot);
+  const library = path.join(toolsetRoot, "lib", "x64", "libnotify.so.4");
+  if (!fs.statSync(library, { throwIfNoEntry: false })?.isFile()) {
+    throw new Error(
+      `No prepared AppImage libnotify found at ${library}. Run scripts/prepare-linux-libnotify.sh, then `
+      + "launcher/scripts/prepare-linux-appimage-tools.cjs with CODEX_WEB_GPT_LINUX_LIBNOTIFY set to the built library.",
+    );
+  }
+  requireLibnotifySymbol(library);
+  return toolsetRoot;
+}
+
 async function main() {
   if (process.platform !== "linux" || process.arch !== "x64") {
     throw new Error("Codex Web GPT AppImage tool preparation requires Linux x64");
@@ -91,4 +104,5 @@ module.exports = {
   REQUIRED_LIBNOTIFY_SYMBOL,
   replaceToolsetLibnotify,
   requireLibnotifySymbol,
+  resolvePreparedAppImageTools,
 };
