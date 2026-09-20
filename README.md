@@ -28,6 +28,10 @@ Use the ChatGPT Web models available on your account, including Pro, from Codexâ
 
 Full harness mode connects ChatGPT to the current taskâ€™s files, terminal, tools, and approvals through MCP. Conversations stay tied to your Codex task, so you can keep working as the context grows.
 
+Temporary browser connection failures during submission acknowledgement, first-response detection, and response reads automatically retry up to three times with jittered exponential backoff. Connection drops and stalled DOM probes share that budget. Recovery reattaches to the same launcher tab without resending the prompt. Closing the tab or cancelling the task still stops the turn.
+
+Completed temporary-chat tabs close automatically after a 30-second grace period, checked every five seconds. Retained and running tabs stay painted offscreen so the debugger target remains attachable without opening the Browser tab. An immediate follow-up can reuse the tab; after it closes, the next turn opens a fresh chat using the Codex task context. Running tasks, tool calls, and pending manual input keep their tabs open.
+
 <div id="get-started"><a id="quick-start"></a></div>
 
 ## Get started
