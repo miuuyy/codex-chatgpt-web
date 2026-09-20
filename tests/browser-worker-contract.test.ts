@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createContext, runInContext } from "node:vm";
 import type { Page } from "playwright-core";
 import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptConnectorAttachmentMode, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
-import { ensureChatGptPersonalizedConnectorAccess, chatGptUnavailableProDetail } from "../src/adapters/chatgpt-web/browser-worker";
+import { ensureChatGptPersonalizedConnectorAccess, chatGptProUnavailableAdapterError, chatGptUnavailableProDetail } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
@@ -74,6 +74,26 @@ test("unavailable Pro detail reads only its linked tooltip in any language", asy
     expect(await observe(details[0]!, kind)).toBeUndefined();
   }
   expect(await observe("x".repeat(513))).toBeUndefined();
+});
+
+test("missing Pro effort is an actionable non-retryable limit instead of a generic model-control failure", () => {
+  const withoutDetail = chatGptProUnavailableAdapterError(
+    "ChatGPT effort slider does not expose Pro item index 4 (min=0; max=3)",
+  );
+  expect(withoutDetail.status).toBe(429);
+  expect(withoutDetail.errorType).toBe("rate_limit_error");
+  expect(withoutDetail.code).toBe("chatgpt_pro_unavailable");
+  expect(withoutDetail.retryable).toBe(false);
+  expect(withoutDetail.message).toContain("currently unavailable in the model picker");
+  expect(withoutDetail.message).toContain("No lower-effort fallback was used");
+  expect(withoutDetail.cause).toBeInstanceOf(Error);
+
+  const withDetail = chatGptProUnavailableAdapterError(
+    "ChatGPT effort slider does not expose Pro item index 4 (min=0; max=3)",
+    "Limit reached. Try again tomorrow.",
+  );
+  expect(withDetail.message).toContain("Limit reached. Try again tomorrow.");
+  expect(withDetail.message).toContain("No lower-effort fallback was used");
 });
 
 test("conversation turn identity survives ChatGPT DOM virtualization", () => {

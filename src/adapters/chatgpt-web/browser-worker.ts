@@ -210,6 +210,21 @@ function chatGptModelControlUnavailableAdapterError(diagnostic: string, detail?:
   );
 }
 
+export function chatGptProUnavailableAdapterError(diagnostic: string, detail?: string): ChatGptWebAdapterError {
+  const message = detail
+    ? `ChatGPT Pro is currently unavailable. ChatGPT: ${detail} No lower-effort fallback was used.`
+    : "ChatGPT Pro is currently unavailable in the model picker. This can happen when its usage limit is reached "
+      + "or the account capability changes. Wait for Pro to reappear, then retry or run Repair. "
+      + "No lower-effort fallback was used.";
+  return new ChatGptWebAdapterError(message, {
+    status: 429,
+    errorType: "rate_limit_error",
+    code: "chatgpt_pro_unavailable",
+    retryable: false,
+    cause: new Error(diagnostic),
+  });
+}
+
 export async function chatGptUnavailableProDetail(menu: Locator): Promise<string | undefined> {
   // Pro is the product label in the picker. Its linked tooltip supplies the site's own
   // localized explanation/date; do not search the conversation or infer a reset time.
@@ -2520,13 +2535,16 @@ export class ChatGptBrowserWorker {
     const targetValue = sliderState.min + uiEffortIndex;
     if (targetValue > sliderState.max) {
       const detail = uiEffortIndex === 4 ? await chatGptUnavailableProDetail(activation.menu) : undefined;
-      const proUsageLimitHint = uiEffortIndex === 4 && sliderState.min === 0 && sliderState.max === 3
-        ? " If you have made many Pro requests recently, ChatGPT may have temporarily hidden Pro because you reached its usage limit."
-        : "";
+      if (uiEffortIndex === 4 && sliderState.min === 0 && sliderState.max === 3) {
+        throw chatGptProUnavailableAdapterError(
+          `ChatGPT effort slider does not expose Pro item index ${uiEffortIndex}`
+          + ` (min=${sliderState.min}; max=${sliderState.max})`,
+          detail,
+        );
+      }
       throw chatGptModelControlUnavailableAdapterError(
         `ChatGPT effort slider does not expose item index ${uiEffortIndex}`
-        + ` (min=${sliderState.min}; max=${sliderState.max})`
-        + proUsageLimitHint,
+        + ` (min=${sliderState.min}; max=${sliderState.max})`,
         detail,
       );
     }
