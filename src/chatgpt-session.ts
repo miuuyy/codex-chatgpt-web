@@ -102,6 +102,48 @@ async function clearGhostEffortState(page: Page, control: Locator): Promise<void
   }
 }
 
+function effortMenuLooksOpen(expanded: string | null, state: string | null): boolean {
+  return expanded === "true" || state === "open";
+}
+
+async function effortMenuIsOpen(control: Locator): Promise<boolean> {
+  const expanded = await control.getAttribute("aria-expanded").catch(() => null);
+  const state = await control.getAttribute("data-state").catch(() => null);
+  return effortMenuLooksOpen(expanded, state);
+}
+
+/** Escape once is not enough on some offscreen ChatGPT menus; wait until the trigger is collapsed. */
+export async function closeChatGptEffortMenu(page: Page, control: Locator): Promise<boolean> {
+  if (!await effortMenuIsOpen(control)) return true;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await page.keyboard.press("Escape").catch(() => {});
+    if (typeof page.evaluate === "function") {
+      await page.evaluate(() => {
+        const target = document.activeElement instanceof HTMLElement ? document.activeElement : document.body;
+        target?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      }).catch(() => {});
+    }
+    await new Promise(resolve => setTimeout(resolve, 250));
+    if (!await effortMenuIsOpen(control)) return true;
+  }
+  // Playwright Escape often never reaches an offscreen Radix menu. Toggle the trigger in-page.
+  if (typeof control.evaluate === "function") {
+    await control.evaluate((element: HTMLElement) => element.click()).catch(() => {});
+  } else {
+    await control.click({ force: true, timeout: 1_000 }).catch(() => {});
+  }
+  await new Promise(resolve => setTimeout(resolve, 250));
+  if (!await effortMenuIsOpen(control)) return true;
+  const composer = page.locator(CHATGPT_COMPOSER_SELECTOR).last();
+  if (typeof composer.evaluate === "function") {
+    await composer.evaluate((element: HTMLElement) => element.click()).catch(() => {});
+  } else {
+    await composer.click({ force: true, timeout: 1_000 }).catch(() => {});
+  }
+  await new Promise(resolve => setTimeout(resolve, 250));
+  return !await effortMenuIsOpen(control);
+}
+
 export async function activateChatGptEffortMenu(
   page: Page,
   control: Locator,
@@ -117,17 +159,203 @@ export async function activateChatGptEffortMenu(
   if (clickedSurface) return { method: "click", ...clickedSurface };
 
   await clearGhostEffortState(page, control);
-  await control.dispatchEvent("pointerdown", {
+  const pointerInit = {
     button: 0,
-    buttons: 1,
     pointerType: "mouse",
     isPrimary: true,
-  });
+  } as const;
+  await control.dispatchEvent("pointerdown", { ...pointerInit, buttons: 1 });
+  // Radix opens on pointerdown and captures the pointer. Without a matching
+  // pointerup, later slider clicks land on a still-captured trigger.
+  await control.dispatchEvent("pointerup", { ...pointerInit, buttons: 0 });
   const pointerSurface = await waitForEffortSurface(page, control, settleMs);
   if (pointerSurface) return { method: "pointerdown", ...pointerSurface };
   throw new Error(
     "ChatGPT effort control did not expose its owned menu or structural slider after click and primary pointerdown",
   );
+}
+
+export const CHATGPT_EFFORT_TICK_LABELS = ["Instant", "Medium", "High", "Extra High", "Pro"] as const;
+
+export function chatGptEffortSliderTickOffset(
+  width: number,
+  state: Pick<ChatGptEffortSliderState, "min" | "max">,
+  value: number,
+): number {
+  const inset = Math.min(16, Math.max(4, width * 0.1));
+  const usable = Math.max(1, width - inset * 2);
+  const span = state.max - state.min;
+  const fraction = span === 0 ? 0 : (value - state.min) / span;
+  return inset + fraction * usable;
+}
+
+export async function clickChatGptEffortTickLabel(root: Locator, label: string): Promise<boolean> {
+  if (typeof root.getByText === "function") {
+    try {
+      const tick = root.getByText(label, { exact: true }).filter({ visible: true }).last();
+      if (await tick.count() > 0) {
+        await tick.click({ force: true, timeout: 1_000 });
+        return true;
+      }
+    } catch (error) {
+      if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
+    }
+  }
+  try {
+    return await root.evaluate((element, tickLabel) => {
+      const matches = [...element.querySelectorAll("*")].filter(node => (
+        [...node.childNodes].some(child => (
+          child.nodeType === Node.TEXT_NODE && (child.textContent ?? "").replace(/\s+/g, " ").trim() === tickLabel
+        ))
+      ));
+      const target = matches.at(-1);
+      if (!(target instanceof HTMLElement)) return false;
+      target.click();
+      return true;
+    }, label, { timeout: 1_000 });
+  } catch {
+    return false;
+  }
+}
+
+export async function chatGptVisibleEffortRadioState(
+  root: Locator,
+): Promise<{ count: number; checkedIndex: number | null }> {
+  try {
+    return await root.evaluate(element => {
+      const scope = element.closest('[role="menu"], [data-testid="composer-intelligence-picker-content"]') ?? document;
+      const radios = [...scope.querySelectorAll('[role="menuitemradio"]')].filter(node => {
+        const rect = node.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      });
+      const checkedIndex = radios.findIndex(node => (
+        node.getAttribute("aria-checked") === "true" || node.getAttribute("data-state") === "checked"
+      ));
+      return { count: radios.length, checkedIndex: checkedIndex >= 0 ? checkedIndex : null };
+    }, undefined, { timeout: 1_000 });
+  } catch {
+    return { count: 0, checkedIndex: null };
+  }
+}
+
+export async function applyChatGptEffortChoice(
+  sliderContainer: Locator,
+  targetValue: number,
+  labels: readonly string[] = CHATGPT_EFFORT_TICK_LABELS,
+): Promise<number | undefined> {
+  try {
+    return await sliderContainer.evaluate((element, { targetValue, labels }) => {
+      const fireClick = (node: EventTarget, clientX?: number, clientY?: number) => {
+        const rect = node instanceof Element ? node.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
+        const x = clientX ?? rect.left + rect.width / 2;
+        const y = clientY ?? rect.top + rect.height / 2;
+        const base = {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          clientX: x,
+          clientY: y,
+          screenX: x,
+          screenY: y,
+          pointerId: 1,
+          pointerType: "mouse",
+          isPrimary: true,
+          button: 0,
+        };
+        node.dispatchEvent(new PointerEvent("pointerdown", { ...base, buttons: 1 }));
+        node.dispatchEvent(new MouseEvent("mousedown", { ...base, buttons: 1 }));
+        node.dispatchEvent(new PointerEvent("pointerup", { ...base, buttons: 0 }));
+        node.dispatchEvent(new MouseEvent("mouseup", { ...base, buttons: 0 }));
+        node.dispatchEvent(new MouseEvent("click", { ...base, buttons: 0 }));
+        if (node instanceof HTMLElement) node.click();
+      };
+      const exactLeaves = (root: ParentNode, label: string): HTMLElement[] => {
+        const matches: HTMLElement[] = [];
+        for (const node of root.querySelectorAll("*")) {
+          const exact = [...node.childNodes].some(child => (
+            child.nodeType === Node.TEXT_NODE
+            && (child.textContent ?? "").replace(/\s+/g, " ").trim() === label
+          ));
+          const aria = (node.getAttribute("aria-label") ?? "").trim() === label;
+          if ((exact || aria) && node instanceof HTMLElement) matches.push(node);
+        }
+        return matches;
+      };
+      const slider = element.querySelector('[role="slider"]');
+      const min = Number(slider?.getAttribute("aria-valuemin") ?? 0);
+      const max = Number(slider?.getAttribute("aria-valuemax") ?? 4);
+      const wanted = labels[targetValue - min] ?? labels[targetValue];
+      for (const input of element.querySelectorAll("input[type=range]")) {
+        if (!(input instanceof HTMLInputElement)) continue;
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, String(targetValue));
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      if (wanted) {
+        const menuRoot = element.closest('[role="menu"], [data-testid="composer-intelligence-picker-content"]') ?? element;
+        for (const node of [...exactLeaves(element, wanted), ...exactLeaves(menuRoot, wanted)]) fireClick(node);
+      }
+      const rect = element.getBoundingClientRect();
+      if (rect.width > 1 && rect.height > 0) {
+        const inset = Math.min(16, Math.max(4, rect.width * 0.1));
+        const usable = Math.max(1, rect.width - inset * 2);
+        const span = max - min;
+        const fraction = span === 0 ? 0 : (targetValue - min) / span;
+        const x = rect.left + inset + fraction * usable;
+        const y = rect.top + rect.height / 2;
+        const hit = document.elementFromPoint(x, y);
+        fireClick(element, x, y);
+        if (hit && hit !== element) fireClick(hit, x, y);
+      }
+      const now = Number(slider?.getAttribute("aria-valuenow"));
+      return Number.isFinite(now) ? now : undefined;
+    }, { targetValue, labels: [...labels] }, { timeout: 2_000 });
+  } catch (error) {
+    if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
+    return undefined;
+  }
+}
+
+export async function pointerNudgeChatGptEffortSlider(
+  page: Page,
+  sliderContainer: Locator,
+  state: ChatGptEffortSliderState,
+  value: number,
+): Promise<void> {
+  let bounds;
+  try {
+    bounds = await sliderContainer.boundingBox({ timeout: 1_000 });
+  } catch (error) {
+    if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
+    return;
+  }
+  const x = Math.max(1, Math.min(bounds.width - 1, chatGptEffortSliderTickOffset(bounds.width, state, value)));
+  const y = bounds.height / 2;
+  const mouse = page.mouse;
+  if (mouse) {
+    const fromX = Math.max(1, Math.min(bounds.width - 1, chatGptEffortSliderTickOffset(bounds.width, state, state.value)));
+    try {
+      if (typeof mouse.move === "function" && typeof mouse.down === "function" && typeof mouse.up === "function") {
+        await mouse.move(bounds.x + fromX, bounds.y + y);
+        await mouse.down();
+        await mouse.move(bounds.x + x, bounds.y + y, { steps: 6 });
+        await mouse.up();
+      } else if (typeof mouse.click === "function") {
+        await mouse.click(bounds.x + x, bounds.y + y);
+      }
+    } catch (error) {
+      if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
+    }
+  }
+  try {
+    await sliderContainer.click({
+      force: true,
+      timeout: 1_000,
+      position: { x, y },
+    });
+  } catch (error) {
+    if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
+  }
 }
 
 function safeIntegerAttribute(value: string | null): number | undefined {

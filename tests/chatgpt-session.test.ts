@@ -6,8 +6,49 @@ import {
   CHATGPT_EFFORT_MENU_SELECTOR,
   CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
   activateChatGptEffortMenu,
+  chatGptEffortSliderTickOffset,
+  closeChatGptEffortMenu,
   detectChatGptAccountCapabilities,
 } from "../src/chatgpt-session";
+
+test("effort menu close clicks the trigger in-page when Escape never collapses it", async () => {
+  let opened = true;
+  let triggerClicks = 0;
+  const control = {
+    getAttribute: async (name: string) => {
+      if (name === "aria-expanded") return String(opened);
+      if (name === "data-state") return opened ? "open" : "closed";
+      return null;
+    },
+    evaluate: async () => { triggerClicks += 1; opened = false; },
+  };
+  const page = {
+    keyboard: { press: async () => {} },
+    evaluate: async () => {},
+    locator: () => ({ last: () => ({ evaluate: async () => { throw new Error("composer unused"); } }) }),
+  };
+  await expect(closeChatGptEffortMenu(page as never, control as never)).resolves.toBe(true);
+  expect(triggerClicks).toBe(1);
+}, 8_000);
+
+test("effort menu close retries Escape until the trigger collapses", async () => {
+  let escapes = 0;
+  let opened = true;
+  const control = {
+    getAttribute: async (name: string) => {
+      if (name === "aria-expanded") return String(opened);
+      if (name === "data-state") return opened ? "open" : "closed";
+      return null;
+    },
+  };
+  const page = {
+    keyboard: { press: async () => { escapes += 1; if (escapes >= 2) opened = false; } },
+    evaluate: async () => {},
+    locator: () => ({ last: () => ({ click: async () => { throw new Error("composer click should not be required"); } }) }),
+  };
+  await expect(closeChatGptEffortMenu(page as never, control as never)).resolves.toBe(true);
+  expect(escapes).toBe(2);
+});
 
 test("composer and effort selectors exclude unrelated editable fields and menu buttons", () => {
   const { createDocument } = require("@mixmark-io/domino") as { createDocument(html: string): Document };
@@ -129,6 +170,7 @@ test("effort activation retries one ghost click with a primary pointerdown", asy
     ["click", { force: true, timeout: 1 }],
     ["keyboard", "Escape"],
     ["pointerdown", { button: 0, buttons: 1, pointerType: "mouse", isPrimary: true }],
+    ["pointerup", { button: 0, buttons: 0, pointerType: "mouse", isPrimary: true }],
   ]);
 });
 
@@ -211,10 +253,11 @@ test("a transient effort control does not turn a Luna-only account into Sol", as
   expect(visibilityReads).toBe(2);
 });
 
-function reasoningPicker(options: { max?: string; delay?: number; missing?: boolean; loseSelectionOnClose?: boolean } = {}) {
-  let value = 0;
+function reasoningPicker(options: { max?: string; delay?: number; missing?: boolean; loseSelectionOnClose?: boolean; initial?: number; ignoreKeys?: boolean; ignoreClicks?: boolean } = {}) {
+  let value = options.initial ?? 0;
   let opened = true;
   const keys: string[] = [];
+  const clicks: unknown[] = [];
   const hidden = {
     filter() { return this; }, last() { return this; }, getByText() { return this; },
     isVisible: async () => false,
@@ -222,15 +265,60 @@ function reasoningPicker(options: { max?: string; delay?: number; missing?: bool
       signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
     }),
   };
-  const sliderControl = { press: async (key: string) => { keys.push(key); value += key === "ArrowRight" ? 1 : -1; } };
+  const sliderControl = {
+    press: async (key: string, pressOptions?: { force?: boolean; timeout?: number }) => {
+      expect(pressOptions).toEqual({ force: true, timeout: 1_000 });
+      keys.push(key);
+      if (!options.ignoreKeys) value += key === "ArrowRight" ? 1 : -1;
+    },
+  };
   const slider = {
     isVisible: async () => false, // Live DOM: aria-hidden=true, zero-width semantic span.
     filter: () => { throw new Error("Semantic input must not be visibility-filtered"); },
     waitFor: async ({ state }: { state: string }) => { expect(state).toBe("attached"); },
     getAttribute: async (name: string) => ({ "aria-valuemin": "0", "aria-valuemax": options.max ?? "4", "aria-valuenow": String(value), "aria-hidden": "true" })[name] ?? null,
     locator: () => sliderControl,
+    press: async () => {},
+  };
+  const ticks = ["Instant", "Medium", "High", "Extra High", "Pro"];
+  const tickLocator = (name: string) => {
+    const self = {
+      filter() { return self; },
+      last() { return self; },
+      count: async () => ticks.includes(name) ? 1 : 0,
+      click: async (clickOptions: unknown) => {
+        clicks.push(["text", name, clickOptions]);
+        if (!options.ignoreClicks) value = ticks.indexOf(name);
+      },
+    };
+    return self;
   };
   const container = {
+    boundingBox: async () => ({ x: 0, y: 0, width: 240, height: 40 }),
+    press: async () => {},
+    getByText: (name: string) => tickLocator(name),
+    evaluate: async (_fn: unknown, arg: unknown) => {
+      if (arg === undefined) return { count: 3, checkedIndex: 0 };
+      if (typeof arg === "string") {
+        if (!ticks.includes(arg)) return false;
+        clicks.push(["evaluate", arg]);
+        if (!options.ignoreClicks) value = ticks.indexOf(arg);
+        return true;
+      }
+      if (arg && typeof arg === "object" && "targetValue" in arg) {
+        const targetValue = (arg as { targetValue: number }).targetValue;
+        clicks.push(["apply", targetValue]);
+        if (!options.ignoreClicks) value = targetValue;
+        return value;
+      }
+      return undefined;
+    },
+    click: async (clickOptions: { position: { x: number; y: number }; force?: boolean; timeout?: number }) => {
+      clicks.push(clickOptions);
+      expect(clickOptions.force).toBe(true);
+      expect(clickOptions.timeout).toBe(1_000);
+      if (!options.ignoreClicks) value = Math.round(clickOptions.position.x / 240 * Number(options.max ?? "4"));
+    },
     filter() { return this; }, last() { return this; },
     locator: () => slider,
     isVisible: async () => true,
@@ -263,7 +351,7 @@ function reasoningPicker(options: { max?: string; delay?: number; missing?: bool
       if (options.loseSelectionOnClose) value = 0;
     } },
   };
-  return { page, composer, keys, value: () => value };
+  return { page, composer, keys, clicks, value: () => value };
 }
 
 test.each([0, 50])("capabilities wait for the visible container and read its hidden semantic input (delay=%s)", async delay => {
@@ -279,6 +367,20 @@ test("an absent effort slider cannot turn three model rows into a saved non-Pro 
 test("the authoritative three-step range is non-Pro; a malformed range fails closed", async () => {
   await expect(detectChatGptAccountCapabilities(reasoningPicker({ max: "2" }).page as never)).resolves.toEqual({ solAvailable: true, extraHighAvailable: false, proAvailable: false });
   await expect(detectChatGptAccountCapabilities(reasoningPicker({ max: "bad" }).page as never)).rejects.toThrow("model controls are unavailable");
+});
+
+test("Pro selection uses the live Extra High tick when ChatGPT hides Pro", async () => {
+  const fixture = reasoningPicker({ max: "3", initial: 1 });
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    activeComposer: async () => fixture.composer,
+  }) as { selectModelAndEffort(...args: unknown[]): Promise<{ uiEffortIndex: number }> };
+  await expect(worker.selectModelAndEffort(
+    fixture.page,
+    "gpt-5.6-sol",
+    "max",
+    { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+  )).resolves.toMatchObject({ uiEffortIndex: 4 });
+  expect(fixture.value()).toBe(3);
 });
 
 test("the four-step browser range keeps Extra High available when Pro is unavailable", async () => {
@@ -301,3 +403,57 @@ test("Pro selection verifies the persisted hidden slider through its visible own
     expect(fixture.value()).toBe(loseSelectionOnClose ? 0 : 4);
   }
 });
+
+
+test.each([false, true])("effort selection verifies pointer fallback when menu arrow keys stop working (ignored click=%s)", async ignoreClicks => {
+  const fixture = reasoningPicker({ initial: 4, ignoreKeys: true, ignoreClicks });
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    activeComposer: async () => fixture.composer,
+  }) as { selectModelAndEffort(...args: unknown[]): Promise<{ uiEffortIndex: number }> };
+  const result = worker.selectModelAndEffort(fixture.page,
+    "gpt-5.6-sol", "xhigh", { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true });
+  if (ignoreClicks) {
+    await expect(result).rejects.toMatchObject({ status: 502, code: "chatgpt_model_control_unavailable", retryable: false });
+    expect(fixture.value()).toBe(4);
+  } else {
+    await expect(result).resolves.toMatchObject({ uiEffortIndex: 3 });
+    expect(fixture.value()).toBe(3);
+  }
+  expect(fixture.keys).toEqual(["ArrowLeft"]);
+  expect(fixture.clicks[0]).toEqual(["apply", 3]);
+  if (ignoreClicks) {
+    expect(fixture.clicks[1]).toEqual({
+      force: true,
+      timeout: 1_000,
+      position: {
+        x: chatGptEffortSliderTickOffset(240, { min: 0, max: 4 }, 3),
+        y: 20,
+      },
+    });
+  } else {
+    expect(fixture.clicks).toHaveLength(1);
+  }
+}, 10_000);
+
+test("slider tick offsets sit on the inset track, not the container edge", () => {
+  const state = { min: 0, max: 4 };
+  expect(chatGptEffortSliderTickOffset(240, state, 0)).toBe(16);
+  expect(chatGptEffortSliderTickOffset(240, state, 4)).toBe(224);
+  expect(chatGptEffortSliderTickOffset(240, state, 3)).toBe(172);
+});
+
+test("Instant selection does not treat the first Medium radio as Instant", async () => {
+  const fixture = reasoningPicker({ initial: 1, ignoreKeys: true, ignoreClicks: true });
+  const select = (ChatGptBrowserWorker.prototype as unknown as {
+    selectModelAndEffort(...args: unknown[]): Promise<unknown>;
+  }).selectModelAndEffort;
+  await expect(select.call(
+    { activeComposer: async () => fixture.composer },
+    fixture.page,
+    "gpt-5.6-sol",
+    "low",
+    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+  )).rejects.toMatchObject({ status: 502, code: "chatgpt_model_control_unavailable", retryable: false });
+  expect(fixture.value()).toBe(1);
+  expect(fixture.keys).toEqual(["ArrowLeft"]);
+}, 10_000);
