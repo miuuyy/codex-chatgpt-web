@@ -189,6 +189,19 @@ function isTurnAbortedNotice(value: Record<string, unknown>): boolean {
   return /^<turn_aborted>[\s\S]*<\/turn_aborted>$/.test(rawMessageText(value).trim());
 }
 
+/** Codex app delivers a cross-thread follow-up as a current-turn tool result, not a user message. */
+function currentTurnDelegationInstruction(
+  item: Record<string, unknown> | undefined,
+  expectedTurnId?: string,
+): string | undefined {
+  if (item?.type !== "function_call_output" || item.name !== "send_message_to_thread"
+    || typeof item.id !== "string" || !item.id || typeof item.output !== "string"
+    || expectedTurnId === undefined || itemTurnId(item) !== expectedTurnId) return undefined;
+  return /^<codex_delegation>\s*<source_thread_id>[A-Za-z0-9_-]{6,128}<\/source_thread_id>\s*<input>[\s\S]*\S[\s\S]*<\/input>\s*<\/codex_delegation>$/.test(item.output.trim())
+    ? item.output
+    : undefined;
+}
+
 /** Native turn ids that Codex has authoritatively marked as interrupted in this thread. */
 export function priorChatGptAbortedTurnIds(parsed: CodexParsedRequest): string[] {
   const currentTurnId = extractChatGptTurnIdentity(parsed).turnId;
@@ -246,14 +259,16 @@ function latestChatGptTurnUserRevision(parsed: CodexParsedRequest, expectedTurnI
 
 function userRevision(value: unknown, expectedTurnId?: string, metadata?: Record<string, unknown>): ChatGptTurnUserRevision | undefined {
   const item = record(value);
-  if (!isUserOrParentInstruction(item, metadata)) return undefined;
+  const delegation = currentTurnDelegationInstruction(item, expectedTurnId);
+  if (delegation === undefined && !isUserOrParentInstruction(item, metadata)) return undefined;
+  if (!item) return undefined;
   const messageTurnId = itemTurnId(item);
   // An abort notice is contextual only when native metadata identifies its earlier turn.
   if (item.type === "message" && isTurnAbortedNotice(item) && expectedTurnId !== undefined
     && messageTurnId !== undefined && messageTurnId !== expectedTurnId) return undefined;
   const itemId = typeof item.id === "string" && item.id.length > 0 ? item.id : undefined;
   if (messageTurnId === undefined && itemId === undefined) return undefined;
-  return { content: item.content, ...(messageTurnId ? { turnId: messageTurnId } : {}),
+  return { content: delegation ?? item.content, ...(messageTurnId ? { turnId: messageTurnId } : {}),
     ...(itemId ? { itemId } : {}) };
 }
 

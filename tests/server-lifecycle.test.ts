@@ -964,6 +964,62 @@ test("a restart recovery turn without a new user instruction fails terminally in
   expect(adapterConstructions).toBe(0);
 });
 
+test("a cross-thread follow-up starts from its authenticated current-turn delegation", async () => {
+  const config = defaultConfig("browser-only");
+  const previousTurnId = "turn_before_follow_up";
+  const followUpTurnId = "turn_after_follow_up";
+  const delegation = [
+    "<codex_delegation>",
+    "  <source_thread_id>01a0bbd4-8de6-78d2-891c-dc329238637a</source_thread_id>",
+    "  <input>Continue the active goal after the completed milestone.</input>",
+    "</codex_delegation>",
+  ].join("\n");
+  const body = {
+    model: "chatgpt-web/high",
+    stream: false,
+    client_metadata: {
+      "x-codex-turn-metadata": JSON.stringify({
+        thread_id: "thread_codex_follow_up",
+        turn_id: followUpTurnId,
+      }),
+    },
+    input: [
+      {
+        type: "message",
+        role: "user",
+        id: "msg_original_instruction",
+        content: [{ type: "input_text", text: "Run the original task" }],
+        internal_chat_message_metadata_passthrough: { turn_id: previousTurnId },
+      },
+      {
+        type: "function_call_output",
+        id: "fco_current_delegation",
+        name: "send_message_to_thread",
+        output: delegation,
+        internal_chat_message_metadata_passthrough: { turn_id: followUpTurnId },
+      },
+    ],
+  };
+  let adapterConstructions = 0;
+
+  const response = await responseRequest(new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }), config, () => ({
+    name: "delegated-follow-up",
+    async runTurn(_parsed, _incoming, emit) {
+      adapterConstructions += 1;
+      emit({ type: "text_delta", text: "Follow-up accepted", phase: "final_answer" });
+      emit({ type: "done", stopReason: "stop", endTurn: true });
+    },
+  }));
+
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ status: "completed" });
+  expect(adapterConstructions).toBe(1);
+});
+
 test.each(["alpha/search", "images/generations"])("authenticated lifecycle control aborts active %s before acknowledging cancellation", async path => {
   const config = { ...defaultConfig("browser-only"), port: 0 };
   let upstreamAbortObserved = false;

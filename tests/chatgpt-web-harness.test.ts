@@ -328,6 +328,39 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(() => chatGptTurnExecutionKey(request)).toThrow("conflicts with native Codex turn_id");
   });
 
+  test("uses an authenticated send_message_to_thread delegation as the next turn instruction", () => {
+    const request = rawWireRequest(environmentXml);
+    const raw = request._rawBody as { input: Array<Record<string, unknown>> };
+    raw.input[1]!.internal_chat_message_metadata_passthrough = { turn_id: "turn_previous" };
+    const delegation = [
+      "<codex_delegation>",
+      "  <source_thread_id>01a0bbd4-8de6-78d2-891c-dc329238637a</source_thread_id>",
+      "  <input>Continue the active goal after the completed milestone.</input>",
+      "</codex_delegation>",
+    ].join("\n");
+    raw.input.push({
+      type: "function_call_output",
+      id: "fco_current_delegation",
+      name: "send_message_to_thread",
+      output: delegation,
+      internal_chat_message_metadata_passthrough: { turn_id: "turn_test_123" },
+    });
+
+    expect(extractChatGptTurnUserRevision(request)).toBe(delegation);
+    expect(() => chatGptTurnExecutionKey(request)).not.toThrow();
+
+    for (const mutation of [
+      { name: "another_tool" },
+      { output: "Continue the active goal" },
+      { internal_chat_message_metadata_passthrough: { turn_id: "turn_previous" } },
+    ]) {
+      const invalid = structuredClone(request);
+      Object.assign((invalid._rawBody as { input: Array<Record<string, unknown>> }).input.at(-1)!, mutation);
+      expect(() => extractChatGptTurnUserRevision(invalid))
+        .toThrow(CHATGPT_TURN_REVISION_CONFLICT_MESSAGE);
+    }
+  });
+
   test("starts a tool-capable browser turn across a same-turn developer gap", async () => {
     const socketPath = brokerTestEndpoint(`cgw-h3-canonical-${process.pid}-${Date.now()}`);
     const provider: CodexProviderConfig = {
