@@ -1440,7 +1440,7 @@ class RuntimeHost {
         ...failures,
       ].join("; ");
       this.publishOperation?.({ name, status: "failed", message });
-      throw new Error(message);
+      throw new Error(message, { cause: error });
     } finally {
       this.lifecycleOperation = null;
     }
