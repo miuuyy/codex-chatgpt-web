@@ -22,7 +22,17 @@ test.each([[true, false, true], [false, false, true], [true, true, true], [true,
   let released = false;
   let activated = 0;
   const frame = {};
-  const page = Object.assign(new EventEmitter(), { evaluate: async () => ({}), isClosed: () => false, mainFrame: () => frame });
+  const hiddenDialog = {
+    filter: () => hiddenDialog,
+    last: () => hiddenDialog,
+    isVisible: async () => false,
+  };
+  const page = Object.assign(new EventEmitter(), {
+    evaluate: async () => ({}),
+    isClosed: () => false,
+    mainFrame: () => frame,
+    locator: () => hiddenDialog,
+  });
   const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
     config: { appName: "Codex Native2", browserDiagnosticsPath: diagnostics, ...(owned ? { browserHostDescriptorPath: "owned-descriptor" } : {}) },
     runStage: async (_trace: string, name: string, timeout: number, action: (signal: AbortSignal) => Promise<unknown>) => {

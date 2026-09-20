@@ -2528,6 +2528,26 @@ test.each([
   expect(fixture.pressed).toEqual(["Enter"]);
 });
 
+test("multipart staging classifies a rate-limit dialog before mutating the next composer", async () => {
+  const fixture = dialogPage("Too many requests. You're making requests too quickly.");
+  let attachmentStarted = false;
+  const attachMultipartStagePrompt = (ChatGptBrowserWorker.prototype as unknown as {
+    attachMultipartStagePrompt(page: Page, prompt: string): Promise<void>;
+  }).attachMultipartStagePrompt;
+
+  await expect(attachMultipartStagePrompt.call({
+    attachPrompt: async () => { attachmentStarted = true; },
+  }, fixture.page, "stage two"))
+    .rejects.toMatchObject({
+      name: "ChatGptWebAdapterError",
+      status: 429,
+      code: "rate_limit_exceeded",
+    });
+
+  expect(attachmentStarted).toBeFalse();
+  expect(fixture.pressed).toEqual(["Enter"]);
+});
+
 test("submission acceptance reports a rate-limit dialog that appears after Enter", async () => {
   const fixture = dialogPage("Too many requests. You're making requests too quickly.");
   const waitForSubmissionAccepted = (ChatGptBrowserWorker.prototype as unknown as {

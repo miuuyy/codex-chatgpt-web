@@ -3466,6 +3466,19 @@ export class ChatGptBrowserWorker {
     }
   }
 
+  private async attachMultipartStagePrompt(
+    page: Page,
+    prompt: string,
+    captureDiagnostic?: (checkpoint: string) => Promise<void>,
+    abortSignal?: AbortSignal,
+  ): Promise<void> {
+    // A requests-too-quickly modal can appear only after the previous staged part is accepted.
+    // Detect it before touching the next composer: execCommand otherwise returns false behind the
+    // modal and misclassifies an account cooldown as a prompt-attachment integrity failure.
+    await throwIfChatGptRateLimitDialog(page);
+    await this.attachPrompt(page, prompt, false, captureDiagnostic, abortSignal);
+  }
+
   private async waitForSubmissionAcceptedWithRecovery(
     page: Page,
     baseline: ChatGptSubmissionBaseline,
@@ -4739,10 +4752,9 @@ export class ChatGptBrowserWorker {
             turn.traceId,
             `multipart_stage_${index + 1}_attachment`,
             browserStageTimeouts.promptAttachment,
-            (stageSignal) => this.attachPrompt(
+            (stageSignal) => this.attachMultipartStagePrompt(
               page,
               stage.text,
-              false,
               checkpoint => diagnostics.capture(page, `multipart-${index + 1}-${checkpoint}`),
               turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal,
             ),
