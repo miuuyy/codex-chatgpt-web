@@ -844,6 +844,47 @@ test("failed first-time setup removes its route before restoring the unconfigure
   }
 });
 
+test("first-time rollback failure adds context without replacing the setup failure", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-rollback-context-"));
+  const configPath = path.join(root, "config.json");
+  const primary = new Error("synthetic primary setup failure");
+  let stops = 0;
+  const supervisor = {
+    coreHome: root,
+    configPath,
+    readConfig: () => null,
+    readSetupConfig: () => null,
+    stopForSetup: async () => {
+      stops += 1;
+      if (stops === 2) throw new Error("synthetic rollback cleanup failure");
+      return { status: "stopped" };
+    },
+    startIfConfigured: async () => ({ status: "not-configured" }),
+    clearState() {},
+  };
+  const host = new RuntimeHost({
+    app: { getPath: () => root },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: "/source",
+    browserDescriptorPath: path.join(root, "launcher-browser.json"),
+    codexHome: path.join(root, "codex"),
+    supervisor,
+  });
+  host.run = async (_name, args) => {
+    if (args.includes("--preflight-only")) return { code: 0, stdout: "", stderr: "" };
+    throw primary;
+  };
+  try {
+    const caught = await host.runSetup("core-setup", ["setup", "--browser-only"], {})
+      .then(() => undefined, error => error);
+    assert.match(caught.message, /^synthetic primary setup failure; first-time setup rollback failed:/);
+    assert.match(caught.message, /synthetic rollback cleanup failure/);
+    assert.equal(caught.cause, primary);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a failed setup preflight leaves the previous runtime running and untouched", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-setup-preflight-"));
   const configPath = path.join(root, "config.json");

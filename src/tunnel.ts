@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { unzipSync } from "fflate";
 import type { AppConfig, BrowserInteractionMode, TunnelConfig } from "./config";
 import { atomicWriteFile, getConfigDir } from "./config";
-import { runCommand, runChecked } from "./process";
+import { processRunning, runCommand, runChecked } from "./process";
 
 export const TUNNEL_VERSION = "0.0.12";
 const MIGRATABLE_TUNNEL_VERSIONS = new Set(["0.0.10"]);
@@ -12,6 +12,7 @@ const RELEASE_BASE = `https://github.com/openai/tunnel-client/releases/download/
 const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024;
 export const TUNNEL_READY_TIMEOUT_MS = 120_000;
 const TUNNEL_STATUS_POLL_INTERVAL_MS = 1_000;
+const WINDOWS_REMOVE_RETRY_DELAYS_MS = [100, 200, 500, 1_000, 2_000] as const;
 
 interface TunnelInstallManifest {
   version: 1;
@@ -31,13 +32,13 @@ function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function platformAsset(): string {
-  const os = process.platform === "darwin" ? "darwin"
-    : process.platform === "linux" ? "linux"
-      : process.platform === "win32" ? "windows"
+function platformAsset(platform = process.platform, architecture = process.arch): string {
+  const os = platform === "darwin" ? "darwin"
+    : platform === "linux" ? "linux"
+      : platform === "win32" ? "windows"
         : undefined;
-  const arch = process.arch === "arm64" ? "arm64" : process.arch === "x64" ? "amd64" : undefined;
-  if (!os || !arch) throw new Error(`openai/tunnel-client has no pinned build for ${process.platform}/${process.arch}`);
+  const arch = architecture === "arm64" ? "arm64" : architecture === "x64" ? "amd64" : undefined;
+  if (!os || !arch) throw new Error(`openai/tunnel-client has no pinned build for ${platform}/${architecture}`);
   return `tunnel-client-v${TUNNEL_VERSION}-${os}-${arch}.zip`;
 }
 
@@ -67,17 +68,90 @@ function parseExpectedChecksum(text: string, asset: string): string {
   return checksum;
 }
 
-function binaryPath(): string {
-  return join(getConfigDir(), "bin", process.platform === "win32" ? "tunnel-client.exe" : "tunnel-client");
+function binaryPath(configDir = getConfigDir(), platform = process.platform): string {
+  return join(configDir, "bin", platform === "win32" ? "tunnel-client.exe" : "tunnel-client");
 }
 
-function manifestPath(): string {
-  return join(getConfigDir(), "bin", "tunnel-client-manifest.json");
+function manifestPath(configDir = getConfigDir()): string {
+  return join(configDir, "bin", "tunnel-client-manifest.json");
 }
 
-export async function installTunnelClient(): Promise<string> {
-  const executable = binaryPath();
-  const manifestFile = manifestPath();
+interface TunnelInstallOptions {
+  platform?: NodeJS.Platform;
+  architecture?: NodeJS.Architecture;
+  configDir?: string;
+  fetchBytes?: (url: string) => Promise<Uint8Array>;
+  runChecked?: typeof runChecked;
+  randomUUID?: () => string;
+  removeOptions?: Parameters<typeof removeTunnelInstallFile>[1];
+}
+
+export async function removeTunnelInstallFile(
+  path: string,
+  options: {
+    platform?: NodeJS.Platform;
+    remove?: (path: string) => void;
+    wait?: (delayMs: number) => Promise<void>;
+    retryDelaysMs?: readonly number[];
+  } = {},
+): Promise<void> {
+  const platform = options.platform ?? process.platform;
+  const remove = options.remove ?? (target => rmSync(target, { force: true }));
+  const wait = options.wait ?? (delayMs => new Promise(resolve => setTimeout(resolve, delayMs)));
+  const retryDelays = options.retryDelaysMs ?? WINDOWS_REMOVE_RETRY_DELAYS_MS;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      remove(path);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const retryable = platform === "win32" && (code === "EBUSY" || code === "EPERM");
+      if (!retryable || attempt >= retryDelays.length) throw error;
+      await wait(retryDelays[attempt]);
+    }
+  }
+}
+
+function tunnelInstallCleanupError(primary: unknown, cleanupFailures: unknown[], context: string): Error {
+  const primaryMessage = primary instanceof Error ? primary.message : String(primary);
+  const cleanupMessage = cleanupFailures
+    .map(error => error instanceof Error ? error.message : String(error))
+    .join("; ");
+  return new AggregateError(
+    [primary, ...cleanupFailures],
+    `${primaryMessage}; ${context}: ${cleanupMessage}`,
+    { cause: primary },
+  );
+}
+
+async function removeStaleTunnelInstallFiles(
+  executable: string,
+  removeFile: (path: string) => Promise<void>,
+): Promise<void> {
+  const directory = dirname(executable);
+  if (!existsSync(directory)) return;
+  const prefix = `${basename(executable)}.install-`;
+  for (const entry of readdirSync(directory)) {
+    if (!entry.startsWith(prefix)) continue;
+    const ownerPid = Number(entry.slice(prefix.length).split("-", 1)[0]);
+    if (Number.isInteger(ownerPid) && ownerPid !== process.pid && processRunning(ownerPid)) continue;
+    await removeFile(join(directory, entry));
+  }
+}
+
+export async function installTunnelClient(options: TunnelInstallOptions = {}): Promise<string> {
+  const platform = options.platform ?? process.platform;
+  const architecture = options.architecture ?? process.arch;
+  const configDir = options.configDir ?? getConfigDir();
+  const download = options.fetchBytes ?? fetchBytes;
+  const execute = options.runChecked ?? runChecked;
+  const createId = options.randomUUID ?? randomUUID;
+  const removeFile = (path: string) => removeTunnelInstallFile(path, {
+    ...options.removeOptions,
+    platform,
+  });
+  const executable = binaryPath(configDir, platform);
+  const manifestFile = manifestPath(configDir);
   let previousInstallation: { binary: Uint8Array; manifestText: string } | undefined;
   if (existsSync(executable) && existsSync(manifestFile)) {
     const manifestText = readFileSync(manifestFile, "utf8");
@@ -88,11 +162,11 @@ export async function installTunnelClient(): Promise<string> {
       || manifest.binarySha256 !== actual) {
       throw new Error(`Existing tunnel-client failed integrity validation: ${executable}`);
     }
-    if (process.platform !== "win32" && (statSync(executable).mode & 0o111) === 0) {
+    if (platform !== "win32" && (statSync(executable).mode & 0o111) === 0) {
       throw new Error(`Existing tunnel-client is not executable: ${executable}`);
     }
     const action = tunnelClientInstallAction(manifest.tunnelClientVersion);
-    const installedVersion = runChecked(executable, ["--version"], { timeout: 10_000 });
+    const installedVersion = execute(executable, ["--version"], { timeout: 10_000 });
     if (!installedVersion.stdout.includes(manifest.tunnelClientVersion)
       && !installedVersion.stderr.includes(manifest.tunnelClientVersion)) {
       throw new Error(`Existing tunnel-client did not report version ${manifest.tunnelClientVersion}`);
@@ -100,56 +174,92 @@ export async function installTunnelClient(): Promise<string> {
     if (action === "reuse") return executable;
     previousInstallation = { binary: installedBinary, manifestText };
   }
-  if (!previousInstallation && (existsSync(executable) || existsSync(manifestFile))) {
-    rmSync(executable, { force: true });
-    rmSync(manifestFile, { force: true });
-  }
+  const untrackedBinary = !existsSync(manifestFile) && existsSync(executable)
+    ? new Uint8Array(readFileSync(executable))
+    : undefined;
+  await removeStaleTunnelInstallFiles(executable, removeFile);
+  if (!previousInstallation && existsSync(manifestFile)) await removeFile(manifestFile);
 
-  const asset = platformAsset();
+  const asset = platformAsset(platform, architecture);
   const [archive, sums] = await Promise.all([
-    fetchBytes(`${RELEASE_BASE}/${asset}`),
-    fetchBytes(`${RELEASE_BASE}/SHA256SUMS.txt`),
+    download(`${RELEASE_BASE}/${asset}`),
+    download(`${RELEASE_BASE}/SHA256SUMS.txt`),
   ]);
   const expected = parseExpectedChecksum(new TextDecoder().decode(sums), asset);
   const archiveHash = sha256(archive);
   if (archiveHash !== expected) throw new Error(`Checksum mismatch for ${asset}`);
   const files = unzipSync(archive);
-  const expectedName = process.platform === "win32" ? "tunnel-client.exe" : "tunnel-client";
+  const expectedName = platform === "win32" ? "tunnel-client.exe" : "tunnel-client";
   const entry = Object.entries(files).find(([name]) => basename(name) === expectedName);
   if (!entry) throw new Error(`${asset} does not contain ${expectedName}`);
   const binary = entry[1];
-  mkdirSync(dirname(executable), { recursive: true, mode: 0o700 });
-  const stagedExecutable = `${executable}.install-${process.pid}-${randomUUID()}${process.platform === "win32" ? ".exe" : ""}`;
-  atomicWriteFile(stagedExecutable, binary);
-  let version: ReturnType<typeof runChecked>;
-  try {
-    if (process.platform !== "win32") chmodSync(stagedExecutable, 0o700);
-    version = runChecked(stagedExecutable, ["--version"], { timeout: 10_000 });
-    if (!version.stdout.includes(TUNNEL_VERSION) && !version.stderr.includes(TUNNEL_VERSION)) {
-      throw new Error(`Installed tunnel-client did not report version ${TUNNEL_VERSION}`);
-    }
-  } finally {
-    rmSync(stagedExecutable, { force: true });
-  }
+  const binaryHash = sha256(binary);
   const manifest: TunnelInstallManifest = {
     version: 1,
     tunnelClientVersion: TUNNEL_VERSION,
     asset,
     archiveSha256: archiveHash,
-    binarySha256: sha256(binary),
+    binarySha256: binaryHash,
   };
+  if (untrackedBinary && sha256(untrackedBinary) === binaryHash) {
+    const installedVersion = execute(executable, ["--version"], { timeout: 10_000 });
+    if (installedVersion.stdout.includes(TUNNEL_VERSION) || installedVersion.stderr.includes(TUNNEL_VERSION)) {
+      atomicWriteFile(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
+      return executable;
+    }
+  }
+  if (!previousInstallation && existsSync(executable)) await removeFile(executable);
+  mkdirSync(dirname(executable), { recursive: true, mode: 0o700 });
+  const stagedExecutable = `${executable}.install-${process.pid}-${createId()}${platform === "win32" ? ".exe" : ""}`;
+  atomicWriteFile(stagedExecutable, binary);
+  let verificationError: unknown;
+  try {
+    if (platform !== "win32") chmodSync(stagedExecutable, 0o700);
+    const version = execute(stagedExecutable, ["--version"], { timeout: 10_000 });
+    if (!version.stdout.includes(TUNNEL_VERSION) && !version.stderr.includes(TUNNEL_VERSION)) {
+      throw new Error(`Installed tunnel-client did not report version ${TUNNEL_VERSION}`);
+    }
+  } catch (error) {
+    verificationError = error;
+  }
+  try {
+    await removeFile(stagedExecutable);
+  } catch (cleanupError) {
+    if (verificationError) {
+      throw tunnelInstallCleanupError(
+        verificationError,
+        [cleanupError],
+        "temporary tunnel-client cleanup also failed",
+      );
+    }
+    throw cleanupError;
+  }
+  if (verificationError) throw verificationError;
   try {
     atomicWriteFile(executable, binary);
-    if (process.platform !== "win32") chmodSync(executable, 0o700);
+    if (platform !== "win32") chmodSync(executable, 0o700);
     atomicWriteFile(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
   } catch (error) {
+    const rollbackFailures: unknown[] = [];
     if (previousInstallation) {
-      atomicWriteFile(executable, previousInstallation.binary);
-      if (process.platform !== "win32") chmodSync(executable, 0o700);
-      atomicWriteFile(manifestFile, previousInstallation.manifestText);
+      try {
+        atomicWriteFile(executable, previousInstallation.binary);
+        if (platform !== "win32") chmodSync(executable, 0o700);
+        atomicWriteFile(manifestFile, previousInstallation.manifestText);
+      } catch (rollbackError) {
+        rollbackFailures.push(rollbackError);
+      }
     } else {
-      rmSync(executable, { force: true });
-      rmSync(manifestFile, { force: true });
+      for (const path of [executable, manifestFile]) {
+        try {
+          await removeFile(path);
+        } catch (cleanupError) {
+          rollbackFailures.push(cleanupError);
+        }
+      }
+    }
+    if (rollbackFailures.length > 0) {
+      throw tunnelInstallCleanupError(error, rollbackFailures, "tunnel-client install rollback also failed");
     }
     throw error;
   }
