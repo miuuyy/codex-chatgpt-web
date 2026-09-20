@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, renameSync, unlinkSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { isWindowsPipeEndpoint } from "../../config";
@@ -260,6 +260,7 @@ export class TurnBroker implements TurnBrokerOwner {
   private acceptingExternalOwners = true;
   private server?: Server;
   private startPromise?: Promise<void>;
+  private boundSocketIdentity?: { dev: number; ino: number };
 
   private constructor(readonly socketPath: string) {}
 
@@ -732,15 +733,43 @@ export class TurnBroker implements TurnBrokerOwner {
     this.server = undefined;
     this.startPromise = undefined;
     brokers.delete(this.socketPath);
-    if (server?.listening) {
-      await new Promise<void>((resolveClose, rejectClose) => server.close(error => {
-        if (!error || (error as NodeJS.ErrnoException).code === "ERR_SERVER_NOT_RUNNING") resolveClose();
-        else rejectClose(error);
-      }));
+    let protectedReplacementPath: string | undefined;
+    if (server?.listening && !isWindowsPipeEndpoint(this.socketPath) && existsSync(this.socketPath)) {
+      const socketStat = lstatSync(this.socketPath);
+      if (socketStat.isSocket()
+        && this.boundSocketIdentity
+        && (socketStat.dev !== this.boundSocketIdentity.dev || socketStat.ino !== this.boundSocketIdentity.ino)) {
+        protectedReplacementPath = `${this.socketPath}.replacement-${process.pid}-${randomBytes(6).toString("hex")}`;
+        renameSync(this.socketPath, protectedReplacementPath);
+      }
     }
-    if (!isWindowsPipeEndpoint(this.socketPath)
-      && existsSync(this.socketPath)
-      && lstatSync(this.socketPath).isSocket()) unlinkSync(this.socketPath);
+    if (server?.listening) {
+      try {
+        await new Promise<void>((resolveClose, rejectClose) => server.close(error => {
+          if (!error || (error as NodeJS.ErrnoException).code === "ERR_SERVER_NOT_RUNNING") resolveClose();
+          else rejectClose(error);
+        }));
+      } finally {
+        if (protectedReplacementPath && existsSync(protectedReplacementPath)) {
+          if (existsSync(this.socketPath)) {
+            console.error(
+              `[chatgpt-web] replacement broker socket preserved at ${protectedReplacementPath}`
+              + ` because ${this.socketPath} was replaced again during shutdown`,
+            );
+          } else {
+            renameSync(protectedReplacementPath, this.socketPath);
+          }
+        }
+      }
+    }
+    if (!isWindowsPipeEndpoint(this.socketPath) && existsSync(this.socketPath)) {
+      const socketStat = lstatSync(this.socketPath);
+      if (socketStat.isSocket()
+        && this.boundSocketIdentity
+        && socketStat.dev === this.boundSocketIdentity.dev
+        && socketStat.ino === this.boundSocketIdentity.ino) unlinkSync(this.socketPath);
+    }
+    this.boundSocketIdentity = undefined;
   }
 
   private start(): Promise<void> {
@@ -772,7 +801,11 @@ export class TurnBroker implements TurnBrokerOwner {
         });
         server.listen(this.socketPath, () => {
           server.off("error", rejectStart);
-          if (!windowsPipe) chmodSync(this.socketPath, 0o600);
+          if (!windowsPipe) {
+            chmodSync(this.socketPath, 0o600);
+            const socketStat = lstatSync(this.socketPath);
+            this.boundSocketIdentity = { dev: socketStat.dev, ino: socketStat.ino };
+          }
           resolveStart();
         });
       };
