@@ -1011,6 +1011,16 @@ async function start() {
   }
   app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
   app.commandLine.appendSwitch("remote-debugging-port", String(cdpPort));
+  // Offscreen/occluded ChatGPT views must keep timers, painting, and CDP targets. Electron's
+  // webPreferences.backgroundThrottling=false is not enough once Chromium decides the window
+  // is in the background.
+  app.commandLine.appendSwitch("disable-renderer-backgrounding");
+  app.commandLine.appendSwitch("disable-background-timer-throttling");
+  app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+  app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
+  // Huge ChatGPT documents can exhaust small /dev/shm tmpfs and the default V8 heap.
+  app.commandLine.appendSwitch("disable-dev-shm-usage");
+  app.commandLine.appendSwitch("js-flags", "--max-old-space-size=4096");
 
   await app.whenReady();
 

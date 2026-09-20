@@ -36,14 +36,20 @@ const MANUAL_COMPACTION_SUBMIT_TIMEOUT_MS = 120_000;
 const MAX_MANUAL_TERMINAL_SIGNALS = 256;
 const MAX_MANUAL_PROMPT_CHARS = 1_000_000;
 const INTERACTION_MODE_CHANGE_OPERATION = "browser interaction mode change";
-const HIDDEN_TURN_VIEWPORT = Object.freeze({ width: 800, height: 600 });
+// Offscreen automatic turns must match a ChatGPT desktop, not the launcher chrome. A 710x522
+// window clipped the connector pill and effort menu; Instant through Pro all need this floor.
+const HIDDEN_TURN_VIEWPORT = Object.freeze({ width: 1120, height: 720 });
+const MIN_CHATGPT_LAYOUT_VIEWPORT = Object.freeze({ width: 800, height: 600 });
 // These are lease/initialization guards only. They do not limit a live ChatGPT turn: active turns
 // stay alive as long as the helper keeps heartbeating. They only reclaim a blank surface or a turn
 // whose helper disappeared without delivering the normal /v1/turn/end event.
 const TURN_HEARTBEAT_SWEEP_MS = 5_000;
-const TURN_HEARTBEAT_TIMEOUT_MS = 60_000;
+// Larger than browser_page / CDP rebind (60s) so a missed interval during reconnect cannot reap the tab.
+const TURN_HEARTBEAT_TIMEOUT_MS = 120_000;
 const TURN_TAB_BOOTSTRAP_TIMEOUT_MS = 120_000;
-const RETAINED_TURN_TAB_TTL_MS = 30 * 60 * 1000;
+// Completed turns get a short window for inspection or immediate continuation. Tool calls,
+// retries, and manual input keep their tab running and never enter this cleanup path.
+const INACTIVE_TURN_TAB_GRACE_MS = 30_000;
 const BROWSER_NAVIGATION_TIMEOUT_MS = 60_000;
 const CHATGPT_AUTH_SESSION_TIMEOUT_MS = 5_000;
 const WINDOW_VISIBILITY_EVENTS = ["show", "hide", "minimize", "restore"];
@@ -402,7 +408,7 @@ class BrowserHost {
         nodeIntegration: false,
         sandbox: true,
         spellcheck: true,
-        backgroundThrottling: true,
+        backgroundThrottling: false,
       },
     });
     window.contentView.addChildView(this.view);
@@ -1348,20 +1354,31 @@ class BrowserHost {
     const cancellations = [];
     const lastSweepAt = this.lastTurnSweepAt;
     this.lastTurnSweepAt = now;
-    if (sweepGapIndicatesSuspension(lastSweepAt, now, TURN_HEARTBEAT_SWEEP_MS)) {
+    const resumedAfterSuspension = sweepGapIndicatesSuspension(lastSweepAt, now, TURN_HEARTBEAT_SWEEP_MS);
+    if (resumedAfterSuspension) {
       // The launcher itself was frozen, so missing heartbeats prove suspension rather than a dead
       // helper. Re-baseline every active lease before ordinary reaping resumes.
       this.refreshTurnLeases("sweep_gap", now);
-      return;
     }
     for (const tab of [...this.turnTabs.values()]) {
+      const terminalManual = tab.interactionMode === "manual"
+        && tab.status === "error"
+        && ["timed-out", "failed", "cancelled"].includes(tab.manualState);
+      if (tab.status === "ready" || terminalManual) {
+        // The completion/terminal acknowledgement establishes this timestamp. Renderer
+        // inactivity is not completion, and beginTurn/beginManualTurn restore running status
+        // synchronously before a reused document can be swept.
+        if (now - (tab.lastHeartbeatAt ?? 0) < INACTIVE_TURN_TAB_GRACE_MS) continue;
+        this.logger.info(terminalManual ? "browser.terminal_tab_expired" : "browser.retained_tab_expired", {
+          tabId: tab.id,
+          traceId: tab.traceId,
+        });
+        this.removeTurnTab(tab, false);
+        continue;
+      }
+      // Wake-up protection applies to active leases, not documents whose turns already ended.
+      if (resumedAfterSuspension) continue;
       if (tab.interactionMode === "manual") {
-        if (tab.status === "ready") {
-          if (now - (tab.lastHeartbeatAt ?? 0) < RETAINED_TURN_TAB_TTL_MS) continue;
-          this.logger.info("browser.retained_tab_expired", { tabId: tab.id, traceId: tab.traceId });
-          this.removeTurnTab(tab, false);
-          continue;
-        }
         if (tab.status === "running" && !processRunning(tab.helperPid)) {
           this.logger.warn("browser.manual_orphan_turn_reaped", {
             tabId: tab.id,
@@ -1372,12 +1389,6 @@ class BrowserHost {
           this.signalManualTerminal(tab, "failed");
           this.removeTurnTab(tab, true);
         }
-        continue;
-      }
-      if (tab.status === "ready") {
-        if (now - (tab.lastHeartbeatAt ?? 0) < RETAINED_TURN_TAB_TTL_MS) continue;
-        this.logger.info("browser.retained_tab_expired", { tabId: tab.id, traceId: tab.traceId });
-        this.removeTurnTab(tab, false);
         continue;
       }
       if (tab.status !== "running") continue;
@@ -1477,10 +1488,13 @@ class BrowserHost {
   presentTurnView(tab, visible) {
     if (tab.interactionMode === "manual") {
       tab.view.setBounds(visible ? this.bounds : this.hiddenTurnBounds());
-      tab.view.setVisible(visible || tab.status === "running");
+      tab.view.setVisible(visible || tab.status === "running" || tab.status === "ready");
       return;
     }
-    if (visible) {
+    const layoutFits = visible
+      && this.bounds.width >= MIN_CHATGPT_LAYOUT_VIEWPORT.width
+      && this.bounds.height >= MIN_CHATGPT_LAYOUT_VIEWPORT.height;
+    if (layoutFits) {
       // Establish native on-screen bounds before removing the background viewport contract.
       tab.view.setBounds(this.bounds);
       if (tab.rendererReady && tab.deviceEmulationViewport) {
@@ -1492,18 +1506,21 @@ class BrowserHost {
       // A WebContentsView born outside a hidden BrowserWindow has a 0x0 renderer even when its
       // native bounds and View visibility are non-zero. Device emulation gives background turns
       // an explicit renderer viewport before moving the view outside the launcher surface.
+      // A visible but cramped launcher window keeps the same contract so ChatGPT's composer,
+      // effort picker, and connector pill still have a desktop layout.
       const bounds = this.hiddenTurnBounds();
+      const viewport = { width: bounds.width, height: bounds.height };
       if (tab.rendererReady
         && (tab.deviceEmulationDirty
-          || tab.deviceEmulationViewport?.width !== bounds.width
-          || tab.deviceEmulationViewport?.height !== bounds.height)) {
-        this.enableHiddenTurnViewport(tab.view.webContents, bounds);
-        tab.deviceEmulationViewport = { width: bounds.width, height: bounds.height };
+          || tab.deviceEmulationViewport?.width !== viewport.width
+          || tab.deviceEmulationViewport?.height !== viewport.height)) {
+        this.enableHiddenTurnViewport(tab.view.webContents, viewport);
+        tab.deviceEmulationViewport = viewport;
         tab.deviceEmulationDirty = false;
       }
-      tab.view.setBounds(bounds);
+      tab.view.setBounds(visible ? this.bounds : bounds);
     }
-    tab.view.setVisible(visible || tab.status === "running");
+    tab.view.setVisible(visible || tab.status === "running" || tab.status === "ready");
   }
 
   presentPrimaryView(visible) {
@@ -2364,7 +2381,7 @@ class BrowserHost {
     this.syncPowerSaveBlocker();
     tab.message = status === "completed" ? "Task completed" : message || `ChatGPT turn ${status}`;
     tab.loading = false;
-    if (!tab.view.webContents.isDestroyed()) tab.view.webContents.setBackgroundThrottling(true);
+    if (!tab.view.webContents.isDestroyed()) tab.view.webContents.setBackgroundThrottling(false);
     if (status === "completed") {
       this.logger.info("browser.tab_completed", { tabId: tab.id, traceId });
     }
@@ -2390,7 +2407,7 @@ class BrowserHost {
 
   async returnToIdle() {
     this.hide();
-    this.view.webContents.setBackgroundThrottling(true);
+    this.view.webContents.setBackgroundThrottling(false);
     if (this.view.webContents.getURL() !== IDLE_BROWSER_URL) {
       await this.view.webContents.loadURL(IDLE_BROWSER_URL);
     }
@@ -2899,7 +2916,6 @@ class BrowserHost {
       this.setState({ status: "error", message });
       throw error;
     } finally {
-      if (contents && !contents.isDestroyed()) contents.setBackgroundThrottling(true);
       this.manualOperation = null;
     }
   }
@@ -2987,12 +3003,15 @@ module.exports = {
   BrowserHost,
   BrowserTurnCancelledError,
   CHATGPT_VIEWPORT_CSS,
+  MIN_CHATGPT_LAYOUT_VIEWPORT,
+  HIDDEN_TURN_VIEWPORT,
   IDLE_BROWSER_URL,
   isChatGptCloudflareChallengeResponse,
   isTemporaryChatUrl,
   loadCommittedBrowserSurface,
   MANUAL_SUBMIT_TIMEOUT_MS,
   MANUAL_COMPACTION_SUBMIT_TIMEOUT_MS,
+  TURN_HEARTBEAT_TIMEOUT_MS,
   navigationErrorForLog,
   navigationOriginForLog,
   TEMPORARY_CHAT_URL,

@@ -15,6 +15,8 @@ const {
 const {
   allowedAuthUrl,
   BrowserHost,
+  HIDDEN_TURN_VIEWPORT,
+  MIN_CHATGPT_LAYOUT_VIEWPORT,
   IDLE_BROWSER_URL,
   isChatGptCloudflareChallengeResponse,
   isTemporaryChatUrl,
@@ -625,6 +627,71 @@ test("turn tabs use the hidden viewport when the launcher window is hidden", () 
       scale: 1,
     }],
     ["bounds", { x: 1121, y: 721, width: 1120, height: 720 }],
+    ["visible", true],
+  ]);
+  assert.deepEqual(tab.deviceEmulationViewport, { width: 1120, height: 720 });
+});
+
+test("the Electron process keeps occluded ChatGPT renderers unthrottled", () => {
+  const main = fs.readFileSync(resolve(__dirname, "../electron/main.cjs"), "utf8");
+  assert.match(main, /appendSwitch\("disable-renderer-backgrounding"\)/);
+  assert.match(main, /appendSwitch\("disable-background-timer-throttling"\)/);
+  assert.match(main, /appendSwitch\("disable-backgrounding-occluded-windows"\)/);
+  assert.match(main, /appendSwitch\("disable-features", "CalculateNativeWinOcclusion"\)/);
+  assert.match(main, /appendSwitch\("disable-dev-shm-usage"\)/);
+  assert.match(main, /appendSwitch\("js-flags", "--max-old-space-size=4096"\)/);
+  const remoteDebug = main.indexOf('appendSwitch("remote-debugging-port"');
+  const unthrottle = main.indexOf('appendSwitch("disable-renderer-backgrounding")');
+  const ready = main.indexOf("await app.whenReady()");
+  assert.ok(remoteDebug > 0 && unthrottle > remoteDebug && unthrottle < ready);
+});
+
+test("hidden turns floor a cramped launcher window to a ChatGPT desktop renderer", () => {
+  assert.deepEqual(HIDDEN_TURN_VIEWPORT, { width: 1120, height: 720 });
+  assert.deepEqual(MIN_CHATGPT_LAYOUT_VIEWPORT, { width: 800, height: 600 });
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    window: { getContentSize: () => [710, 522] },
+  });
+  assert.deepEqual(BrowserHost.prototype.hiddenTurnBounds.call(fixture), {
+    x: 1121,
+    y: 721,
+    width: 1120,
+    height: 720,
+  });
+});
+
+test("a visible but cramped automatic tab keeps ChatGPT's desktop emulation", () => {
+  const events = [];
+  const tab = {
+    interactionMode: "automatic",
+    status: "running",
+    rendererReady: true,
+    deviceEmulationViewport: null,
+    deviceEmulationDirty: true,
+    view: {
+      setBounds: bounds => events.push(["bounds", bounds]),
+      setVisible: visible => events.push(["visible", visible]),
+      webContents: {
+        enableDeviceEmulation: options => events.push(["emulate", options]),
+        disableDeviceEmulation: () => events.push(["disable-emulation"]),
+      },
+    },
+  };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    bounds: { x: 8, y: 24, width: 710, height: 522 },
+    window: { getContentSize: () => [710, 522] },
+  });
+  BrowserHost.prototype.presentTurnView.call(fixture, tab, true);
+  assert.deepEqual(events, [
+    ["emulate", {
+      screenPosition: "desktop",
+      screenSize: { width: 1120, height: 720 },
+      viewPosition: { x: 0, y: 0 },
+      deviceScaleFactor: 0,
+      viewSize: { width: 1120, height: 720 },
+      scale: 1,
+    }],
+    ["bounds", { x: 8, y: 24, width: 710, height: 522 }],
     ["visible", true],
   ]);
   assert.deepEqual(tab.deviceEmulationViewport, { width: 1120, height: 720 });
@@ -1989,7 +2056,7 @@ test("manual browser operations disable background throttling until completion",
 
   assert.equal(result, "ok");
   assert.deepEqual(surfaces, ["ready", "home"]);
-  assert.deepEqual(throttling, [false, true]);
+  assert.deepEqual(throttling, [false]);
   assert.equal(fixture.manualOperation, null);
 });
 
@@ -2513,7 +2580,7 @@ test("ending one browser turn does not stop another running tab", async () => {
   assert.equal(fixture.activeTraceId, active.traceId);
 });
 
-test("a completed keyed turn is retained for thirty minutes and preserves its acknowledgement", async () => {
+test("a completed keyed turn has a thirty-second grace period and preserves its acknowledgement", async () => {
   const throttling = [];
   const tab = {
     id: "tab-retained",
@@ -2559,14 +2626,14 @@ test("a completed keyed turn is retained for thirty minutes and preserves its ac
   assert.equal(tab.status, "ready");
   assert.equal(tab.connectorBound, true);
   assert.equal(Number.isFinite(tab.lastHeartbeatAt), true);
-  assert.deepEqual(throttling, [true]);
+  assert.deepEqual(throttling, [false]);
 
   const retainedAt = tab.lastHeartbeatAt;
-  BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, retainedAt + (30 * 60 * 1000) - 1);
+  BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, retainedAt + 30_000 - 1);
   assert.equal(fixture.turnTabs.has(tab.id), true);
 });
 
-test("a retained browser tab expires at thirty minutes", () => {
+test("a retained browser tab expires at thirty seconds", () => {
   const removed = [];
   const tab = {
     id: "tab-expired",
@@ -2583,10 +2650,128 @@ test("a retained browser tab expires at thirty minutes", () => {
     },
   };
 
-  BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, 100 + (30 * 60 * 1000));
+  BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, 100 + 30_000);
 
   assert.deepEqual(removed, [[tab.id, false]]);
   assert.equal(fixture.turnTabs.size, 0);
+});
+
+function inactiveTurnCleanupFixture(ids) {
+  const closed = [];
+  const removed = [];
+  const tabs = ids.map((id) => {
+    const contents = Object.assign(new EventEmitter(), {
+      destroyed: false,
+      isDestroyed() { return this.destroyed; },
+      setBackgroundThrottling() {},
+      close() {
+        this.destroyed = true;
+        closed.push(id);
+        this.emit("destroyed");
+      },
+    });
+    return {
+      id,
+      surfaceId: `surface-${id}`,
+      traceId: `trace-${id}`,
+      conversationKey: createHash("sha256").update(id).digest("hex"),
+      helperPid: process.pid,
+      interactionMode: "automatic",
+      status: "running",
+      bootstrapReady: true,
+      lastHeartbeatAt: Date.now(),
+      view: { webContents: contents },
+    };
+  });
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    turnTabs: new Map(tabs.map(tab => [tab.id, tab])),
+    closedTurnOwners: new Map(),
+    userCancelledTurnOwners: new Map(),
+    shellZoomShortcutBindings: new Map(),
+    selectedTabId: tabs[0].id,
+    lastTurnSweepAt: Date.now(),
+    view: { webContents: { getURL: () => IDLE_BROWSER_URL } },
+    window: { contentView: { removeChildView: view => removed.push(view) } },
+    logger: { info() {}, warn() {} },
+    syncViewVisibility() {},
+    writeDescriptor() {},
+    publishState() {},
+    snapshot: () => ({ tabs: [] }),
+    hide() { this.hidden = true; },
+    cancelTurn: () => assert.fail("inactive cleanup must not cancel a running task"),
+  });
+  for (const tab of tabs) fixture.bindShellZoomShortcuts(tab.view.webContents);
+  return { fixture, tabs, closed, removed };
+}
+
+test("inactive cleanup closes completed views and listeners while another task remains active", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  const { fixture, tabs: [completed, active], closed, removed } = inactiveTurnCleanupFixture(["completed", "active"]);
+  await fixture.endTurn(completed.traceId, completed.helperPid, "completed", false, undefined, true);
+
+  for (let elapsed = 5_000; elapsed < 30_000; elapsed += 5_000) {
+    t.mock.timers.tick(5_000);
+    await fixture.reapExpiredTurnTabs();
+    assert.deepEqual(closed, []);
+  }
+  t.mock.timers.tick(5_000);
+  await fixture.reapExpiredTurnTabs();
+  assert.deepEqual(closed, [completed.id]);
+  assert.deepEqual(removed, [completed.view]);
+  assert.equal(fixture.shellZoomShortcutBindings.has(completed.view.webContents), false);
+  assert.equal(fixture.shellZoomShortcutBindings.has(active.view.webContents), true);
+  assert.equal(fixture.selectedTabId, active.id);
+  assert.equal(active.status, "running");
+  assert.equal(fixture.hidden, undefined);
+  assert.equal(fixture.closedTurnOwners.size, 0);
+  assert.equal(fixture.userCancelledTurnOwners.size, 0);
+
+  await fixture.endTurn(active.traceId, active.helperPid, "completed", false, undefined, true);
+  // A suspended launcher still cleans up finished documents on its first sweep after waking.
+  t.mock.timers.tick(60_000);
+  await fixture.reapExpiredTurnTabs();
+  await fixture.reapExpiredTurnTabs();
+  assert.deepEqual(closed, [completed.id, active.id]);
+  assert.equal(fixture.shellZoomShortcutBindings.size, 0);
+  assert.equal(fixture.turnTabs.size, 0);
+  assert.equal(fixture.selectedTabId, "home");
+  assert.equal(fixture.hidden, true);
+});
+
+test("a resumed automatic turn survives its old cleanup deadline and gets a fresh completion grace period", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  const { fixture, tabs: [tab], closed } = inactiveTurnCleanupFixture(["reused"]);
+  await fixture.endTurn(tab.traceId, tab.helperPid, "completed", false, undefined, true);
+  t.mock.timers.tick(29_999);
+  const lease = await fixture.beginTurn("trace-followup", false, process.pid, tab.conversationKey);
+  assert.equal(lease.reused, true);
+  t.mock.timers.tick(1);
+  await fixture.reapExpiredTurnTabs();
+  // A quiet but heartbeating task can outlive the completed-tab grace period many times over.
+  for (let elapsed = 0; elapsed < 120_000; elapsed += 5_000) {
+    t.mock.timers.tick(5_000);
+    fixture.heartbeatTurn(tab.traceId, tab.helperPid);
+    await fixture.reapExpiredTurnTabs();
+  }
+  assert.deepEqual(closed, []);
+  assert.equal(tab.status, "running");
+
+  await fixture.endTurn(tab.traceId, tab.helperPid, "completed", false, undefined, true);
+  t.mock.timers.tick(29_999);
+  await fixture.reapExpiredTurnTabs();
+  assert.deepEqual(closed, []);
+  t.mock.timers.tick(1);
+  await fixture.reapExpiredTurnTabs();
+  assert.deepEqual(closed, [tab.id]);
+
+  let freshTabCreated = false;
+  fixture.createTurnTab = async () => {
+    freshTabCreated = true;
+    return { id: "fresh", surfaceId: "fresh-surface" };
+  };
+  const fresh = await fixture.beginTurn("trace-after-cleanup", false, process.pid, tab.conversationKey);
+  assert.equal(freshTabCreated, true);
+  assert.equal(fresh.reused, false);
 });
 
 test("a completed connector turn without binding is released instead of retained", async () => {
@@ -2730,6 +2915,73 @@ function manualTurnFixture() {
   });
   return { fixture, clipboardWrites };
 }
+
+test("completed manual tabs close after the grace period while sent and awaiting-user tabs survive", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000_000 });
+  const { fixture } = manualTurnFixture();
+  const completed = fixture.beginManualTurn("manual-done", process.pid, "prompt", "a".repeat(64));
+  fixture.confirmManualSent(completed.tabId);
+  fixture.markManualTurnStarted("manual-done", process.pid);
+  fixture.endManualTurn("manual-done", process.pid, "completed", true);
+  const waiting = fixture.beginManualTurn("manual-waiting", process.pid, "handoff", undefined, undefined, true);
+  const sent = fixture.beginManualTurn("manual-sent", process.pid, "prompt");
+  fixture.confirmManualSent(sent.tabId);
+
+  t.mock.timers.tick(29_999);
+  await fixture.reapExpiredTurnTabs();
+  assert.equal(fixture.turnTabs.has(completed.tabId), true);
+  t.mock.timers.tick(1);
+  await fixture.reapExpiredTurnTabs();
+  assert.equal(fixture.turnTabs.has(completed.tabId), false);
+  assert.equal(fixture.turnTabs.get(waiting.tabId).manualState, "awaiting-user");
+  assert.equal(fixture.turnTabs.get(sent.tabId).manualState, "sent");
+  // Cleanup must not erase the acknowledgement or turn completion into cancellation.
+  assert.deepEqual(fixture.endManualTurn("manual-done", process.pid, "completed", true), { cancelledByUser: false });
+  assert.equal(fixture.manualTerminalSignals.has("manual-done"), false);
+});
+
+test("resuming a manual tab protects pending input from the previous completion deadline", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000_000 });
+  const { fixture } = manualTurnFixture();
+  const key = "b".repeat(64);
+  const first = fixture.beginManualTurn("manual-first", process.pid, "prompt", key);
+  fixture.confirmManualSent(first.tabId);
+  fixture.endManualTurn("manual-first", process.pid, "completed", true);
+  t.mock.timers.tick(29_999);
+  const resumed = fixture.beginManualTurn("manual-resumed", process.pid, "full prompt", key, "resume", true);
+  assert.equal(resumed.tabId, first.tabId);
+  t.mock.timers.tick(30_001);
+  await fixture.reapExpiredTurnTabs();
+  assert.equal(fixture.turnTabs.get(resumed.tabId).manualState, "awaiting-user");
+  fixture.confirmManualSent(resumed.tabId);
+  fixture.markManualTurnStarted("manual-resumed", process.pid);
+  t.mock.timers.tick(120_000);
+  await fixture.reapExpiredTurnTabs();
+  assert.equal(fixture.turnTabs.get(resumed.tabId).manualState, "running");
+  fixture.endManualTurn("manual-resumed", process.pid, "completed", true);
+  t.mock.timers.tick(29_999);
+  await fixture.reapExpiredTurnTabs();
+  assert.equal(fixture.turnTabs.has(resumed.tabId), true);
+  t.mock.timers.tick(1);
+  await fixture.reapExpiredTurnTabs();
+  assert.equal(fixture.turnTabs.has(resumed.tabId), false);
+});
+
+test("timed-out manual tabs are cleaned up only after their terminal-state grace period", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000_000 });
+  const { fixture } = manualTurnFixture();
+  const lease = fixture.beginManualTurn("manual-timeout", process.pid, "prompt");
+  t.mock.timers.tick(30_000);
+  await fixture.reapExpiredTurnTabs();
+  assert.equal(fixture.turnTabs.get(lease.tabId).manualState, "timed-out");
+  t.mock.timers.tick(29_999);
+  await fixture.reapExpiredTurnTabs();
+  assert.equal(fixture.turnTabs.has(lease.tabId), true);
+  t.mock.timers.tick(1);
+  await fixture.reapExpiredTurnTabs();
+  assert.equal(fixture.turnTabs.has(lease.tabId), false);
+  assert.deepEqual(await fixture.waitManualSent("manual-timeout", process.pid), { status: "timeout" });
+});
 
 test("manual start is idempotent and never exposes its private prompt in snapshots", () => {
   const { fixture, clipboardWrites } = manualTurnFixture();
@@ -3034,6 +3286,34 @@ test("manual turns never resume across a dead runtime owner", () => {
     helperPid: process.pid,
     status: "failed",
   });
+});
+
+test("retained automatic tabs stay painted offscreen so CDP can reattach", () => {
+  const calls = [];
+  const hiddenBounds = { x: 1000, y: 1000, width: 800, height: 600 };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    bounds: { x: 1, y: 2, width: 640, height: 480 },
+    hiddenTurnBounds: () => hiddenBounds,
+    enableHiddenTurnViewport: (contents, size) => calls.push(["emulate", size]),
+  });
+  const tab = {
+    interactionMode: "automatic",
+    status: "ready",
+    rendererReady: true,
+    deviceEmulationViewport: null,
+    deviceEmulationDirty: true,
+    view: {
+      setBounds: bounds => calls.push(["bounds", bounds]),
+      setVisible: visible => calls.push(["visible", visible]),
+      webContents: {},
+    },
+  };
+  fixture.presentTurnView(tab, false);
+  assert.deepEqual(calls, [
+    ["emulate", { width: hiddenBounds.width, height: hiddenBounds.height }],
+    ["bounds", hiddenBounds],
+    ["visible", true],
+  ]);
 });
 
 test("manual hidden tabs use native view placement without DOM or device-emulation hooks", () => {

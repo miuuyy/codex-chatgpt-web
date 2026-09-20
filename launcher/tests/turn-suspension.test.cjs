@@ -5,7 +5,7 @@ const {
   shouldBlockSleepForTurns,
   sweepGapIndicatesSuspension,
 } = require("../electron/turn-suspension.cjs");
-const { BrowserHost } = require("../electron/browser-host.cjs");
+const { BrowserHost, TURN_HEARTBEAT_TIMEOUT_MS } = require("../electron/browser-host.cjs");
 
 // Suspension freezes both launcher sweeps and helper heartbeats. These tests pin wake-side lease
 // re-baselining and sleep prevention without treating suspended time as helper failure.
@@ -72,20 +72,21 @@ test("the first sweep after a suspension refreshes stale leases instead of reapi
 });
 
 test("a helper that is genuinely gone is still reaped on the ordinary cadence", () => {
+  assert.equal(TURN_HEARTBEAT_TIMEOUT_MS, 120_000);
   const reaped = [];
   const tab = {
     id: "t1", traceId: "trace-1", helperPid: 42, status: "running",
     bootstrapReady: true, lastHeartbeatAt: 1_000,
   };
   const host = {
-    lastTurnSweepAt: 56_000,
+    lastTurnSweepAt: 116_000,
     turnTabs: new Map([["t1", tab]]),
     logger: { warn: () => {}, info: () => {} },
     removeTurnTab: t => reaped.push(t.traceId),
     refreshTurnLeases: BrowserHost.prototype.refreshTurnLeases,
   };
 
-  BrowserHost.prototype.reapExpiredTurnTabs.call(host, 61_000);
+  BrowserHost.prototype.reapExpiredTurnTabs.call(host, 121_000);
 
   assert.deepEqual(reaped, ["trace-1"]);
 });
