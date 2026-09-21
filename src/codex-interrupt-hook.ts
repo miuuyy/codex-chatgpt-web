@@ -136,6 +136,27 @@ function hookTextPattern(text: string): string {
     .join("(?:\\r\\n|\\n|\\r)");
 }
 
+function trimBoundaryLineEndings(text: string): string {
+  return text
+    .replace(/^(?:(?:\r\n|\n|\r))+/, "")
+    .replace(/(?:(?:\r\n|\n|\r))+$/, "");
+}
+
+function locateUniqueTextRange(text: string, exact: string, boundaryNormalized: string): {
+  start: number; end: number;
+} {
+  for (const source of new Set([exact, boundaryNormalized])) {
+    const pattern = new RegExp(source, "g");
+    const match = pattern.exec(text);
+    const duplicate = pattern.exec(text);
+    if (duplicate) {
+      throw new Error("Codex interrupt lifecycle hook changed after setup; refusing to overwrite it");
+    }
+    if (match) return { start: match.index, end: match.index + match[0].length };
+  }
+  throw new Error("Codex interrupt lifecycle hook changed after setup; refusing to overwrite it");
+}
+
 function locateCodexInterruptHook(text: string, installed: InstalledCodexInterruptHook): Array<{
   start: number; end: number;
 }> {
@@ -162,26 +183,39 @@ function locateCodexInterruptHook(text: string, installed: InstalledCodexInterru
         return false;
       }
     });
+  const hookDefinition = ownedPrefix.slice(0, stateOffset);
+  const stateSuffix = ownedPrefix.slice(stateOffset + stateHeader[1].length);
+  const stateHeaderPattern = `(?:${stateHeaders.map(hookTextPattern).join("|")})`;
   const patterns = [
-    hookTextPattern(ownedPrefix.slice(0, stateOffset)),
-    `(?:${stateHeaders.map(hookTextPattern).join("|")})`
-      + hookTextPattern(ownedPrefix.slice(stateOffset + stateHeader[1].length)),
-  ];
+    [
+      hookTextPattern(hookDefinition),
+      hookTextPattern(trimBoundaryLineEndings(hookDefinition)),
+    ],
+    [
+      stateHeaderPattern + hookTextPattern(stateSuffix),
+      stateHeaderPattern + hookTextPattern(stateSuffix.replace(/(?:(?:\r\n|\n|\r))+$/, "")),
+    ],
+  ] as const;
   if (stateHeaders.length === 0) {
     throw new Error("Codex interrupt lifecycle hook changed after setup; refusing to overwrite it");
   }
-  const ranges = patterns.map(source => {
-    const pattern = new RegExp(source, "g");
-    const match = pattern.exec(text);
-    if (!match || pattern.exec(text)) {
-      throw new Error("Codex interrupt lifecycle hook changed after setup; refusing to overwrite it");
-    }
-    return { start: match.index, end: match.index + match[0].length };
-  });
+  const ranges = patterns.map(([exact, boundaryNormalized]) =>
+    locateUniqueTextRange(text, exact, boundaryNormalized));
   const [hook, state] = ranges;
-  if (!hook || !state || state.start < hook.end) {
+  // Codex may regroup hooks.state tables before the hook arrays when it rewrites
+  // config.toml. Ownership is established by the exact parsed definitions below,
+  // so require the two unique textual ranges to be disjoint without requiring
+  // either serialization order. The line-oriented patterns may share only the
+  // newline at their boundary when the state moves before the hook.
+  const overlapStart = hook && state ? Math.max(hook.start, state.start) : 0;
+  const overlapEnd = hook && state ? Math.min(hook.end, state.end) : 0;
+  if (!hook || !state || (overlapStart < overlapEnd
+    && /[^\r\n]/.test(text.slice(overlapStart, overlapEnd)))) {
     throw new Error("Codex interrupt lifecycle hook changed after setup; refusing to overwrite it");
   }
+  const definitionRanges = overlapStart < overlapEnd
+    ? [{ start: Math.min(hook.start, state.start), end: Math.max(hook.end, state.end) }]
+    : ranges;
   if (interruptGroupCount(text.slice(0, hook.start)) !== installed.groupIndex) {
     throw new Error("Codex interrupt lifecycle hook order changed after setup; refusing to overwrite it");
   }
@@ -221,7 +255,7 @@ function locateCodexInterruptHook(text: string, installed: InstalledCodexInterru
   }
   const trailing = installed.fragment.slice(marker + MANAGED_INTERRUPT_HOOK_END.length);
   const trailingLength = new RegExp("^" + hookTextPattern(trailing)).exec(text.slice(end))?.[0].length ?? 0;
-  return [...ranges, { start: endMarker, end: end + trailingLength }];
+  return [...definitionRanges, { start: endMarker, end: end + trailingLength }];
 }
 
 export function verifyCodexInterruptHook(text: string, installed: InstalledCodexInterruptHook): void {
