@@ -25,6 +25,42 @@ import type { Browser, BrowserContext, Page } from "playwright-core";
 
 const roots: string[] = [];
 
+test("slow lease acquisition survives the old five-second deadline without replay", async () => {
+  let calls = 0;
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch() {
+    calls++;
+    await Bun.sleep(5_100);
+    return Response.json({ surfaceId: "a".repeat(32), reused: false, connectorBound: false });
+  } });
+  try {
+    const path = descriptorFile(`http://127.0.0.1:${server.port}`);
+    await expect(notifyLauncherTurn(path, { phase: "start", traceId: "slow12345678", helperPid: process.pid }))
+      .resolves.toMatchObject({ reused: false });
+    expect(calls).toBe(1);
+  } finally { server.stop(true); }
+}, 10_000);
+
+test("control timeouts identify their phase and caller cancellation stays distinct", async () => {
+  let calls = 0;
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch() {
+    calls++;
+    await Bun.sleep(100);
+    return Response.json({ surfaceId: "a".repeat(32), reused: false, connectorBound: false });
+  } });
+  try {
+    const path = descriptorFile(`http://127.0.0.1:${server.port}`);
+    const activity = { phase: "start" as const, traceId: "timeout12345", helperPid: process.pid };
+    await expect(notifyLauncherTurn(path, activity, 20)).rejects.toThrow("control start timed out after 20ms");
+    const controller = new AbortController();
+    const pending = notifyLauncherTurn(path, activity, 500, controller.signal);
+    setTimeout(() => controller.abort(), 20);
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(calls).toBe(2);
+  } finally { server.stop(true); }
+});
+
+
+
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });

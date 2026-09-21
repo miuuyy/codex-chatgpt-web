@@ -28,6 +28,7 @@ const TEMPORARY_CHAT_URL = "https://chatgpt.com/?temporary-chat=true";
 const CHATGPT_ORIGIN = "https://chatgpt.com";
 const IDLE_BROWSER_URL = "data:text/html;charset=utf-8,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22utf-8%22%3E%3Ctitle%3ECodex%20Web%20GPT%3C%2Ftitle%3E%3C%2Fhead%3E%3Cbody%3E%3C%2Fbody%3E%3C%2Fhtml%3E#codex-web-gpt-browser-host";
 const PRIMARY_VIEW_BOOTSTRAP_TIMEOUT_MS = 10_000;
+const TURN_OWNERSHIP_TIMEOUT_MS = 10_000;
 const MAX_BROWSER_VIEW_DIMENSION = 16_384;
 const MAX_BROWSER_TABS = 5;
 const MAX_CANCELLED_TURN_TRACES = 256;
@@ -866,12 +867,17 @@ class BrowserHost {
     }
     void contents.insertCSS(CHATGPT_VIEWPORT_CSS).catch(() => {});
     const encoded = JSON.stringify(tab.surfaceId);
-    await contents.executeJavaScript(`(() => {
+    let timer;
+    try {
+      await Promise.race([contents.executeJavaScript(`(() => {
       Object.defineProperty(globalThis, "__CODEX_WEB_GPT_SURFACE_ID__", {
         value: ${encoded}, configurable: true, enumerable: false, writable: false,
       });
       document.documentElement.dataset.codexWebGptSurface = ${encoded};
-    })()`, true);
+    })()`, true), new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("ChatGPT turn ownership marking timed out")), TURN_OWNERSHIP_TIMEOUT_MS);
+      })]);
+    } finally { clearTimeout(timer); }
   }
 
   bindManualTurnContents(tab) {

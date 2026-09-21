@@ -3,6 +3,43 @@ const assert = require("node:assert/strict");
 const { BrowserHost } = require("../electron/browser-host.cjs");
 const { BrowserControlServer } = require("../electron/control-server.cjs");
 
+test("disconnect during acquisition retires the unclaimed lease without starting another turn", async () => {
+  const events = [];
+  let release;
+  let started;
+  const beginning = new Promise(resolve => { started = resolve; });
+  const lease = new Promise(resolve => { release = resolve; });
+  const server = await new BrowserControlServer({
+    logger: { info() {}, warn() {}, error() {} },
+    getPreferences: () => ({ showBrowserDuringTurns: false }),
+    getBrowserHost: () => ({
+      browserInteractionMode: () => "automatic",
+      beginTurn: async () => { events.push("start"); started(); return lease; },
+      endTurn: async (...args) => { events.push(args); return { cancelledByUser: false }; },
+    }),
+  }).start();
+  const { endpoint, token } = server.descriptor();
+  try {
+    const controller = new AbortController();
+    const pending = fetch(`${endpoint}/v1/turn/start`, {
+      method: "POST", signal: controller.signal,
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ traceId: "disconnect123", helperPid: process.pid }),
+    }).catch(e => e);
+    await beginning;
+    controller.abort();
+    await pending;
+    await new Promise(resolve => setTimeout(resolve, 30));
+    release({ surfaceId: "a".repeat(32), reused: false, connectorBound: false });
+    for (let i = 0; i < 50 && events.length < 2; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(events.length, 2);
+    assert.equal(events[1][0], "disconnect123");
+    assert.equal(events[1][1], process.pid);
+    assert.equal(events[1][2], "aborted");
+    assert.equal(events[1][5], false);
+  } finally { await server.close(); }
+});
+
 test("native proxy resolution requires owner auth, restricts targets, and works without browser automation", async () => {
   const resolved = [];
   const server = await new BrowserControlServer({

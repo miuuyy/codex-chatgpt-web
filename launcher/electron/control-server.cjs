@@ -295,14 +295,27 @@ class BrowserControlServer {
         if (host.browserInteractionMode() === "manual") {
           throw new Error("Automatic browser interaction is disabled");
         }
-        const lease = await host.beginTurn(
+        let disconnected = false;
+        const onClose = () => { if (!response.writableEnded) disconnected = true; };
+        response.once("close", onClose);
+        let lease;
+        try {
+          lease = await host.beginTurn(
           body.traceId,
           preferences.showBrowserDuringTurns === true,
           body.helperPid,
           body.conversationKey,
           body.connectorIdentity,
           body.requireRetainedConversation === true,
-        );
+          );
+          if (disconnected) {
+            // No lease reached the helper, so no prompt could have been submitted.
+            await host.endTurn(body.traceId, body.helperPid, "aborted", false,
+              "Turn acquisition caller disconnected before receiving its browser lease", false, false);
+            this.logger.info("browser.unclaimed_turn_released", { traceId: body.traceId });
+            return;
+          }
+        } finally { response.off("close", onClose); }
         this.logger.info("browser.turn_started", { traceId: body.traceId });
         writeJson(response, 200, { ok: true, ...lease });
         return;

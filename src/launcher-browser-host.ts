@@ -382,7 +382,8 @@ export type LauncherTurnActivity =
       connectorBound?: boolean;
     };
 
-export const LAUNCHER_TURN_START_TIMEOUT_MS = 5_000;
+// Idle document loading and renderer ownership each have a ten-second deadline.
+export const LAUNCHER_TURN_START_TIMEOUT_MS = 30_000;
 export const LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS = 10_000;
 export const LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS = 5_000;
 export const LAUNCHER_TURN_END_TIMEOUT_MS = 15_000;
@@ -617,6 +618,7 @@ export async function notifyLauncherTurn(
     : activity.phase === "heartbeat"
       ? LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS
       : LAUNCHER_TURN_START_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<{
   surfaceId?: string;
   reused?: boolean;
@@ -634,7 +636,7 @@ export async function notifyLauncherTurn(
         "content-type": "application/json",
       },
       body: JSON.stringify(activity),
-      signal: controller.signal,
+      signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
     });
     if (!response.ok) {
       const body = await response.json().catch(() => ({})) as Record<string, unknown>;
@@ -676,6 +678,10 @@ export async function notifyLauncherTurn(
     }
     return {};
   } catch (error) {
+    if (signal?.aborted) throw new DOMException("Launcher browser control cancelled by caller", "AbortError");
+    if (controller.signal.aborted) {
+      throw new Error(`Launcher browser control ${activity.phase} timed out after ${timeoutMs}ms; request was not replayed`);
+    }
     if (error instanceof LauncherBrowserTurnCancelledError
       || error instanceof LauncherRetainedConversationUnavailableError) throw error;
     throw new Error(`Launcher browser control channel failed: ${error instanceof Error ? error.message : String(error)}`);
