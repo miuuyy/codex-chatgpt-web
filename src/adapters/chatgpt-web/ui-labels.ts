@@ -64,3 +64,13 @@ export const CHATGPT_STOPPED_THINKING_LABELS = [
   "已停止思考", // zh-CN, zh-HK
   "已中斷思考", // zh-TW
 ] as const;
+
+export const CHATGPT_PERSONALIZED_BUTTON_PATTERN =
+  /^(?:Personalized|Personalizované|Personalizado|Personalisiert|Personnalisé|Personalizzato|Spersonalizowane|Gepersonaliseerd|Персонализированный|Персоналізований|Kişiselleştirilmiş|パーソナライズ|맞춤 설정됨|个性化|個人化)$/i;
+
+export const CHATGPT_UNPERSONALIZED_BUTTON_PATTERN =
+  /^(?:Unpersonalized|Nepersonalizované|No personalizado|Não personalizado|Nicht personalisiert|Non personnalisé|Non personalizzato|Niespersonalizowane|Niet gepersonaliseerd|Неперсонализированный|Неперсоналізований|Kişiselleştirilmemiş|非パーソナライズ|맞춤 설정되지 않음|非个性化|非個人化)$/i;
+
+export const CHATGPT_PERSONALIZED_CHOICE_PATTERN =
+  /^(?:Personalized|Personalizované|Personalizado|Personalisiert|Personnalisé|Personalizzato|Spersonalizowane|Gepersonaliseerd|Персонализированный|Персоналізований|Kişiselleştirilmiş|パーソナライズ|맞춤 설정됨|个性化|個人化)/i;
+
