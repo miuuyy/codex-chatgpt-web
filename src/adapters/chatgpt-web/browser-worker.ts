@@ -2461,11 +2461,14 @@ export class ChatGptBrowserWorker {
     try {
       const ready = await Promise.race([
         currentEffort.waitFor({ state: "visible", timeout: 70_000, signal: effortWaitAbort.signal }).then(() => "effort" as const),
+        chatGptRateLimitDialog(page).waitFor({ state: "visible", timeout: 70_000, signal: effortWaitAbort.signal }).then(() => "rate-limit" as const),
         chatGptExpiredSessionAlert(page).waitFor({ state: "visible", timeout: 70_000, signal: effortWaitAbort.signal }).then(() => "session-expired" as const),
       ]);
+      if (ready === "rate-limit") await throwIfChatGptRateLimitDialog(page);
       if (ready === "session-expired") await throwIfChatGptSessionFailureAlert(page);
     } catch (error) {
       if (error instanceof ChatGptWebAdapterError) throw error;
+      await throwIfChatGptRateLimitDialog(page);
       await throwIfChatGptSessionFailureAlert(page);
       throw chatGptModelControlUnavailableError(
         "ChatGPT rendered the composer but its model/effort control did not become ready",

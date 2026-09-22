@@ -2801,6 +2801,59 @@ test("effort selection stops as soon as ChatGPT reports an expired session", asy
   });
 });
 
+test("effort selection reports a rate limit when its model control is hidden", async () => {
+  const neverVisible = new Promise<void>(() => {});
+  const effortControl = {
+    last() { return this; },
+    waitFor: async () => await neverVisible,
+  };
+  const composer = { locator: () => ({ locator: () => effortControl }) };
+  const pressed: string[] = [];
+  const rateLimitButton = {
+    last() { return this; },
+    isVisible: async () => true,
+    press: async (key: string) => { pressed.push(key); },
+  };
+  const rateLimitDialog = {
+    filter() { return this; },
+    last() { return this; },
+    waitFor: async () => {},
+    isVisible: async () => true,
+    getByRole: () => rateLimitButton,
+  };
+  const hiddenAlert = {
+    filter() { return this; },
+    last() { return this; },
+    waitFor: async () => await neverVisible,
+    isVisible: async () => false,
+  };
+  const page = {
+    locator: (selector: string) => selector.includes('[role="dialog"]') ? rateLimitDialog : hiddenAlert,
+  } as unknown as Page;
+  const selectModelAndEffort = (ChatGptBrowserWorker.prototype as unknown as {
+    selectModelAndEffort(
+      page: Page,
+      modelId: string,
+      reasoning: string,
+      capabilities: { localToolsEnabled: boolean; solAvailable: boolean; extraHighAvailable: boolean; proAvailable: boolean },
+    ): Promise<unknown>;
+  }).selectModelAndEffort;
+
+  await expect(selectModelAndEffort.call({ activeComposer: async () => composer }, page,
+    "gpt-5.6-sol", "high", {
+      localToolsEnabled: true,
+      solAvailable: true,
+      extraHighAvailable: true,
+      proAvailable: false,
+    })).rejects.toMatchObject({
+    name: "ChatGptWebAdapterError",
+    status: 429,
+    code: "rate_limit_exceeded",
+    retryable: false,
+  });
+  expect(pressed).toEqual(["Enter"]);
+});
+
 test("effort menu waiting stops when ChatGPT reports an expired session", async () => {
   const neverVisible = new Promise<void>(() => {});
   const effortControl = {
