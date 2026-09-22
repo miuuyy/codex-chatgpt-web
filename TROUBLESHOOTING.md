@@ -54,6 +54,35 @@ Do not hand-edit the launcher's route journal. It exists so setup and removal ca
 of silently destroying another provider's configuration. First-class external-router composition is
 tracked in [#205](https://github.com/miuuyy/codex-chatgpt-web/issues/205), but is not supported today.
 
+## Native Codex models stop working after the launcher is quit
+
+The installed `openai_base_url` routes Responses through the local bridge even when the selected
+model is native, not `chatgpt-web/*`. Quitting the launcher stops its runtime but does not restore
+the previous route. A native model selection alone does not bypass an unavailable bridge. Ordinary
+browser ChatGPT working at the same time does not establish a network block or an account problem.
+
+- To keep using the integration, reopen Codex Web GPT, wait for its runtime to be ready, then fully
+  quit Codex (including background processes) and reopen it.
+- To stop using the integration, use **Settings → Remove Codex integration**, wait for successful
+  restoration, then fully restart Codex before quitting or uninstalling the launcher. The launcher's
+  ChatGPT login profile is preserved.
+- For a temporary explicit route change from an existing CLI installation, finish active Codex
+  tasks, run `codex-chatgpt-web route disconnect`, and fully restart Codex. This uses the existing
+  journal to restore the previous route without removing the integration. An already-running Codex
+  process can retain the old route. Starting the launcher again reconnects an installed route after
+  its runtime is ready; this is not a persistent opt-out.
+
+Route commands keep JSON on stdout; a successful change prints the restart reminder on stderr.
+An error is not a successful restore: preserve the config and journal, check for another route
+owner as described above, and export a safe log if launcher recovery fails. Do not delete the
+journal or replace the route with a guessed default URL. The previous route may itself belong to
+another provider. Model selection is unchanged; a Web-only model cannot run without the bridge.
+
+Automatic restoration on quit is not supported, including after crashes, forced termination, or
+power loss. When reporting an unavailable bridge, include the exact final Codex error and an
+unfiltered listener check for the configured port if available; a process-name-filtered check
+alone does not prove that the port has no listener.
+
 ## ChatGPT sign-in does not complete
 
 The launcher must own the ChatGPT session used for model turns. Signing in to an unrelated browser

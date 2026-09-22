@@ -1,5 +1,5 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -25,6 +25,92 @@ async function runCli(args: string[], env: Record<string, string | undefined>) {
   ]);
   return { exitCode, stdout, stderr };
 }
+
+test("explicit route changes preserve native settings and print restart guidance outside JSON", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "codex-chatgpt-web-route-cli-")));
+  const codexHome = join(root, "codex");
+  const appHome = join(root, "app");
+  const configPath = join(codexHome, "config.toml");
+  const journalPath = join(appHome, "codex", "integration-journal.json");
+  const env = { ...process.env, CODEX_HOME: codexHome, CODEX_CHATGPT_WEB_HOME: appHome };
+  const original = 'model = "gpt-6-astra"\n'
+    + 'openai_base_url = "https://native.example/v1" # previous route\n'
+    + 'experimental_realtime_webrtc_call_base_url = "https://voice.example"\n';
+  const userEdit = '\n[agents]\nmax_concurrent_threads_per_session = 1\n';
+  const restartNotice = "Fully quit Codex, including background processes, and reopen it to reload the route.";
+  try {
+    mkdirSync(codexHome);
+    writeFileSync(configPath, original);
+    const absent = await runCli(["route", "disconnect"], env);
+    expect(absent.exitCode).toBe(0);
+    expect(JSON.parse(absent.stdout)).toEqual({ changed: false, active: false });
+    expect(absent.stderr).toBe("");
+    expect(readFileSync(configPath, "utf8")).toBe(original);
+    expect(existsSync(journalPath)).toBe(false);
+
+    // Exercise real journal writes in a child with explicit homes, never the caller's profile.
+    const installed = Bun.spawnSync([process.execPath, "-e", `
+      import { strict as assert } from "node:assert";
+      import { defaultConfig, getConfigDir } from ${JSON.stringify(resolve(import.meta.dir, "../src/config.ts"))};
+      import { getCodexHome, getCodexJournalPath, installCodexIntegration } from ${JSON.stringify(resolve(import.meta.dir, "../src/codex-integration.ts"))};
+      assert.equal(getCodexHome(), ${JSON.stringify(codexHome)});
+      assert.equal(getConfigDir(), ${JSON.stringify(appHome)});
+      assert.equal(getCodexJournalPath(), ${JSON.stringify(journalPath)});
+      const config = { ...defaultConfig("browser-only"), subagentProtocol: "native",
+        runtimeCommand: [process.execPath, ${JSON.stringify(resolve(import.meta.dir, "../src/cli.ts"))}] };
+      const journal = installCodexIntegration(config, { replaceExistingRoute: true });
+      assert.equal(journal.configPath, ${JSON.stringify(configPath)});
+    `], { env: { ...env, CODEX_CHATGPT_WEB_LAUNCHER: process.execPath }, stdout: "pipe", stderr: "pipe" });
+    expect({ code: installed.exitCode, stderr: installed.stderr.toString() }).toEqual({ code: 0, stderr: "" });
+    writeFileSync(configPath, readFileSync(configPath, "utf8") + userEdit);
+
+    const status = await runCli(["route", "status"], env);
+    expect(status.exitCode).toBe(0);
+    expect(JSON.parse(status.stdout)).toMatchObject({ installed: true, active: true, errors: [] });
+    expect(status.stderr).toBe("");
+
+    for (const action of ["disconnect", "connect"] as const) {
+      const changed = await runCli(["route", action], env);
+      expect(changed.exitCode).toBe(0);
+      expect(JSON.parse(changed.stdout)).toEqual({ changed: true, active: action === "connect" });
+      expect(changed.stderr.trim()).toBe(restartNotice);
+      const text = readFileSync(configPath, "utf8");
+      if (action === "disconnect") expect(text).toBe(original + userEdit);
+      else {
+        expect(text).toContain('model = "gpt-6-astra"');
+        expect(text).toContain(userEdit);
+        expect(text).toContain('openai_base_url = "http://127.0.0.1:17841/v1"');
+      }
+      const unchanged = await runCli(["route", action], env);
+      expect(unchanged.exitCode).toBe(0);
+      expect(JSON.parse(unchanged.stdout)).toEqual({ changed: false, active: action === "connect" });
+      expect(unchanged.stderr).toBe("");
+      expect(readFileSync(configPath, "utf8")).toBe(text);
+    }
+
+    const connected = readFileSync(configPath, "utf8");
+    const journal = readFileSync(journalPath, "utf8");
+    const conflicting = connected.replace("http://127.0.0.1:17841/v1", "https://other.example/v1");
+    writeFileSync(configPath, conflicting);
+    const failed = await runCli(["route", "disconnect"], env);
+    expect(failed.exitCode).toBe(1);
+    expect(failed.stderr).toContain("openai_base_url changed after setup");
+    expect(failed.stderr).not.toContain(restartNotice);
+    expect(failed.stdout).toBe("");
+    expect(readFileSync(configPath, "utf8")).toBe(conflicting);
+    expect(readFileSync(journalPath, "utf8")).toBe(journal);
+
+    // Restore only this fixture's known managed value, then retry the same explicit command.
+    writeFileSync(configPath, connected);
+    const retried = await runCli(["route", "disconnect"], env);
+    expect(retried.exitCode).toBe(0);
+    expect(JSON.parse(retried.stdout)).toEqual({ changed: true, active: false });
+    expect(retried.stderr.trim()).toBe(restartNotice);
+    expect(readFileSync(configPath, "utf8")).toBe(original + userEdit);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("production and DEV setup reject the removed connector-name option before configuration", async () => {
   const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-fixed-connector-"));

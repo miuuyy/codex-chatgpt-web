@@ -391,6 +391,9 @@ async function routeCommand(args: string[]): Promise<void> {
         : undefined;
   if (!result) throw new Error(`Unknown route action: ${action}`);
   stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  if ("changed" in result && result.changed) {
+    process.stderr.write("Fully quit Codex, including background processes, and reopen it to reload the route.\n");
+  }
 }
 
 async function subagentsCommand(args: string[]): Promise<void> {
