@@ -19,8 +19,6 @@ jobs:
             runtime_asset: codex-chatgpt-web-darwin-amd64.tar.gz
           - runner: ubuntu-latest
             runtime_asset: codex-chatgpt-web-linux-amd64.tar.gz
-          - runner: ubuntu-24.04-arm
-            runtime_asset: codex-chatgpt-web-linux-arm64.tar.gz
           - runner: windows-latest
             runtime_asset: codex-chatgpt-web-windows-amd64.zip
     runs-on: ${{ matrix.runner }}
@@ -48,7 +46,7 @@ jobs:
       - run: bun run verify
       - run: bun run app:package
       - name: Verify Linux AppImage ABI on current Arch
-        if: runner.os == 'Linux' && runner.arch == 'X64'
+        if: runner.os == 'Linux'
         run: |
           artifact="$(find launcher/artifacts -maxdepth 1 -name '*-linux-x64.AppImage' -print -quit)"
           test -n "$artifact"
@@ -162,14 +160,7 @@ jobs:
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then
             release_flags=(--prerelease --latest=false)
           fi
-          if existing_release="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isPrerelease 2>/dev/null)"; then
-            # A maintainer can stage a final-version tag as a public preview before building it.
-            # Rebuilding its assets must not silently promote that release to old launchers.
-            if jq -e '.isPrerelease == true' <<< "$existing_release" >/dev/null; then
-              release_flags=(--prerelease --latest=false)
-            else
-              release_flags=(--prerelease=false --latest)
-            fi
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "${release_files[@]}" \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
