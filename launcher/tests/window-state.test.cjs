@@ -33,6 +33,19 @@ test("window state drops off-screen positions and enforces minimum dimensions", 
   });
 });
 
+test("window state resets positions with no usable title bar on a remaining display", () => {
+  for (const bounds of [
+    { x: 1511, y: 400, width: 1120, height: 720 }, // Only one pixel remains visible.
+    { x: 100, y: 981, width: 1120, height: 720 }, // Title bar is below the work area.
+    { x: 100, y: -700, width: 1120, height: 720 }, // Body overlaps, title bar does not.
+  ]) {
+    assert.deepEqual(normalizeWindowState({ bounds }, displays).bounds, { width: 1120, height: 720 });
+  }
+  assert.deepEqual(normalizeWindowState({
+    bounds: { x: 1400, y: 10, width: 1120, height: 720 },
+  }, displays).bounds, { x: 1400, y: 10, width: 1120, height: 720 });
+});
+
 test("window state caps corrupt oversized dimensions", () => {
   const state = normalizeWindowState({
     bounds: { width: Number.MAX_SAFE_INTEGER, height: Number.MAX_SAFE_INTEGER },

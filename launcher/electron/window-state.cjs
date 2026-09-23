@@ -8,6 +8,9 @@ const DEFAULT_WINDOW_STATE = Object.freeze({
 });
 const MIN_WINDOW_BOUNDS = Object.freeze({ width: 720, height: 600 });
 const MAX_WINDOW_DIMENSION = 16_384;
+const MIN_VISIBLE_TITLEBAR_WIDTH = 96;
+const MIN_VISIBLE_TITLEBAR_HEIGHT = 32;
+const TITLEBAR_HEIGHT = 46;
 
 function finiteNumber(value, fallback) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
@@ -17,10 +20,12 @@ function overlapsDisplay(bounds, displays) {
   return displays.some((display) => {
     const area = display?.workArea;
     if (!area) return false;
-    return bounds.x < area.x + area.width
-      && bounds.x + bounds.width > area.x
-      && bounds.y < area.y + area.height
-      && bounds.y + bounds.height > area.y;
+    // Keep the restored window movable after a display layout change.
+    const visibleWidth = Math.min(bounds.x + bounds.width, area.x + area.width) - Math.max(bounds.x, area.x);
+    const visibleTitlebarHeight = Math.min(bounds.y + TITLEBAR_HEIGHT, area.y + area.height)
+      - Math.max(bounds.y, area.y);
+    return visibleWidth >= MIN_VISIBLE_TITLEBAR_WIDTH
+      && visibleTitlebarHeight >= MIN_VISIBLE_TITLEBAR_HEIGHT;
   });
 }
 
