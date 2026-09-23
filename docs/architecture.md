@@ -159,6 +159,14 @@ uses a fresh read-only summarization chat with the same bounded lifecycle. This 
 connector access on retained follow-ups, at the cost of resending more context. The preference is
 preserved but inactive in Zero Risk mode.
 
+A trusted `thread_spawn` child can explicitly request a brief-only turn by starting its current
+direct parent instruction with `CODEX_WEB_BRIEF_ONLY_V1`. The adapter requires canonical child
+lineage (`subagent_kind`, parent thread, and agent name), verifies the current parent-owned
+instruction, removes the marker, and sends only that direct brief plus a small transport contract.
+The selected route keeps its normal capabilities: Full mode retains Codex Native tools and
+Browser-only retains ChatGPT-native capabilities. Root turns, forged markers, stale inherited
+markers, and unmarked subagents retain the complete canonical context.
+
 Bigger Context partitions complete ordered records against each message's available token and
 composer budgets. Inert stages carry text; the final message also carries all retained attachments,
 the execution contract and any output schema. Their reserves are deducted before partitioning,
