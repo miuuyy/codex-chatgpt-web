@@ -1,0 +1,1178 @@
+[
+  [
+    "Launcher ownership processes are still alive while an external installation is configured",
+    "Des processus sous le contrôle du lanceur fonctionnent encore alors qu’une installation externe est configurée",
+    "已配置外部安装，但启动器所属进程仍在运行",
+    "已設定外部安裝，但啟動器所屬程序仍在執行",
+    "外部インストールが設定されていますが、ランチャーの所有プロセスがまだ動作しています",
+    "외부 설치가 구성되어 있지만 런처 소유 프로세스가 아직 실행 중입니다"
+  ],
+  [
+    "runtime configuration is missing while launcher ownership processes are still alive",
+    "La configuration du moteur est absente alors que des processus contrôlés par le lanceur fonctionnent encore",
+    "运行环境配置缺失，但启动器所属进程仍在运行",
+    "執行環境設定遺失，但啟動器所屬程序仍在執行",
+    "実行環境の設定がありませんが、ランチャーの所有プロセスがまだ動作しています",
+    "실행 환경 구성이 없지만 런처 소유 프로세스가 아직 실행 중입니다"
+  ],
+  [
+    "Launcher-owned runtime children exist while an external installation is configured",
+    "Des processus enfants du moteur géré par le lanceur existent alors qu’une installation externe est configurée",
+    "已配置外部安装，但仍存在启动器管理的运行环境子进程",
+    "已設定外部安裝，但仍存在啟動器管理的執行環境子程序",
+    "外部インストールが設定されていますが、ランチャーが所有する実行環境の子プロセスが存在します",
+    "외부 설치가 구성되어 있지만 런처가 관리하는 실행 환경 자식 프로세스가 있습니다"
+  ],
+  [
+    "drained daemon is still alive but no longer provides matching health evidence",
+    "Le service suspendu fonctionne encore, mais ne fournit plus de preuve de fonctionnement correspondante",
+    "已排空的后台进程仍在运行，但不再提供匹配的健康证明",
+    "已清空的背景程序仍在執行，但不再提供相符的健康證明",
+    "ドレイン済みデーモンは動作中ですが、一致する稼働状態の証拠を返さなくなりました",
+    "드레인된 데몬이 아직 실행 중이지만 더 이상 일치하는 상태 확인 정보를 제공하지 않습니다"
+  ],
+  [
+    "Launcher-owned runtime did not acknowledge targeted browser-turn cancellation",
+    "Le moteur géré par le lanceur n’a pas confirmé l’annulation du tour de navigateur ciblé",
+    "启动器管理的运行环境未确认取消指定的浏览器轮次",
+    "啟動器管理的執行環境未確認取消指定的瀏覽器輪次",
+    "ランチャーが管理する実行環境が対象ブラウザターンのキャンセルを確認しませんでした",
+    "런처가 관리하는 실행 환경이 지정된 브라우저 턴 취소를 확인하지 않았습니다"
+  ],
+  [
+    "launcher-owned daemon did not acknowledge complete active-turn cancellation",
+    "Le service géré par le lanceur n’a pas confirmé l’annulation de tous les tours actifs",
+    "启动器管理的后台进程未确认已取消所有活动轮次",
+    "啟動器管理的背景程序未確認已取消所有進行中輪次",
+    "ランチャーが管理するデーモンが実行中の全ターンのキャンセルを確認しませんでした",
+    "런처가 관리하는 데몬이 모든 진행 중인 턴의 취소를 확인하지 않았습니다"
+  ],
+  [
+    "The process on the Responses port does not match the stale launcher marker",
+    "Le processus qui utilise le port Responses ne correspond pas à l’ancien marqueur du lanceur",
+    "Responses 端口上的进程与过期的启动器标记不匹配",
+    "Responses 連接埠上的程序與過期的啟動器標記不符",
+    "Responses ポートのプロセスが古いランチャーマーカーと一致しません",
+    "Responses 포트의 프로세스가 오래된 런처 마커와 일치하지 않습니다"
+  ],
+  [
+    "Runtime configuration has an invalid experimentalFreshConversationPerTurn",
+    "La valeur experimentalFreshConversationPerTurn de la configuration du moteur est invalide",
+    "运行环境配置中的 experimentalFreshConversationPerTurn 无效",
+    "執行環境設定中的 experimentalFreshConversationPerTurn 無效",
+    "実行環境の設定の experimentalFreshConversationPerTurn が無効です",
+    "실행 환경 구성의 experimentalFreshConversationPerTurn이 올바르지 않습니다"
+  ],
+  [
+    "Local tunnel health discovery returned no unique alias health URL file",
+    "La détection de l’état du tunnel local n’a renvoyé aucun fichier unique d’URL de santé pour l’alias",
+    "本地隧道健康状态发现未返回此别名的唯一健康 URL 文件",
+    "本機通道健康狀態探索未傳回此別名的唯一健康 URL 檔案",
+    "ローカルトンネルの稼働状態の検出で、エイリアスに対応する一意のヘルスチェック URL ファイルが見つかりませんでした",
+    "로컬 터널 상태 검색에서 별칭에 해당하는 고유한 상태 확인 URL 파일을 찾지 못했습니다"
+  ],
+  [
+    "launcher-owned daemon cannot be stopped without a verified idle drain",
+    "Le service géré par le lanceur ne peut pas être arrêté sans suspension vérifiée et sans confirmation de l’absence d’activité",
+    "未验证排空后的空闲状态，无法停止启动器管理的后台进程",
+    "未驗證清空後的閒置狀態，無法停止啟動器管理的背景程序",
+    "アイドル状態へのドレインを確認せずに、ランチャーが管理するデーモンを停止することはできません",
+    "드레인 후 유휴 상태를 확인하지 않으면 런처가 관리하는 데몬을 중지할 수 없습니다"
+  ],
+  [
+    "launcher-owned tunnel cannot be stopped without a valid configuration",
+    "Le tunnel géré par le lanceur ne peut pas être arrêté sans configuration valide",
+    "没有有效配置，无法停止启动器管理的隧道",
+    "沒有有效設定，無法停止啟動器管理的通道",
+    "有効な設定なしではランチャーが管理するトンネルを停止できません",
+    "올바른 구성 없이는 런처가 관리하는 터널을 중지할 수 없습니다"
+  ],
+  [
+    "Local tunnel health discovery returned no verified loopback endpoint",
+    "La détection de l’état du tunnel local n’a renvoyé aucun point de connexion local vérifié",
+    "本地隧道健康状态发现未返回经验证的回环端点",
+    "本機通道健康狀態探索未傳回經驗證的回送端點",
+    "ローカルトンネルの稼働状態の検出で、検証済みのループバックエンドポイントが見つかりませんでした",
+    "로컬 터널 상태 검색에서 확인된 루프백 엔드포인트를 찾지 못했습니다"
+  ],
+  [
+    "DEV launcher refuses a configuration that is not marked dev-harness",
+    "Le lanceur DEV refuse une configuration qui n’est pas marquée dev-harness",
+    "DEV 启动器拒绝未标记为 dev-harness 的配置",
+    "DEV 啟動器拒絕未標記為 dev-harness 的設定",
+    "DEV ランチャーは dev-harness と指定されていない設定を受け付けません",
+    "DEV 런처는 dev-harness로 표시되지 않은 구성을 거부합니다"
+  ],
+  [
+    "Launcher tunnel MCP command requires an explicit runtime invocation",
+    "La commande MCP du tunnel du lanceur nécessite une invocation explicite du moteur",
+    "启动器隧道 MCP 命令需要显式指定运行环境调用",
+    "啟動器通道 MCP 命令需要明確指定執行環境呼叫",
+    "ランチャーのトンネル MCP コマンドには実行環境の明示的な呼び出しが必要です",
+    "런처 터널 MCP 명령에는 명시적인 실행 환경 호출이 필요합니다"
+  ],
+  [
+    "Launcher-owned runtime is unavailable for browser-turn cancellation",
+    "Le moteur géré par le lanceur est indisponible pour annuler le tour du navigateur",
+    "启动器管理的运行环境不可用于取消浏览器轮次",
+    "啟動器管理的執行環境無法用於取消瀏覽器輪次",
+    "ブラウザターンのキャンセルに必要なランチャー管理の実行環境を利用できません",
+    "브라우저 턴을 취소할 런처 관리 실행 환경을 사용할 수 없습니다"
+  ],
+  [
+    "Runtime configuration points to a different launcher browser host",
+    "La configuration du moteur désigne un autre hôte de navigateur du lanceur",
+    "运行环境配置指向不同的启动器浏览器宿主",
+    "執行環境設定指向不同的啟動器瀏覽器主機",
+    "実行環境の設定が別のランチャーブラウザホストを指しています",
+    "실행 환경 구성이 다른 런처 브라우저 호스트를 가리킵니다"
+  ],
+  [
+    "Active browser interaction mode does not match the active tunnel",
+    "Le mode d’interaction actif du navigateur ne correspond pas au tunnel actif",
+    "当前浏览器交互模式与活动隧道不匹配",
+    "目前瀏覽器互動模式與使用中的通道不符",
+    "現在のブラウザ操作モードが有効なトンネルと一致しません",
+    "현재 브라우저 상호 작용 모드가 활성 터널과 일치하지 않습니다"
+  ],
+  [
+    "DEV launcher ownership unexpectedly contains a Responses daemon",
+    "Les processus contrôlés par le lanceur DEV incluent un service Responses inattendu",
+    "DEV 启动器的所属进程意外包含 Responses 后台进程",
+    "DEV 啟動器的所屬程序意外包含 Responses 背景程序",
+    "DEV ランチャーの所有プロセスに想定外の Responses デーモンが含まれています",
+    "DEV 런처 소유 프로세스에 예상치 못한 Responses 데몬이 있습니다"
+  ],
+  [
+    "Tunnel MCP command values must be non-empty single-line strings",
+    "Les valeurs de commande MCP du tunnel doivent être des chaînes non vides sur une seule ligne",
+    "隧道 MCP 命令值必须是非空的单行字符串",
+    "通道 MCP 命令值必須是非空的單行字串",
+    "トンネルの MCP コマンドの値は空でない単一行の文字列である必要があります",
+    "터널 MCP 명령 값은 비어 있지 않은 한 줄 문자열이어야 합니다"
+  ],
+  [
+    "launcher-owned daemon did not provide matching health evidence",
+    "Le service géré par le lanceur n’a pas fourni de preuve de fonctionnement correspondante",
+    "启动器管理的后台进程未提供匹配的健康证明",
+    "啟動器管理的背景程序未提供相符的健康證明",
+    "ランチャーが管理するデーモンが一致する稼働状態の証拠を返しませんでした",
+    "런처가 관리하는 데몬이 일치하는 상태 확인 정보를 제공하지 않았습니다"
+  ],
+  [
+    "Runtime configuration has an invalid experimentalBiggerContext",
+    "La valeur experimentalBiggerContext de la configuration du moteur est invalide",
+    "运行环境配置中的 experimentalBiggerContext 无效",
+    "執行環境設定中的 experimentalBiggerContext 無效",
+    "実行環境の設定の experimentalBiggerContext が無効です",
+    "실행 환경 구성의 experimentalBiggerContext가 올바르지 않습니다"
+  ],
+  [
+    "Tunnel runtime became ready without a managed process identity",
+    "Le moteur du tunnel est devenu prêt sans identité de processus géré",
+    "隧道运行环境已就绪，但没有托管进程身份",
+    "通道執行環境已就緒，但沒有代管程序身分",
+    "トンネル実行環境が管理対象プロセスの識別情報なしに準備完了になりました",
+    "터널 실행 환경이 관리 대상 프로세스 식별 정보 없이 준비 상태가 되었습니다"
+  ],
+  [
+    "Runtime configuration has an invalid browser interaction mode",
+    "Le mode d’interaction du navigateur indiqué dans la configuration du moteur est invalide",
+    "运行环境配置中的浏览器交互模式无效",
+    "執行環境設定中的瀏覽器互動模式無效",
+    "実行環境の設定のブラウザ操作モードが無効です",
+    "실행 환경 구성의 브라우저 상호 작용 모드가 올바르지 않습니다"
+  ],
+  [
+    "Runtime configuration has an invalid lifecycle control token",
+    "Le jeton de contrôle du cycle de vie indiqué dans la configuration du moteur est invalide",
+    "运行环境配置中的生命周期控制令牌无效",
+    "執行環境設定中的生命週期控制權杖無效",
+    "実行環境の設定のライフサイクル制御トークンが無効です",
+    "실행 환경 구성의 수명 주기 제어 토큰이 올바르지 않습니다"
+  ],
+  [
+    "Active browser interaction mode has no tunnel configuration",
+    "Le mode d’interaction actif du navigateur n’a pas de configuration de tunnel",
+    "当前浏览器交互模式没有隧道配置",
+    "目前瀏覽器互動模式沒有通道設定",
+    "現在のブラウザ操作モードにトンネル設定がありません",
+    "현재 브라우저 상호 작용 모드에 터널 구성이 없습니다"
+  ],
+  [
+    "Responses proxy did not acknowledge readiness after resume",
+    "Le proxy Responses n’a pas confirmé qu’il était prêt après la reprise",
+    "Responses 代理在恢复后未确认就绪",
+    "Responses 代理在恢復後未確認就緒",
+    "Responses プロキシが再開後に準備完了を確認しませんでした",
+    "Responses 프록시가 재개 후 준비 상태를 확인하지 않았습니다"
+  ],
+  [
+    "Responses proxy exited while readiness was being confirmed",
+    "Le proxy Responses s’est arrêté pendant la vérification de disponibilité",
+    "Responses 代理在确认就绪期间退出",
+    "Responses 代理在確認就緒期間結束",
+    "Responses プロキシが準備完了の確認中に終了しました",
+    "Responses 프록시가 준비 상태 확인 중에 종료되었습니다"
+  ],
+  [
+    "Runtime configuration cannot enable Extra High without Sol",
+    "La configuration du moteur ne peut pas activer l’effort Très élevé sans Sol",
+    "运行环境配置不能在没有 Sol 时启用超高推理强度",
+    "執行環境設定不能在沒有 Sol 時啟用超高推理強度",
+    "実行環境の設定では Sol なしで「非常に高い」推論強度を有効にできません",
+    "실행 환경 구성에서 Sol 없이 매우 높은 추론 강도를 활성화할 수 없습니다"
+  ],
+  [
+    "Responses proxy exited immediately after becoming healthy",
+    "Le proxy Responses s’est arrêté immédiatement après être devenu opérationnel",
+    "Responses 代理在恢复正常后立即退出",
+    "Responses 代理在恢復正常後立即結束",
+    "Responses プロキシが正常になった直後に終了しました",
+    "Responses 프록시가 정상 상태가 된 직후 종료되었습니다"
+  ],
+  [
+    "Runtime configuration has an invalid Windows broker pipe",
+    "Le canal du courtier Windows indiqué dans la configuration du moteur est invalide",
+    "运行环境配置中的 Windows 代理管道无效",
+    "執行環境設定中的 Windows 代理管線無效",
+    "実行環境の設定の Windows ブローカーパイプが無効です",
+    "실행 환경 구성의 Windows 브로커 파이프가 올바르지 않습니다"
+  ],
+  [
+    "Production launcher refuses a DEV harness configuration",
+    "Le lanceur de production refuse une configuration d’environnement DEV",
+    "生产启动器拒绝 DEV 执行环境配置",
+    "正式啟動器拒絕 DEV 執行環境設定",
+    "本番ランチャーは DEV 実行環境の設定を受け付けません",
+    "운영 런처는 DEV 실행 환경 구성을 거부합니다"
+  ],
+  [
+    "Runtime configuration has an invalid extraHighAvailable",
+    "La valeur extraHighAvailable de la configuration du moteur est invalide",
+    "运行环境配置中的 extraHighAvailable 无效",
+    "執行環境設定中的 extraHighAvailable 無效",
+    "実行環境の設定の extraHighAvailable が無効です",
+    "실행 환경 구성의 extraHighAvailable이 올바르지 않습니다"
+  ],
+  [
+    "Runtime configuration has an invalid Unix broker socket",
+    "Le socket du courtier Unix indiqué dans la configuration du moteur est invalide",
+    "运行环境配置中的 Unix 代理套接字无效",
+    "執行環境設定中的 Unix 代理通訊端無效",
+    "実行環境の設定の Unix ブローカーソケットが無効です",
+    "실행 환경 구성의 Unix 브로커 소켓이 올바르지 않습니다"
+  ],
+  [
+    "Runtime configuration has an invalid loopback endpoint",
+    "Le point de connexion local indiqué dans la configuration du moteur est invalide",
+    "运行环境配置中的回环端点无效",
+    "執行環境設定中的回送端點無效",
+    "実行環境の設定のループバックエンドポイントが無効です",
+    "실행 환경 구성의 루프백 엔드포인트가 올바르지 않습니다"
+  ],
+  [
+    "Runtime configuration has an invalid subagent protocol",
+    "Le protocole des sous-agents indiqué dans la configuration du moteur est invalide",
+    "运行环境配置中的子代理协议无效",
+    "執行環境設定中的子代理通訊協定無效",
+    "実行環境の設定のサブエージェントプロトコルが無効です",
+    "실행 환경 구성의 하위 에이전트 프로토콜이 올바르지 않습니다"
+  ],
+  [
+    "Responses proxy is unavailable after runtime recovery",
+    "Le proxy Responses est indisponible après la récupération du moteur",
+    "运行环境恢复后 Responses 代理不可用",
+    "執行環境恢復後 Responses 代理無法使用",
+    "実行環境の復旧後も Responses プロキシを利用できません",
+    "실행 환경 복구 후 Responses 프록시를 사용할 수 없습니다"
+  ],
+  [
+    "Runtime configuration has an invalid runtime command",
+    "La commande d’exécution indiquée dans la configuration du moteur est invalide",
+    "运行环境配置中的运行命令无效",
+    "執行環境設定中的執行命令無效",
+    "実行環境の設定の実行コマンドが無効です",
+    "실행 환경 구성의 실행 명령이 올바르지 않습니다"
+  ],
+  [
+    "Runtime configuration has an invalid stallTimeoutSec",
+    "La valeur stallTimeoutSec de la configuration du moteur est invalide",
+    "运行环境配置中的 stallTimeoutSec 无效",
+    "執行環境設定中的 stallTimeoutSec 無效",
+    "実行環境の設定の stallTimeoutSec が無効です",
+    "실행 환경 구성의 stallTimeoutSec가 올바르지 않습니다"
+  ],
+  [
+    "Tunnel runtime is unavailable after runtime recovery",
+    "Le moteur du tunnel est indisponible après la récupération du moteur",
+    "运行环境恢复后隧道运行环境不可用",
+    "執行環境恢復後通道執行環境無法使用",
+    "実行環境の復旧後もトンネル実行環境を利用できません",
+    "실행 환경 복구 후 터널 실행 환경을 사용할 수 없습니다"
+  ],
+  [
+    "Runtime configuration cannot enable Pro without Sol",
+    "La configuration du moteur ne peut pas activer Pro sans Sol",
+    "运行环境配置不能在没有 Sol 时启用 Pro",
+    "執行環境設定不能在沒有 Sol 時啟用 Pro",
+    "実行環境の設定では Sol なしで Pro を有効にできません",
+    "실행 환경 구성에서 Sol 없이 Pro를 활성화할 수 없습니다"
+  ],
+  [
+    "Runtime configuration has an invalid connector name",
+    "Le nom du connecteur indiqué dans la configuration du moteur est invalide",
+    "运行环境配置中的连接器名称无效",
+    "執行環境設定中的連接器名稱無效",
+    "実行環境の設定のコネクタ名が無効です",
+    "실행 환경 구성의 커넥터 이름이 올바르지 않습니다"
+  ],
+  [
+    "Runtime configuration has an invalid context window",
+    "La fenêtre de contexte indiquée dans la configuration du moteur est invalide",
+    "运行环境配置中的上下文窗口无效",
+    "執行環境設定中的上下文視窗無效",
+    "実行環境の設定のコンテキストウィンドウが無効です",
+    "실행 환경 구성의 컨텍스트 창이 올바르지 않습니다"
+  ],
+  [
+    "launcher-owned tunnel has no runtime configuration",
+    "Le tunnel géré par le lanceur n’a pas de configuration d’exécution",
+    "启动器管理的隧道没有运行配置",
+    "啟動器管理的通道沒有執行設定",
+    "ランチャーが管理するトンネルに実行設定がありません",
+    "런처가 관리하는 터널에 실행 구성이 없습니다"
+  ],
+  [
+    "Runtime configuration is not owned by the launcher",
+    "La configuration du moteur n’est pas gérée par le lanceur",
+    "运行环境配置不属于启动器",
+    "執行環境設定不屬於啟動器",
+    "実行環境の設定はランチャーの管理下にありません",
+    "실행 환경 구성이 런처의 관리 대상이 아닙니다"
+  ],
+  [
+    "stale daemon did not acknowledge graceful shutdown",
+    "L’ancien service n’a pas confirmé l’arrêt normal",
+    "过期后台进程未确认正常关闭",
+    "過期背景程序未確認正常關閉",
+    "古いデーモンが正常終了を確認しませんでした",
+    "오래된 데몬이 정상 종료를 확인하지 않았습니다"
+  ],
+  [
+    "an existing runtime could not be safely recovered",
+    "Un moteur existant n’a pas pu être récupéré en toute sécurité",
+    "无法安全恢复现有运行环境",
+    "無法安全恢復現有執行環境",
+    "既存の実行環境を安全に復旧できませんでした",
+    "기존 실행 환경을 안전하게 복구할 수 없습니다"
+  ],
+  [
+    "Runtime configuration has an invalid setup mode",
+    "Le mode d’installation indiqué dans la configuration du moteur est invalide",
+    "运行环境配置中的安装模式无效",
+    "執行環境設定中的安裝模式無效",
+    "実行環境の設定のセットアップモードが無効です",
+    "실행 환경 구성의 설치 모드가 올바르지 않습니다"
+  ],
+  [
+    "Runtime configuration is missing or unsupported",
+    "La configuration du moteur est absente ou non prise en charge",
+    "运行环境配置缺失或不受支持",
+    "執行環境設定遺失或不受支援",
+    "実行環境の設定がないか、サポートされていません",
+    "실행 환경 구성이 없거나 지원되지 않습니다"
+  ],
+  [
+    "Automatic and Zero Risk tunnel IDs must differ",
+    "Les identifiants des tunnels Automatique et Sans risque doivent être différents",
+    "自动模式和零风险模式的隧道 ID 必须不同",
+    "自動模式與零風險模式的通道 ID 必須不同",
+    "自動モードとゼロリスクモードのトンネル ID は異なる必要があります",
+    "자동 모드와 제로 리스크 모드의 터널 ID는 달라야 합니다"
+  ],
+  [
+    "Responses proxy exited before becoming healthy",
+    "Le proxy Responses s’est arrêté avant de devenir opérationnel",
+    "Responses 代理在恢复正常前退出",
+    "Responses 代理在恢復正常前結束",
+    "Responses プロキシが正常になる前に終了しました",
+    "Responses 프록시가 정상 상태가 되기 전에 종료되었습니다"
+  ],
+  [
+    "Runtime supervisor launcher profile is invalid",
+    "Le profil du lanceur utilisé par le superviseur du moteur est invalide",
+    "运行环境监控器的启动器配置无效",
+    "執行環境監控器的啟動器設定檔無效",
+    "実行環境スーパーバイザーのランチャープロファイルが無効です",
+    "실행 환경 관리자의 런처 프로필이 올바르지 않습니다"
+  ],
+  [
+    "daemon did not acknowledge the drain contract",
+    "Le service n’a pas confirmé le protocole de suspension des nouvelles requêtes",
+    "后台进程未确认排空协议",
+    "背景程序未確認清空協定",
+    "デーモンがドレイン契約を確認しませんでした",
+    "데몬이 드레인 규약을 확인하지 않았습니다"
+  ],
+  [
+    "DEV runtime cannot recover a Responses daemon",
+    "Le moteur DEV ne peut pas récupérer un service Responses",
+    "DEV 运行环境无法恢复 Responses 后台进程",
+    "DEV 執行環境無法恢復 Responses 背景程序",
+    "DEV 実行環境は Responses デーモンを復旧できません",
+    "DEV 실행 환경은 Responses 데몬을 복구할 수 없습니다"
+  ],
+  [
+    "daemon did not acknowledge graceful shutdown",
+    "Le service n’a pas confirmé l’arrêt normal",
+    "后台进程未确认正常关闭",
+    "背景程序未確認正常關閉",
+    "デーモンが正常終了を確認しませんでした",
+    "데몬이 정상 종료를 확인하지 않았습니다"
+  ],
+  [
+    "Runtime configuration has no release version",
+    "La configuration du moteur ne précise aucune version de publication",
+    "运行环境配置未指定发布版本",
+    "執行環境設定未指定發行版本",
+    "実行環境の設定にリリースバージョンがありません",
+    "실행 환경 구성에 릴리스 버전이 없습니다"
+  ],
+  [
+    "drained daemon did not acknowledge resume",
+    "Le service suspendu n’a pas confirmé la reprise",
+    "已排空的后台进程未确认恢复",
+    "已清空的背景程序未確認恢復",
+    "ドレイン済みデーモンが再開を確認しませんでした",
+    "드레인된 데몬이 재개를 확인하지 않았습니다"
+  ],
+  [
+    "Runtime configuration has an invalid mode",
+    "Le mode indiqué dans la configuration du moteur est invalide",
+    "运行环境配置中的模式无效",
+    "執行環境設定中的模式無效",
+    "実行環境の設定のモードが無効です",
+    "실행 환경 구성의 모드가 올바르지 않습니다"
+  ],
+  [
+    "Tunnel client is missing: not configured",
+    "Le client du tunnel est absent : non configuré",
+    "缺少隧道客户端：尚未配置",
+    "缺少通道用戶端：尚未設定",
+    "トンネルクライアントがありません：未設定",
+    "터널 클라이언트가 없습니다: 구성되지 않음"
+  ],
+  [
+    "Runtime configuration is not an object",
+    "La configuration du moteur n’est pas un objet",
+    "运行环境配置不是对象",
+    "執行環境設定不是物件",
+    "実行環境の設定がオブジェクトではありません",
+    "실행 환경 구성이 객체가 아닙니다"
+  ],
+  [
+    "local inventory has no entries array",
+    "L’inventaire local ne contient pas de tableau entries",
+    "本地清单没有 entries 数组",
+    "本機清單沒有 entries 陣列",
+    "ローカル一覧に entries 配列がありません",
+    "로컬 목록에 entries 배열이 없습니다"
+  ],
+  [
+    "runtime configuration is unavailable",
+    "La configuration du moteur est indisponible",
+    "运行环境配置不可用",
+    "執行環境設定無法使用",
+    "実行環境の設定を利用できません",
+    "실행 환경 구성을 사용할 수 없습니다"
+  ],
+  [
+    "Browser turn trace id is invalid",
+    "L’identifiant de trace du tour du navigateur est invalide",
+    "浏览器轮次跟踪 ID 无效",
+    "瀏覽器輪次追蹤 ID 無效",
+    "ブラウザターンのトレース ID が無効です",
+    "브라우저 턴 추적 ID가 올바르지 않습니다"
+  ],
+  [
+    "response has no events array",
+    "La réponse ne contient pas de tableau events",
+    "响应没有 events 数组",
+    "回應沒有 events 陣列",
+    "応答に events 配列がありません",
+    "응답에 events 배열이 없습니다"
+  ],
+  [
+    "state shape is invalid",
+    "La structure des données d’état est invalide",
+    "状态数据结构无效",
+    "狀態資料結構無效",
+    "状態データの構造が無効です",
+    "상태 데이터 구조가 올바르지 않습니다"
+  ],
+  [
+    "The stale tunnel PID {0} is still alive but the native runtime manager does not recognize it; refusing to terminate an unverified process",
+    "L’ancien tunnel de PID {0} fonctionne encore, mais le gestionnaire natif ne le reconnaît pas ; arrêt d’un processus non vérifié refusé",
+    "过期隧道 PID {0} 仍在运行，但原生运行环境管理器无法识别它；拒绝终止未经验证的进程",
+    "過期通道 PID {0} 仍在執行，但原生執行環境管理器無法識別它；拒絕終止未經驗證的程序",
+    "古いトンネルの PID {0} は動作中ですが、ネイティブ実行環境マネージャーが認識していません。未検証プロセスの終了を拒否します",
+    "오래된 터널 PID {0}이 아직 실행 중이지만 기본 실행 환경 관리자가 인식하지 못합니다. 확인되지 않은 프로세스의 종료를 거부합니다"
+  ],
+  [
+    "The stale tunnel PID {0} is still alive but browser-only configuration has no tunnel identity with which to verify it",
+    "L’ancien tunnel de PID {0} fonctionne encore, mais la configuration Navigateur seul ne contient aucune identité de tunnel permettant de le vérifier",
+    "过期隧道 PID {0} 仍在运行，但仅浏览器配置没有可用于验证它的隧道身份",
+    "過期通道 PID {0} 仍在執行，但僅瀏覽器設定沒有可用於驗證它的通道身分",
+    "古いトンネルの PID {0} は動作中ですが、ブラウザ専用設定には検証に使えるトンネルの識別情報がありません",
+    "오래된 터널 PID {0}이 아직 실행 중이지만 브라우저 전용 구성에는 이를 확인할 터널 식별 정보가 없습니다"
+  ],
+  [
+    "Local tunnel health discovery timed out after {0}ms; the control process did not exit after forced termination",
+    "Délai de « Détection de l’état du tunnel local » expiré après {0} ms ; le processus de contrôle ne s’est pas terminé après l’arrêt forcé",
+    "本地隧道健康状态发现在 {0} 毫秒后超时；控制进程在强制终止后仍未退出",
+    "本機通道健康狀態探索在 {0} 毫秒後逾時；控制程序在強制終止後仍未結束",
+    "ローカルトンネルの稼働状態の検出が {0} ミリ秒でタイムアウトしました。強制終了後も制御プロセスが終了しませんでした",
+    "로컬 터널 상태 검색 작업이 {0}ms 후 시간 초과되었습니다; 강제 종료 후에도 제어 프로세스가 종료되지 않았습니다"
+  ],
+  [
+    "Local tunnel inventory probe timed out after {0}ms; the control process did not exit after forced termination",
+    "Délai de « Vérification de l’inventaire du tunnel local » expiré après {0} ms ; le processus de contrôle ne s’est pas terminé après l’arrêt forcé",
+    "本地隧道清单检查在 {0} 毫秒后超时；控制进程在强制终止后仍未退出",
+    "本機通道清單檢查在 {0} 毫秒後逾時；控制程序在強制終止後仍未結束",
+    "ローカルトンネル一覧の確認が {0} ミリ秒でタイムアウトしました。強制終了後も制御プロセスが終了しませんでした",
+    "로컬 터널 목록 검사 작업이 {0}ms 후 시간 초과되었습니다; 강제 종료 후에도 제어 프로세스가 종료되지 않았습니다"
+  ],
+  [
+    "Tunnel managed startup timed out after {0}ms; the control process did not exit after forced termination",
+    "Délai de « Démarrage géré du tunnel » expiré après {0} ms ; le processus de contrôle ne s’est pas terminé après l’arrêt forcé",
+    "隧道托管启动在 {0} 毫秒后超时；控制进程在强制终止后仍未退出",
+    "通道代管啟動在 {0} 毫秒後逾時；控制程序在強制終止後仍未結束",
+    "管理下でのトンネル起動が {0} ミリ秒でタイムアウトしました。強制終了後も制御プロセスが終了しませんでした",
+    "터널의 관리된 시작 작업이 {0}ms 후 시간 초과되었습니다; 강제 종료 후에도 제어 프로세스가 종료되지 않았습니다"
+  ],
+  [
+    "Local tunnel health discovery timed out after {0}ms; forced control process tree termination failed: {1}",
+    "Délai de « Détection de l’état du tunnel local » expiré après {0} ms ; échec de l’arrêt forcé de l’arborescence des processus de contrôle : {1}",
+    "本地隧道健康状态发现在 {0} 毫秒后超时；控制进程树强制终止失败：{1}",
+    "本機通道健康狀態探索在 {0} 毫秒後逾時；控制程序樹強制終止失敗：{1}",
+    "ローカルトンネルの稼働状態の検出が {0} ミリ秒でタイムアウトしました。制御プロセスツリーの強制終了に失敗しました：{1}",
+    "로컬 터널 상태 검색 작업이 {0}ms 후 시간 초과되었습니다; 제어 프로세스 트리 강제 종료 실패: {1}"
+  ],
+  [
+    "Tunnel runtime did not confirm a stopped state within {0}ms: tunnel stop status has not been observed",
+    "Le moteur du tunnel n’a pas confirmé son arrêt dans un délai de {0} ms : l’arrêt du tunnel n’a pas encore été observé",
+    "隧道运行环境未在 {0} 毫秒内确认已停止：尚未观察到隧道停止状态",
+    "通道執行環境未在 {0} 毫秒內確認已停止：尚未觀察到通道停止狀態",
+    "トンネル実行環境は {0} ミリ秒以内に停止状態を確認しませんでした：トンネルの停止状態をまだ観測できていません",
+    "터널 실행 환경이 {0}ms 안에 중지 상태를 확인하지 않았습니다: 터널 중지 상태가 아직 관측되지 않았습니다"
+  ],
+  [
+    "Local tunnel inventory probe timed out after {0}ms; forced control process tree termination failed: {1}",
+    "Délai de « Vérification de l’inventaire du tunnel local » expiré après {0} ms ; échec de l’arrêt forcé de l’arborescence des processus de contrôle : {1}",
+    "本地隧道清单检查在 {0} 毫秒后超时；控制进程树强制终止失败：{1}",
+    "本機通道清單檢查在 {0} 毫秒後逾時；控制程序樹強制終止失敗：{1}",
+    "ローカルトンネル一覧の確認が {0} ミリ秒でタイムアウトしました。制御プロセスツリーの強制終了に失敗しました：{1}",
+    "로컬 터널 목록 검사 작업이 {0}ms 후 시간 초과되었습니다; 제어 프로세스 트리 강제 종료 실패: {1}"
+  ],
+  [
+    "Local tunnel health discovery timed out after {0}ms; final control process-group cleanup failed: {1}",
+    "Délai de « Détection de l’état du tunnel local » expiré après {0} ms ; échec du nettoyage final du groupe de processus de contrôle : {1}",
+    "本地隧道健康状态发现在 {0} 毫秒后超时；控制进程组最终清理失败：{1}",
+    "本機通道健康狀態探索在 {0} 毫秒後逾時；控制程序群組最終清理失敗：{1}",
+    "ローカルトンネルの稼働状態の検出が {0} ミリ秒でタイムアウトしました。制御プロセスグループの最終クリーンアップに失敗しました：{1}",
+    "로컬 터널 상태 검색 작업이 {0}ms 후 시간 초과되었습니다; 제어 프로세스 그룹 최종 정리 실패: {1}"
+  ],
+  [
+    "Tunnel runtime did not become healthy and ready within {0}ms: tunnel status has not been observed",
+    "Le moteur du tunnel n’est pas devenu opérationnel et prêt dans un délai de {0} ms : l’état du tunnel n’a pas encore été observé",
+    "隧道运行环境未在 {0} 毫秒内恢复正常并就绪：尚未观察到隧道状态",
+    "通道執行環境未在 {0} 毫秒內恢復正常並就緒：尚未觀察到通道狀態",
+    "トンネル実行環境は {0} ミリ秒以内に正常かつ準備完了の状態になりませんでした：トンネルの状態をまだ観測できていません",
+    "터널 실행 환경이 {0}ms 안에 정상 및 준비 상태가 되지 않았습니다: 터널 상태가 아직 관측되지 않았습니다"
+  ],
+  [
+    "Local tunnel inventory probe timed out after {0}ms; final control process-group cleanup failed: {1}",
+    "Délai de « Vérification de l’inventaire du tunnel local » expiré après {0} ms ; échec du nettoyage final du groupe de processus de contrôle : {1}",
+    "本地隧道清单检查在 {0} 毫秒后超时；控制进程组最终清理失败：{1}",
+    "本機通道清單檢查在 {0} 毫秒後逾時；控制程序群組最終清理失敗：{1}",
+    "ローカルトンネル一覧の確認が {0} ミリ秒でタイムアウトしました。制御プロセスグループの最終クリーンアップに失敗しました：{1}",
+    "로컬 터널 목록 검사 작업이 {0}ms 후 시간 초과되었습니다; 제어 프로세스 그룹 최종 정리 실패: {1}"
+  ],
+  [
+    "Tunnel shutdown timed out after {0}ms; the control process did not exit after forced termination",
+    "Délai de « Arrêt du tunnel » expiré après {0} ms ; le processus de contrôle ne s’est pas terminé après l’arrêt forcé",
+    "隧道关闭在 {0} 毫秒后超时；控制进程在强制终止后仍未退出",
+    "通道關閉在 {0} 毫秒後逾時；控制程序在強制終止後仍未結束",
+    "トンネルの終了が {0} ミリ秒でタイムアウトしました。強制終了後も制御プロセスが終了しませんでした",
+    "터널 종료 작업이 {0}ms 후 시간 초과되었습니다; 강제 종료 후에도 제어 프로세스가 종료되지 않았습니다"
+  ],
+  [
+    "Local tunnel health discovery timed out after {0}ms; control process tree termination failed: {1}",
+    "Délai de « Détection de l’état du tunnel local » expiré après {0} ms ; échec de l’arrêt de l’arborescence des processus de contrôle : {1}",
+    "本地隧道健康状态发现在 {0} 毫秒后超时；控制进程树终止失败：{1}",
+    "本機通道健康狀態探索在 {0} 毫秒後逾時；控制程序樹終止失敗：{1}",
+    "ローカルトンネルの稼働状態の検出が {0} ミリ秒でタイムアウトしました。制御プロセスツリーの終了に失敗しました：{1}",
+    "로컬 터널 상태 검색 작업이 {0}ms 후 시간 초과되었습니다; 제어 프로세스 트리 종료 실패: {1}"
+  ],
+  [
+    "Tunnel managed startup timed out after {0}ms; forced control process tree termination failed: {1}",
+    "Délai de « Démarrage géré du tunnel » expiré après {0} ms ; échec de l’arrêt forcé de l’arborescence des processus de contrôle : {1}",
+    "隧道托管启动在 {0} 毫秒后超时；控制进程树强制终止失败：{1}",
+    "通道代管啟動在 {0} 毫秒後逾時；控制程序樹強制終止失敗：{1}",
+    "管理下でのトンネル起動が {0} ミリ秒でタイムアウトしました。制御プロセスツリーの強制終了に失敗しました：{1}",
+    "터널의 관리된 시작 작업이 {0}ms 후 시간 초과되었습니다; 제어 프로세스 트리 강제 종료 실패: {1}"
+  ],
+  [
+    "Local tunnel inventory probe timed out after {0}ms; control process tree termination failed: {1}",
+    "Délai de « Vérification de l’inventaire du tunnel local » expiré après {0} ms ; échec de l’arrêt de l’arborescence des processus de contrôle : {1}",
+    "本地隧道清单检查在 {0} 毫秒后超时；控制进程树终止失败：{1}",
+    "本機通道清單檢查在 {0} 毫秒後逾時；控制程序樹終止失敗：{1}",
+    "ローカルトンネル一覧の確認が {0} ミリ秒でタイムアウトしました。制御プロセスツリーの終了に失敗しました：{1}",
+    "로컬 터널 목록 검사 작업이 {0}ms 후 시간 초과되었습니다; 제어 프로세스 트리 종료 실패: {1}"
+  ],
+  [
+    "Tunnel managed startup timed out after {0}ms; final control process-group cleanup failed: {1}",
+    "Délai de « Démarrage géré du tunnel » expiré après {0} ms ; échec du nettoyage final du groupe de processus de contrôle : {1}",
+    "隧道托管启动在 {0} 毫秒后超时；控制进程组最终清理失败：{1}",
+    "通道代管啟動在 {0} 毫秒後逾時；控制程序群組最終清理失敗：{1}",
+    "管理下でのトンネル起動が {0} ミリ秒でタイムアウトしました。制御プロセスグループの最終クリーンアップに失敗しました：{1}",
+    "터널의 관리된 시작 작업이 {0}ms 후 시간 초과되었습니다; 제어 프로세스 그룹 최종 정리 실패: {1}"
+  ],
+  [
+    "Refusing to stop launcher-owned runtime because atomic idleness could not be proven: {0}",
+    "Arrêt du moteur géré par le lanceur refusé, car l’absence d’activité n’a pas pu être vérifiée de façon atomique : {0}",
+    "无法以原子方式确认空闲状态，因此拒绝停止启动器管理的运行环境：{0}",
+    "無法以不可分割方式確認閒置狀態，因此拒絕停止啟動器管理的執行環境：{0}",
+    "アトミックなアイドル状態を確認できないため、ランチャーが管理する実行環境の停止を拒否しました：{0}",
+    "원자적으로 유휴 상태를 확인할 수 없어 런처가 관리하는 실행 환경의 중지를 거부합니다: {0}"
+  ],
+  [
+    "Tunnel managed startup timed out after {0}ms; control process tree termination failed: {1}",
+    "Délai de « Démarrage géré du tunnel » expiré après {0} ms ; échec de l’arrêt de l’arborescence des processus de contrôle : {1}",
+    "隧道托管启动在 {0} 毫秒后超时；控制进程树终止失败：{1}",
+    "通道代管啟動在 {0} 毫秒後逾時；控制程序樹終止失敗：{1}",
+    "管理下でのトンネル起動が {0} ミリ秒でタイムアウトしました。制御プロセスツリーの終了に失敗しました：{1}",
+    "터널의 관리된 시작 작업이 {0}ms 후 시간 초과되었습니다; 제어 프로세스 트리 종료 실패: {1}"
+  ],
+  [
+    "Tunnel shutdown timed out after {0}ms; forced control process tree termination failed: {1}",
+    "Délai de « Arrêt du tunnel » expiré après {0} ms ; échec de l’arrêt forcé de l’arborescence des processus de contrôle : {1}",
+    "隧道关闭在 {0} 毫秒后超时；控制进程树强制终止失败：{1}",
+    "通道關閉在 {0} 毫秒後逾時；控制程序樹強制終止失敗：{1}",
+    "トンネルの終了が {0} ミリ秒でタイムアウトしました。制御プロセスツリーの強制終了に失敗しました：{1}",
+    "터널 종료 작업이 {0}ms 후 시간 초과되었습니다; 제어 프로세스 트리 강제 종료 실패: {1}"
+  ],
+  [
+    "The stale daemon PID {0} is still alive but did not provide matching health evidence",
+    "L’ancien service de PID {0} fonctionne encore, mais n’a pas fourni de preuve de fonctionnement correspondante",
+    "过期后台进程 PID {0} 仍在运行，但未提供匹配的健康证明",
+    "過期背景程序 PID {0} 仍在執行，但未提供相符的健康證明",
+    "古いデーモンの PID {0} は動作中ですが、一致する稼働状態の証拠を返しませんでした",
+    "오래된 데몬 PID {0}이 아직 실행 중이지만 일치하는 상태 확인 정보를 제공하지 않았습니다"
+  ],
+  [
+    "Tunnel shutdown timed out after {0}ms; final control process-group cleanup failed: {1}",
+    "Délai de « Arrêt du tunnel » expiré après {0} ms ; échec du nettoyage final du groupe de processus de contrôle : {1}",
+    "隧道关闭在 {0} 毫秒后超时；控制进程组最终清理失败：{1}",
+    "通道關閉在 {0} 毫秒後逾時；控制程序群組最終清理失敗：{1}",
+    "トンネルの終了が {0} ミリ秒でタイムアウトしました。制御プロセスグループの最終クリーンアップに失敗しました：{1}",
+    "터널 종료 작업이 {0}ms 후 시간 초과되었습니다; 제어 프로세스 그룹 최종 정리 실패: {1}"
+  ],
+  [
+    "Tunnel MCP transport could not be verified within {0}ms: no diagnostics returned",
+    "Le transport MCP du tunnel n’a pas pu être vérifié dans un délai de {0} ms : aucun diagnostic renvoyé",
+    "未能在 {0} 毫秒内验证隧道 MCP 传输：未返回诊断信息",
+    "未能在 {0} 毫秒內驗證通道 MCP 傳輸：未傳回診斷資訊",
+    "{0} ミリ秒以内にトンネルの MCP トランスポートを確認できませんでした：診断情報が返されませんでした",
+    "{0}ms 안에 터널 MCP 전송을 확인할 수 없습니다: 진단 정보가 반환되지 않았습니다"
+  ],
+  [
+    "Tunnel shutdown timed out after {0}ms; control process tree termination failed: {1}",
+    "Délai de « Arrêt du tunnel » expiré après {0} ms ; échec de l’arrêt de l’arborescence des processus de contrôle : {1}",
+    "隧道关闭在 {0} 毫秒后超时；控制进程树终止失败：{1}",
+    "通道關閉在 {0} 毫秒後逾時；控制程序樹終止失敗：{1}",
+    "トンネルの終了が {0} ミリ秒でタイムアウトしました。制御プロセスツリーの終了に失敗しました：{1}",
+    "터널 종료 작업이 {0}ms 후 시간 초과되었습니다; 제어 프로세스 트리 종료 실패: {1}"
+  ],
+  [
+    "Tunnel runtime status could not be inspected within {0}ms: no status returned",
+    "L’état du moteur du tunnel n’a pas pu être inspecté dans un délai de {0} ms : aucun état renvoyé",
+    "未能在 {0} 毫秒内检查隧道运行环境状态：未返回状态",
+    "未能在 {0} 毫秒內檢查通道執行環境狀態：未傳回狀態",
+    "{0} ミリ秒以内にトンネル実行環境の状態を確認できませんでした：状態が返されませんでした",
+    "{0}ms 안에 터널 실행 환경 상태를 점검할 수 없습니다: 상태가 반환되지 않았습니다"
+  ],
+  [
+    "Local tunnel health discovery timed out after {0}ms; termination failed: {1}",
+    "Délai de « Détection de l’état du tunnel local » expiré après {0} ms ; échec de l’arrêt : {1}",
+    "本地隧道健康状态发现在 {0} 毫秒后超时；终止失败：{1}",
+    "本機通道健康狀態探索在 {0} 毫秒後逾時；終止失敗：{1}",
+    "ローカルトンネルの稼働状態の検出が {0} ミリ秒でタイムアウトしました。終了に失敗しました：{1}",
+    "로컬 터널 상태 검색 작업이 {0}ms 후 시간 초과되었습니다; 종료 실패: {1}"
+  ],
+  [
+    "Local tunnel inventory probe timed out after {0}ms; termination failed: {1}",
+    "Délai de « Vérification de l’inventaire du tunnel local » expiré après {0} ms ; échec de l’arrêt : {1}",
+    "本地隧道清单检查在 {0} 毫秒后超时；终止失败：{1}",
+    "本機通道清單檢查在 {0} 毫秒後逾時；終止失敗：{1}",
+    "ローカルトンネル一覧の確認が {0} ミリ秒でタイムアウトしました。終了に失敗しました：{1}",
+    "로컬 터널 목록 검사 작업이 {0}ms 후 시간 초과되었습니다; 종료 실패: {1}"
+  ],
+  [
+    "Responses port {0}:{1} was not released within {2}ms: port is still occupied",
+    "Le port Responses {0}:{1} n’a pas été libéré dans un délai de {2} ms : le port est toujours utilisé",
+    "Responses 端口 {0}:{1} 未在 {2} 毫秒内释放：端口仍被占用",
+    "Responses 連接埠 {0}:{1} 未在 {2} 毫秒內釋放：連接埠仍被占用",
+    "Responses ポート {0}:{1} が {2} ミリ秒以内に解放されませんでした：ポートが使用中のままです",
+    "Responses 포트 {0}:{1}이 {2}ms 안에 해제되지 않았습니다: 포트가 여전히 사용 중입니다"
+  ],
+  [
+    "Tunnel managed startup timed out after {0}ms; termination failed: {1}",
+    "Délai de « Démarrage géré du tunnel » expiré après {0} ms ; échec de l’arrêt : {1}",
+    "隧道托管启动在 {0} 毫秒后超时；终止失败：{1}",
+    "通道代管啟動在 {0} 毫秒後逾時；終止失敗：{1}",
+    "管理下でのトンネル起動が {0} ミリ秒でタイムアウトしました。終了に失敗しました：{1}",
+    "터널의 관리된 시작 작업이 {0}ms 후 시간 초과되었습니다; 종료 실패: {1}"
+  ],
+  [
+    "Responses proxy did not become healthy on 127.0.0.1:{0} within {1}ms",
+    "Le proxy Responses n’est pas devenu opérationnel sur 127.0.0.1:{0} dans un délai de {1} ms",
+    "Responses 代理未在 {1} 毫秒内于 127.0.0.1:{0} 恢复正常",
+    "Responses 代理未在 {1} 毫秒內於 127.0.0.1:{0} 恢復正常",
+    "Responses プロキシは {1} ミリ秒以内に 127.0.0.1:{0} で正常になりませんでした",
+    "Responses 프록시가 {1}ms 안에 127.0.0.1:{0}에서 정상 상태가 되지 않았습니다"
+  ],
+  [
+    "{0}; the control process did not exit after forced termination",
+    "{0} ; le processus de contrôle ne s’est pas terminé après l’arrêt forcé",
+    "{0}；控制进程在强制终止后仍未退出",
+    "{0}；控制程序在強制終止後仍未結束",
+    "{0}。強制終了後も制御プロセスが終了しませんでした",
+    "{0}; 강제 종료 후에도 제어 프로세스가 종료되지 않았습니다"
+  ],
+  [
+    "daemon has {0} active HTTP turn(s) and {1} active browser turn(s)",
+    "Le service compte {0} tour(s) HTTP et {1} tour(s) de navigateur en cours",
+    "后台进程有 {0} 个活动 HTTP 轮次和 {1} 个活动浏览器轮次",
+    "背景程序有 {0} 個進行中 HTTP 輪次和 {1} 個進行中瀏覽器輪次",
+    "デーモンには実行中の HTTP ターンが {0} 件、ブラウザターンが {1} 件あります",
+    "데몬에 진행 중인 HTTP 턴 {0}개와 브라우저 턴 {1}개가 있습니다"
+  ],
+  [
+    "Tunnel runtime did not become healthy and ready within {0}ms: {1}",
+    "Le moteur du tunnel n’est pas devenu opérationnel et prêt dans un délai de {0} ms : {1}",
+    "隧道运行环境未在 {0} 毫秒内恢复正常并就绪：{1}",
+    "通道執行環境未在 {0} 毫秒內恢復正常並就緒：{1}",
+    "トンネル実行環境は {0} ミリ秒以内に正常かつ準備完了の状態になりませんでした：{1}",
+    "터널 실행 환경이 {0}ms 안에 정상 및 준비 상태가 되지 않았습니다: {1}"
+  ],
+  [
+    "Tunnel runtime did not confirm a stopped state within {0}ms: {1}",
+    "Le moteur du tunnel n’a pas confirmé son arrêt dans un délai de {0} ms : {1}",
+    "隧道运行环境未在 {0} 毫秒内确认已停止：{1}",
+    "通道執行環境未在 {0} 毫秒內確認已停止：{1}",
+    "トンネル実行環境は {0} ミリ秒以内に停止状態を確認しませんでした：{1}",
+    "터널 실행 환경이 {0}ms 안에 중지 상태를 확인하지 않았습니다: {1}"
+  ],
+  [
+    "Tunnel runtime status could not be inspected within {0}ms: {1}",
+    "L’état du moteur du tunnel n’a pas pu être inspecté dans un délai de {0} ms : {1}",
+    "未能在 {0} 毫秒内检查隧道运行环境状态：{1}",
+    "未能在 {0} 毫秒內檢查通道執行環境狀態：{1}",
+    "{0} ミリ秒以内にトンネル実行環境の状態を確認できませんでした：{1}",
+    "{0}ms 안에 터널 실행 환경 상태를 점검할 수 없습니다: {1}"
+  ],
+  [
+    "Tunnel shutdown timed out after {0}ms; termination failed: {1}",
+    "Délai de « Arrêt du tunnel » expiré après {0} ms ; échec de l’arrêt : {1}",
+    "隧道关闭在 {0} 毫秒后超时；终止失败：{1}",
+    "通道關閉在 {0} 毫秒後逾時；終止失敗：{1}",
+    "トンネルの終了が {0} ミリ秒でタイムアウトしました。終了に失敗しました：{1}",
+    "터널 종료 작업이 {0}ms 후 시간 초과되었습니다; 종료 실패: {1}"
+  ],
+  [
+    "Another launcher process still owns the runtime (pid {0})",
+    "Un autre processus du lanceur contrôle encore le moteur (PID {0})",
+    "另一个启动器进程仍拥有此运行环境（PID {0}）",
+    "另一個啟動器程序仍擁有此執行環境（PID {0}）",
+    "別のランチャープロセスが実行環境を所有したままです（PID {0}）",
+    "다른 런처 프로세스가 여전히 실행 환경을 소유하고 있습니다(PID {0})"
+  ],
+  [
+    "Tunnel MCP transport could not be verified within {0}ms: {1}",
+    "Le transport MCP du tunnel n’a pas pu être vérifié dans un délai de {0} ms : {1}",
+    "未能在 {0} 毫秒内验证隧道 MCP 传输：{1}",
+    "未能在 {0} 毫秒內驗證通道 MCP 傳輸：{1}",
+    "{0} ミリ秒以内にトンネルの MCP トランスポートを確認できませんでした：{1}",
+    "{0}ms 안에 터널 MCP 전송을 확인할 수 없습니다: {1}"
+  ],
+  [
+    "Local tunnel health discovery returned invalid JSON: {0}",
+    "La détection de l’état du tunnel local a renvoyé un document JSON invalide : {0}",
+    "本地隧道健康状态发现返回了无效 JSON：{0}",
+    "本機通道健康狀態探索傳回了無效 JSON：{0}",
+    "ローカルトンネルの稼働状態の検出が無効な JSON を返しました：{0}",
+    "로컬 터널 상태 검색이 올바르지 않은 JSON을 반환했습니다: {0}"
+  ],
+  [
+    "local inventory reported unsupported runtime_state={0}",
+    "L’inventaire local a signalé un état non pris en charge : runtime_state={0}",
+    "本地清单报告了不支持的 runtime_state={0}",
+    "本機清單回報了不支援的 runtime_state={0}",
+    "ローカル一覧が未対応の runtime_state={0} を報告しました",
+    "로컬 목록이 지원되지 않는 runtime_state={0}을 보고했습니다"
+  ],
+  [
+    "Tunnel runtime state is ambiguous before shutdown: {0}",
+    "L’état du moteur du tunnel est ambigu avant l’arrêt : {0}",
+    "关闭前隧道运行环境状态不明确：{0}",
+    "關閉前通道執行環境狀態不明確：{0}",
+    "終了前のトンネル実行環境の状態が不明確です：{0}",
+    "종료 전 터널 실행 환경 상태가 불명확합니다: {0}"
+  ],
+  [
+    "{0}; forced control process tree termination failed: {1}",
+    "{0} ; échec de l’arrêt forcé de l’arborescence des processus de contrôle : {1}",
+    "{0}；控制进程树强制终止失败：{1}",
+    "{0}；控制程序樹強制終止失敗：{1}",
+    "{0}。制御プロセスツリーの強制終了に失敗しました：{1}",
+    "{0}; 제어 프로세스 트리 강제 종료 실패: {1}"
+  ],
+  [
+    "Local tunnel health discovery stderr pipe failed: {0}",
+    "Échec du canal stderr de Détection de l’état du tunnel local : {0}",
+    "本地隧道健康状态发现 的 stderr 管道失败：{0}",
+    "本機通道健康狀態探索 的 stderr 管線失敗：{0}",
+    "ローカルトンネルの稼働状態の検出 の stderr パイプで障害が発生しました：{0}",
+    "로컬 터널 상태 검색의 stderr 파이프 실패: {0}"
+  ],
+  [
+    "Local tunnel health discovery stdout pipe failed: {0}",
+    "Échec du canal stdout de Détection de l’état du tunnel local : {0}",
+    "本地隧道健康状态发现 的 stdout 管道失败：{0}",
+    "本機通道健康狀態探索 的 stdout 管線失敗：{0}",
+    "ローカルトンネルの稼働状態の検出 の stdout パイプで障害が発生しました：{0}",
+    "로컬 터널 상태 검색의 stdout 파이프 실패: {0}"
+  ],
+  [
+    "Launcher runtime ownership state is invalid at {0}: {1}",
+    "L’état de contrôle du moteur par le lanceur est invalide dans {0} : {1}",
+    "{0} 中的启动器运行环境归属状态无效：{1}",
+    "{0} 中的啟動器執行環境歸屬狀態無效：{1}",
+    "{0} のランチャー実行環境の所有権状態が無効です：{1}",
+    "{0}의 런처 실행 환경 소유권 상태가 올바르지 않습니다: {1}"
+  ],
+  [
+    "Local tunnel inventory probe stderr pipe failed: {0}",
+    "Échec du canal stderr de Vérification de l’inventaire du tunnel local : {0}",
+    "本地隧道清单检查 的 stderr 管道失败：{0}",
+    "本機通道清單檢查 的 stderr 管線失敗：{0}",
+    "ローカルトンネル一覧の確認 の stderr パイプで障害が発生しました：{0}",
+    "로컬 터널 목록 검사의 stderr 파이프 실패: {0}"
+  ],
+  [
+    "Local tunnel inventory probe stdout pipe failed: {0}",
+    "Échec du canal stdout de Vérification de l’inventaire du tunnel local : {0}",
+    "本地隧道清单检查 的 stdout 管道失败：{0}",
+    "本機通道清單檢查 的 stdout 管線失敗：{0}",
+    "ローカルトンネル一覧の確認 の stdout パイプで障害が発生しました：{0}",
+    "로컬 터널 목록 검사의 stdout 파이프 실패: {0}"
+  ],
+  [
+    "Could not request daemon process-tree shutdown: {0}",
+    "Impossible de demander l’arrêt de l’arborescence des processus du service : {0}",
+    "无法请求关闭后台进程树：{0}",
+    "無法請求關閉背景程序樹：{0}",
+    "デーモンのプロセスツリーの終了を要求できませんでした：{0}",
+    "데몬 프로세스 트리 종료를 요청할 수 없습니다: {0}"
+  ],
+  [
+    "Local tunnel health discovery timed out after {0}ms",
+    "Délai de « Détection de l’état du tunnel local » expiré après {0} ms",
+    "本地隧道健康状态发现在 {0} 毫秒后超时",
+    "本機通道健康狀態探索在 {0} 毫秒後逾時",
+    "ローカルトンネルの稼働状態の検出が {0} ミリ秒でタイムアウトしました",
+    "로컬 터널 상태 검색 작업이 {0}ms 후 시간 초과되었습니다"
+  ],
+  [
+    "Local tunnel inventory probe timed out after {0}ms",
+    "Délai de « Vérification de l’inventaire du tunnel local » expiré après {0} ms",
+    "本地隧道清单检查在 {0} 毫秒后超时",
+    "本機通道清單檢查在 {0} 毫秒後逾時",
+    "ローカルトンネル一覧の確認が {0} ミリ秒でタイムアウトしました",
+    "로컬 터널 목록 검사 작업이 {0}ms 후 시간 초과되었습니다"
+  ],
+  [
+    "Tunnel managed runtime stopped during startup: {0}",
+    "Le moteur géré du tunnel s’est arrêté pendant le démarrage : {0}",
+    "隧道托管运行环境在启动期间停止：{0}",
+    "通道代管執行環境在啟動期間停止：{0}",
+    "トンネルの管理対象実行環境が起動中に停止しました：{0}",
+    "터널의 관리 대상 실행 환경이 시작 중에 중지되었습니다: {0}"
+  ],
+  [
+    "{0}; final control process-group cleanup failed: {1}",
+    "{0} ; échec du nettoyage final du groupe de processus de contrôle : {1}",
+    "{0}；控制进程组最终清理失败：{1}",
+    "{0}；控制程序群組最終清理失敗：{1}",
+    "{0}。制御プロセスグループの最終クリーンアップに失敗しました：{1}",
+    "{0}; 제어 프로세스 그룹 최종 정리 실패: {1}"
+  ],
+  [
+    "Responses port {0}:{1} was not released within {2}ms: {3}",
+    "Le port Responses {0}:{1} n’a pas été libéré dans un délai de {2} ms : {3}",
+    "Responses 端口 {0}:{1} 未在 {2} 毫秒内释放：{3}",
+    "Responses 連接埠 {0}:{1} 未在 {2} 毫秒內釋放：{3}",
+    "Responses ポート {0}:{1} が {2} ミリ秒以内に解放されませんでした：{3}",
+    "Responses 포트 {0}:{1}이 {2}ms 안에 해제되지 않았습니다: {3}"
+  ],
+  [
+    "The stale tunnel runtime state is ambiguous: {0}",
+    "L’état de l’ancien moteur du tunnel est ambigu : {0}",
+    "过期隧道运行环境状态不明确：{0}",
+    "過期通道執行環境狀態不明確：{0}",
+    "古いトンネル実行環境の状態が不明確です：{0}",
+    "오래된 터널 실행 환경 상태가 불명확합니다: {0}"
+  ],
+  [
+    "stale daemon process {0} did not stop within {1}ms",
+    "L’ancien processus de service de PID {0} ne s’est pas arrêté dans un délai de {1} ms",
+    "过期后台进程 {0} 未在 {1} 毫秒内停止",
+    "過期背景程序 {0} 未在 {1} 毫秒內停止",
+    "古いデーモンのプロセス {0} は {1} ミリ秒以内に停止しませんでした",
+    "오래된 데몬 프로세스 {0}이 {1}ms 안에 중지되지 않았습니다"
+  ],
+  [
+    "{0}; control process tree termination failed: {1}",
+    "{0} ; échec de l’arrêt de l’arborescence des processus de contrôle : {1}",
+    "{0}；控制进程树终止失败：{1}",
+    "{0}；控制程序樹終止失敗：{1}",
+    "{0}。制御プロセスツリーの終了に失敗しました：{1}",
+    "{0}; 제어 프로세스 트리 종료 실패: {1}"
+  ],
+  [
+    "Tunnel managed startup stderr pipe failed: {0}",
+    "Échec du canal stderr de Démarrage géré du tunnel : {0}",
+    "隧道托管启动 的 stderr 管道失败：{0}",
+    "通道代管啟動 的 stderr 管線失敗：{0}",
+    "管理下でのトンネル起動 の stderr パイプで障害が発生しました：{0}",
+    "터널의 관리된 시작의 stderr 파이프 실패: {0}"
+  ],
+  [
+    "Tunnel managed startup stdout pipe failed: {0}",
+    "Échec du canal stdout de Démarrage géré du tunnel : {0}",
+    "隧道托管启动 的 stdout 管道失败：{0}",
+    "通道代管啟動 的 stdout 管線失敗：{0}",
+    "管理下でのトンネル起動 の stdout パイプで障害が発生しました：{0}",
+    "터널의 관리된 시작의 stdout 파이프 실패: {0}"
+  ],
+  [
+    "Could not request {0} process-tree shutdown: {1}",
+    "Impossible de demander l’arrêt de l’arborescence des processus de {0} : {1}",
+    "无法请求关闭 {0} 进程树：{1}",
+    "無法請求關閉 {0} 程序樹：{1}",
+    "{0} のプロセスツリーの終了を要求できませんでした：{1}",
+    "{0} 프로세스 트리 종료를 요청할 수 없습니다: {1}"
+  ],
+  [
+    "tunnel runtime refused graceful shutdown: {0}",
+    "Le moteur du tunnel a refusé l’arrêt normal : {0}",
+    "隧道运行环境拒绝正常关闭：{0}",
+    "通道執行環境拒絕正常關閉：{0}",
+    "トンネル実行環境が正常終了を拒否しました：{0}",
+    "터널 실행 환경이 정상 종료를 거부했습니다: {0}"
+  ],
+  [
+    "tunnel runtime refused pre-start cleanup: {0}",
+    "Le moteur du tunnel a refusé le nettoyage avant démarrage : {0}",
+    "隧道运行环境拒绝启动前清理：{0}",
+    "通道執行環境拒絕啟動前清理：{0}",
+    "トンネル実行環境が起動前のクリーンアップを拒否しました：{0}",
+    "터널 실행 환경이 시작 전 정리를 거부했습니다: {0}"
+  ],
+  [
+    "Tunnel managed startup timed out after {0}ms",
+    "Délai de « Démarrage géré du tunnel » expiré après {0} ms",
+    "隧道托管启动在 {0} 毫秒后超时",
+    "通道代管啟動在 {0} 毫秒後逾時",
+    "管理下でのトンネル起動が {0} ミリ秒でタイムアウトしました",
+    "터널의 관리된 시작 작업이 {0}ms 후 시간 초과되었습니다"
+  ],
+  [
+    "stale tunnel refused graceful shutdown: {0}",
+    "L’ancien tunnel a refusé l’arrêt normal : {0}",
+    "过期隧道拒绝正常关闭：{0}",
+    "過期通道拒絕正常關閉：{0}",
+    "古いトンネルが正常終了を拒否しました：{0}",
+    "오래된 터널이 정상 종료를 거부했습니다: {0}"
+  ],
+  [
+    "tunnel runtime refused managed startup: {0}",
+    "Le moteur du tunnel a refusé le démarrage géré : {0}",
+    "隧道运行环境拒绝托管启动：{0}",
+    "通道執行環境拒絕代管啟動：{0}",
+    "トンネル実行環境が管理下での起動を拒否しました：{0}",
+    "터널 실행 환경이 관리된 시작을 거부했습니다: {0}"
+  ],
+  [
+    "Local tunnel health discovery failed: {0}",
+    "Échec de la détection de l’état du tunnel local : {0}",
+    "本地隧道健康状态发现失败：{0}",
+    "本機通道健康狀態探索失敗：{0}",
+    "ローカルトンネルの稼働状態の検出に失敗しました：{0}",
+    "로컬 터널 상태 검색 실패: {0}"
+  ],
+  [
+    "Runtime configuration has an invalid {0}",
+    "La valeur de {0} dans la configuration du moteur est invalide",
+    "运行环境配置中的 {0} 无效",
+    "執行環境設定中的 {0} 無效",
+    "実行環境の設定の {0} が無効です",
+    "실행 환경 구성의 {0}이 올바르지 않습니다"
+  ],
+  [
+    "Tunnel shutdown stderr pipe failed: {0}",
+    "Échec du canal stderr de Arrêt du tunnel : {0}",
+    "隧道关闭 的 stderr 管道失败：{0}",
+    "通道關閉 的 stderr 管線失敗：{0}",
+    "トンネルの終了 の stderr パイプで障害が発生しました：{0}",
+    "터널 종료의 stderr 파이프 실패: {0}"
+  ],
+  [
+    "Tunnel shutdown stdout pipe failed: {0}",
+    "Échec du canal stdout de Arrêt du tunnel : {0}",
+    "隧道关闭 的 stdout 管道失败：{0}",
+    "通道關閉 的 stdout 管線失敗：{0}",
+    "トンネルの終了 の stdout パイプで障害が発生しました：{0}",
+    "터널 종료의 stdout 파이프 실패: {0}"
+  ],
+  [
+    "Tunnel MCP transport is unhealthy: {0}",
+    "Le transport MCP du tunnel ne fonctionne pas correctement : {0}",
+    "隧道 MCP 传输异常：{0}",
+    "通道 MCP 傳輸異常：{0}",
+    "トンネルの MCP トランスポートが異常です：{0}",
+    "터널 MCP 전송 상태가 비정상입니다: {0}"
+  ],
+  [
+    "Tunnel shutdown timed out after {0}ms",
+    "Délai de « Arrêt du tunnel » expiré après {0} ms",
+    "隧道关闭在 {0} 毫秒后超时",
+    "通道關閉在 {0} 毫秒後逾時",
+    "トンネルの終了が {0} ミリ秒でタイムアウトしました",
+    "터널 종료 작업이 {0}ms 후 시간 초과되었습니다"
+  ],
+  [
+    "Runtime configuration is missing {0}",
+    "Il manque {0} dans la configuration du moteur",
+    "运行环境配置缺少 {0}",
+    "執行環境設定缺少 {0}",
+    "実行環境の設定に {0} がありません",
+    "실행 환경 구성에 {0}이 없습니다"
+  ],
+  [
+    "{0} process {1} did not stop within {2}ms",
+    "Le processus {0} de PID {1} ne s’est pas arrêté dans un délai de {2} ms",
+    "{0} 进程 {1} 未在 {2} 毫秒内停止",
+    "{0} 程序 {1} 未在 {2} 毫秒內停止",
+    "{0} のプロセス {1} は {2} ミリ秒以内に停止しませんでした",
+    "{0} 프로세스 {1}이 {2}ms 안에 중지되지 않았습니다"
+  ],
+  [
+    "Full mode requires an absolute {0}.{1}",
+    "Le mode Complet exige un chemin absolu pour {0}.{1}",
+    "完整模式要求 {0}.{1} 为绝对路径",
+    "完整模式要求 {0}.{1} 為絕對路徑",
+    "完全モードでは {0}.{1} に絶対パスが必要です",
+    "전체 모드에서 {0}.{1}에는 절대 경로가 필요합니다"
+  ],
+  [
+    "Tunnel runtime key is missing: {0}",
+    "La clé d’exécution du tunnel est absente : {0}",
+    "缺少隧道运行密钥：{0}",
+    "缺少通道執行金鑰：{0}",
+    "トンネルの実行キーがありません：{0}",
+    "터널 실행 키가 없습니다: {0}"
+  ],
+  [
+    "daemon did not stop within {0}ms",
+    "Le service ne s’est pas arrêté dans un délai de {0} ms",
+    "后台进程未在 {0} 毫秒内停止",
+    "背景程序未在 {0} 毫秒內停止",
+    "デーモンは {0} ミリ秒以内に停止しませんでした",
+    "데몬이 {0}ms 안에 중지되지 않았습니다"
+  ],
+  [
+    "Full mode has an invalid {0} id",
+    "L’identifiant de {0} en mode Complet est invalide",
+    "完整模式的 {0} ID 无效",
+    "完整模式的 {0} ID 無效",
+    "完全モードの {0} ID が無効です",
+    "전체 모드의 {0} ID가 올바르지 않습니다"
+  ],
+  [
+    "Full mode has an invalid {0}.{1}",
+    "La valeur de {0}.{1} en mode Complet est invalide",
+    "完整模式的 {0}.{1} 无效",
+    "完整模式的 {0}.{1} 無效",
+    "完全モードの {0}.{1} が無効です",
+    "전체 모드의 {0}.{1}이 올바르지 않습니다"
+  ],
+  [
+    "Tunnel client is missing: {0}",
+    "Le client du tunnel est absent : {0}",
+    "缺少隧道客户端：{0}",
+    "缺少通道用戶端：{0}",
+    "トンネルクライアントがありません：{0}",
+    "터널 클라이언트가 없습니다: {0}"
+  ],
+  [
+    "{0} did not stop within {1}ms",
+    "{0} ne s’est pas arrêté dans un délai de {1} ms",
+    "{0} 未在 {1} 毫秒内停止",
+    "{0} 未在 {1} 毫秒內停止",
+    "{0} は {1} ミリ秒以内に停止しませんでした",
+    "{0}이 {1}ms 안에 중지되지 않았습니다"
+  ],
+  [
+    "{0}; termination failed: {1}",
+    "{0} ; échec de l’arrêt : {1}",
+    "{0}；终止失败：{1}",
+    "{0}；終止失敗：{1}",
+    "{0}。終了に失敗しました：{1}",
+    "{0}; 종료 실패: {1}"
+  ],
+  [
+    "Full mode is missing {0}.{1}",
+    "Il manque {0}.{1} pour le mode Complet",
+    "完整模式缺少 {0}.{1}",
+    "完整模式缺少 {0}.{1}",
+    "完全モードに {0}.{1} がありません",
+    "전체 모드에 {0}.{1}이 없습니다"
+  ],
+  [
+    "Full mode is missing {0}",
+    "Il manque {0} pour le mode Complet",
+    "完整模式缺少 {0}",
+    "完整模式缺少 {0}",
+    "完全モードに {0} がありません",
+    "전체 모드에 {0}이 없습니다"
+  ],
+  [
+    "{0} {1} pipe failed: {2}",
+    "Échec du canal {1} de {0} : {2}",
+    "{0} 的 {1} 管道失败：{2}",
+    "{0} 的 {1} 管線失敗：{2}",
+    "{0} の {1} パイプで障害が発生しました：{2}",
+    "{0}의 {1} 파이프 실패: {2}"
+  ],
+  [
+    "HTTP {0}",
+    "HTTP {0}",
+    "HTTP {0}",
+    "HTTP {0}",
+    "HTTP {0}",
+    "HTTP {0}"
+  ]
+]

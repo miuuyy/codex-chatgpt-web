@@ -1,0 +1,600 @@
+import type { Language } from "./types";
+import browserErrors from "./runtime-errors-browser.json";
+import controlErrors from "./runtime-errors-control.json";
+import supervisorErrors from "./runtime-errors-supervisor.json";
+
+// Presentation-only translations for messages emitted by the launcher runtime.
+// Keep the original values in IPC, logs and diagnostic exports. Unknown messages
+// (including OS, server and user-provided text) must remain available verbatim.
+// Tuple order is English/source, French, Simplified Chinese, Traditional Chinese,
+// Japanese, Korean. A tuple requires every supported translation at compile time.
+type Translation = readonly [string, string, string, string, string, string];
+const localeIndex: Record<Language, number> = { en: 0, fr: 1, "zh-CN": 2, "zh-TW": 3, ja: 4, ko: 5 };
+
+const messages: readonly Translation[] = [
+  ["Sign in to the isolated DEV ChatGPT profile before configuring the harness", "Connectez-vous au profil ChatGPT DEV isolé avant de configurer l’environnement d’exécution", "请先登录隔离的 DEV ChatGPT 配置，再配置执行环境", "請先登入隔離的 DEV ChatGPT 設定檔，再設定執行環境", "実行環境を設定する前に、隔離された DEV ChatGPT プロファイルにログインしてください", "실행 환경을 구성하기 전에 격리된 DEV ChatGPT 프로필에 로그인하세요"],
+  ["Sign in to ChatGPT before installing the Codex integration", "Connectez-vous à ChatGPT avant d’installer l’intégration Codex", "请先登录 ChatGPT，再安装 Codex 集成", "請先登入 ChatGPT，再安裝 Codex 整合", "Codex の連携をインストールする前に ChatGPT にログインしてください", "Codex 통합을 설치하기 전에 ChatGPT에 로그인하세요"],
+  ["Run the browser smoke test before configuring the DEV harness", "Lancez le test de fonctionnement du navigateur avant de configurer l’environnement DEV", "请先运行浏览器基本功能测试，再配置 DEV 执行环境", "請先執行瀏覽器基本功能測試，再設定 DEV 執行環境", "DEV 実行環境を設定する前にブラウザの動作テストを実行してください", "DEV 실행 환경을 구성하기 전에 브라우저 기본 작동 테스트를 실행하세요"],
+  ["Run the browser smoke test before installing the Codex integration", "Lancez le test de fonctionnement du navigateur avant d’installer l’intégration Codex", "请先运行浏览器基本功能测试，再安装 Codex 集成", "請先執行瀏覽器基本功能測試，再安裝 Codex 整合", "Codex の連携をインストールする前にブラウザの動作テストを実行してください", "Codex 통합을 설치하기 전에 브라우저 기본 작동 테스트를 실행하세요"],
+  ["Finish or cancel active ChatGPT turns before changing Zero Risk model profiles", "Terminez ou annulez les échanges ChatGPT en cours avant de modifier les profils de modèles Sans risque", "请先完成或取消正在进行的 ChatGPT 轮次，再更改零风险模型配置", "請先完成或取消進行中的 ChatGPT 輪次，再變更零風險模型設定", "ゼロリスクのモデルプロファイルを変更する前に、実行中の ChatGPT ターンを完了するかキャンセルしてください", "제로 리스크 모델 프로필을 변경하기 전에 진행 중인 ChatGPT 턴을 완료하거나 취소하세요"],
+  ["Launcher IPC is unavailable.", "La communication avec le lanceur est indisponible.", "启动器进程通信不可用。", "啟動器程序通訊無法使用。", "ランチャーとのプロセス間通信を利用できません。", "런처 프로세스 간 통신을 사용할 수 없습니다."],
+  ["Completed", "Terminé", "已完成", "已完成", "完了", "완료"],
+  ["No active task", "Aucune tâche en cours", "没有进行中的任务", "沒有進行中的任務", "実行中のタスクはありません", "진행 중인 작업 없음"],
+  ["ChatGPT is working", "ChatGPT travaille", "ChatGPT 正在处理", "ChatGPT 正在處理", "ChatGPT が処理中です", "ChatGPT가 작업 중입니다"],
+  ["ChatGPT is working through the Codex harness", "ChatGPT travaille via l’environnement Codex", "ChatGPT 正通过 Codex 执行环境处理任务", "ChatGPT 正透過 Codex 執行環境處理任務", "ChatGPT が Codex 実行環境で処理中です", "ChatGPT가 Codex 실행 환경에서 작업 중입니다"],
+  ["ChatGPT is ready", "ChatGPT est prêt", "ChatGPT 已就绪", "ChatGPT 已就緒", "ChatGPT の準備ができました", "ChatGPT가 준비되었습니다"],
+  ["Task completed", "Tâche terminée", "任务已完成", "任務已完成", "タスクが完了しました", "작업 완료"],
+  ["Opening ChatGPT", "Ouverture de ChatGPT", "正在打开 ChatGPT", "正在開啟 ChatGPT", "ChatGPT を開いています", "ChatGPT 여는 중"],
+  ["Sign in to ChatGPT", "Connectez-vous à ChatGPT", "登录 ChatGPT", "登入 ChatGPT", "ChatGPT にログインしてください", "ChatGPT에 로그인하세요"],
+  ["Opening ChatGPT sign-in", "Ouverture de la connexion à ChatGPT", "正在打开 ChatGPT 登录页面", "正在開啟 ChatGPT 登入頁面", "ChatGPT のログイン画面を開いています", "ChatGPT 로그인 화면 여는 중"],
+  ["Signing out of ChatGPT", "Déconnexion de ChatGPT", "正在退出 ChatGPT", "正在登出 ChatGPT", "ChatGPT からログアウトしています", "ChatGPT에서 로그아웃 중"],
+  ["Waiting for ChatGPT", "En attente de ChatGPT", "正在等待 ChatGPT", "正在等待 ChatGPT", "ChatGPT を待機中です", "ChatGPT 대기 중"],
+  ["Checking saved ChatGPT session", "Vérification de la session ChatGPT enregistrée", "正在检查已保存的 ChatGPT 会话", "正在檢查已儲存的 ChatGPT 工作階段", "保存された ChatGPT セッションを確認しています", "저장된 ChatGPT 세션 확인 중"],
+  ["Refreshing the ChatGPT connector catalog", "Actualisation du catalogue des connecteurs ChatGPT", "正在刷新 ChatGPT 连接器目录", "正在重新整理 ChatGPT 連接器目錄", "ChatGPT コネクタ一覧を更新しています", "ChatGPT 커넥터 목록 새로 고치는 중"],
+  ["Refreshing ChatGPT security check", "Actualisation du contrôle de sécurité ChatGPT", "正在刷新 ChatGPT 安全检查", "正在重新整理 ChatGPT 安全檢查", "ChatGPT のセキュリティ確認を更新しています", "ChatGPT 보안 검사 새로 고치는 중"],
+  ["Running browser smoke test", "Test de fonctionnement du navigateur", "正在运行浏览器基本功能测试", "正在執行瀏覽器基本功能測試", "ブラウザの動作テストを実行しています", "브라우저 기본 작동 테스트 실행 중"],
+  ["Smoke test passed", "Test de fonctionnement réussi", "基本功能测试通过", "基本功能測試通過", "動作テストに合格しました", "기본 작동 테스트 통과"],
+  ["Checking ChatGPT connector", "Vérification du connecteur ChatGPT", "正在检查 ChatGPT 连接器", "正在檢查 ChatGPT 連接器", "ChatGPT コネクタを確認しています", "ChatGPT 커넥터 확인 중"],
+  ["ChatGPT connector is available", "Le connecteur ChatGPT est disponible", "ChatGPT 连接器可用", "ChatGPT 連接器可用", "ChatGPT コネクタを利用できます", "ChatGPT 커넥터를 사용할 수 있습니다"],
+  ["Checking local runtime", "Vérification du moteur local", "正在检查本地运行环境", "正在檢查本機執行環境", "ローカル実行環境を確認しています", "로컬 실행 환경 확인 중"],
+  ["Checking runtime", "Vérification du moteur", "正在检查运行环境", "正在檢查執行環境", "実行環境を確認しています", "실행 환경 확인 중"],
+  ["Runtime and connector verified", "Moteur et connecteur vérifiés", "运行环境和连接器已验证", "執行環境與連接器已驗證", "実行環境とコネクタを確認しました", "실행 환경 및 커넥터 확인 완료"],
+  ["DEV harness and connector verified", "Environnement DEV et connecteur vérifiés", "DEV 执行环境和连接器已验证", "DEV 執行環境與連接器已驗證", "DEV 実行環境とコネクタを確認しました", "DEV 실행 환경 및 커넥터 확인 완료"],
+  ["Local Zero Risk runtime is healthy; connector selection remains a manual turn step", "Le moteur local Sans risque fonctionne ; sélectionnez le connecteur manuellement à chaque tour", "本地零风险运行环境正常；每轮仍需手动选择连接器", "本機零風險執行環境正常；每輪仍須手動選擇連接器", "ローカルのゼロリスク実行環境は正常です。各ターンでコネクタを手動選択してください", "로컬 제로 리스크 실행 환경이 정상입니다. 매 턴 커넥터를 직접 선택하세요"],
+  ["The local MCP runtime is not healthy", "Le moteur MCP local ne fonctionne pas correctement", "本地 MCP 运行环境异常", "本機 MCP 執行環境異常", "ローカル MCP 実行環境が正常ではありません", "로컬 MCP 실행 환경이 정상적이지 않습니다"],
+  ["Finish the active Codex task before verifying the ChatGPT connector", "Terminez la tâche Codex en cours avant de vérifier le connecteur ChatGPT", "请先完成当前 Codex 任务，再验证 ChatGPT 连接器", "請先完成目前的 Codex 任務，再驗證 ChatGPT 連接器", "ChatGPT コネクタを確認する前に実行中の Codex タスクを完了してください", "ChatGPT 커넥터를 확인하기 전에 진행 중인 Codex 작업을 마치세요"],
+  ["Paste the copied prompt, add any images yourself because Zero Risk cannot transfer them, choose a model and effort, then press Sent", "Collez le texte copié, ajoutez vous-même les images car le mode Sans risque ne peut pas les transférer, choisissez un modèle et un effort, puis cliquez sur Envoyé", "粘贴已复制的提示词；零风险模式无法传输图片，请自行添加。选择模型和推理强度后，点击“已发送”", "貼上已複製的提示詞；零風險模式無法傳輸圖片，請自行加入。選擇模型與推理強度後，按一下「已傳送」", "コピーしたプロンプトを貼り付け、画像はご自身で追加してください（ゼロリスクでは転送できません）。モデルと推論の強度を選び、「送信済み」を押してください", "복사한 프롬프트를 붙여 넣고, 제로 리스크에서 전송할 수 없는 이미지는 직접 추가하세요. 모델과 추론 강도를 선택한 다음 ‘전송 완료’를 누르세요"],
+  ["Prompt sent; waiting for ChatGPT to start through the Codex harness", "Message envoyé ; attente du démarrage de ChatGPT via l’environnement Codex", "提示词已发送；正在等待 ChatGPT 通过 Codex 执行环境启动", "提示詞已傳送；正在等待 ChatGPT 透過 Codex 執行環境啟動", "プロンプト送信済み。Codex 実行環境経由での ChatGPT の開始を待っています", "프롬프트 전송 완료. Codex 실행 환경을 통한 ChatGPT 시작 대기 중"],
+  ["ChatGPT page changed during a resumed Zero Risk turn. Start a new Codex turn to resend the full context.", "La page ChatGPT a changé pendant la reprise d’un tour Sans risque. Lancez un nouveau tour Codex pour renvoyer tout le contexte.", "恢复零风险轮次时 ChatGPT 页面发生了变化。请开始新的 Codex 轮次以重新发送完整上下文。", "恢復零風險輪次時 ChatGPT 頁面發生變化。請開始新的 Codex 輪次以重新傳送完整上下文。", "ゼロリスクのターン再開中に ChatGPT ページが変わりました。Codex で新しいターンを開始して、コンテキスト全体を再送してください。", "제로 리스크 턴을 재개하는 동안 ChatGPT 페이지가 변경되었습니다. 새 Codex 턴을 시작하여 전체 컨텍스트를 다시 보내세요."],
+  ["ChatGPT requires a fresh sign-in; finish this turn, then sign in from Setup", "ChatGPT demande une nouvelle connexion ; terminez ce tour, puis reconnectez-vous depuis Configuration", "ChatGPT 需要重新登录；请先完成本轮，再从设置页面登录", "ChatGPT 需要重新登入；請先完成本輪，再從設定頁面登入", "ChatGPT への再ログインが必要です。このターンを終えてからセットアップでログインしてください", "ChatGPT에 다시 로그인해야 합니다. 이 턴을 마친 후 설정에서 로그인하세요"],
+  ["ChatGPT did not finish loading within 60 seconds. Check your connection and retry.", "ChatGPT ne s’est pas chargé en 60 secondes. Vérifiez votre connexion et réessayez.", "ChatGPT 未在 60 秒内完成加载。请检查网络连接并重试。", "ChatGPT 未在 60 秒內完成載入。請檢查網路連線並重試。", "ChatGPT の読み込みが 60 秒以内に完了しませんでした。接続を確認して再試行してください。", "ChatGPT가 60초 안에 로드되지 않았습니다. 연결을 확인하고 다시 시도하세요."],
+  ["The ChatGPT sign-in page did not finish loading within 60 seconds. Check your connection and try again.", "La page de connexion ChatGPT ne s’est pas chargée en 60 secondes. Vérifiez votre connexion et réessayez.", "ChatGPT 登录页面未在 60 秒内完成加载。请检查网络连接并重试。", "ChatGPT 登入頁面未在 60 秒內完成載入。請檢查網路連線並重試。", "ChatGPT のログイン画面が 60 秒以内に読み込まれませんでした。接続を確認して再試行してください。", "ChatGPT 로그인 페이지가 60초 안에 로드되지 않았습니다. 연결을 확인하고 다시 시도하세요."],
+  ["Embedded browser failed to initialize", "Échec de l’initialisation du navigateur intégré", "嵌入式浏览器初始化失败", "內建瀏覽器初始化失敗", "内蔵ブラウザの初期化に失敗しました", "내장 브라우저 초기화 실패"],
+  ["Embedded browser ownership could not be established", "Impossible de confirmer le contrôle du navigateur intégré", "无法确认嵌入式浏览器的归属", "無法確認內建瀏覽器的歸屬", "内蔵ブラウザの所有権を確認できませんでした", "내장 브라우저의 소유권을 확인할 수 없습니다"],
+  ["Waiting for passkey sign-in in Chrome", "En attente de la connexion par clé d’accès dans Chrome", "正在等待在 Chrome 中使用通行密钥登录", "正在等待在 Chrome 中使用通行密鑰登入", "Chrome でのパスキーによるログインを待っています", "Chrome에서 패스키 로그인 대기 중"],
+  ["Capturing and verifying the passkey session", "Récupération et vérification de la session par clé d’accès", "正在获取并验证通行密钥会话", "正在擷取並驗證通行密鑰工作階段", "パスキーセッションを取得して検証しています", "패스키 세션 가져오기 및 확인 중"],
+  ["Sign in with your passkey in Chrome, then return here and choose Continue", "Connectez-vous avec votre clé d’accès dans Chrome, puis revenez ici et cliquez sur Continuer", "请在 Chrome 中使用通行密钥登录，然后返回此处并选择“继续”", "請在 Chrome 中使用通行密鑰登入，然後返回此處並選擇「繼續」", "Chrome でパスキーを使ってログインし、ここに戻って「続行」を選択してください", "Chrome에서 패스키로 로그인한 다음 여기로 돌아와 ‘계속’을 선택하세요"],
+  ["Passkey session captured for private Launcher verification", "Session par clé d’accès récupérée pour vérification privée par le lanceur", "已获取通行密钥会话，供启动器私密验证", "已擷取通行密鑰工作階段，供啟動器私密驗證", "ランチャーで非公開の検証を行うためにパスキーセッションを取得しました", "런처에서 비공개로 확인할 패스키 세션을 가져왔습니다"],
+  ["Checking Codex bridge route", "Vérification du routage de la passerelle Codex", "正在检查 Codex 桥接路由", "正在檢查 Codex 橋接路由", "Codex ブリッジのルートを確認しています", "Codex 브리지 경로 확인 중"],
+  ["Codex bridge route checked", "Routage de la passerelle Codex vérifié", "Codex 桥接路由已检查", "Codex 橋接路由已檢查", "Codex ブリッジのルートを確認しました", "Codex 브리지 경로 확인 완료"],
+  ["Restoring the previous Codex route", "Rétablissement du routage Codex précédent", "正在恢复先前的 Codex 路由", "正在還原先前的 Codex 路由", "以前の Codex ルートを復元しています", "이전 Codex 경로 복원 중"],
+  ["Previous Codex route restored", "Routage Codex précédent rétabli", "先前的 Codex 路由已恢复", "先前的 Codex 路由已還原", "以前の Codex ルートを復元しました", "이전 Codex 경로 복원 완료"],
+  ["Connecting Codex to the launcher", "Connexion de Codex au lanceur", "正在将 Codex 连接到启动器", "正在將 Codex 連線至啟動器", "Codex をランチャーに接続しています", "Codex를 런처에 연결 중"],
+  ["Codex bridge connected", "Passerelle Codex connectée", "Codex 桥接已连接", "Codex 橋接已連線", "Codex ブリッジに接続しました", "Codex 브리지 연결 완료"],
+  ["Cancelling active Codex turns", "Annulation des tours Codex en cours", "正在取消进行中的 Codex 轮次", "正在取消進行中的 Codex 輪次", "実行中の Codex ターンをキャンセルしています", "진행 중인 Codex 턴 취소 중"],
+  ["Active Codex turns cancelled", "Tours Codex en cours annulés", "进行中的 Codex 轮次已取消", "進行中的 Codex 輪次已取消", "実行中の Codex ターンをキャンセルしました", "진행 중인 Codex 턴 취소 완료"],
+  ["Codex Web GPT integration removed", "Intégration Codex Web GPT supprimée", "Codex Web GPT 集成已移除", "Codex Web GPT 整合已移除", "Codex Web GPT の連携を削除しました", "Codex Web GPT 통합 제거 완료"],
+  ["Installing ChatGPT Web models into Codex", "Installation des modèles ChatGPT Web dans Codex", "正在将 ChatGPT Web 模型安装到 Codex", "正在將 ChatGPT Web 模型安裝至 Codex", "ChatGPT Web モデルを Codex にインストールしています", "Codex에 ChatGPT Web 모델 설치 중"],
+  ["Codex integration installed", "Intégration Codex installée", "Codex 集成已安装", "Codex 整合已安裝", "Codex の連携をインストールしました", "Codex 통합 설치 완료"],
+  ["Configuring the isolated DEV harness", "Configuration de l’environnement DEV isolé", "正在配置隔离的 DEV 执行环境", "正在設定隔離的 DEV 執行環境", "隔離された DEV 実行環境を設定しています", "격리된 DEV 실행 환경 구성 중"],
+  ["Isolated DEV harness configured", "Environnement DEV isolé configuré", "隔离的 DEV 执行环境已配置", "隔離的 DEV 執行環境已設定", "隔離された DEV 実行環境を設定しました", "격리된 DEV 실행 환경 구성 완료"],
+  ["Enabling Bigger Context", "Activation du contexte étendu", "正在启用更大上下文", "正在啟用更大上下文", "拡張コンテキストを有効にしています", "확장 컨텍스트 활성화 중"],
+  ["Disabling Bigger Context", "Désactivation du contexte étendu", "正在禁用更大上下文", "正在停用更大上下文", "拡張コンテキストを無効にしています", "확장 컨텍스트 비활성화 중"],
+  ["Bigger Context enabled", "Contexte étendu activé", "已启用更大上下文", "已啟用更大上下文", "拡張コンテキストを有効にしました", "확장 컨텍스트 활성화 완료"],
+  ["Standard context restored", "Contexte standard rétabli", "已恢复标准上下文", "已還原標準上下文", "標準コンテキストに戻しました", "표준 컨텍스트 복원 완료"],
+  ["Enabling Skills as files", "Activation des compétences sous forme de fichiers", "正在启用技能文件", "正在啟用技能檔案", "ファイル形式のスキルを有効にしています", "스킬 파일 활성화 중"],
+  ["Disabling Skills as files", "Désactivation des compétences sous forme de fichiers", "正在禁用技能文件", "正在停用技能檔案", "ファイル形式のスキルを無効にしています", "스킬 파일 비활성화 중"],
+  ["Skills as files enabled", "Compétences sous forme de fichiers activées", "已启用技能文件", "已啟用技能檔案", "ファイル形式のスキルを有効にしました", "스킬 파일 활성화 완료"],
+  ["Inline skills restored", "Compétences intégrées au message rétablies", "已恢复内联技能", "已還原內嵌技能", "インラインのスキルに戻しました", "인라인 스킬 복원 완료"],
+  ["Enabling a new browser chat for each turn", "Activation d’une nouvelle conversation web à chaque tour", "正在启用每轮新建浏览器对话", "正在啟用每輪新增瀏覽器對話", "各ターンの新規ブラウザチャットを有効にしています", "매 턴 새 브라우저 대화 활성화 중"],
+  ["Restoring browser chat retention", "Rétablissement de la réutilisation des conversations web", "正在恢复浏览器对话保留", "正在還原瀏覽器對話保留", "ブラウザチャットの保持を復元しています", "브라우저 대화 유지 복원 중"],
+  ["New browser chats per turn enabled", "Nouvelle conversation web à chaque tour activée", "已启用每轮新建浏览器对话", "已啟用每輪新增瀏覽器對話", "各ターンの新規ブラウザチャットを有効にしました", "매 턴 새 브라우저 대화 활성화 완료"],
+  ["Browser chat retention restored", "Réutilisation des conversations web rétablie", "已恢复浏览器对话保留", "已還原瀏覽器對話保留", "ブラウザチャットの保持を復元しました", "브라우저 대화 유지 복원 완료"],
+  ["Enabling saved ChatGPT conversations", "Activation de l’enregistrement des conversations ChatGPT", "正在启用保存 ChatGPT 对话", "正在啟用儲存 ChatGPT 對話", "ChatGPT の会話保存を有効にしています", "ChatGPT 대화 저장 활성화 중"],
+  ["Restoring Temporary Chat", "Rétablissement des conversations temporaires", "正在恢复临时聊天", "正在還原暫時聊天", "一時チャットに戻しています", "임시 채팅 복원 중"],
+  ["Saved ChatGPT conversations enabled", "Enregistrement des conversations ChatGPT activé", "已启用保存 ChatGPT 对话", "已啟用儲存 ChatGPT 對話", "ChatGPT の会話保存を有効にしました", "ChatGPT 대화 저장 활성화 완료"],
+  ["Temporary Chat restored", "Conversations temporaires rétablies", "已恢复临时聊天", "已還原暫時聊天", "一時チャットに戻しました", "임시 채팅 복원 완료"],
+  ["Installing the Zero Risk Pro model", "Installation du modèle Pro en mode Sans risque", "正在安装零风险 Pro 模型", "正在安裝零風險 Pro 模型", "ゼロリスクの Pro モデルをインストールしています", "제로 리스크 Pro 모델 설치 중"],
+  ["Removing the Zero Risk Pro model", "Suppression du modèle Pro en mode Sans risque", "正在移除零风险 Pro 模型", "正在移除零風險 Pro 模型", "ゼロリスクの Pro モデルを削除しています", "제로 리스크 Pro 모델 제거 중"],
+  ["Zero Risk Pro installed", "Modèle Pro en mode Sans risque installé", "零风险 Pro 已安装", "零風險 Pro 已安裝", "ゼロリスクの Pro をインストールしました", "제로 리스크 Pro 설치 완료"],
+  ["Default Zero Risk model restored", "Modèle Sans risque par défaut rétabli", "已恢复默认零风险模型", "已還原預設零風險模型", "既定のゼロリスクモデルに戻しました", "기본 제로 리스크 모델 복원 완료"],
+  ["Enabling Zero Risk", "Activation du mode Sans risque", "正在启用零风险模式", "正在啟用零風險模式", "ゼロリスクを有効にしています", "제로 리스크 활성화 중"],
+  ["Zero Risk enabled", "Mode Sans risque activé", "已启用零风险模式", "已啟用零風險模式", "ゼロリスクを有効にしました", "제로 리스크 활성화 완료"],
+  ["Enabling automatic browser interaction", "Activation de l’interaction automatique avec le navigateur", "正在启用浏览器自动交互", "正在啟用瀏覽器自動互動", "ブラウザの自動操作を有効にしています", "자동 브라우저 상호 작용 활성화 중"],
+  ["Automatic browser interaction enabled", "Interaction automatique avec le navigateur activée", "已启用浏览器自动交互", "已啟用瀏覽器自動互動", "ブラウザの自動操作を有効にしました", "자동 브라우저 상호 작용 활성화 완료"],
+  ["Reconnecting the native Codex harness with saved tunnel credentials", "Reconnexion de l’environnement Codex natif avec les identifiants de tunnel enregistrés", "正在使用已保存的隧道凭据重新连接原生 Codex 执行环境", "正在使用已儲存的通道憑證重新連接原生 Codex 執行環境", "保存済みのトンネル認証情報でネイティブ Codex 実行環境に再接続しています", "저장된 터널 자격 증명으로 기본 Codex 실행 환경에 다시 연결 중"],
+  ["Connecting the native Codex harness", "Connexion de l’environnement Codex natif", "正在连接原生 Codex 执行环境", "正在連接原生 Codex 執行環境", "ネイティブ Codex 実行環境に接続しています", "기본 Codex 실행 환경에 연결 중"],
+  ["Local MCP tools are ready", "Les outils MCP locaux sont prêts", "本地 MCP 工具已就绪", "本機 MCP 工具已就緒", "ローカル MCP ツールの準備ができました", "로컬 MCP 도구가 준비되었습니다"],
+  ["Validating saved DEV tunnel credentials", "Validation des identifiants de tunnel DEV enregistrés", "正在验证已保存的 DEV 隧道凭据", "正在驗證已儲存的 DEV 通道憑證", "保存済みの DEV トンネル認証情報を検証しています", "저장된 DEV 터널 자격 증명 확인 중"],
+  ["Configuring the isolated DEV Full harness", "Configuration de l’environnement DEV complet isolé", "正在配置隔离的 DEV 完整执行环境", "正在設定隔離的 DEV 完整執行環境", "隔離された DEV の完全実行環境を設定しています", "격리된 DEV 전체 실행 환경 구성 중"],
+  ["DEV Full harness is configured", "L’environnement DEV complet est configuré", "DEV 完整执行环境已配置", "DEV 完整執行環境已設定", "DEV の完全実行環境を設定しました", "DEV 전체 실행 환경 구성 완료"],
+  ["Validating Codex configuration before changing the runtime", "Validation de la configuration Codex avant de modifier le moteur", "正在更改运行环境前验证 Codex 配置", "正在變更執行環境前驗證 Codex 設定", "実行環境を変更する前に Codex の設定を検証しています", "실행 환경을 변경하기 전 Codex 구성 확인 중"],
+  ["Codex configuration is ready for setup", "La configuration Codex est prête pour l’installation", "Codex 配置已准备好进行安装", "Codex 設定已準備好進行安裝", "Codex の設定がセットアップ可能になりました", "Codex 구성이 설치할 준비가 되었습니다"],
+  ["Restoring the previous terminal-managed daemon", "Rétablissement du service précédent géré par le terminal", "正在恢复先前由终端管理的后台进程", "正在還原先前由終端機管理的背景程序", "以前のターミナル管理デーモンを復元しています", "이전에 터미널에서 관리하던 데몬 복원 중"],
+  ["Previous terminal-managed daemon restored", "Service précédent géré par le terminal rétabli", "先前由终端管理的后台进程已恢复", "先前由終端機管理的背景程序已還原", "以前のターミナル管理デーモンを復元しました", "이전에 터미널에서 관리하던 데몬 복원 완료"],
+  ["Restoring the previous terminal-managed tunnel", "Rétablissement du tunnel précédent géré par le terminal", "正在恢复先前由终端管理的隧道", "正在還原先前由終端機管理的通道", "以前のターミナル管理トンネルを復元しています", "이전에 터미널에서 관리하던 터널 복원 중"],
+  ["Previous terminal-managed tunnel restored", "Tunnel précédent géré par le terminal rétabli", "先前由终端管理的隧道已恢复", "先前由終端機管理的通道已還原", "以前のターミナル管理トンネルを復元しました", "이전에 터미널에서 관리하던 터널 복원 완료"],
+  ["Verifying the previous terminal-managed runtime", "Vérification du moteur précédent géré par le terminal", "正在验证先前由终端管理的运行环境", "正在驗證先前由終端機管理的執行環境", "以前のターミナル管理実行環境を確認しています", "이전에 터미널에서 관리하던 실행 환경 확인 중"],
+  ["Previous terminal-managed runtime is still healthy", "Le moteur précédent géré par le terminal fonctionne toujours", "先前由终端管理的运行环境仍正常", "先前由終端機管理的執行環境仍正常", "以前のターミナル管理実行環境は引き続き正常です", "이전에 터미널에서 관리하던 실행 환경이 여전히 정상입니다"],
+];
+
+const diagnostics: readonly Translation[] = [
+  ["Configuration is invalid", "La configuration est invalide", "配置无效", "設定無效", "設定が無効です", "구성이 올바르지 않습니다"],
+  ["Embedded launcher browser is unavailable", "Le navigateur intégré du lanceur est indisponible", "启动器内嵌浏览器不可用", "啟動器內建瀏覽器無法使用", "ランチャーの内蔵ブラウザを利用できません", "런처 내장 브라우저를 사용할 수 없습니다"],
+  ["The configured port belongs to another service", "Le port configuré est utilisé par un autre service", "配置的端口被其他服务占用", "設定的連接埠由其他服務使用", "設定されたポートは別のサービスが使用しています", "구성된 포트를 다른 서비스가 사용 중입니다"],
+  ["Responses proxy is still drained and is not accepting Codex turns", "Le proxy Responses reste suspendu et n’accepte pas de tours Codex", "Responses 代理仍处于排空状态，未接受 Codex 轮次", "Responses 代理仍處於清空狀態，未接受 Codex 輪次", "Responses プロキシはドレイン状態のままで、Codex ターンを受け付けていません", "Responses 프록시가 여전히 드레인 상태이며 Codex 턴을 받지 않습니다"],
+  ["Responses proxy ownership could not be verified", "Impossible de vérifier le contrôle du proxy Responses", "无法验证 Responses 代理的归属", "無法驗證 Responses 代理的歸屬", "Responses プロキシの所有権を確認できませんでした", "Responses 프록시의 소유권을 확인할 수 없습니다"],
+  ["Responses proxy is not reachable", "Le proxy Responses est inaccessible", "无法连接 Responses 代理", "無法連線至 Responses 代理", "Responses プロキシに接続できません", "Responses 프록시에 연결할 수 없습니다"],
+  ["ChatGPT login state is missing or unverified; run `codex-chatgpt-web login`", "La session ChatGPT est absente ou non vérifiée ; exécutez `codex-chatgpt-web login`", "ChatGPT 登录状态缺失或未经验证；请运行 `codex-chatgpt-web login`", "ChatGPT 登入狀態遺失或尚未驗證；請執行 `codex-chatgpt-web login`", "ChatGPT のログイン状態がないか未検証です。`codex-chatgpt-web login` を実行してください", "ChatGPT 로그인 상태가 없거나 확인되지 않았습니다. `codex-chatgpt-web login`을 실행하세요"],
+  ["ChatGPT login verification marker is readable by other users", "Le marqueur de vérification de la connexion ChatGPT est lisible par d’autres utilisateurs", "其他用户可读取 ChatGPT 登录验证标记", "其他使用者可讀取 ChatGPT 登入驗證標記", "ChatGPT のログイン検証マーカーを他のユーザーが読み取れます", "다른 사용자가 ChatGPT 로그인 확인 마커를 읽을 수 있습니다"],
+  ["ChatGPT login state has authenticated browser evidence", "La connexion ChatGPT a été vérifiée dans le navigateur", "ChatGPT 登录状态已通过浏览器身份验证", "ChatGPT 登入狀態已透過瀏覽器驗證", "ChatGPT へのログインをブラウザで確認しました", "브라우저에서 ChatGPT 로그인 상태를 확인했습니다"],
+  ["Codex model route is not installed", "Le routage des modèles Codex n’est pas installé", "Codex 模型路由未安装", "Codex 模型路由未安裝", "Codex のモデルルートがインストールされていません", "Codex 모델 경로가 설치되지 않았습니다"],
+  ["Codex integration is inconsistent", "L’intégration Codex présente des incohérences", "Codex 集成状态不一致", "Codex 整合狀態不一致", "Codex 連携の状態に不整合があります", "Codex 통합 상태가 일관되지 않습니다"],
+  ["Codex native model route is installed", "Le routage natif des modèles Codex est installé", "Codex 原生模型路由已安装", "Codex 原生模型路由已安裝", "Codex のネイティブモデルルートがインストールされています", "Codex 기본 모델 경로가 설치되었습니다"],
+  ["A legacy OS background service still exists; rerun launcher setup to migrate ownership", "Un ancien service système en arrière-plan existe encore ; relancez la configuration du lanceur pour lui en transférer le contrôle", "旧版系统后台服务仍存在；请重新运行启动器设置以迁移归属", "舊版系統背景服務仍存在；請重新執行啟動器設定以移轉歸屬", "古い OS バックグラウンドサービスが残っています。ランチャーのセットアップを再実行して所有権を移行してください", "기존 OS 백그라운드 서비스가 남아 있습니다. 런처 설정을 다시 실행하여 소유권을 이전하세요"],
+  ["Launcher owns the background runtime", "Le lanceur gère le moteur en arrière-plan", "启动器管理后台运行环境", "啟動器管理背景執行環境", "ランチャーがバックグラウンド実行環境を管理しています", "런처가 백그라운드 실행 환경을 관리합니다"],
+  ["Managed service is unavailable on this OS; keep `serve` running manually", "Le service géré est indisponible sur ce système ; laissez `serve` fonctionner manuellement", "此系统不支持托管服务；请手动保持 `serve` 运行", "此系統不支援代管服務；請手動保持 `serve` 執行", "この OS では管理サービスを利用できません。`serve` を手動で実行し続けてください", "이 OS에서는 관리 서비스를 사용할 수 없습니다. `serve`를 수동으로 계속 실행하세요"],
+  ["macOS background service is not installed and loaded", "Le service d’arrière-plan macOS n’est pas installé et chargé", "macOS 后台服务未安装并加载", "macOS 背景服務未安裝並載入", "macOS のバックグラウンドサービスがインストール・読み込みされていません", "macOS 백그라운드 서비스가 설치 및 로드되지 않았습니다"],
+  ["macOS background service is loaded", "Le service d’arrière-plan macOS est chargé", "macOS 后台服务已加载", "macOS 背景服務已載入", "macOS のバックグラウンドサービスを読み込みました", "macOS 백그라운드 서비스가 로드되었습니다"],
+  ["Pinned openai/tunnel-client binary is installed", "La version fixée du programme openai/tunnel-client est installée", "固定版本的 openai/tunnel-client 程序已安装", "固定版本的 openai/tunnel-client 程式已安裝", "指定バージョンの openai/tunnel-client がインストールされています", "지정된 버전의 openai/tunnel-client가 설치되었습니다"],
+  ["Tunnel runtime key file is missing", "Le fichier de clé d’exécution du tunnel est absent", "缺少隧道运行密钥文件", "缺少通道執行金鑰檔案", "トンネルの実行キーのファイルがありません", "터널 실행 키 파일이 없습니다"],
+  ["Tunnel runtime key file has unsafe permissions", "Les droits d’accès du fichier de clé d’exécution du tunnel ne sont pas sûrs", "隧道运行密钥文件的权限不安全", "通道執行金鑰檔案的權限不安全", "トンネルの実行キーのファイル権限が安全ではありません", "터널 실행 키 파일의 권한이 안전하지 않습니다"],
+  ["Tunnel runtime key is stored privately", "La clé d’exécution du tunnel est stockée de façon privée", "隧道运行密钥已私密保存", "通道執行金鑰已私密儲存", "トンネルの実行キーは非公開で保存されています", "터널 실행 키가 비공개로 저장되었습니다"],
+  ["A legacy OS tunnel service still exists; rerun launcher MCP setup to migrate ownership", "Un ancien service système de tunnel existe encore ; relancez la configuration MCP du lanceur pour lui en transférer le contrôle", "旧版系统隧道服务仍存在；请重新运行启动器 MCP 设置以迁移归属", "舊版系統通道服務仍存在；請重新執行啟動器 MCP 設定以移轉歸屬", "古い OS トンネルサービスが残っています。ランチャーの MCP セットアップを再実行して所有権を移行してください", "기존 OS 터널 서비스가 남아 있습니다. 런처 MCP 설정을 다시 실행하여 소유권을 이전하세요"],
+  ["Launcher owns the tunnel runtime", "Le lanceur gère le moteur du tunnel", "启动器管理隧道运行环境", "啟動器管理通道執行環境", "ランチャーがトンネル実行環境を管理しています", "런처가 터널 실행 환경을 관리합니다"],
+  ["macOS tunnel service is installed, loaded, and running", "Le service de tunnel macOS est installé, chargé et en cours d’exécution", "macOS 隧道服务已安装、加载并运行", "macOS 通道服務已安裝、載入並執行", "macOS のトンネルサービスはインストール・読み込み済みで、実行中です", "macOS 터널 서비스가 설치 및 로드되어 실행 중입니다"],
+  ["macOS tunnel service is not fully running", "Le service de tunnel macOS ne fonctionne pas entièrement", "macOS 隧道服务未完全运行", "macOS 通道服務未完全執行", "macOS のトンネルサービスは完全には動作していません", "macOS 터널 서비스가 완전히 실행되지 않습니다"],
+  ["Tunnel runtime reports healthy and ready", "Le moteur du tunnel est opérationnel et prêt", "隧道运行环境正常且已就绪", "通道執行環境正常且已就緒", "トンネル実行環境は正常で準備ができています", "터널 실행 환경이 정상이며 준비되었습니다"],
+  ["Tunnel runtime is not ready", "Le moteur du tunnel n’est pas prêt", "隧道运行环境未就绪", "通道執行環境尚未就緒", "トンネル実行環境の準備ができていません", "터널 실행 환경이 준비되지 않았습니다"],
+  ["Browser-only mode intentionally has no local tools or MCP tunnel", "Le mode Navigateur seul ne propose volontairement aucun outil local ni tunnel MCP", "仅浏览器模式按设计不提供本地工具或 MCP 隧道", "僅瀏覽器模式依設計不提供本機工具或 MCP 通道", "ブラウザ専用モードには仕様上、ローカルツールや MCP トンネルはありません", "브라우저 전용 모드에는 의도적으로 로컬 도구나 MCP 터널이 없습니다"],
+  ["Isolated DEV harness configuration is valid", "La configuration de l’environnement DEV isolé est valide", "隔离的 DEV 执行环境配置有效", "隔離的 DEV 執行環境設定有效", "隔離された DEV 実行環境の設定は有効です", "격리된 DEV 실행 환경 구성이 올바릅니다"],
+  ["Isolated DEV harness configuration is missing", "La configuration de l’environnement DEV isolé est absente", "缺少隔离的 DEV 执行环境配置", "缺少隔離的 DEV 執行環境設定", "隔離された DEV 実行環境の設定がありません", "격리된 DEV 실행 환경 구성이 없습니다"],
+  ["DEV tunnel credentials are configured", "Les identifiants du tunnel DEV sont configurés", "DEV 隧道凭据已配置", "DEV 通道憑證已設定", "DEV トンネルの認証情報が設定されています", "DEV 터널 자격 증명이 구성되었습니다"],
+  ["DEV Full harness tunnel credentials are not configured", "Les identifiants de tunnel de l’environnement DEV complet ne sont pas configurés", "DEV 完整执行环境的隧道凭据未配置", "DEV 完整執行環境的通道憑證未設定", "DEV の完全実行環境のトンネル認証情報が未設定です", "DEV 전체 실행 환경의 터널 자격 증명이 구성되지 않았습니다"],
+  ["Isolated DEV MCP tunnel runtime is ready", "Le moteur du tunnel MCP DEV isolé est prêt", "隔离的 DEV MCP 隧道运行环境已就绪", "隔離的 DEV MCP 通道執行環境已就緒", "隔離された DEV MCP トンネル実行環境の準備ができました", "격리된 DEV MCP 터널 실행 환경이 준비되었습니다"],
+  ["Isolated DEV MCP tunnel runtime is not ready", "Le moteur du tunnel MCP DEV isolé n’est pas prêt", "隔离的 DEV MCP 隧道运行环境未就绪", "隔離的 DEV MCP 通道執行環境尚未就緒", "隔離された DEV MCP トンネル実行環境の準備ができていません", "격리된 DEV MCP 터널 실행 환경이 준비되지 않았습니다"],
+  ["Isolated DEV MCP tunnel runtime could not be inspected", "Impossible d’inspecter le moteur du tunnel MCP DEV isolé", "无法检查隔离的 DEV MCP 隧道运行环境", "無法檢查隔離的 DEV MCP 通道執行環境", "隔離された DEV MCP トンネル実行環境を確認できませんでした", "격리된 DEV MCP 터널 실행 환경을 점검할 수 없습니다"],
+  ["DEV runtime supervision is tunnel-only and never starts a Responses listener", "La supervision DEV gère uniquement le tunnel et ne démarre jamais d’écouteur Responses", "DEV 运行环境仅监管隧道，绝不启动 Responses 监听器", "DEV 執行環境僅監管通道，絕不啟動 Responses 接聽器", "DEV 実行環境の監視はトンネルのみを対象とし、Responses リスナーを起動しません", "DEV 실행 환경은 터널만 관리하며 Responses 수신기를 시작하지 않습니다"],
+];
+
+const errors: readonly Translation[] = [
+  ["Finish the current launcher operation before checking Limits.", "Terminez l’opération du lanceur en cours avant de vérifier les limites.", "请先完成当前启动器操作，再检查用量限制。", "請先完成目前啟動器操作，再檢查用量限制。", "使用量上限を確認する前に、現在のランチャー操作を完了してください。", "사용량 제한을 확인하기 전에 현재 런처 작업을 마치세요."],
+  ["Open the GitHub and X pages before continuing", "Ouvrez les pages GitHub et X avant de continuer", "请先打开 GitHub 和 X 页面再继续", "請先開啟 GitHub 與 X 頁面再繼續", "続行する前に GitHub と X のページを開いてください", "계속하기 전에 GitHub 및 X 페이지를 여세요"],
+  ["External URL is not allowlisted", "Cette URL externe ne figure pas dans la liste autorisée", "此外部网址不在允许列表中", "此外部網址不在允許清單中", "この外部 URL は許可リストに含まれていません", "이 외부 URL은 허용 목록에 없습니다"],
+  ["Browser smoke testing is disabled in Zero Risk mode", "Le test de fonctionnement du navigateur est désactivé en mode Sans risque", "零风险模式禁用浏览器基本功能测试", "零風險模式停用瀏覽器基本功能測試", "ゼロリスクモードではブラウザの動作テストが無効です", "제로 리스크 모드에서는 브라우저 기본 작동 테스트를 사용할 수 없습니다"],
+  ["DEV chat turns are owned by the repository CLI process", "Les tours de conversation DEV sont gérés par le processus en ligne de commande du dépôt", "DEV 对话轮次由仓库命令行进程管理", "DEV 對話輪次由儲存庫命令列程序管理", "DEV のチャットターンはリポジトリの CLI プロセスが所有しています", "DEV 대화 턴은 저장소 CLI 프로세스가 관리합니다"],
+  ["DEV profile has no Codex integration to remove", "Le profil DEV ne contient aucune intégration Codex à supprimer", "DEV 配置没有可移除的 Codex 集成", "DEV 設定檔沒有可移除的 Codex 整合", "DEV プロファイルには削除する Codex 連携がありません", "DEV 프로필에는 제거할 Codex 통합이 없습니다"],
+  ["The isolated DEV launcher is started explicitly from the repository CLI", "Le lanceur DEV isolé se démarre explicitement depuis la ligne de commande du dépôt", "隔离的 DEV 启动器需从仓库命令行显式启动", "隔離的 DEV 啟動器須從儲存庫命令列明確啟動", "隔離された DEV ランチャーはリポジトリの CLI から明示的に起動します", "격리된 DEV 런처는 저장소 CLI에서 명시적으로 시작합니다"],
+  ["Finish or cancel active ChatGPT turns before changing Skills as files", "Terminez ou annulez les tours ChatGPT en cours avant de modifier les compétences sous forme de fichiers", "更改技能文件前，请完成或取消进行中的 ChatGPT 轮次", "變更技能檔案前，請完成或取消進行中的 ChatGPT 輪次", "ファイル形式のスキルを変更する前に、実行中の ChatGPT ターンを完了またはキャンセルしてください", "스킬 파일을 변경하기 전에 진행 중인 ChatGPT 턴을 마치거나 취소하세요"],
+  ["Finish or cancel active ChatGPT turns before changing browser conversation retention", "Terminez ou annulez les tours ChatGPT en cours avant de modifier la conservation des conversations web", "更改浏览器对话保留前，请完成或取消进行中的 ChatGPT 轮次", "變更瀏覽器對話保留前，請完成或取消進行中的 ChatGPT 輪次", "ブラウザの会話保持を変更する前に、実行中の ChatGPT ターンを完了またはキャンセルしてください", "브라우저 대화 유지를 변경하기 전에 진행 중인 ChatGPT 턴을 마치거나 취소하세요"],
+  ["Finish or cancel active ChatGPT turns before changing saved chats", "Terminez ou annulez les tours ChatGPT en cours avant de modifier l’enregistrement des conversations", "更改对话保存前，请完成或取消进行中的 ChatGPT 轮次", "變更對話儲存前，請完成或取消進行中的 ChatGPT 輪次", "会話の保存を変更する前に、実行中の ChatGPT ターンを完了またはキャンセルしてください", "대화 저장을 변경하기 전에 진행 중인 ChatGPT 턴을 마치거나 취소하세요"],
+  ["Launcher updates are unavailable", "Les mises à jour du lanceur sont indisponibles", "启动器更新不可用", "啟動器更新無法使用", "ランチャーの更新を利用できません", "런처 업데이트를 사용할 수 없습니다"],
+  ["The macOS update archive does not contain an application bundle", "L’archive de mise à jour macOS ne contient pas d’application", "macOS 更新压缩包不包含应用程序包", "macOS 更新壓縮檔不包含應用程式套件", "macOS の更新アーカイブにアプリケーションバンドルがありません", "macOS 업데이트 압축 파일에 애플리케이션 번들이 없습니다"],
+  ["The macOS update archive is incomplete", "L’archive de mise à jour macOS est incomplète", "macOS 更新压缩包不完整", "macOS 更新壓縮檔不完整", "macOS の更新アーカイブが不完全です", "macOS 업데이트 압축 파일이 불완전합니다"],
+  ["The running Linux AppImage path is unavailable; reinstall with install-launcher.sh", "Le chemin de l’AppImage Linux en cours est indisponible ; réinstallez avec install-launcher.sh", "无法获取正在运行的 Linux AppImage 路径；请使用 install-launcher.sh 重新安装", "無法取得正在執行的 Linux AppImage 路徑；請使用 install-launcher.sh 重新安裝", "実行中の Linux AppImage のパスを取得できません。install-launcher.sh で再インストールしてください", "실행 중인 Linux AppImage 경로를 확인할 수 없습니다. install-launcher.sh로 다시 설치하세요"],
+  ["Linux auto-update requires the stable install-launcher.sh wrapper; reinstall once", "La mise à jour automatique Linux nécessite le lanceur stable install-launcher.sh ; réinstallez une fois", "Linux 自动更新需要稳定的 install-launcher.sh 启动脚本；请重新安装一次", "Linux 自動更新需要穩定的 install-launcher.sh 啟動指令稿；請重新安裝一次", "Linux の自動更新には安定した install-launcher.sh ラッパーが必要です。一度再インストールしてください", "Linux 자동 업데이트에는 안정된 install-launcher.sh 래퍼가 필요합니다. 한 번 다시 설치하세요"],
+  ["Packaged Linux AppImage runner is missing", "Le programme de lancement AppImage Linux intégré est absent", "缺少随附的 Linux AppImage 运行程序", "缺少隨附的 Linux AppImage 執行程式", "同梱の Linux AppImage ランナーがありません", "포함된 Linux AppImage 실행기가 없습니다"],
+  ["Finish or cancel active ChatGPT turns before changing browser interaction mode", "Terminez ou annulez les tours ChatGPT en cours avant de changer le mode d’interaction du navigateur", "更改浏览器交互模式前，请完成或取消进行中的 ChatGPT 轮次", "變更瀏覽器互動模式前，請完成或取消進行中的 ChatGPT 輪次", "ブラウザの操作モードを変更する前に、実行中の ChatGPT ターンを完了またはキャンセルしてください", "브라우저 상호 작용 모드를 변경하기 전에 진행 중인 ChatGPT 턴을 마치거나 취소하세요"],
+  ["Browser interaction mode must be automatic or manual", "Le mode d’interaction du navigateur doit être automatic ou manual", "浏览器交互模式必须为 automatic 或 manual", "瀏覽器互動模式必須為 automatic 或 manual", "ブラウザの操作モードは automatic または manual である必要があります", "브라우저 상호 작용 모드는 automatic 또는 manual이어야 합니다"],
+  ["Launcher browser interaction mode is invalid", "Le mode d’interaction du navigateur du lanceur est invalide", "启动器浏览器交互模式无效", "啟動器瀏覽器互動模式無效", "ランチャーのブラウザ操作モードが無効です", "런처 브라우저 상호 작용 모드가 올바르지 않습니다"],
+  ["Browser tab does not exist", "Cet onglet du navigateur n’existe pas", "浏览器标签页不存在", "瀏覽器分頁不存在", "ブラウザのタブが存在しません", "브라우저 탭이 없습니다"],
+  ["Zero Risk tab does not exist", "Cet onglet Sans risque n’existe pas", "零风险标签页不存在", "零風險分頁不存在", "ゼロリスクのタブが存在しません", "제로 리스크 탭이 없습니다"],
+  ["Browser navigation is locked while ChatGPT is running a Codex turn", "La navigation est verrouillée pendant que ChatGPT exécute un tour Codex", "ChatGPT 正在执行 Codex 轮次时，浏览器导航被锁定", "ChatGPT 正在執行 Codex 輪次時，瀏覽器導覽會鎖定", "ChatGPT が Codex ターンを実行中のため、ブラウザの移動はロックされています", "ChatGPT가 Codex 턴을 실행하는 동안 브라우저 탐색이 잠깁니다"],
+  ["Electron clipboard is unavailable", "Le presse-papiers Electron est indisponible", "Electron 剪贴板不可用", "Electron 剪貼簿無法使用", "Electron のクリップボードを利用できません", "Electron 클립보드를 사용할 수 없습니다"],
+  ["Manual prompt is no longer available", "Le message manuel n’est plus disponible", "手动提示词已不可用", "手動提示詞已無法使用", "手動プロンプトは利用できなくなりました", "수동 프롬프트를 더 이상 사용할 수 없습니다"],
+  ["Zero Risk turn can no longer be marked as sent", "Ce tour Sans risque ne peut plus être marqué comme envoyé", "此零风险轮次已无法标记为已发送", "此零風險輪次已無法標記為已傳送", "このゼロリスクのターンを送信済みにすることはできません", "이 제로 리스크 턴을 더 이상 전송 완료로 표시할 수 없습니다"],
+  ["A retained Zero Risk conversation requires an incremental resume prompt", "La reprise d’une conversation Sans risque conservée nécessite un message complémentaire", "保留的零风险对话需要增量恢复提示词", "保留的零風險對話需要增量恢復提示詞", "保持されたゼロリスクの会話には差分の再開プロンプトが必要です", "유지된 제로 리스크 대화에는 증분 재개 프롬프트가 필요합니다"],
+  ["ChatGPT browser is unavailable for zoom", "Le navigateur ChatGPT est indisponible pour le zoom", "无法使用 ChatGPT 浏览器缩放", "無法使用 ChatGPT 瀏覽器縮放", "ChatGPT ブラウザのズームを利用できません", "ChatGPT 브라우저 확대/축소를 사용할 수 없습니다"],
+  ["The managed ChatGPT page is not available for connector verification", "La page ChatGPT gérée est indisponible pour vérifier le connecteur", "托管的 ChatGPT 页面不可用于连接器验证", "代管的 ChatGPT 頁面無法用於連接器驗證", "管理中の ChatGPT ページでコネクタを確認できません", "관리 중인 ChatGPT 페이지에서 커넥터를 확인할 수 없습니다"],
+  ["ChatGPT security check is still blocking backend requests. Reload ChatGPT and retry.", "Le contrôle de sécurité ChatGPT bloque toujours les requêtes. Rechargez ChatGPT et réessayez.", "ChatGPT 安全检查仍阻止后端请求。请重新加载 ChatGPT 并重试。", "ChatGPT 安全檢查仍阻擋後端請求。請重新載入 ChatGPT 並重試。", "ChatGPT のセキュリティ確認がバックエンドへのリクエストをブロックしています。ChatGPT を再読み込みして再試行してください。", "ChatGPT 보안 검사가 여전히 백엔드 요청을 차단하고 있습니다. ChatGPT를 새로 고치고 다시 시도하세요."],
+  ["ChatGPT login was not completed before the timeout", "La connexion à ChatGPT n’a pas été terminée dans le délai imparti", "ChatGPT 登录未在超时前完成", "ChatGPT 登入未在逾時前完成", "制限時間内に ChatGPT へのログインが完了しませんでした", "제한 시간 안에 ChatGPT 로그인이 완료되지 않았습니다"],
+  ["Passkey sign-in is currently supported only on macOS", "La connexion par clé d’accès est actuellement disponible uniquement sur macOS", "通行密钥登录目前仅支持 macOS", "通行密鑰登入目前僅支援 macOS", "パスキーによるログインは現在 macOS のみで利用できます", "패스키 로그인은 현재 macOS에서만 지원됩니다"],
+  ["No passkey sign-in is waiting for Continue", "Aucune connexion par clé d’accès n’attend l’action Continuer", "没有等待“继续”的通行密钥登录", "沒有等待「繼續」的通行密鑰登入", "「続行」を待っているパスキーログインはありません", "‘계속’을 기다리는 패스키 로그인이 없습니다"],
+  ["Passkey sign-in completed without an authenticated Launcher session", "La connexion par clé d’accès s’est terminée sans session authentifiée dans le lanceur", "通行密钥登录已结束，但启动器会话未通过身份验证", "通行密鑰登入已結束，但啟動器工作階段未通過驗證", "パスキーログインは完了しましたが、ランチャーのセッションは認証されていません", "패스키 로그인이 완료되었지만 런처 세션이 인증되지 않았습니다"],
+  ["ChatGPT session remained authenticated after local session data was cleared", "La session ChatGPT reste connectée après l’effacement des données locales", "清除本地会话数据后，ChatGPT 会话仍保持登录", "清除本機工作階段資料後，ChatGPT 仍保持登入", "ローカルセッションデータの消去後も ChatGPT はログイン状態のままです", "로컬 세션 데이터를 지운 후에도 ChatGPT 세션이 로그인 상태로 남아 있습니다"],
+  ["A previous launcher operation process is still running", "Le processus d’une opération précédente du lanceur est toujours en cours", "先前的启动器操作进程仍在运行", "先前的啟動器操作程序仍在執行", "以前のランチャー操作のプロセスがまだ実行中です", "이전 런처 작업 프로세스가 아직 실행 중입니다"],
+  ["Install the Codex integration before connecting the bridge route", "Installez l’intégration Codex avant de connecter le routage de la passerelle", "连接桥接路由前，请先安装 Codex 集成", "連接橋接路由前，請先安裝 Codex 整合", "ブリッジのルートに接続する前に Codex 連携をインストールしてください", "브리지 경로를 연결하기 전에 Codex 통합을 설치하세요"],
+  ["The native MCP runtime is not configured", "Le moteur MCP natif n’est pas configuré", "原生 MCP 运行环境未配置", "原生 MCP 執行環境未設定", "ネイティブ MCP 実行環境が未設定です", "기본 MCP 실행 환경이 구성되지 않았습니다"],
+  ["Zero Risk must be installed through MCP setup because tunnel credentials are required", "Installez le mode Sans risque via la configuration MCP, car des identifiants de tunnel sont nécessaires", "零风险模式需要隧道凭据，必须通过 MCP 设置安装", "零風險模式需要通道憑證，必須透過 MCP 設定安裝", "ゼロリスクにはトンネル認証情報が必要なため、MCP セットアップからインストールしてください", "제로 리스크에는 터널 자격 증명이 필요하므로 MCP 설정을 통해 설치해야 합니다"],
+  ["Initialize the runtime before changing Bigger Context", "Initialisez le moteur avant de modifier le contexte étendu", "更改更大上下文前，请初始化运行环境", "變更更大上下文前，請初始化執行環境", "拡張コンテキストを変更する前に実行環境を初期化してください", "확장 컨텍스트를 변경하기 전에 실행 환경을 초기화하세요"],
+  ["Initialize the runtime before changing Skills as files", "Initialisez le moteur avant de modifier les compétences sous forme de fichiers", "更改技能文件前，请初始化运行环境", "變更技能檔案前，請初始化執行環境", "ファイル形式のスキルを変更する前に実行環境を初期化してください", "스킬 파일을 변경하기 전에 실행 환경을 초기화하세요"],
+  ["Skills as files is unavailable in Zero Risk mode", "Les compétences sous forme de fichiers sont indisponibles en mode Sans risque", "零风险模式不支持技能文件", "零風險模式不支援技能檔案", "ゼロリスクモードではファイル形式のスキルを利用できません", "제로 리스크 모드에서는 스킬 파일을 사용할 수 없습니다"],
+  ["Initialize the runtime before changing browser conversation retention", "Initialisez le moteur avant de modifier la conservation des conversations web", "更改浏览器对话保留前，请初始化运行环境", "變更瀏覽器對話保留前，請初始化執行環境", "ブラウザの会話保持を変更する前に実行環境を初期化してください", "브라우저 대화 유지를 변경하기 전에 실행 환경을 초기화하세요"],
+  ["New browser chats per turn are unavailable in Zero Risk mode", "Une nouvelle conversation web à chaque tour n’est pas disponible en mode Sans risque", "零风险模式不支持每轮新建浏览器对话", "零風險模式不支援每輪新增瀏覽器對話", "ゼロリスクモードでは各ターンの新規ブラウザチャットを利用できません", "제로 리스크 모드에서는 매 턴 새 브라우저 대화를 사용할 수 없습니다"],
+  ["Initialize the runtime before changing saved chats", "Initialisez le moteur avant de modifier l’enregistrement des conversations", "更改对话保存前，请初始化运行环境", "變更對話儲存前，請初始化執行環境", "会話の保存を変更する前に実行環境を初期化してください", "대화 저장을 변경하기 전에 실행 환경을 초기화하세요"],
+  ["Install the Codex integration before changing Zero Risk model profiles", "Installez l’intégration Codex avant de modifier les profils de modèles Sans risque", "更改零风险模型配置前，请安装 Codex 集成", "變更零風險模型設定前，請安裝 Codex 整合", "ゼロリスクのモデルプロファイルを変更する前に Codex 連携をインストールしてください", "제로 리스크 모델 프로필을 변경하기 전에 Codex 통합을 설치하세요"],
+  ["Zero Risk Pro is available only while the Full Zero Risk harness is active", "Le modèle Pro Sans risque est disponible uniquement lorsque l’environnement complet Sans risque est actif", "仅在完整零风险执行环境启用时，才能使用零风险 Pro", "僅在完整零風險執行環境啟用時，才能使用零風險 Pro", "ゼロリスクの Pro は完全なゼロリスク実行環境が有効な場合のみ利用できます", "제로 리스크 Pro는 전체 제로 리스크 실행 환경이 활성화된 경우에만 사용할 수 있습니다"],
+  ["Tunnel ID must be tunnel_ followed by 32 lowercase hexadecimal characters", "L’identifiant du tunnel doit commencer par tunnel_ suivi de 32 caractères hexadécimaux minuscules", "隧道 ID 必须为 tunnel_ 后接 32 个小写十六进制字符", "通道 ID 必須為 tunnel_ 後接 32 個小寫十六進位字元", "トンネル ID は tunnel_ の後に 32 文字の小文字の 16 進数を続けた形式である必要があります", "터널 ID는 tunnel_ 뒤에 소문자 16진수 32자가 오는 형식이어야 합니다"],
+  ["A Tunnels Read + Use runtime key is required", "Une clé d’exécution avec les droits Tunnels Read + Use est requise", "需要具有 Tunnels Read + Use 权限的运行密钥", "需要具有 Tunnels Read + Use 權限的執行金鑰", "Tunnels Read + Use 権限の実行キーが必要です", "Tunnels Read + Use 권한의 실행 키가 필요합니다"],
+  ["Install the Codex integration before changing browser interaction mode", "Installez l’intégration Codex avant de changer le mode d’interaction du navigateur", "更改浏览器交互模式前，请安装 Codex 集成", "變更瀏覽器互動模式前，請安裝 Codex 整合", "ブラウザの操作モードを変更する前に Codex 連携をインストールしてください", "브라우저 상호 작용 모드를 변경하기 전에 Codex 통합을 설치하세요"],
+  ["Connect the Full MCP harness before enabling Zero Risk", "Connectez l’environnement MCP complet avant d’activer le mode Sans risque", "启用零风险模式前，请连接完整 MCP 执行环境", "啟用零風險模式前，請連接完整 MCP 執行環境", "ゼロリスクを有効にする前に完全な MCP 実行環境に接続してください", "제로 리스크를 활성화하기 전에 전체 MCP 실행 환경을 연결하세요"],
+  ["Launcher shutdown is already in progress", "L’arrêt du lanceur est déjà en cours", "启动器正在关闭", "啟動器正在關閉", "ランチャーはすでに終了処理中です", "런처 종료가 이미 진행 중입니다"],
+  ["Update request timed out", "Le délai de la demande de mise à jour a expiré", "更新请求超时", "更新請求逾時", "更新リクエストがタイムアウトしました", "업데이트 요청 시간이 초과되었습니다"],
+  ["Update metadata exceeded its size limit", "Les métadonnées de mise à jour dépassent la taille autorisée", "更新元数据超出大小限制", "更新中繼資料超出大小限制", "更新メタデータがサイズ制限を超えました", "업데이트 메타데이터가 크기 제한을 초과했습니다"],
+  ["An update is already being prepared", "Une mise à jour est déjà en préparation", "已有更新正在准备", "已有更新正在準備", "更新をすでに準備中です", "이미 업데이트를 준비 중입니다"],
+  ["No launcher update is available", "Aucune mise à jour du lanceur n’est disponible", "没有可用的启动器更新", "沒有可用的啟動器更新", "利用可能なランチャーの更新はありません", "사용 가능한 런처 업데이트가 없습니다"],
+  ["The update worker did not start", "Le processus de mise à jour n’a pas démarré", "更新工作进程未启动", "更新工作程序未啟動", "更新プロセスが起動しませんでした", "업데이트 프로세스가 시작되지 않았습니다"],
+];
+
+// Braces are numbered placeholders, not regular expressions. Only full messages
+// match; interpolated values are inserted literally, including $, braces and newlines.
+const templates: readonly Translation[] = [
+  ["Zero Risk turn {0} is already completed", "L’échange Sans risque {0} est déjà terminé", "零风险轮次 {0} 已完成", "零風險輪次 {0} 已完成", "ゼロリスクのターン {0} はすでに完了しています", "제로 리스크 턴 {0}은(는) 이미 완료되었습니다"],
+  ["Zero Risk turn {0} timed out before Sent confirmation", "L’échange Sans risque {0} a expiré avant la confirmation Envoyé", "零风险轮次 {0} 在确认“已发送”之前超时", "零風險輪次 {0} 在確認「已傳送」之前逾時", "ゼロリスクのターン {0} は「送信済み」の確認前にタイムアウトしました", "제로 리스크 턴 {0}이(가) ‘전송 완료’ 확인 전에 시간 초과되었습니다"],
+  ["Zero Risk turn {0} is already {1}", "L’échange Sans risque {0} est déjà dans l’état {1}", "零风险轮次 {0} 已处于 {1} 状态", "零風險輪次 {0} 已處於 {1} 狀態", "ゼロリスクのターン {0} はすでに {1} の状態です", "제로 리스크 턴 {0}은(는) 이미 {1} 상태입니다"],
+  ["Finish {0} before changing Zero Risk model profiles", "Terminez {0} avant de modifier les profils de modèles Sans risque", "请先完成 {0}，再更改零风险模型配置", "請先完成 {0}，再變更零風險模型設定", "ゼロリスクのモデルプロファイルを変更する前に {0} を完了してください", "제로 리스크 모델 프로필을 변경하기 전에 {0}을(를) 완료하세요"],
+  ["Finish {0} before changing browser interaction mode", "Terminez {0} avant de changer le mode d’interaction du navigateur", "请先完成 {0}，再更改浏览器交互模式", "請先完成 {0}，再變更瀏覽器互動模式", "ブラウザ操作モードを変更する前に {0} を完了してください", "브라우저 상호 작용 모드를 변경하기 전에 {0}을(를) 완료하세요"],
+  ["Configuration is valid ({0})", "La configuration est valide ({0})", "配置有效（{0}）", "設定有效（{0}）", "設定は有効です（{0}）", "구성이 올바릅니다({0})"],
+  ["Embedded launcher browser is authenticated and reachable (pid {0})", "Le navigateur intégré est connecté et accessible (PID {0})", "内嵌浏览器已登录且可访问（进程 {0}）", "內建瀏覽器已登入且可存取（程序 {0}）", "内蔵ブラウザは認証済みで接続可能です（PID {0}）", "내장 브라우저가 인증되어 연결 가능합니다(PID {0})"],
+  ["Embedded launcher browser is reachable for Zero Risk (pid {0})", "Le navigateur intégré est accessible en mode Sans risque (PID {0})", "内嵌浏览器可用于零风险模式（进程 {0}）", "內建瀏覽器可用於零風險模式（程序 {0}）", "内蔵ブラウザはゼロリスクで接続可能です（PID {0}）", "내장 브라우저가 제로 리스크 모드로 연결 가능합니다(PID {0})"],
+  ["Responses proxy is healthy on {0}", "Le proxy Responses fonctionne sur {0}", "Responses 代理在 {0} 正常运行", "Responses 代理在 {0} 正常執行", "Responses プロキシは {0} で正常に動作しています", "Responses 프록시가 {0}에서 정상 작동합니다"],
+  ["Responses proxy returned HTTP {0}", "Le proxy Responses a renvoyé HTTP {0}", "Responses 代理返回 HTTP {0}", "Responses 代理傳回 HTTP {0}", "Responses プロキシが HTTP {0} を返しました", "Responses 프록시가 HTTP {0}을 반환했습니다"],
+  ["Daemon is running in {0} mode; config requires {1}", "Le service fonctionne en mode {0} ; la configuration exige {1}", "后台进程运行在 {0} 模式；配置要求 {1}", "背景程序在 {0} 模式執行；設定要求 {1}", "デーモンは {0} モードで実行中ですが、設定では {1} が必要です", "데몬은 {0} 모드로 실행 중이지만 구성에는 {1}이 필요합니다"],
+  ["Daemon version is {0}; config requires {1}", "La version du service est {0} ; la configuration exige {1}", "后台进程版本为 {0}；配置要求 {1}", "背景程序版本為 {0}；設定要求 {1}", "デーモンのバージョンは {0} ですが、設定では {1} が必要です", "데몬 버전은 {0}이지만 구성에는 {1}이 필요합니다"],
+  ["Chrome executable found: {0}", "Programme Chrome trouvé : {0}", "已找到 Chrome 程序：{0}", "已找到 Chrome 程式：{0}", "Chrome の実行ファイルが見つかりました：{0}", "Chrome 실행 파일을 찾았습니다: {0}"],
+  ["Chrome executable is missing: {0}", "Le programme Chrome est absent : {0}", "缺少 Chrome 程序：{0}", "缺少 Chrome 程式：{0}", "Chrome の実行ファイルがありません：{0}", "Chrome 실행 파일이 없습니다: {0}"],
+  ["Google Chrome is unavailable at {0}", "Google Chrome est indisponible à l’emplacement {0}", "{0} 处的 Google Chrome 不可用", "{0} 處的 Google Chrome 無法使用", "{0} にある Google Chrome を利用できません", "{0}에서 Google Chrome을 사용할 수 없습니다"],
+  ["ChatGPT login state is readable by other users: {0}", "Les données de connexion ChatGPT sont lisibles par d’autres utilisateurs : {0}", "其他用户可读取 ChatGPT 登录状态：{0}", "其他使用者可讀取 ChatGPT 登入狀態：{0}", "ChatGPT のログイン状態を他のユーザーが読み取れます：{0}", "다른 사용자가 ChatGPT 로그인 상태를 읽을 수 있습니다: {0}"],
+  ["tunnel-client is missing: {0}", "Le programme tunnel-client est absent : {0}", "缺少 tunnel-client：{0}", "缺少 tunnel-client：{0}", "tunnel-client がありません：{0}", "tunnel-client가 없습니다: {0}"],
+  ["ChatGPT connector {0} is available", "Le connecteur ChatGPT {0} est disponible", "ChatGPT 连接器 {0} 可用", "ChatGPT 連接器 {0} 可用", "ChatGPT コネクタ {0} を利用できます", "ChatGPT 커넥터 {0}을 사용할 수 있습니다"],
+  ["Local checks cannot prove that ChatGPT connector {0} is attached to this tunnel", "Les contrôles locaux ne peuvent pas confirmer que le connecteur ChatGPT {0} est rattaché à ce tunnel", "本地检查无法证明 ChatGPT 连接器 {0} 已连接到此隧道", "本機檢查無法證明 ChatGPT 連接器 {0} 已連接至此通道", "ローカルの確認では、ChatGPT コネクタ {0} がこのトンネルに接続されているかを証明できません", "로컬 검사로는 ChatGPT 커넥터 {0}이 이 터널에 연결되어 있는지 확인할 수 없습니다"],
+  ["Select ChatGPT connector {0} manually for every Zero Risk turn", "Sélectionnez manuellement le connecteur ChatGPT {0} à chaque tour Sans risque", "每个零风险轮次都需手动选择 ChatGPT 连接器 {0}", "每個零風險輪次都須手動選擇 ChatGPT 連接器 {0}", "ゼロリスクの各ターンで ChatGPT コネクタ {0} を手動で選択してください", "매 제로 리스크 턴에 ChatGPT 커넥터 {0}을 직접 선택하세요"],
+  ["Prompt submission was not confirmed within {0} seconds", "L’envoi du message n’a pas été confirmé dans un délai de {0} secondes", "未在 {0} 秒内确认提示词已发送", "未在 {0} 秒內確認提示詞已傳送", "{0} 秒以内にプロンプトの送信を確認できませんでした", "{0}초 안에 프롬프트 전송이 확인되지 않았습니다"],
+  ["Browser ownership failed: {0}", "Échec du contrôle du navigateur : {0}", "浏览器归属验证失败：{0}", "瀏覽器歸屬驗證失敗：{0}", "ブラウザの所有権の確認に失敗しました：{0}", "브라우저 소유권 확인 실패: {0}"],
+  ["Browser renderer stopped: {0}", "Le moteur de rendu du navigateur s’est arrêté : {0}", "浏览器渲染进程已停止：{0}", "瀏覽器繪製程序已停止：{0}", "ブラウザのレンダラーが停止しました：{0}", "브라우저 렌더러가 중지되었습니다: {0}"],
+  ["ChatGPT sign-in renderer stopped: {0}", "Le moteur de rendu de la connexion ChatGPT s’est arrêté : {0}", "ChatGPT 登录渲染进程已停止：{0}", "ChatGPT 登入繪製程序已停止：{0}", "ChatGPT ログインのレンダラーが停止しました：{0}", "ChatGPT 로그인 렌더러가 중지되었습니다: {0}"],
+  ["ChatGPT sign-in page failed to load: {0}", "Échec du chargement de la page de connexion ChatGPT : {0}", "ChatGPT 登录页面加载失败：{0}", "ChatGPT 登入頁面載入失敗：{0}", "ChatGPT ログイン画面の読み込みに失敗しました：{0}", "ChatGPT 로그인 페이지 로드 실패: {0}"],
+  ["ChatGPT sign-in page failed to open: {0}", "Échec de l’ouverture de la page de connexion ChatGPT : {0}", "ChatGPT 登录页面打开失败：{0}", "ChatGPT 登入頁面開啟失敗：{0}", "ChatGPT ログイン画面を開けませんでした：{0}", "ChatGPT 로그인 페이지 열기 실패: {0}"],
+  ["Could not open the external link: {0}", "Impossible d’ouvrir le lien externe : {0}", "无法打开外部链接：{0}", "無法開啟外部連結：{0}", "外部リンクを開けませんでした：{0}", "외부 링크를 열 수 없습니다: {0}"],
+  ["Another launcher operation is active: {0}", "Une autre opération du lanceur est en cours : {0}", "另一项启动器操作正在运行：{0}", "另一項啟動器操作正在執行：{0}", "別のランチャー操作が実行中です：{0}", "다른 런처 작업이 진행 중입니다: {0}"],
+  ["ChatGPT browser is already busy with {0}", "Le navigateur ChatGPT est déjà occupé par {0}", "ChatGPT 浏览器正忙于 {0}", "ChatGPT 瀏覽器正忙於 {0}", "ChatGPT ブラウザはすでに {0} を処理中です", "ChatGPT 브라우저가 이미 {0} 작업 중입니다"],
+  ["ChatGPT browser is busy with {0}", "Le navigateur ChatGPT est occupé par {0}", "ChatGPT 浏览器正忙于 {0}", "ChatGPT 瀏覽器正忙於 {0}", "ChatGPT ブラウザは {0} を処理中です", "ChatGPT 브라우저가 {0} 작업 중입니다"],
+  ["Browser navigation is locked during {0}", "La navigation du navigateur est verrouillée pendant {0}", "{0} 期间浏览器导航被锁定", "{0} 期間瀏覽器導覽會鎖定", "{0} の間、ブラウザの移動はロックされています", "{0} 동안 브라우저 탐색이 잠깁니다"],
+  ["Upgrading launcher runtime from {0} to {1}", "Mise à jour du moteur du lanceur de {0} vers {1}", "正在将启动器运行环境从 {0} 升级到 {1}", "正在將啟動器執行環境從 {0} 升級至 {1}", "ランチャー実行環境を {0} から {1} に更新しています", "런처 실행 환경을 {0}에서 {1}(으)로 업데이트 중"],
+  ["Launcher runtime upgraded to {0}", "Moteur du lanceur mis à jour vers {0}", "启动器运行环境已升级到 {0}", "啟動器執行環境已升級至 {0}", "ランチャー実行環境を {0} に更新しました", "런처 실행 환경을 {0}(으)로 업데이트했습니다"],
+  ["Separating {0} MCP credentials", "Séparation des identifiants MCP de {0}", "正在分离 {0} MCP 凭据", "正在分離 {0} MCP 憑證", "{0} の MCP 認証情報を分離しています", "{0} MCP 자격 증명 분리 중"],
+  ["{0} MCP profile migrated", "Profil MCP {0} migré", "{0} MCP 配置已迁移", "{0} MCP 設定已移轉", "{0} の MCP プロファイルを移行しました", "{0} MCP 프로필 이전 완료"],
+  ["Update download failed with HTTP {0}", "Échec du téléchargement de la mise à jour : HTTP {0}", "更新下载失败，HTTP {0}", "更新下載失敗，HTTP {0}", "更新のダウンロードに失敗しました：HTTP {0}", "업데이트 다운로드 실패: HTTP {0}"],
+  ["SHA-256 verification failed for {0}", "Échec de la vérification SHA-256 de {0}", "{0} 的 SHA-256 验证失败", "{0} 的 SHA-256 驗證失敗", "{0} の SHA-256 検証に失敗しました", "{0}의 SHA-256 확인 실패"],
+  ["Release v{0} is missing {1} or checksums.txt", "Il manque {1} ou checksums.txt dans la version v{0}", "版本 v{0} 缺少 {1} 或 checksums.txt", "版本 v{0} 缺少 {1} 或 checksums.txt", "リリース v{0} に {1} または checksums.txt がありません", "릴리스 v{0}에 {1} 또는 checksums.txt가 없습니다"],
+  ["Updates are not supported on {0}", "Les mises à jour ne sont pas prises en charge sur {0}", "{0} 不支持更新", "{0} 不支援更新", "{0} では更新がサポートされていません", "{0}에서는 업데이트를 지원하지 않습니다"],
+  ["{0} timed out after {1}ms", "Délai de {0} expiré après {1} ms", "{0} 在 {1} 毫秒后超时", "{0} 在 {1} 毫秒後逾時", "{0} が {1} ミリ秒でタイムアウトしました", "{0} 작업이 {1}ms 후 시간 초과되었습니다"],
+];
+
+function compileTemplate(row: readonly string[]) {
+  const parameters: number[] = [];
+  const source = row[0].split(/(\{\d+\})/).map(part => {
+    if (/^\{\d+\}$/.test(part)) {
+      parameters.push(Number(part.slice(1, -1)));
+      return "([^\\r\\n]*?)";
+    }
+    return part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }).join("");
+  return { row, parameters, match: new RegExp(`^${source}$`) };
+}
+
+const limitsMessages: readonly Translation[] = [
+  ["Local history may be incomplete. Check your plan again.", "L’historique local peut être incomplet. Vérifiez de nouveau votre abonnement.", "本地历史记录可能不完整。请重新检查套餐。", "本機歷史記錄可能不完整。請重新檢查方案。", "ローカル履歴が不完全な可能性があります。プランをもう一度確認してください。", "로컬 기록이 불완전할 수 있습니다. 요금제를 다시 확인하세요."],
+  ["Limits requires a valid browser interaction mode.", "Le suivi des limites nécessite un mode d’interaction du navigateur valide.", "用量限制需要有效的浏览器交互模式。", "用量限制需要有效的瀏覽器互動模式。", "使用量上限には有効なブラウザ操作モードが必要です。", "사용량 제한에는 올바른 브라우저 상호 작용 모드가 필요합니다."],
+  ["Limits is unavailable in Zero Risk mode. Switch to Automatic to check your plan.", "Le suivi des limites est indisponible en mode Sans risque. Passez au mode Automatique pour vérifier votre abonnement.", "零风险模式无法使用用量限制。请切换到自动模式以检查套餐。", "零風險模式無法使用用量限制。請切換到自動模式以檢查方案。", "ゼロリスクモードでは使用量上限を利用できません。自動モードに切り替えてプランを確認してください。", "제로 리스크 모드에서는 사용량 제한을 확인할 수 없습니다. 자동 모드로 전환하여 요금제를 확인하세요."],
+  ["A Limits plan check is already running.", "Une vérification de l’abonnement est déjà en cours.", "套餐限制检查正在进行中。", "方案限制檢查正在進行中。", "プランの使用量上限をすでに確認中です。", "요금제 사용량 제한 확인이 이미 진행 중입니다."],
+  ["Unknown Limits error.", "Erreur inconnue du suivi des limites.", "未知的用量限制错误。", "未知的用量限制錯誤。", "使用量上限の不明なエラーです。", "알 수 없는 사용량 제한 오류입니다."],
+  ["Expected exactly one submission receipt or tracking error.", "Un seul reçu d’envoi ou une seule erreur de suivi est attendu.", "必须提供且仅提供一个发送回执或跟踪错误。", "必須提供且僅提供一個傳送回條或追蹤錯誤。", "送信確認または追跡エラーのいずれか 1 つが必要です。", "전송 확인서 또는 추적 오류 중 정확히 하나가 필요합니다."],
+  ["Unrecognized Limits tracking error.", "Erreur de suivi des limites non reconnue.", "无法识别的用量限制跟踪错误。", "無法識別的用量限制追蹤錯誤。", "使用量上限の追跡エラーを認識できません。", "인식할 수 없는 사용량 제한 추적 오류입니다."],
+  ["Invalid Limits submission receipt.", "Reçu d’envoi du suivi des limites invalide.", "用量限制发送回执无效。", "用量限制傳送回條無效。", "使用量上限の送信確認が無効です。", "사용량 제한 전송 확인서가 올바르지 않습니다."],
+  ["The ChatGPT account could not be identified for a sent message.", "Impossible d’identifier le compte ChatGPT pour un message envoyé.", "无法确定已发送消息所属的 ChatGPT 账户。", "無法確定已傳送訊息所屬的 ChatGPT 帳戶。", "送信されたメッセージの ChatGPT アカウントを特定できませんでした。", "전송된 메시지의 ChatGPT 계정을 식별할 수 없습니다."],
+  ["The ChatGPT account does not match the checked account. This message was not counted.", "Le compte ChatGPT ne correspond pas au compte vérifié. Ce message n’a pas été compté.", "ChatGPT 账户与已检查的账户不符。此消息未计入。", "ChatGPT 帳戶與已檢查的帳戶不符。此訊息未計入。", "ChatGPT アカウントが確認済みアカウントと一致しません。このメッセージは集計されませんでした。", "ChatGPT 계정이 확인한 계정과 일치하지 않습니다. 이 메시지는 집계되지 않았습니다."],
+  ["Invalid limits store data; the file was not changed.", "Données de suivi des limites invalides ; le fichier n’a pas été modifié.", "用量限制存储数据无效；文件未更改。", "用量限制儲存資料無效；檔案未變更。", "使用量上限の保存データが無効です。ファイルは変更していません。", "사용량 제한 저장 데이터가 올바르지 않습니다. 파일은 변경되지 않았습니다."],
+  ["Unsupported limits store version; the file was not changed.", "Version du stockage des limites non prise en charge ; le fichier n’a pas été modifié.", "不支持此用量限制存储版本；文件未更改。", "不支援此用量限制儲存版本；檔案未變更。", "使用量上限の保存データのバージョンに対応していません。ファイルは変更していません。", "지원하지 않는 사용량 제한 저장소 버전입니다. 파일은 변경되지 않았습니다."],
+  ["Could not read the limits store.", "Impossible de lire les données de suivi des limites.", "无法读取用量限制存储。", "無法讀取用量限制儲存資料。", "使用量上限の保存データを読み取れませんでした。", "사용량 제한 저장소를 읽을 수 없습니다."],
+  ["Limits store is not a bounded regular file; it was not changed.", "Le stockage des limites n’est pas un fichier ordinaire de taille autorisée ; il n’a pas été modifié.", "用量限制存储不是符合大小限制的普通文件；未作更改。", "用量限制儲存資料不是符合大小限制的一般檔案；未作變更。", "使用量上限の保存先がサイズ制限内の通常ファイルではありません。変更していません。", "사용량 제한 저장소가 크기 제한 내의 일반 파일이 아닙니다. 변경하지 않았습니다."],
+  ["Limits store is not valid JSON; the file was not changed.", "Le stockage des limites n’est pas un document JSON valide ; le fichier n’a pas été modifié.", "用量限制存储不是有效 JSON；文件未更改。", "用量限制儲存資料不是有效 JSON；檔案未變更。", "使用量上限の保存データは有効な JSON ではありません。ファイルは変更していません。", "사용량 제한 저장소가 올바른 JSON이 아닙니다. 파일은 변경되지 않았습니다."],
+  ["A file path and clock function are required.", "Un chemin de fichier et une fonction d’horloge sont requis.", "需要文件路径和时钟函数。", "需要檔案路徑與時鐘函式。", "ファイルパスと時刻関数が必要です。", "파일 경로와 시계 함수가 필요합니다."],
+  ["The limits clock must return a nonnegative safe integer timestamp.", "L’horloge du suivi des limites doit renvoyer un horodatage entier sûr et positif ou nul.", "用量限制时钟必须返回非负安全整数时间戳。", "用量限制時鐘必須傳回非負安全整數時間戳記。", "使用量上限の時刻関数は非負の安全な整数のタイムスタンプを返す必要があります。", "사용량 제한 시계는 음수가 아닌 안전한 정수 타임스탬프를 반환해야 합니다."],
+  ["Limits store file capacity reached; no history was discarded.", "Capacité du fichier de suivi des limites atteinte ; aucun historique n’a été supprimé.", "用量限制存储文件已达容量上限；未丢弃任何历史记录。", "用量限制儲存檔案已達容量上限；未捨棄任何歷史記錄。", "使用量上限の保存ファイルが容量上限に達しました。履歴は破棄していません。", "사용량 제한 저장 파일의 용량에 도달했습니다. 기록은 삭제되지 않았습니다."],
+  ["Could not save the limits store.", "Impossible d’enregistrer les données de suivi des limites.", "无法保存用量限制存储。", "無法儲存用量限制資料。", "使用量上限のデータを保存できませんでした。", "사용량 제한 저장소를 저장할 수 없습니다."],
+  ["Expected a 64-hex accountKey and plan pro_100, pro_200, or unsupported.", "Une valeur accountKey de 64 chiffres hexadécimaux et un abonnement pro_100, pro_200 ou unsupported sont attendus.", "需要 64 位十六进制 accountKey，以及 pro_100、pro_200 或 unsupported 套餐。", "需要 64 位十六進位 accountKey，以及 pro_100、pro_200 或 unsupported 方案。", "64 桁の 16 進数の accountKey と、pro_100、pro_200 または unsupported のプランが必要です。", "64자리 16진수 accountKey와 pro_100, pro_200 또는 unsupported 요금제가 필요합니다."],
+  ["Limits account capacity reached; no accounts were discarded.", "Nombre maximal de comptes du suivi des limites atteint ; aucun compte n’a été supprimé.", "用量限制账户数已达上限；未丢弃任何账户。", "用量限制帳戶數已達上限；未捨棄任何帳戶。", "使用量上限のアカウント数が上限に達しました。アカウントは破棄していません。", "사용량 제한 계정 수가 한도에 도달했습니다. 계정은 삭제되지 않았습니다."],
+  ["Expected a bounded receipt id, 64-hex accountKey, supported model, and nonnegative integer timestamp.", "Un identifiant de reçu de longueur autorisée, une valeur accountKey de 64 chiffres hexadécimaux, un modèle pris en charge et un horodatage entier positif ou nul sont attendus.", "需要长度受限的回执 ID、64 位十六进制 accountKey、受支持模型和非负整数时间戳。", "需要長度受限的回條 ID、64 位十六進位 accountKey、受支援模型與非負整數時間戳記。", "長さ制限内の確認 ID、64 桁の 16 進数の accountKey、対応モデル、非負の整数タイムスタンプが必要です。", "길이 제한 내의 확인서 ID, 64자리 16진수 accountKey, 지원 모델 및 음수가 아닌 정수 타임스탬프가 필요합니다."],
+  ["Receipt time is ahead of the local clock; the message was not recorded.", "L’heure du reçu est postérieure à l’horloge locale ; le message n’a pas été enregistré.", "回执时间晚于本地时钟；消息未记录。", "回條時間晚於本機時鐘；訊息未記錄。", "確認時刻がローカル時刻より未来です。メッセージは記録していません。", "확인서 시간이 로컬 시계보다 앞섭니다. 메시지는 기록되지 않았습니다."],
+  ["The local clock is before tracking began; the message was not recorded.", "L’horloge locale indique une date antérieure au début du suivi ; le message n’a pas été enregistré.", "本地时钟早于跟踪开始时间；消息未记录。", "本機時鐘早於追蹤開始時間；訊息未記錄。", "ローカル時刻が追跡開始時刻より前です。メッセージは記録していません。", "로컬 시계가 추적 시작 시점보다 이전입니다. 메시지는 기록되지 않았습니다."],
+  ["Limits receipt capacity reached; no recent history was discarded.", "Nombre maximal de reçus atteint ; aucun historique récent n’a été supprimé.", "用量限制回执已达容量上限；未丢弃近期历史记录。", "用量限制回條已達容量上限；未捨棄近期歷史記錄。", "使用量上限の確認数が上限に達しました。最近の履歴は破棄していません。", "사용량 제한 확인서 용량에 도달했습니다. 최근 기록은 삭제되지 않았습니다."],
+];
+const limitsWrappers: readonly Translation[] = [
+  ["Limits tracking is unavailable. {0}", "Le suivi des limites est indisponible. {0}", "用量限制跟踪不可用。{0}", "用量限制追蹤無法使用。{0}", "使用量上限の追跡を利用できません。{0}", "사용량 제한 추적을 사용할 수 없습니다. {0}"],
+  ["Could not check the ChatGPT plan. {0}", "Impossible de vérifier l’abonnement ChatGPT. {0}", "无法检查 ChatGPT 套餐。{0}", "無法檢查 ChatGPT 方案。{0}", "ChatGPT のプランを確認できませんでした。{0}", "ChatGPT 요금제를 확인할 수 없습니다. {0}"],
+  ["Could not record launcher usage. {0}", "Impossible d’enregistrer l’utilisation du lanceur. {0}", "无法记录启动器用量。{0}", "無法記錄啟動器用量。{0}", "ランチャーの使用量を記録できませんでした。{0}", "런처 사용량을 기록할 수 없습니다. {0}"],
+];
+
+const internalErrors = [...browserErrors, ...controlErrors, ...supervisorErrors];
+const exactMessages = new Map([...messages, ...diagnostics, ...errors, ...limitsMessages,
+  ...internalErrors.filter(row => !/\{\d+\}/.test(row[0]))].map(row => [row[0], row]));
+// Prefer the more specific templates when a generic producer wrapper also fits.
+const messageTemplates = [...templates, ...internalErrors.filter(row => /\{\d+\}/.test(row[0]))]
+  .sort((left, right) => right[0].replace(/\{\d+\}/g, "").length - left[0].replace(/\{\d+\}/g, "").length)
+  .map(compileTemplate);
+const restartSuffix: Translation = ["; restart Codex", " ; redémarrez Codex", "；请重启 Codex", "；請重新啟動 Codex", "。Codex を再起動してください", "; Codex를 다시 시작하세요"];
+
+const statuses: readonly Translation[] = [
+  ["idle", "Au repos", "空闲", "閒置", "待機中", "대기"],
+  ["loading", "Chargement", "加载中", "載入中", "読み込み中", "로딩 중"],
+  ["signed-out", "Déconnecté", "已退出登录", "已登出", "未ログイン", "로그아웃 상태"],
+  ["ready", "Prêt", "就绪", "就緒", "準備完了", "준비됨"],
+  ["testing", "Test en cours", "测试中", "測試中", "テスト中", "테스트 중"],
+  ["running", "En cours", "运行中", "執行中", "実行中", "실행 중"],
+  ["error", "Erreur", "错误", "錯誤", "エラー", "오류"],
+  ["aborted", "Interrompu", "已中止", "已中止", "中断", "중단됨"],
+  ["awaiting-user", "En attente de votre action", "等待用户操作", "等待使用者操作", "ユーザーの操作待ち", "사용자 작업 대기 중"],
+  ["sent", "Envoyé", "已发送", "已傳送", "送信済み", "전송 완료"],
+  ["completed", "Terminé", "已完成", "已完成", "完了", "완료"],
+  ["timed-out", "Délai expiré", "已超时", "已逾時", "タイムアウト", "시간 초과"],
+  ["cancelled", "Annulé", "已取消", "已取消", "キャンセル済み", "취소됨"],
+  ["failed", "Échec", "失败", "失敗", "失敗", "실패"],
+  ["ok", "Correct", "正常", "正常", "正常", "정상"],
+  ["warning", "Avertissement", "警告", "警告", "警告", "경고"],
+  ["info", "Information", "信息", "資訊", "情報", "정보"],
+  ["debug", "Débogage", "调试", "偵錯", "デバッグ", "디버그"],
+  ["disabled", "Désactivé", "已禁用", "已停用", "無効", "비활성화됨"],
+  ["checking", "Vérification", "检查中", "檢查中", "確認中", "확인 중"],
+  ["up-to-date", "À jour", "已是最新", "已是最新", "最新", "최신 상태"],
+  ["available", "Disponible", "可用", "可用", "利用可能", "사용 가능"],
+  ["downloading", "Téléchargement", "下载中", "下載中", "ダウンロード中", "다운로드 중"],
+  ["installing", "Installation", "安装中", "安裝中", "インストール中", "설치 중"],
+  ["healthy", "Opérationnel", "健康", "正常", "正常", "정상"],
+  ["stopped", "Arrêté", "已停止", "已停止", "停止", "중지됨"],
+  ["starting", "Démarrage", "启动中", "啟動中", "起動中", "시작 중"],
+  ["stopping", "Arrêt en cours", "停止中", "停止中", "停止中", "중지 중"],
+  ["unconfigured", "Non configuré", "未配置", "未設定", "未設定", "구성되지 않음"],
+  ["unhealthy", "Défaillant", "异常", "異常", "異常", "비정상"],
+  ["automatic", "Automatique", "自动", "自動", "自動", "자동"],
+  ["manual", "Manuel", "手动", "手動", "手動", "수동"],
+];
+const detailKeys: readonly Translation[] = [
+  ["action", "Action", "操作", "操作", "操作", "작업"],
+  ["activeTraceId", "Identifiant de l’échange actif", "当前轮次 ID", "目前輪次 ID", "実行中のターン ID", "활성 턴 ID"],
+  ["args", "Arguments", "参数", "參數", "引数", "인수"],
+  ["at", "Date", "时间", "時間", "日時", "시간"],
+  ["brokerTurns", "Échanges du courtier", "代理轮次", "代理輪次", "ブローカーのターン数", "브로커 턴 수"],
+  ["browserTurns", "Échanges du navigateur", "浏览器轮次", "瀏覽器輪次", "ブラウザのターン数", "브라우저 턴 수"],
+  ["changed", "Modifié", "已更改", "已變更", "変更済み", "변경됨"],
+  ["channel", "Canal", "通道", "通道", "チャネル", "채널"],
+  ["configured", "Configuré", "已配置", "已設定", "設定済み", "구성됨"],
+  ["connectorMigrated", "Connecteur migré", "连接器已迁移", "連接器已移轉", "コネクタ移行済み", "커넥터 이전 완료"],
+  ["consecutiveFailures", "Échecs consécutifs", "连续失败次数", "連續失敗次數", "連続失敗回数", "연속 실패 횟수"],
+  ["coreHome", "Dossier du moteur", "核心目录", "核心目錄", "コアのディレクトリ", "코어 디렉터리"],
+  ["daemonPid", "PID du service", "后台服务 PID", "背景服務 PID", "デーモンの PID", "데몬 PID"],
+  ["errorCode", "Code d’erreur", "错误代码", "錯誤代碼", "エラーコード", "오류 코드"],
+  ["errorDescription", "Description de l’erreur", "错误描述", "錯誤說明", "エラーの説明", "오류 설명"],
+  ["errorName", "Nom de l’erreur", "错误名称", "錯誤名稱", "エラー名", "오류 이름"],
+  ["errorType", "Type d’erreur", "错误类型", "錯誤類型", "エラーの種類", "오류 유형"],
+  ["evidence", "Éléments observés", "观测证据", "觀測證據", "確認した情報", "확인된 정보"],
+  ["failures", "Échecs", "失败", "失敗", "失敗", "실패"],
+  ["helperPid", "PID de l’assistant", "辅助进程 PID", "輔助程序 PID", "ヘルパーの PID", "도우미 PID"],
+  ["httpTurns", "Échanges HTTP", "HTTP 轮次", "HTTP 輪次", "HTTP のターン数", "HTTP 턴 수"],
+  ["language", "Langue", "语言", "語言", "言語", "언어"],
+  ["launcherFocused", "Lanceur au premier plan", "启动器已聚焦", "啟動器已取得焦點", "ランチャーにフォーカス", "런처에 포커스됨"],
+  ["operation", "Opération", "操作", "操作", "処理", "작업"],
+  ["ownerPid", "PID du propriétaire", "所有者 PID", "擁有者 PID", "所有者の PID", "소유자 PID"],
+  ["phase", "Étape", "阶段", "階段", "段階", "단계"],
+  ["port", "Port", "端口", "連接埠", "ポート", "포트"],
+  ["previousHelperPid", "PID de l’assistant précédent", "上一个辅助进程 PID", "上一個輔助程序 PID", "以前のヘルパーの PID", "이전 도우미 PID"],
+  ["released", "Libéré", "已释放", "已釋放", "解放済み", "해제됨"],
+  ["rendererFocused", "Interface au premier plan", "渲染器已聚焦", "轉譯器已取得焦點", "レンダラーにフォーカス", "렌더러에 포커스됨"],
+  ["requests", "Requêtes", "请求数", "請求數", "リクエスト数", "요청 수"],
+  ["reused", "Réutilisé", "已复用", "已重複使用", "再利用済み", "재사용됨"],
+  ["state", "État", "状态", "狀態", "状態", "상태"],
+  ["surface", "Vue", "视图", "檢視", "ビュー", "화면"],
+  ["tunnelPid", "PID du tunnel", "隧道 PID", "通道 PID", "トンネルの PID", "터널 PID"],
+  ["userData", "Données utilisateur", "用户数据", "使用者資料", "ユーザーデータ", "사용자 데이터"],
+  ["message", "Message", "消息", "訊息", "メッセージ", "메시지"],
+  ["error", "Erreur", "错误", "錯誤", "エラー", "오류"],
+  ["reason", "Raison", "原因", "原因", "理由", "이유"],
+  ["detail", "Détail", "详情", "詳細資料", "詳細", "세부 정보"],
+  ["status", "État", "状态", "狀態", "状態", "상태"],
+  ["line", "Ligne", "行", "行", "行", "줄"],
+  ["name", "Nom", "名称", "名稱", "名前", "이름"],
+  ["code", "Code", "代码", "代碼", "コード", "코드"],
+  ["exitCode", "Code de sortie", "退出码", "結束代碼", "終了コード", "종료 코드"],
+  ["signal", "Signal", "信号", "訊號", "シグナル", "신호"],
+  ["pid", "PID", "进程 ID", "程序 ID", "プロセス ID", "프로세스 ID"],
+  ["url", "URL", "网址", "網址", "URL", "URL"],
+  ["origin", "Origine", "来源", "來源", "オリジン", "출처"],
+  ["destination", "Destination", "目标", "目標", "移動先", "대상"],
+  ["protocol", "Protocole", "协议", "通訊協定", "プロトコル", "프로토콜"],
+  ["platform", "Système", "平台", "平台", "プラットフォーム", "플랫폼"],
+  ["profile", "Profil", "配置", "設定檔", "プロファイル", "프로필"],
+  ["mode", "Mode", "模式", "模式", "モード", "모드"],
+  ["version", "Version", "版本", "版本", "バージョン", "버전"],
+  ["fromVersion", "Version précédente", "原版本", "原版本", "更新前のバージョン", "이전 버전"],
+  ["toVersion", "Nouvelle version", "新版本", "新版本", "更新後のバージョン", "새 버전"],
+  ["tabId", "Identifiant de l’onglet", "标签页 ID", "分頁 ID", "タブ ID", "탭 ID"],
+  ["traceId", "Identifiant de trace", "跟踪 ID", "追蹤 ID", "トレース ID", "추적 ID"],
+  ["traceIds", "Identifiants de trace", "跟踪 ID 列表", "追蹤 ID 清單", "トレース ID 一覧", "추적 ID 목록"],
+  ["tabCount", "Nombre d’onglets", "标签页数", "分頁數", "タブ数", "탭 수"],
+  ["appName", "Nom du connecteur", "连接器名称", "連接器名稱", "コネクタ名", "커넥터 이름"],
+  ["recordCount", "Nombre d’entrées", "记录数", "紀錄數", "レコード数", "항목 수"],
+  ["effort", "Effort de réflexion", "推理强度", "推理強度", "推論の強度", "추론 강도"],
+  ["responseChars", "Caractères de la réponse", "回复字符数", "回覆字元數", "応答の文字数", "응답 문자 수"],
+  ["retained", "Conservé", "已保留", "已保留", "保持", "유지됨"],
+  ["request", "Requête", "请求", "請求", "リクエスト", "요청"],
+  ["timeoutMs", "Délai (ms)", "超时（毫秒）", "逾時（毫秒）", "タイムアウト（ミリ秒）", "제한 시간(ms)"],
+  ["durationMs", "Durée (ms)", "耗时（毫秒）", "耗時（毫秒）", "所要時間（ミリ秒）", "소요 시간(ms)"],
+  ["interactionMode", "Mode d’interaction", "交互模式", "互動模式", "操作モード", "상호 작용 모드"],
+  ["browserInteractionMode", "Interaction avec le navigateur", "浏览器交互", "瀏覽器互動", "ブラウザ操作", "브라우저 상호 작용"],
+  ["cdpPort", "Port CDP", "CDP 端口", "CDP 連接埠", "CDP ポート", "CDP 포트"],
+  ["blockerId", "Identifiant du blocage de veille", "休眠阻止 ID", "睡眠阻止 ID", "スリープ抑止 ID", "절전 차단 ID"],
+];
+const events: readonly Translation[] = [
+  ["bridge.route_restore_after_runtime_failure_failed", "Échec du rétablissement du routage après la panne du moteur", "运行环境故障后路由恢复失败", "執行環境故障後路由還原失敗", "実行環境の障害後にルートを復元できませんでした", "실행 환경 장애 후 경로 복원 실패"],
+  ["bridge.route_restored_after_runtime_failure", "Routage rétabli après la panne du moteur", "运行环境故障后已恢复路由", "執行環境故障後已還原路由", "実行環境の障害後にルートを復元しました", "실행 환경 장애 후 경로 복원 완료"],
+  ["browser.auth_navigation_completed", "Page de connexion chargée", "登录页面加载完成", "登入頁面載入完成", "ログイン画面の読み込み完了", "로그인 페이지 로드 완료"],
+  ["browser.auth_navigation_failed", "Échec du chargement de la page de connexion", "登录页面加载失败", "登入頁面載入失敗", "ログイン画面の読み込み失敗", "로그인 페이지 로드 실패"],
+  ["browser.auth_navigation_started", "Chargement de la page de connexion", "开始加载登录页面", "開始載入登入頁面", "ログイン画面の読み込み開始", "로그인 페이지 로드 시작"],
+  ["browser.auth_navigation_timeout", "Délai de chargement de la connexion expiré", "登录页面加载超时", "登入頁面載入逾時", "ログイン画面の読み込みタイムアウト", "로그인 페이지 로드 시간 초과"],
+  ["browser.auth_refresh_failed", "Échec de l’actualisation de la connexion", "登录状态刷新失败", "登入狀態重新整理失敗", "ログイン状態の更新失敗", "로그인 상태 새로 고침 실패"],
+  ["browser.auth_renderer_gone", "Moteur de rendu de connexion arrêté", "登录渲染进程已停止", "登入繪製程序已停止", "ログイン画面のレンダラー停止", "로그인 렌더러 중지"],
+  ["browser.auth_surface_closed", "Fenêtre de connexion fermée", "登录窗口已关闭", "登入視窗已關閉", "ログインウィンドウを閉じました", "로그인 창 닫힘"],
+  ["browser.auth_surface_opened", "Fenêtre de connexion ouverte", "登录窗口已打开", "登入視窗已開啟", "ログインウィンドウを開きました", "로그인 창 열림"],
+  ["browser.auth_window_open_failed", "Échec de l’ouverture de la fenêtre de connexion", "登录窗口打开失败", "登入視窗開啟失敗", "ログインウィンドウを開けませんでした", "로그인 창 열기 실패"],
+  ["browser.authenticated", "Connexion au navigateur vérifiée", "浏览器登录已验证", "瀏覽器登入已驗證", "ブラウザの認証完了", "브라우저 인증 완료"],
+  ["browser.cloudflare_challenge_detected", "Contrôle Cloudflare détecté", "检测到 Cloudflare 验证", "偵測到 Cloudflare 驗證", "Cloudflare の確認を検出", "Cloudflare 검사 감지"],
+  ["browser.cloudflare_challenge_not_reloaded", "Contrôle Cloudflare conservé sans rechargement", "Cloudflare 验证未重新加载", "Cloudflare 驗證未重新載入", "Cloudflare の確認を再読み込みせずに維持", "Cloudflare 검사를 새로 고치지 않음"],
+  ["browser.cloudflare_challenge_persisted", "Contrôle Cloudflare toujours présent", "Cloudflare 验证仍存在", "Cloudflare 驗證仍存在", "Cloudflare の確認が継続中", "Cloudflare 검사 지속"],
+  ["browser.cloudflare_challenge_recovered", "Contrôle Cloudflare résolu", "Cloudflare 验证已恢复", "Cloudflare 驗證已恢復", "Cloudflare の確認から復旧", "Cloudflare 검사 복구 완료"],
+  ["browser.cloudflare_challenge_recovery_failed", "Échec de la reprise après le contrôle Cloudflare", "Cloudflare 验证恢复失败", "Cloudflare 驗證恢復失敗", "Cloudflare の確認からの復旧に失敗", "Cloudflare 검사 복구 실패"],
+  ["browser.control_rejected", "Commande du navigateur refusée", "浏览器控制被拒绝", "瀏覽器控制遭拒", "ブラウザ操作を拒否", "브라우저 제어 거부"],
+  ["browser.control_request_failed", "Échec de la commande du navigateur", "浏览器控制请求失败", "瀏覽器控制請求失敗", "ブラウザ操作リクエスト失敗", "브라우저 제어 요청 실패"],
+  ["browser.control_server_error", "Erreur du serveur de contrôle du navigateur", "浏览器控制服务器错误", "瀏覽器控制伺服器錯誤", "ブラウザ制御サーバーのエラー", "브라우저 제어 서버 오류"],
+  ["browser.control_started", "Contrôle du navigateur démarré", "浏览器控制已启动", "瀏覽器控制已啟動", "ブラウザ制御を開始", "브라우저 제어 시작"],
+  ["browser.external_url_open_failed", "Échec de l’ouverture du lien externe", "外部链接打开失败", "外部連結開啟失敗", "外部リンクを開けませんでした", "외부 링크 열기 실패"],
+  ["browser.external_url_rejected", "Lien externe refusé par le navigateur", "浏览器拒绝外部链接", "瀏覽器拒絕外部連結", "ブラウザが外部リンクを拒否", "브라우저가 외부 링크 거부"],
+  ["browser.idle_cleanup_failed", "Échec du nettoyage du navigateur au repos", "空闲浏览器清理失败", "閒置瀏覽器清理失敗", "待機中のブラウザのクリーンアップ失敗", "대기 브라우저 정리 실패"],
+  ["browser.initialization_failed", "Échec de l’initialisation du navigateur", "浏览器初始化失败", "瀏覽器初始化失敗", "ブラウザの初期化失敗", "브라우저 초기화 실패"],
+  ["browser.initialized", "Navigateur initialisé", "浏览器已初始化", "瀏覽器已初始化", "ブラウザの初期化完了", "브라우저 초기화 완료"],
+  ["browser.login_opened", "Connexion au navigateur ouverte", "已打开浏览器登录", "已開啟瀏覽器登入", "ブラウザのログインを開始", "브라우저 로그인 열림"],
+  ["browser.logout_completed", "Déconnexion du navigateur terminée", "浏览器已退出登录", "瀏覽器已登出", "ブラウザからログアウトしました", "브라우저 로그아웃 완료"],
+  ["browser.manual_control_started", "Contrôle manuel du navigateur démarré", "浏览器手动控制已启动", "瀏覽器手動控制已啟動", "ブラウザの手動制御を開始", "브라우저 수동 제어 시작"],
+  ["browser.manual_conversation_invalidated", "Conversation manuelle invalidée", "手动对话已失效", "手動對話已失效", "手動の会話が無効になりました", "수동 대화 무효화"],
+  ["browser.manual_external_url_failed", "Échec du lien externe en mode manuel", "手动模式外部链接失败", "手動模式外部連結失敗", "手動モードで外部リンクに失敗", "수동 모드 외부 링크 실패"],
+  ["browser.manual_orphan_turn_reaped", "Tour manuel abandonné nettoyé", "已清理孤立的手动轮次", "已清理孤立的手動輪次", "孤立した手動ターンを回収", "소유자가 없는 수동 턴 정리"],
+  ["browser.manual_prompt_confirmed", "Envoi du message manuel confirmé", "已确认手动提示词发送", "已確認手動提示詞傳送", "手動プロンプトの送信確認完了", "수동 프롬프트 전송 확인"],
+  ["browser.manual_prompt_copied", "Message manuel copié", "手动提示词已复制", "手動提示詞已複製", "手動プロンプトをコピーしました", "수동 프롬프트 복사 완료"],
+  ["browser.manual_tab_initialization_failed", "Échec de l’initialisation de l’onglet manuel", "手动标签页初始化失败", "手動分頁初始化失敗", "手動タブの初期化失敗", "수동 탭 초기화 실패"],
+  ["browser.manual_tab_navigation_failed", "Échec de la navigation de l’onglet manuel", "手动标签页导航失败", "手動分頁導覽失敗", "手動タブの移動失敗", "수동 탭 탐색 실패"],
+  ["browser.manual_tab_navigation_superseded", "Navigation de l’onglet manuel remplacée", "手动标签页导航已被替代", "手動分頁導覽已被取代", "手動タブの移動を新しい操作で置換", "수동 탭 탐색 대체"],
+  ["browser.manual_tab_renderer_gone", "Moteur de rendu de l’onglet manuel arrêté", "手动标签页渲染进程已停止", "手動分頁繪製程序已停止", "手動タブのレンダラー停止", "수동 탭 렌더러 중지"],
+  ["browser.manual_turn_cancel_failed", "Échec de l’annulation du tour manuel", "手动轮次取消失败", "手動輪次取消失敗", "手動ターンのキャンセル失敗", "수동 턴 취소 실패"],
+  ["browser.manual_turn_completed", "Tour manuel terminé", "手动轮次已完成", "手動輪次已完成", "手動ターン完了", "수동 턴 완료"],
+  ["browser.manual_turn_started", "Tour manuel démarré", "手动轮次已开始", "手動輪次已開始", "手動ターン開始", "수동 턴 시작"],
+  ["browser.manual_turn_timed_out", "Délai du tour manuel expiré", "手动轮次超时", "手動輪次逾時", "手動ターンのタイムアウト", "수동 턴 시간 초과"],
+  ["browser.navigation_timeout", "Délai de navigation expiré", "浏览器导航超时", "瀏覽器導覽逾時", "ブラウザの移動タイムアウト", "브라우저 탐색 시간 초과"],
+  ["browser.orphan_turn_cancel_failed", "Échec de l’annulation du tour abandonné", "孤立轮次取消失败", "孤立輪次取消失敗", "孤立したターンのキャンセル失敗", "소유자가 없는 턴 취소 실패"],
+  ["browser.orphan_turn_expired", "Tour abandonné expiré", "孤立轮次已过期", "孤立輪次已過期", "孤立したターンが期限切れ", "소유자가 없는 턴 만료"],
+  ["browser.orphan_turn_reaped", "Tour abandonné nettoyé", "孤立轮次已清理", "孤立輪次已清理", "孤立したターンを回収", "소유자가 없는 턴 정리"],
+  ["browser.passkey_login_imported", "Connexion par clé d’accès importée", "通行密钥登录已导入", "通行密鑰登入已匯入", "パスキーログインをインポートしました", "패스키 로그인 가져오기 완료"],
+  ["browser.passkey_login_started", "Connexion par clé d’accès démarrée", "通行密钥登录已开始", "通行密鑰登入已開始", "パスキーログインを開始", "패스키 로그인 시작"],
+  ["browser.renderer_gone", "Moteur de rendu du navigateur arrêté", "浏览器渲染进程已停止", "瀏覽器繪製程序已停止", "ブラウザのレンダラー停止", "브라우저 렌더러 중지"],
+  ["browser.retained_conversation_released", "Conversation conservée libérée", "已释放保留的对话", "已釋放保留的對話", "保持された会話を解放", "유지된 대화 해제"],
+  ["browser.retained_tab_expired", "Onglet conservé expiré", "保留的标签页已过期", "保留的分頁已過期", "保持されたタブが期限切れ", "유지된 탭 만료"],
+  ["browser.session_refresh_failed", "Échec de l’actualisation de la session", "会话刷新失败", "工作階段重新整理失敗", "セッションの更新失敗", "세션 새로 고침 실패"],
+  ["browser.sleep_block_released", "Blocage de mise en veille levé", "已解除休眠阻止", "已解除睡眠阻止", "スリープの抑止を解除", "절전 차단 해제"],
+  ["browser.sleep_blocked_for_turns", "Mise en veille bloquée pendant les tours", "轮次执行期间已阻止休眠", "輪次執行期間已阻止睡眠", "ターンの実行中はスリープを抑止", "턴 실행 중 절전 차단"],
+  ["browser.stale_turn_owner_replaced", "Ancien processus du tour remplacé", "已替换过期的轮次所有者", "已取代過期的輪次擁有者", "期限切れのターン所有者を置換", "오래된 턴 소유자 교체"],
+  ["browser.surface_mark_failed", "Échec du marquage de la page contrôlée", "浏览器页面归属标记失败", "瀏覽器頁面歸屬標記失敗", "ブラウザページの所有権マークに失敗", "브라우저 페이지 소유권 표시 실패"],
+  ["browser.tab_closed", "Onglet fermé", "标签页已关闭", "分頁已關閉", "タブを閉じました", "탭 닫힘"],
+  ["browser.tab_completed", "Travail de l’onglet terminé", "标签页任务已完成", "分頁任務已完成", "タブのタスク完了", "탭 작업 완료"],
+  ["browser.tab_created", "Onglet créé", "标签页已创建", "分頁已建立", "タブを作成しました", "탭 생성"],
+  ["browser.tab_initialization_failed", "Échec de l’initialisation de l’onglet", "标签页初始化失败", "分頁初始化失敗", "タブの初期化失敗", "탭 초기화 실패"],
+  ["browser.tab_navigation_failed", "Échec de la navigation de l’onglet", "标签页导航失败", "分頁導覽失敗", "タブの移動失敗", "탭 탐색 실패"],
+  ["browser.tab_released", "Onglet libéré", "标签页已释放", "分頁已釋放", "タブを解放しました", "탭 해제"],
+  ["browser.tab_renderer_gone", "Moteur de rendu de l’onglet arrêté", "标签页渲染进程已停止", "分頁繪製程序已停止", "タブのレンダラー停止", "탭 렌더러 중지"],
+  ["browser.tab_responsive", "L’onglet répond de nouveau", "标签页已恢复响应", "分頁已恢復回應", "タブの応答が復旧", "탭 응답 복구"],
+  ["browser.tab_retained", "Onglet conservé", "标签页已保留", "分頁已保留", "タブを保持しました", "탭 유지"],
+  ["browser.tab_reused", "Onglet réutilisé", "标签页已复用", "分頁已重複使用", "タブを再利用しました", "탭 재사용"],
+  ["browser.tab_unresponsive", "L’onglet ne répond plus", "标签页无响应", "分頁無回應", "タブが応答しません", "탭 응답 없음"],
+  ["browser.turn_authentication_blocked", "Tour bloqué par une demande de connexion", "轮次被身份验证阻止", "輪次遭身分驗證阻擋", "認証によりターンがブロックされました", "인증으로 턴 차단"],
+  ["browser.turn_ended", "Tour du navigateur terminé", "浏览器轮次已结束", "瀏覽器輪次已結束", "ブラウザのターン終了", "브라우저 턴 종료"],
+  ["browser.turn_leases_refreshed_after_suspension", "Réservations des tours renouvelées après la suspension", "暂停后已刷新轮次租约", "暫停後已更新輪次租約", "中断後にターンのリースを更新", "일시 중단 후 턴 임대 갱신"],
+  ["browser.turn_started", "Tour du navigateur démarré", "浏览器轮次已开始", "瀏覽器輪次已開始", "ブラウザのターン開始", "브라우저 턴 시작"],
+  ["codex.model_catalog_failed", "Échec du catalogue de modèles Codex", "Codex 模型目录失败", "Codex 模型目錄失敗", "Codex モデル一覧の確認失敗", "Codex 모델 목록 확인 실패"],
+  ["codex.model_catalog_verification_pending", "Vérification du catalogue de modèles Codex en attente", "等待验证 Codex 模型目录", "等待驗證 Codex 模型目錄", "Codex モデル一覧の確認待ち", "Codex 모델 목록 확인 대기"],
+  ["codex.model_catalog_verified", "Catalogue de modèles Codex vérifié", "Codex 模型目录已验证", "Codex 模型目錄已驗證", "Codex モデル一覧の確認完了", "Codex 모델 목록 확인 완료"],
+  ["connector.verification_failed", "Échec de la vérification du connecteur", "连接器验证失败", "連接器驗證失敗", "コネクタの確認失敗", "커넥터 확인 실패"],
+  ["connector.verified", "Connecteur vérifié", "连接器已验证", "連接器已驗證", "コネクタの確認完了", "커넥터 확인 완료"],
+  ["dev_profile.config_invalid", "Configuration du profil DEV invalide", "DEV 配置无效", "DEV 設定無效", "DEV プロファイルの設定が無効", "DEV 프로필 구성 오류"],
+  ["dev_profile.ready", "Profil DEV prêt", "DEV 配置已就绪", "DEV 設定檔已就緒", "DEV プロファイルの準備完了", "DEV 프로필 준비 완료"],
+  ["dev_profile.runtime_start_failed", "Échec du démarrage du moteur DEV", "DEV 运行环境启动失败", "DEV 執行環境啟動失敗", "DEV 実行環境の起動失敗", "DEV 실행 환경 시작 실패"],
+  ["launcher.external_url_rejected", "Lien externe refusé par le lanceur", "启动器拒绝外部链接", "啟動器拒絕外部連結", "ランチャーが外部リンクを拒否", "런처가 외부 링크 거부"],
+  ["launcher.ipc_failed", "Échec de la communication avec le lanceur", "启动器进程通信失败", "啟動器程序通訊失敗", "ランチャーのプロセス間通信失敗", "런처 프로세스 간 통신 실패"],
+  ["launcher.logs_exported", "Journaux exportés", "日志已导出", "記錄已匯出", "ログをエクスポートしました", "로그 내보내기 완료"],
+  ["launcher.onboarding_completed", "Configuration initiale terminée", "初始设置已完成", "初始設定已完成", "初期設定が完了しました", "초기 설정 완료"],
+  ["launcher.renderer_navigation_blocked", "Navigation du lanceur bloquée", "启动器页面导航被阻止", "啟動器頁面導覽遭阻擋", "ランチャーのページ移動をブロック", "런처 페이지 탐색 차단"],
+  ["launcher.shell_zoom_shortcut_failed", "Échec du raccourci de zoom du lanceur", "启动器缩放快捷键失败", "啟動器縮放快速鍵失敗", "ランチャーのズームショートカット失敗", "런처 확대/축소 단축키 실패"],
+  ["launcher.tray_unavailable", "Icône de notification indisponible", "系统托盘不可用", "系統匣無法使用", "トレイアイコンを利用できません", "알림 영역 아이콘 사용 불가"],
+  ["launcher.window_created", "Fenêtre du lanceur créée", "启动器窗口已创建", "啟動器視窗已建立", "ランチャーウィンドウを作成しました", "런처 창 생성"],
+  ["launcher.window_state_write_failed", "Échec de l’enregistrement de l’état de la fenêtre", "窗口状态保存失败", "視窗狀態儲存失敗", "ウィンドウ状態の保存失敗", "창 상태 저장 실패"],
+  ["mcp.verification_requested", "Vérification MCP demandée", "已请求 MCP 验证", "已請求 MCP 驗證", "MCP の確認をリクエスト", "MCP 확인 요청"],
+  ["runtime.active_turns_cancelled", "Tours actifs annulés par le moteur", "运行环境已取消活动轮次", "執行環境已取消進行中輪次", "実行環境が実行中のターンをキャンセル", "실행 환경에서 진행 중인 턴 취소"],
+  ["runtime.browser_turn_cancelled", "Tour du navigateur annulé par le moteur", "运行环境已取消浏览器轮次", "執行環境已取消瀏覽器輪次", "実行環境がブラウザのターンをキャンセル", "실행 환경에서 브라우저 턴 취소"],
+  ["runtime.external_owner_detected", "Moteur contrôlé par un autre processus détecté", "检测到外部运行环境所有者", "偵測到外部執行環境擁有者", "外部の実行環境所有者を検出", "외부 실행 환경 소유자 감지"],
+  ["runtime.forced_shutdown_completed", "Arrêt forcé du moteur terminé", "运行环境强制关闭完成", "執行環境強制關閉完成", "実行環境の強制終了完了", "실행 환경 강제 종료 완료"],
+  ["runtime.forced_shutdown_started", "Arrêt forcé du moteur démarré", "运行环境强制关闭已开始", "執行環境強制關閉已開始", "実行環境の強制終了開始", "실행 환경 강제 종료 시작"],
+  ["runtime.passkey_cleanup_failed", "Échec du nettoyage de la session par clé d’accès", "通行密钥会话清理失败", "通行密鑰工作階段清理失敗", "パスキーセッションのクリーンアップ失敗", "패스키 세션 정리 실패"],
+  ["runtime.release_upgraded", "Version du moteur mise à jour", "运行环境版本已更新", "執行環境版本已更新", "実行環境のバージョン更新完了", "실행 환경 버전 업데이트 완료"],
+  ["runtime.secret_cleanup_failed", "Échec du nettoyage des données secrètes", "机密数据清理失败", "機密資料清理失敗", "シークレットのクリーンアップ失敗", "비밀 데이터 정리 실패"],
+  ["runtime.setup_required", "Configuration du moteur requise", "需要配置运行环境", "需要設定執行環境", "実行環境のセットアップが必要", "실행 환경 설정 필요"],
+  ["runtime.stale_owner_recovered", "Contrôle du moteur récupéré", "已恢复过期的运行环境归属", "已恢復過期的執行環境歸屬", "古い実行環境の所有権を回復", "오래된 실행 환경 소유권 복구"],
+  ["runtime.stale_owner_recovery_started", "Récupération du contrôle du moteur démarrée", "已开始恢复过期的运行环境归属", "已開始恢復過期的執行環境歸屬", "古い実行環境の所有権回復を開始", "오래된 실행 환경 소유권 복구 시작"],
+  ["runtime.start_failed_before_stop", "Échec du démarrage avant l’arrêt du moteur", "运行环境停止前启动失败", "執行環境停止前啟動失敗", "実行環境の停止前に起動失敗", "실행 환경 중지 전 시작 실패"],
+  ["runtime.startup_failed", "Échec du démarrage du moteur", "运行环境启动失败", "執行環境啟動失敗", "実行環境の起動失敗", "실행 환경 시작 실패"],
+  ["runtime.state_write_failed", "Échec de l’enregistrement de l’état du moteur", "运行环境状态保存失败", "執行環境狀態儲存失敗", "実行環境の状態保存失敗", "실행 환경 상태 저장 실패"],
+  ["runtime.tunnel_adopted", "Tunnel existant repris en charge", "已接管现有隧道", "已接管現有通道", "既存のトンネルを引き継ぎました", "기존 터널 인계"],
+  ["runtime.tunnel_adopted_for_stop", "Tunnel repris en charge pour l’arrêt", "已接管隧道以便停止", "已接管通道以便停止", "停止のためにトンネルを引き継ぎました", "중지를 위해 터널 인계"],
+  ["runtime.tunnel_monitor_observation_restored", "Observation du tunnel rétablie", "隧道监测已恢复", "通道監測已恢復", "トンネルの監視が復旧", "터널 관측 복구"],
+  ["runtime.tunnel_monitor_observation_unavailable", "Observation du tunnel indisponible", "隧道监测不可用", "通道監測無法使用", "トンネルを監視できません", "터널 관측 불가"],
+  ["runtime.tunnel_monitor_unhealthy", "Surveillance du tunnel : anomalie", "隧道监测发现异常", "通道監測發現異常", "トンネルの監視で異常を検出", "터널 모니터 비정상 감지"],
+  ["runtime.tunnel_waiting", "En attente du tunnel", "正在等待隧道", "正在等待通道", "トンネルを待機中", "터널 대기 중"],
+  ["smoke.completed", "Test de fonctionnement terminé", "基本功能测试完成", "基本功能測試完成", "動作テスト完了", "기본 작동 테스트 완료"],
+  ["smoke.started", "Test de fonctionnement démarré", "基本功能测试开始", "基本功能測試開始", "動作テスト開始", "기본 작동 테스트 시작"],
+  ["runtime.operation_started", "Opération du moteur démarrée", "运行环境操作已开始", "執行環境操作已開始", "実行環境の操作を開始しました", "실행 환경 작업 시작"],
+  ["runtime.operation_completed", "Opération du moteur terminée", "运行环境操作已完成", "執行環境操作已完成", "実行環境の操作が完了しました", "실행 환경 작업 완료"],
+  ["runtime.operation_failed", "Échec de l’opération du moteur", "运行环境操作失败", "執行環境操作失敗", "実行環境の操作に失敗しました", "실행 환경 작업 실패"],
+  ["runtime.stdout", "Sortie du moteur", "运行环境输出", "執行環境輸出", "実行環境の出力", "실행 환경 출력"],
+  ["runtime.stderr", "Erreur du moteur", "运行环境错误输出", "執行環境錯誤輸出", "実行環境のエラー出力", "실행 환경 오류 출력"],
+  ["runtime.daemon_stdout", "Sortie du service", "后台服务输出", "背景服務輸出", "デーモンの出力", "데몬 출력"],
+  ["runtime.daemon_stderr", "Erreur du service", "后台服务错误输出", "背景服務錯誤輸出", "デーモンのエラー出力", "데몬 오류 출력"],
+  ["runtime.tunnel_stdout", "Sortie du tunnel", "隧道输出", "通道輸出", "トンネルの出力", "터널 출력"],
+  ["runtime.tunnel_stderr", "Erreur du tunnel", "隧道错误输出", "通道錯誤輸出", "トンネルのエラー出力", "터널 오류 출력"],
+];
+const statusRows = new Map(statuses.map(row => [row[0], row]));
+const detailRows = new Map(detailKeys.map(row => [row[0], row]));
+const eventRows = new Map(events.map(row => [row[0], row]));
+
+export function statusLabel(status: string, language: Language): string {
+  return statusRows.get(status)?.[localeIndex[language] ?? 0] ?? status;
+}
+
+export function localizeDetailKey(key: string, language: Language): string {
+  return detailRows.get(key)?.[localeIndex[language] ?? 0] ?? key;
+}
+
+export function localizeEvent(event: string, language: Language): string {
+  const index = localeIndex[language] ?? 0;
+  const row = eventRows.get(event);
+  if (row && index !== 0) return row[index];
+  return row ? event.split(".").map(part => part.replaceAll("_", " ")).join(" · ") : event;
+}
+
+/** Localize only application-authored copy; never translate arbitrary log content. */
+export function localizeMessage(message: string, language: Language): string {
+  return translateMessage(message, language, 0);
+}
+
+function translateMessage(message: string, language: Language, depth: number): string {
+  const index = localeIndex[language] ?? 0;
+  if (index === 0 || depth > 3 || /[\r\n]/.test(message)) return message;
+  const row = exactMessages.get(message);
+  if (row) return row[index];
+  // Electron wraps rejected invoke calls. Strip this known transport wrapper only
+  // when the inner application message was actually translated. Raw stacks and
+  // unknown third-party diagnostics keep their complete original context.
+  const invoked = /^Error invoking remote method 'launcher:[a-z0-9:-]+': (?:(?:Error|TypeError|RangeError|LimitsStoreError): )?([^\r\n]+)$/.exec(message);
+  if (invoked) {
+    const translated = translateMessage(invoked[1], language, depth + 1);
+    return translated === invoked[1] ? message : translated;
+  }
+  const warning = limitsMessages[0];
+  if (message.endsWith(` ${warning[0]}`)) {
+    const cause = message.slice(0, -(warning[0].length + 1));
+    for (const wrapper of limitsWrappers) {
+      const prefix = wrapper[0].slice(0, -3);
+      if (!cause.startsWith(prefix)) continue;
+      const detail = translateMessage(cause.slice(prefix.length), language, depth + 1);
+      return wrapper[index].replace("{0}", () => detail) + " " + warning[index];
+    }
+    const translated = exactMessages.get(cause);
+    if (translated) return translated[index] + " " + warning[index];
+  }
+  if (message.endsWith(restartSuffix[0])) {
+    const source = message.slice(0, -restartSuffix[0].length);
+    const translated = exactMessages.get(source);
+    if (translated) return translated[index] + restartSuffix[index];
+  }
+  for (const template of messageTemplates) {
+    const match = template.match.exec(message);
+    if (!match) continue;
+    const values = new Map(template.parameters.map((parameter, position) => [parameter, match[position + 1]]));
+    return template.row[index].replace(/\{(\d+)\}/g, (placeholder, parameter: string) => values.get(Number(parameter)) ?? placeholder);
+  }
+  return message;
+}

@@ -11,6 +11,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { copyFor, localizeRuntimeMessage, type Copy } from "./i18n";
+import { localizeMessage, localizeEvent, localizeDetailKey, statusLabel } from "./runtime-copy";
 import { Icon, type IconName } from "./icons";
 import { LimitsSurface } from "./LimitsSurface";
 import { limitsCopyFor } from "./limits-copy";
@@ -101,7 +102,7 @@ export function App() {
       : current);
   }, []);
 
-  if (!api) return <FatalMessage message="Launcher IPC is unavailable." />;
+  if (!api) return <FatalMessage message={localizeMessage("Launcher IPC is unavailable.", preferredLanguage())} />;
   if (!snapshot) return <LaunchLoading />;
 
   const language = snapshot.state.language ?? "en";
@@ -139,7 +140,7 @@ export function App() {
         )}
       </AnimatePresence>
       <AnimatePresence>
-        {error ? <ErrorToast copy={copy} message={error} onDismiss={() => setError(null)} /> : null}
+        {error ? <ErrorToast copy={copy} message={localizeMessage(error, language)} onDismiss={() => setError(null)} /> : null}
       </AnimatePresence>
     </div>
   );
@@ -1539,7 +1540,7 @@ function McpSurface({
             >
               {busy
                 ? operation?.name === "mcp-verification" && operation.status === "running"
-                  ? localizeRuntimeMessage(copy, operation.message, undefined, language)
+                  ? localizeMessage(localizeRuntimeMessage(copy, operation.message, undefined, language), language)
                   : copy.running
                 : verified ? copy.done : copy.verifyRuntime}
             </PrimaryButton>
@@ -1583,8 +1584,8 @@ function ActivitySurface({
           <div className="activity-row" key={`${record.at}-${record.event}-${index}`}>
             <StateDot state={record.level === "error" ? "error" : record.level === "warning" ? "busy" : "ready"} />
             <div>
-              <strong>{humanEvent(record.event)}</strong>
-              <span>{logDetail(record.detail)}</span>
+              <strong>{localizeEvent(record.event, language)}</strong>
+              <span>{logDetail(record.detail, language)}</span>
             </div>
             <time>{formatTime(record.at, language)}</time>
           </div>
@@ -2220,9 +2221,7 @@ function DoctorSummary({ copy, language, report }: { copy: Copy; language: Langu
         {visibleChecks.map((check) => (
           <p key={check.id}>
             <StateDot state={check.status === "ok" ? "ready" : check.status === "warning" ? "busy" : "error"} />
-            <span>{check.status === "ok"
-              ? localizeRuntimeMessage(copy, check.message, check.id, language)
-              : check.message}</span>
+            <span>{localizeMessage(localizeRuntimeMessage(copy, check.message, check.id, language), language)}</span>
           </p>
         ))}
       </div>
@@ -2612,16 +2611,28 @@ function platformLabel(value: string): string {
   return value === "darwin" ? "macOS" : value === "win32" ? "Windows" : value === "linux" ? "Linux" : value;
 }
 
-function humanEvent(value: string): string {
-  return value.split(".").map((part) => part.replaceAll("_", " ")).join(" · ");
+function preferredLanguage(): Language {
+  for (const locale of navigator.languages) {
+    const exact = Object.keys(languages).find(language => language.toLowerCase() === locale.toLowerCase());
+    if (exact) return exact as Language;
+    const base = locale.split("-")[0];
+    if (Object.hasOwn(languages, base)) return base as Language;
+  }
+  return "en";
 }
 
-function logDetail(detail: Record<string, unknown>): string {
+function logDetail(detail: Record<string, unknown>, language: Language): string {
   const entries = Object.entries(detail).filter(([, value]) => value !== undefined && value !== null);
   if (entries.length === 0) return "";
   return entries
     .slice(0, 3)
-    .map(([key, value]) => `${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`)
+    .map(([key, value]) => {
+      // Translate display labels and known messages; keep paths, IDs and other diagnostic data literal.
+      const display = typeof value !== "string" ? JSON.stringify(value)
+        : /^(?:message|error|reason|detail|errorDescription)$/.test(key) ? localizeMessage(value, language)
+        : /^(?:status|state|phase)$/.test(key) ? statusLabel(value, language) : value;
+      return `${localizeDetailKey(key, language)}: ${display}`;
+    })
     .join(" · ");
 }
 

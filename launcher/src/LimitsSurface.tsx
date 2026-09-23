@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Icon } from "./icons";
 import { limitsCopyFor, type LimitsCopy } from "./limits-copy";
+import { localizeMessage } from "./runtime-copy";
 import type { LimitsApi, LimitsWindow } from "./limits-types";
 import { limitNeedsAttention, type LimitsTracker } from "./useLimits";
 import type { Language } from "./types";
@@ -96,10 +97,10 @@ export function LimitsSurface({
         {readError !== null ? (
           <div className="limits-error" role="alert">
             <Icon name="alert" />
-            <div><strong>{snapshot ? copy.staleError : copy.loadError}</strong>{readError ? <p>{readError}</p> : null}</div>
+            <div><strong>{snapshot ? copy.staleError : copy.loadError}</strong>{readError ? <p>{localizeMessage(readError, language)}</p> : null}</div>
           </div>
         ) : null}
-        {error ? <div className="limits-error" role="alert"><Icon name="alert" /><p>{error}</p></div> : null}
+        {error ? <div className="limits-error" role="alert"><Icon name="alert" /><p>{localizeMessage(error, language)}</p></div> : null}
 
         {snapshot ? (
           <section aria-label={stateLabel} className={`limits-setup${zeroRisk || unsupported ? " is-unavailable" : ""}`}>
@@ -191,8 +192,8 @@ export function LimitsSurface({
             <article className="limits-reference-plan is-reference-only">
               <h3>Business</h3>
               <dl>
-                <div><dt>Standard</dt><dd>{copy.month.replace("{count}", number(policy.business.standardMonthly))}</dd></div>
-                <div><dt>Premium</dt><dd>{copy.week.replace("{count}", number(policy.business.premiumWeekly))}</dd></div>
+                <div><dt>{copy.businessStandard}</dt><dd>{copy.month.replace("{count}", number(policy.business.standardMonthly))}</dd></div>
+                <div><dt>{copy.businessPremium}</dt><dd>{copy.week.replace("{count}", number(policy.business.premiumWeekly))}</dd></div>
               </dl>
               <p>{copy.shared}</p>
               <p>{copy.businessBody}</p>

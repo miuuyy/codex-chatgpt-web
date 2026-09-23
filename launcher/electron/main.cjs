@@ -226,6 +226,8 @@ const NATIVE_COPY = Object.freeze({
     openLauncher: "Open Codex Web GPT",
     quit: "Quit",
     exportDiagnostics: "Export privacy-safe diagnostics",
+    saveDiagnostics: "Export",
+    diagnosticFileType: "JSON Lines diagnostics",
     cancel: "Cancel",
     remove: "Remove",
     removeTitle: "Remove Codex Web GPT",
@@ -233,21 +235,46 @@ const NATIVE_COPY = Object.freeze({
     removeDetail: "The launcher's ChatGPT login profile will be preserved. Codex must be restarted once.",
     retry: "Retry",
     startupTitle: "Codex Web GPT could not start",
+    startupMessage: "The launcher encountered a problem during startup.",
+    technicalDetails: "Technical details",
     startupDetail: "Retry starts the launcher again without changing your saved settings or ChatGPT profile.",
     startupCleanupFailed: "Startup cleanup failed",
     catalogFailure: "Codex reached the launcher, but loading its model catalog failed (HTTP {status}; {reason}). Check Activity for details and export a safe log if it persists.",
+  }),
+  "fr": Object.freeze({
+    openLauncher: "Ouvrir Codex Web GPT",
+    quit: "Quitter",
+    exportDiagnostics: "Exporter les diagnostics sans données privées",
+    saveDiagnostics: "Exporter",
+    diagnosticFileType: "Diagnostics JSON Lines",
+    cancel: "Annuler",
+    remove: "Supprimer",
+    removeTitle: "Supprimer Codex Web GPT",
+    removeMessage: "Supprimer les modèles ChatGPT Web de Codex et rétablir la configuration précédente d’accès aux modèles ?",
+    removeDetail: "Le profil de connexion ChatGPT du lanceur sera conservé. Vous devrez redémarrer Codex une fois.",
+    retry: "Réessayer",
+    startupTitle: "Codex Web GPT n’a pas pu démarrer",
+    startupMessage: "Le lanceur a rencontré un problème au démarrage.",
+    technicalDetails: "Détails techniques",
+    startupDetail: "Réessayer relance l’application sans modifier vos paramètres enregistrés ni votre profil ChatGPT.",
+    startupCleanupFailed: "Le nettoyage après l’échec du démarrage a échoué",
+    catalogFailure: "Codex a joint le lanceur, mais le chargement du catalogue de modèles a échoué (HTTP {status} ; {reason}). Consultez Activité pour en savoir plus et exportez un journal sans données privées si le problème persiste.",
   }),
   "zh-CN": Object.freeze({
     openLauncher: "打开 Codex Web GPT",
     quit: "退出",
     exportDiagnostics: "导出隐私安全诊断",
+    saveDiagnostics: "导出",
+    diagnosticFileType: "JSON Lines 诊断文件",
     cancel: "取消",
     remove: "移除",
     removeTitle: "移除 Codex Web GPT",
     removeMessage: "从 Codex 中移除 ChatGPT Web 模型并恢复此前的模型路由？",
-    removeDetail: "启动器中的 ChatGPT 登录 profile 会保留。Codex 需要重启一次。",
+    removeDetail: "启动器中的 ChatGPT 登录配置会保留。Codex 需要重启一次。",
     retry: "重试",
     startupTitle: "Codex Web GPT 无法启动",
+    startupMessage: "启动器在启动过程中遇到了问题。",
+    technicalDetails: "技术详情",
     startupDetail: "重试会重新启动应用，不会更改已保存的设置或 ChatGPT 登录配置。",
     startupCleanupFailed: "启动清理失败",
     catalogFailure: "Codex 已连接到启动器，但模型列表加载失败（HTTP {status}；{reason}）。请查看“活动”了解详情；若问题持续，请导出安全日志。",
@@ -256,6 +283,8 @@ const NATIVE_COPY = Object.freeze({
     openLauncher: "開啟 Codex Web GPT",
     quit: "結束",
     exportDiagnostics: "匯出隱私安全診斷",
+    saveDiagnostics: "匯出",
+    diagnosticFileType: "JSON Lines 診斷檔案",
     cancel: "取消",
     remove: "移除",
     removeTitle: "移除 Codex Web GPT",
@@ -263,6 +292,8 @@ const NATIVE_COPY = Object.freeze({
     removeDetail: "啟動器中的 ChatGPT 登入設定檔會保留。Codex 需要重新啟動一次。",
     retry: "重試",
     startupTitle: "Codex Web GPT 無法啟動",
+    startupMessage: "啟動器在啟動過程中遇到了問題。",
+    technicalDetails: "技術詳細資訊",
     startupDetail: "重試會重新啟動應用程式，不會變更已儲存的設定或 ChatGPT 登入設定檔。",
     startupCleanupFailed: "啟動清理失敗",
     catalogFailure: "Codex 已連線到啟動器，但模型清單載入失敗（HTTP {status}；{reason}）。請查看「活動」了解詳情；若問題持續，請匯出安全日誌。",
@@ -271,6 +302,8 @@ const NATIVE_COPY = Object.freeze({
     openLauncher: "Codex Web GPT を開く",
     quit: "終了",
     exportDiagnostics: "プライバシー保護済みの診断情報をエクスポート",
+    saveDiagnostics: "エクスポート",
+    diagnosticFileType: "JSON Lines 診断ファイル",
     cancel: "キャンセル",
     remove: "削除",
     removeTitle: "Codex Web GPT を削除",
@@ -278,6 +311,8 @@ const NATIVE_COPY = Object.freeze({
     removeDetail: "ランチャーの ChatGPT ログインプロファイルは保持されます。Codex を一度再起動する必要があります。",
     retry: "再試行",
     startupTitle: "Codex Web GPT を起動できませんでした",
+    startupMessage: "ランチャーの起動中に問題が発生しました。",
+    technicalDetails: "技術的な詳細",
     startupDetail: "保存済みの設定と ChatGPT プロファイルを変更せずに、ランチャーを再起動します。",
     startupCleanupFailed: "起動後のクリーンアップに失敗しました",
     catalogFailure: "Codex はランチャーに接続しましたが、モデル一覧を読み込めませんでした（HTTP {status}、{reason}）。「アクティビティ」で詳細を確認し、問題が続く場合は安全なログをエクスポートしてください。",
@@ -286,6 +321,8 @@ const NATIVE_COPY = Object.freeze({
     openLauncher: "Codex Web GPT 열기",
     quit: "종료",
     exportDiagnostics: "개인정보가 보호된 진단 정보 내보내기",
+    saveDiagnostics: "내보내기",
+    diagnosticFileType: "JSON Lines 진단 파일",
     cancel: "취소",
     remove: "제거",
     removeTitle: "Codex Web GPT 제거",
@@ -293,6 +330,8 @@ const NATIVE_COPY = Object.freeze({
     removeDetail: "런처의 ChatGPT 로그인 프로필은 유지됩니다. Codex를 한 번 다시 시작해야 합니다.",
     retry: "다시 시도",
     startupTitle: "Codex Web GPT를 시작할 수 없습니다",
+    startupMessage: "런처를 시작하는 중에 문제가 발생했습니다.",
+    technicalDetails: "기술 정보",
     startupDetail: "저장된 설정이나 ChatGPT 프로필을 변경하지 않고 런처를 다시 시작합니다.",
     startupCleanupFailed: "시작 정리에 실패했습니다",
     catalogFailure: "Codex가 런처에 연결했지만 모델 목록을 불러오지 못했습니다(HTTP {status}; {reason}). 활동에서 세부 정보를 확인하고 문제가 계속되면 안전한 로그를 내보내 주세요.",
@@ -300,7 +339,9 @@ const NATIVE_COPY = Object.freeze({
 });
 
 function nativeCopyFor(language) {
-  return NATIVE_COPY[language] || NATIVE_COPY.en;
+  return typeof language === "string" && Object.hasOwn(NATIVE_COPY, language)
+    ? NATIVE_COPY[language]
+    : NATIVE_COPY.en;
 }
 
 function updateTrayMenu(language) {
@@ -963,8 +1004,9 @@ function registerIpc({ logger, stateStore }) {
     const copy = nativeCopyFor(stateStore.read().language);
     const result = await dialog.showSaveDialog(mainWindow, {
       title: copy.exportDiagnostics,
+      buttonLabel: copy.saveDiagnostics,
       defaultPath: path.join(app.getPath("documents"), `codex-web-gpt-diagnostics-${date}.jsonl`),
-      filters: [{ name: "JSON Lines", extensions: ["jsonl"] }],
+      filters: [{ name: copy.diagnosticFileType, extensions: ["jsonl"] }],
     });
     if (result.canceled || !result.filePath) return null;
     const recordCount = exportSanitizedLogs({
@@ -1431,8 +1473,8 @@ void start().catch(async (error) => {
     const options = {
       type: "error",
       title: copy.startupTitle,
-      message,
-      detail: [copy.startupDetail,
+      message: copy.startupMessage,
+      detail: [copy.startupDetail, `${copy.technicalDetails}: ${message}`,
         ...cleanupErrors.map(detail => `${copy.startupCleanupFailed}: ${detail}`)].join("\n"),
       buttons: [copy.retry, copy.quit],
       defaultId: 0,

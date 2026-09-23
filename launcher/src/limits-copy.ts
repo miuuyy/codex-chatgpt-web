@@ -60,9 +60,75 @@ const en = {
   otherPlans: "Plus & other plans",
   otherPlansBody: "Numeric allowances unknown. Launcher tracking is available only for Pro $100 and Pro $200.",
   businessBody: "Business allowances are shown for reference only. Business tracking is not supported.",
+  businessStandard: "Standard",
+  businessPremium: "Premium",
 };
 
 export type LimitsCopy = typeof en;
+
+const fr: LimitsCopy = {
+  title: "Limites",
+  subtitle: "Limites publiques de ChatGPT et messages observés par ce lanceur.",
+  notConfigured: "Non configuré",
+  setupTitle: "Suivre les messages envoyés ici",
+  setupBody: "Configurez le suivi pour détecter votre abonnement ChatGPT dans le navigateur du lanceur. Disponible pour Pro $100 et Pro $200.",
+  setup: "Configurer le suivi",
+  checking: "Vérification de votre abonnement…",
+  recheck: "Vérifier à nouveau l’abonnement",
+  browserBusy: "Attendez la fin de la tâche ou de l’opération en cours dans le navigateur avant de vérifier votre abonnement.",
+  loading: "Chargement du suivi enregistré…",
+  refresh: "Actualiser",
+  loadError: "Impossible de charger le suivi.",
+  staleError: "Impossible d’actualiser le suivi. Les dernières données chargées sont affichées ci-dessous.",
+  actionError: "Impossible d’effectuer cette action.",
+  sourceError: "Impossible d’ouvrir la documentation de référence OpenAI.",
+  zeroRisk: "Indisponible en mode sans risque",
+  zeroRiskBody: "La détection de l’abonnement et le suivi de l’utilisation ne sont pas disponibles en mode sans risque. Les limites publiques de référence restent consultables.",
+  proOnly: "Le suivi est réservé aux abonnements Pro",
+  unsupportedBody: "Ce compte n’a pas été identifié comme Pro $100 ou Pro $200. Les abonnements Plus et les autres offres ne peuvent pas être suivis ici ; leurs limites chiffrées sont inconnues.",
+  paused: "Suivi inactif",
+  active: "Suivi du lanceur activé",
+  estimate: "Estimation",
+  observedTitle: "Utilisation observée",
+  observedBody: "Messages enregistrés localement sur des périodes glissantes, comparés aux limites de référence publiées.",
+  scopeTitle: "Seule l’activité passant par ce lanceur est comptabilisée",
+  scopeBody: "L’utilisation en dehors de ce lanceur est exclue. Ces estimations ne correspondent pas au quota restant de votre compte. Les périodes glissantes de 24 heures et de 7 jours ne permettent pas de déterminer l’heure de réinitialisation de ChatGPT.",
+  noWindows: "Aucune période de suivi disponible pour le moment.",
+  rollingDay: "24 heures glissantes",
+  rollingWeek: "7 jours glissants",
+  rollingHours: "{hours} heures glissantes",
+  observed: "observés",
+  nearLimit: "L’utilisation observée a atteint au moins 75 % d’une limite de référence",
+  referenceCap: "Référence : {count} messages",
+  uncertain: "Messages Pro non attribués sur cette période : {count}",
+  sharedUnknown: "Dont {count} messages avec un modèle Pro inconnu",
+  lowerBound: "Au moins {count}",
+  modelTotalUnknown: "Total par modèle inconnu",
+  attributionBody: "Le modèle de certains messages Pro est inconnu. Les décomptes par modèle sont des valeurs minimales ; les totaux partagés incluent ces messages.",
+  combined: "Les deux modèles Pro",
+  history: "Historique enregistré",
+  historyBody: "Les messages des 7 derniers jours sont enregistrés sur cet appareil et conservés après le redémarrage du lanceur. L’enregistrement commence à l’activation du suivi ; l’activité antérieure est exclue.",
+  totalMessages: "Messages · 7 derniers jours",
+  unknownPro: "Modèle Pro non identifié",
+  unknownProBody: "Ces messages ne peuvent pas être attribués à un modèle Pro précis.",
+  since: "Suivi depuis",
+  checked: "Abonnement vérifié",
+  unknown: "Inconnu",
+  referenceTitle: "Limites publiques de référence",
+  referenceBody: "Quotas de conversation pour GPT-6 Pro et GPT-5.6 Sol Pro. Il s’agit de valeurs de référence, et non de données lues sur votre compte. Les quotas de Work et de Codex sont distincts.",
+  asOf: "Au {date}",
+  source: "Référence OpenAI",
+  referenceOnly: "À titre indicatif uniquement",
+  shared: "Partagé entre les deux modèles Pro",
+  day: "{count} / jour",
+  week: "{count} / semaine",
+  month: "{count} / mois",
+  otherPlans: "Plus et autres abonnements",
+  otherPlansBody: "Les quotas chiffrés sont inconnus. Le suivi du lanceur est disponible uniquement pour Pro $100 et Pro $200.",
+  businessBody: "Les quotas Business sont affichés à titre indicatif uniquement. Le suivi des abonnements Business n’est pas pris en charge.",
+  businessStandard: "Standard",
+  businessPremium: "Supérieur",
+};
 
 const zhCN: LimitsCopy = {
   title: "使用限额",
@@ -113,7 +179,7 @@ const zhCN: LimitsCopy = {
   checked: "套餐检查时间",
   unknown: "未知",
   referenceTitle: "公开参考限额",
-  referenceBody: "GPT-6 Pro 和 GPT-5.6 Sol Pro 在 Chat 中的额度。这些是参考值，并非账户实际读数。Work 和 Codex 使用独立额度。",
+  referenceBody: "GPT-6 Pro 和 GPT-5.6 Sol Pro 的聊天额度。这些是参考值，并非账户实际读数。Work 和 Codex 使用独立额度。",
   asOf: "截至 {date}",
   source: "OpenAI 参考资料",
   referenceOnly: "仅供参考",
@@ -124,6 +190,8 @@ const zhCN: LimitsCopy = {
   otherPlans: "Plus 及其他套餐",
   otherPlansBody: "具体额度未知。启动器用量跟踪仅支持 Pro $100 和 Pro $200。",
   businessBody: "Business 额度仅供参考，不支持 Business 用量跟踪。",
+  businessStandard: "标准",
+  businessPremium: "高级",
 };
 
 const zhTW: LimitsCopy = {
@@ -175,7 +243,7 @@ const zhTW: LimitsCopy = {
   checked: "方案檢查時間",
   unknown: "未知",
   referenceTitle: "公開參考額度",
-  referenceBody: "GPT-6 Pro 和 GPT-5.6 Sol Pro 在 Chat 中的額度。這些是參考值，並非帳戶實際讀數。Work 和 Codex 使用獨立額度。",
+  referenceBody: "GPT-6 Pro 和 GPT-5.6 Sol Pro 的聊天額度。這些是參考值，並非帳戶實際讀數。Work 和 Codex 使用獨立額度。",
   asOf: "截至 {date}",
   source: "OpenAI 參考資料",
   referenceOnly: "僅供參考",
@@ -186,6 +254,8 @@ const zhTW: LimitsCopy = {
   otherPlans: "Plus 及其他方案",
   otherPlansBody: "具體額度未知。啟動器用量追蹤僅支援 Pro $100 和 Pro $200。",
   businessBody: "Business 額度僅供參考，不支援 Business 用量追蹤。",
+  businessStandard: "標準",
+  businessPremium: "進階",
 };
 
 const ja: LimitsCopy = {
@@ -204,8 +274,8 @@ const ja: LimitsCopy = {
   staleError: "利用記録を更新できませんでした。前回読み込んだデータを表示しています。",
   actionError: "操作を完了できませんでした。",
   sourceError: "OpenAI の参考資料を開けませんでした。",
-  zeroRisk: "Zero Risk では利用不可",
-  zeroRiskBody: "Zero Risk モードではプランの検出と利用状況の追跡はできません。公開上限は引き続き参照できます。",
+  zeroRisk: "ゼロリスクでは利用不可",
+  zeroRiskBody: "ゼロリスクモードではプランの検出と利用状況の追跡はできません。公開上限は引き続き参照できます。",
   proOnly: "追跡は Pro プランのみ対応",
   unsupportedBody: "このアカウントを Pro $100 または Pro $200 と確認できませんでした。Plus などのプランは追跡できず、具体的な上限値も不明です。",
   paused: "追跡は無効",
@@ -237,7 +307,7 @@ const ja: LimitsCopy = {
   checked: "プラン確認日時",
   unknown: "不明",
   referenceTitle: "公開されている参考上限",
-  referenceBody: "Chat での GPT-6 Pro と GPT-5.6 Sol Pro の利用枠です。参考値であり、アカウントから取得した値ではありません。Work と Codex の利用枠は別です。",
+  referenceBody: "チャットでの GPT-6 Pro と GPT-5.6 Sol Pro の利用枠です。参考値であり、アカウントから取得した値ではありません。Work と Codex の利用枠は別です。",
   asOf: "{date} 時点",
   source: "OpenAI の参考資料",
   referenceOnly: "参考情報のみ",
@@ -248,6 +318,8 @@ const ja: LimitsCopy = {
   otherPlans: "Plus・その他のプラン",
   otherPlansBody: "具体的な利用枠は不明です。ランチャーの追跡は Pro $100 と Pro $200 のみに対応しています。",
   businessBody: "Business の利用枠は参考情報です。Business の利用追跡には対応していません。",
+  businessStandard: "標準",
+  businessPremium: "上位",
 };
 
 const ko: LimitsCopy = {
@@ -266,8 +338,8 @@ const ko: LimitsCopy = {
   staleError: "사용 기록을 새로고침하지 못했습니다. 마지막으로 불러온 데이터를 표시합니다.",
   actionError: "이 작업을 완료하지 못했습니다.",
   sourceError: "OpenAI 참고 자료를 열지 못했습니다.",
-  zeroRisk: "Zero Risk에서는 사용 불가",
-  zeroRiskBody: "Zero Risk 모드에서는 요금제 확인과 사용량 추적을 사용할 수 없습니다. 공개 참고 한도는 계속 볼 수 있습니다.",
+  zeroRisk: "제로 리스크에서는 사용 불가",
+  zeroRiskBody: "제로 리스크 모드에서는 요금제 확인과 사용량 추적을 사용할 수 없습니다. 공개 참고 한도는 계속 볼 수 있습니다.",
   proOnly: "추적은 Pro 요금제만 지원합니다",
   unsupportedBody: "이 계정을 Pro $100 또는 Pro $200으로 확인하지 못했습니다. Plus와 기타 요금제는 추적할 수 없으며 구체적인 한도도 알 수 없습니다.",
   paused: "추적 비활성",
@@ -299,7 +371,7 @@ const ko: LimitsCopy = {
   checked: "요금제 확인",
   unknown: "알 수 없음",
   referenceTitle: "공개 참고 한도",
-  referenceBody: "Chat에서의 GPT-6 Pro 및 GPT-5.6 Sol Pro 사용 한도입니다. 계정에서 읽은 값이 아닌 참고 값입니다. Work와 Codex 한도는 별도입니다.",
+  referenceBody: "채팅에서의 GPT-6 Pro 및 GPT-5.6 Sol Pro 사용 한도입니다. 계정에서 읽은 값이 아닌 참고 값입니다. Work와 Codex 한도는 별도입니다.",
   asOf: "{date} 기준",
   source: "OpenAI 참고 자료",
   referenceOnly: "참고용",
@@ -310,9 +382,11 @@ const ko: LimitsCopy = {
   otherPlans: "Plus 및 기타 요금제",
   otherPlansBody: "구체적인 사용 한도는 알 수 없습니다. 런처 추적은 Pro $100 및 Pro $200만 지원합니다.",
   businessBody: "Business 한도는 참고용입니다. Business 사용량 추적은 지원하지 않습니다.",
+  businessStandard: "일반",
+  businessPremium: "고급",
 };
 
-const copies: Record<Language, LimitsCopy> = { en, "zh-CN": zhCN, "zh-TW": zhTW, ja, ko };
+const copies: Record<Language, LimitsCopy> = { en, fr, "zh-CN": zhCN, "zh-TW": zhTW, ja, ko };
 
 export function limitsCopyFor(language: Language): LimitsCopy {
   return copies[language];

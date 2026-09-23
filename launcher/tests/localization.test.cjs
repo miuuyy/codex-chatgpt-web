@@ -9,6 +9,7 @@ const repositoryRoot = path.resolve(launcherRoot, "..");
 const read = (...parts) => fs.readFileSync(path.join(repositoryRoot, ...parts), "utf8");
 
 const englishReadme = read("README.md");
+const frenchReadme = read("README.fr.md");
 const chineseReadme = read("README.zh-CN.md");
 const japaneseReadme = read("README.ja.md");
 const koreanReadme = read("README.ko.md");
@@ -28,6 +29,17 @@ function loadI18nModule() {
   return loaded.exports;
 }
 
+function loadNativeLocalization() {
+  const main = read("launcher", "electron", "main.cjs");
+  const copySource = main.slice(main.indexOf("const NATIVE_COPY ="), main.indexOf("function updateTrayMenu("));
+  const validation = main.slice(main.indexOf("function validateLanguage("), main.indexOf("function validateBrowserInteractionMode("));
+  return Function("languages", `${copySource}\n${validation}\nreturn {NATIVE_COPY, nativeCopyFor, validateLanguage};`)(languages);
+}
+
+function placeholders(value) {
+  return [...value.matchAll(/\{([A-Za-z][A-Za-z0-9_]*)\}/g)].map(match => match[1]).sort();
+}
+
 function commandFences(source) {
   return [...source.matchAll(/```(bash|powershell)\r?\n([\s\S]*?)```/g)]
     .map((match) => `${match[1]}\n${match[2].replace(/\r\n/g, "\n").trim()}`);
@@ -40,7 +52,7 @@ function linkTargets(source) {
 }
 
 test("localized READMEs preserve every command block and link target from English", () => {
-  for (const source of [chineseReadme, japaneseReadme, koreanReadme]) {
+  for (const source of [frenchReadme, chineseReadme, japaneseReadme, koreanReadme]) {
     assert.deepEqual(commandFences(source), commandFences(englishReadme));
     assert.deepEqual(linkTargets(source), linkTargets(englishReadme));
   }
@@ -117,29 +129,145 @@ test("runtime message localization preserves other languages and unknown backend
 });
 
 test("launcher UI localizes MCP verification progress and doctor check messages", () => {
-  assert.match(appSource, /localizeRuntimeMessage\(copy, operation\.message, undefined, language\)/);
+  assert.match(appSource, /localizeMessage\(localizeRuntimeMessage\(copy, operation\.message, undefined, language\), language\)/);
   assert.match(
     appSource,
-    /check\.status === "ok"\s*\?\s*localizeRuntimeMessage\(copy, check\.message, check\.id, language\)\s*:\s*check\.message/,
+    /localizeMessage\(localizeRuntimeMessage\(copy, check\.message, check\.id, language\), language\)/,
   );
+  assert.doesNotMatch(appSource, /check\.status === "ok"\s*\?\s*localizeRuntimeMessage/);
 });
 
 
 
 test("native dialogs and IPC accept exactly the renderer's supported languages", () => {
-  const main = read("launcher", "electron", "main.cjs");
-  const copySource = main.slice(main.indexOf("const NATIVE_COPY ="), main.indexOf("function updateTrayMenu("));
-  const validation = main.slice(main.indexOf("function validateLanguage("), main.indexOf("function validateBrowserInteractionMode("));
-  const { nativeCopyFor, validateLanguage } = Function("languages", `${copySource}\n${validation}\nreturn {nativeCopyFor, validateLanguage};`)(languages);
+  const { NATIVE_COPY, nativeCopyFor, validateLanguage } = loadNativeLocalization();
+  assert.deepEqual(Object.keys(NATIVE_COPY).sort(), Object.keys(languages).sort());
+  assert.deepEqual(languages.fr, { label: "Français", marker: "FR", locale: "fr-FR" });
   const english = nativeCopyFor("en");
+  assert.ok(Object.isFrozen(NATIVE_COPY));
   for (const language of Object.keys(languages)) {
     assert.equal(validateLanguage(language), language);
     const copy = nativeCopyFor(language);
+    assert.ok(Object.isFrozen(copy));
     assert.deepEqual(Object.keys(copy).sort(), Object.keys(english).sort());
-    assert.ok(Object.values(copy).every(value => typeof value === "string" && value.trim()));
-    if (language !== "en") for (const key of ["quit", "remove", "retry", "startupTitle"]) assert.notEqual(copy[key], english[key]);
+    for (const [key, value] of Object.entries(copy)) {
+      assert.ok(typeof value === "string" && value.trim(), `${language}.${key} must be translated`);
+      assert.deepEqual(placeholders(value), placeholders(english[key]), `${language}.${key} must preserve placeholders`);
+      if (language !== "en") assert.notEqual(value, english[key], `${language}.${key} must not fall back to English`);
+    }
   }
-  for (const language of ["__proto__", "constructor", "unknown", null, [], {}]) assert.throws(() => validateLanguage(language), /Language must/);
+  for (const language of ["__proto__", "constructor", "toString", "unknown", null, [], {}, 42]) {
+    assert.throws(() => validateLanguage(language), /Language must/);
+    assert.equal(nativeCopyFor(language), english);
+  }
+});
+
+test("renderer catalogs preserve every key and placeholder in all registered languages", () => {
+  const { copyFor } = loadI18nModule();
+  const english = copyFor("en");
+  for (const language of Object.keys(languages)) {
+    const copy = copyFor(language);
+    assert.deepEqual(Object.keys(copy).sort(), Object.keys(english).sort(), `${language} keys`);
+    for (const [key, value] of Object.entries(copy)) {
+      assert.ok(typeof value === "string" && value.trim(), `${language}.${key} must not be blank`);
+      assert.deepEqual(placeholders(value), placeholders(english[key]), `${language}.${key} placeholders`);
+    }
+    if (language !== "en") {
+      for (const key of ["chooseLanguage", "setupTitle", "settings", "continue", "install"]) {
+        assert.notEqual(copy[key], english[key], `${language}.${key} must not silently use English`);
+      }
+    }
+  }
+});
+
+test("tray labels update immediately for each registered language", () => {
+  const main = read("launcher", "electron", "main.cjs");
+  const { nativeCopyFor } = loadNativeLocalization();
+  const source = main.slice(main.indexOf("function updateTrayMenu("), main.indexOf("function createTray("));
+  let template;
+  let opens = 0;
+  let quits = 0;
+  const updateTrayMenu = Function("tray", "Menu", "nativeCopyFor", "showMainWindow", "requestQuit",
+    `${source}\nreturn updateTrayMenu;`)(
+    { setContextMenu: value => { template = value; } },
+    { buildFromTemplate: value => value },
+    nativeCopyFor,
+    () => { opens++; },
+    async () => { quits++; },
+  );
+  for (const language of Object.keys(languages)) {
+    updateTrayMenu(language);
+    assert.deepEqual(template.map(item => item.label).filter(Boolean), [nativeCopyFor(language).openLauncher, nativeCopyFor(language).quit]);
+    template[0].click();
+    template[2].click();
+  }
+  assert.equal(opens, Object.keys(languages).length);
+  assert.equal(quits, Object.keys(languages).length);
+});
+
+test("native export and removal dialogs use the selected language without changing file formats or actions", async () => {
+  const main = read("launcher", "electron", "main.cjs");
+  const { nativeCopyFor } = loadNativeLocalization();
+  const exportSource = main.slice(main.indexOf('handle("launcher:export-logs",'), main.indexOf('handle("launcher:update-install",'));
+  const removeSource = main.slice(main.indexOf('handle("launcher:uninstall-integration",'), main.indexOf('handle("launcher:setup-core",'));
+  for (const language of Object.keys(languages)) {
+    const handlers = new Map();
+    const copy = nativeCopyFor(language);
+    const dialogs = [];
+    Function("handle", "stateStore", "nativeCopyFor", "dialog", "mainWindow", "app", "path", "IS_DEV_PROFILE",
+      `${exportSource}\n${removeSource}`)(
+      (channel, callback) => handlers.set(channel, callback),
+      { read: () => ({ language }) }, nativeCopyFor,
+      {
+        showSaveDialog: async (_owner, options) => { dialogs.push(options); return { canceled: true }; },
+        showMessageBox: async (_owner, options) => { dialogs.push(options); return { response: 0 }; },
+      },
+      {}, { getPath: () => "/synthetic-documents" }, path, false,
+    );
+    assert.equal(await handlers.get("launcher:export-logs")(), null);
+    assert.deepEqual(await handlers.get("launcher:uninstall-integration")(), { cancelled: true });
+    const [exportDialog, removeDialog] = dialogs;
+    assert.equal(exportDialog.title, copy.exportDiagnostics);
+    assert.equal(exportDialog.buttonLabel, copy.saveDiagnostics);
+    assert.deepEqual(exportDialog.filters, [{ name: copy.diagnosticFileType, extensions: ["jsonl"] }]);
+    assert.match(exportDialog.defaultPath, /codex-web-gpt-diagnostics-\d{4}-\d{2}-\d{2}\.jsonl$/);
+    assert.equal(removeDialog.title, copy.removeTitle);
+    assert.equal(removeDialog.message, copy.removeMessage);
+    assert.equal(removeDialog.detail, copy.removeDetail);
+    assert.deepEqual(removeDialog.buttons, [copy.cancel, copy.remove]);
+    assert.equal(removeDialog.cancelId, 0);
+    assert.equal(removeDialog.defaultId, 0);
+  }
+});
+
+test("startup failure dialogs localize their message and retain the original diagnostic", async () => {
+  const main = read("launcher", "electron", "main.cjs");
+  const { nativeCopyFor } = loadNativeLocalization();
+  const source = main.slice(main.indexOf("void start().catch(")).replace("void start()", "return start()");
+  const failure = "Synthetic startup failure: C:\\sample $&\\file.json {status}";
+  for (const language of Object.keys(languages)) {
+    let options;
+    let fatalLog;
+    let exitCode;
+    await Function("start", "app", "fs", "path", "browserHost", "browserControl", "mainWindow", "showMainWindow",
+      "createStateStore", "nativeCopyFor", "process", "dialog", `let startupFailed = false; let quitting = false; ${source}`)(
+      async () => { throw new Error(failure); },
+      { getPath: () => "/synthetic-logs", whenReady: async () => {}, exit: code => { exitCode = code; } },
+      { appendFileSync: (_path, value) => { fatalLog = value; } }, path,
+      { destroy() {} }, { close: async () => {} }, { isDestroyed: () => false }, () => {},
+      () => ({ read: () => ({ language }) }), nativeCopyFor, { argv: ["launcher"] },
+      { showMessageBox: async (_owner, value) => { options = value; return { response: 1 }; } },
+    );
+    const copy = nativeCopyFor(language);
+    assert.equal(options.title, copy.startupTitle);
+    assert.equal(options.message, copy.startupMessage);
+    assert.equal(options.detail, `${copy.startupDetail}\n${copy.technicalDetails}: ${failure}`);
+    assert.deepEqual(options.buttons, [copy.retry, copy.quit]);
+    assert.equal(options.defaultId, 0);
+    assert.equal(options.cancelId, 1);
+    assert.equal(exitCode, 1);
+    assert.ok(fatalLog.includes(failure), "the original error must remain available in the log");
+  }
 });
 
 test("all locales translate known doctor success checks without changing literal diagnostic data", () => {
@@ -167,7 +295,6 @@ test("all locales translate known doctor success checks without changing literal
     for (const [id, message, key, placeholder, value] of checks) {
       const expected = placeholder ? copy[key].replace(placeholder, () => value) : copy[key];
       assert.equal(localizeRuntimeMessage(copy, message, id, language), expected);
-      if (language !== "en") assert.notEqual(expected, message);
       if (language !== "en") assert.notEqual(expected, message);
       assert.equal(localizeRuntimeMessage(copy, message, "wrong-check", language), message);
     }

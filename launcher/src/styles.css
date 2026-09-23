@@ -1793,6 +1793,9 @@ code {
   color: var(--color-text-secondary);
   font-size: var(--text-sm);
   font-weight: 500;
+}
+
+:lang(en) .activity-row strong {
   text-transform: capitalize;
 }
 
