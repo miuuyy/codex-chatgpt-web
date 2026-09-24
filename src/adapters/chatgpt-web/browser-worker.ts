@@ -1409,8 +1409,8 @@ export async function setChatGptThinkMode(
     const composer = composerForm.locator(CHATGPT_COMPOSER_SELECTOR).filter({ visible: true }).first();
     const composerState = () => composer.evaluate(element => {
       const copy = element.cloneNode(true) as HTMLElement;
-      const pills = [...copy.querySelectorAll('[data-id^="plugin:"][data-keyword]')];
-      const connectors = pills.map(pill => pill.getAttribute("data-keyword")).sort();
+      const pills = [...copy.querySelectorAll('[data-id^="plugin:"][data-keyword], [app-mention-path^="app://"][app-mention-display-name][contenteditable="false"]')];
+      const connectors = pills.map(pill => pill.getAttribute("data-keyword") ?? pill.getAttribute("app-mention-display-name")).sort();
       for (const pill of pills) pill.remove();
       const text = element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement
         ? element.value : copy.textContent ?? "";
@@ -1907,10 +1907,10 @@ class ChatGptBrowserDiagnostics {
           const composers = [...document.querySelectorAll(composerSelector)].filter(rendered);
           const assistantTurns = [...document.querySelectorAll(assistantTurnSelector)].filter(rendered);
           const selectedConnectors = composers.flatMap(composer => (
-            [...composer.querySelectorAll('[data-id^="plugin:"][data-keyword]')]
+            [...composer.querySelectorAll('[data-id^="plugin:"][data-keyword], [app-mention-path^="app://"][app-mention-display-name][contenteditable="false"]')]
           ))
             .filter(rendered);
-          const exactConnectorRows = [...document.querySelectorAll('.__menu-item[tabindex="0"]')]
+          const exactConnectorRows = [...document.querySelectorAll('.__menu-item[tabindex="0"], [data-mention-list-scroll-area] button[data-list-navigation-item="true"]')]
             .filter(element => rendered(element) && exactText(element, appName));
           const currentUrl = new URL(location.href);
           const integerAttribute = (element: Element, name: string): number | null => {
@@ -1943,7 +1943,7 @@ class ChatGptBrowserDiagnostics {
               })),
               selectedConnectorCount: selectedConnectors.length,
               exactSelectedConnectorCount: selectedConnectors.filter(
-                element => element.getAttribute("data-keyword") === appName,
+                element => (element.getAttribute("data-keyword") ?? element.getAttribute("app-mention-display-name")) === appName,
               ).length,
             },
             focus: {
@@ -3138,7 +3138,7 @@ export class ChatGptBrowserWorker {
     return composer.evaluate(element => {
       const clone = element.cloneNode(true) as HTMLElement;
       clone.querySelectorAll(
-        '[data-id^="plugin:"][data-keyword], [data-inline-selection-pill-cursor-target]',
+        '[data-id^="plugin:"][data-keyword], [app-mention-path^="app://"][app-mention-display-name][contenteditable="false"], [data-inline-selection-pill-cursor-target]',
       )
         .forEach(part => part.remove());
       return [...clone.childNodes]
@@ -3174,7 +3174,7 @@ export class ChatGptBrowserWorker {
 
   private selectedConnectorControl(composer: Locator): Locator {
     return composer
-      .locator(`[data-id^="plugin:"][data-keyword=${JSON.stringify(this.config.appName)}]`)
+      .locator(`[data-id^="plugin:"][data-keyword=${JSON.stringify(this.config.appName)}], [app-mention-path^="app://"][app-mention-display-name=${JSON.stringify(this.config.appName)}][contenteditable="false"]`)
       .filter({ visible: true });
   }
 
@@ -3182,7 +3182,7 @@ export class ChatGptBrowserWorker {
     const selected = this.selectedConnectorControl(composer);
     const keywords = await withBrowserTurnAbort(
       withChatGptBrowserObservationTimeout(selected.evaluateAll(elements => (
-        elements.map(element => element.getAttribute("data-keyword"))
+        elements.map(element => element.getAttribute("data-keyword") ?? element.getAttribute("app-mention-display-name"))
       ))),
       abortSignal,
     );
@@ -3283,7 +3283,7 @@ export class ChatGptBrowserWorker {
       throwIfPromptAttachmentAborted(abortSignal);
     };
     let composer: Locator;
-    const menuRows = page.locator('.__menu-item[tabindex="0"]');
+    const menuRows = page.locator('.__menu-item[tabindex="0"], [data-mention-list-scroll-area] button[data-list-navigation-item="true"]');
     const appResult = menuRows.filter({
       has: page.getByText(this.config.appName, { exact: true }),
     });
@@ -3428,7 +3428,10 @@ export class ChatGptBrowserWorker {
       const rowHighlighted = async () => await appResult.getAttribute("data-highlighted", {
         signal: abortSignal,
         timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
-      }) !== null;
+      }) !== null || await appResult.getAttribute("aria-current", {
+        signal: abortSignal,
+        timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
+      }) === "true";
       if (!await rowHighlighted()) {
         const visibleRowCount = await withBrowserTurnAbort(
           withChatGptBrowserObservationTimeout(menuRows.filter({ visible: true }).count()),

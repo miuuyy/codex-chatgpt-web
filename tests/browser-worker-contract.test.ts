@@ -1352,6 +1352,11 @@ test("selected connector identity does not depend on its visible pill text", asy
     };
     return worker.connectorIsSelected(composer);
   };
+  const mention = '<span app-mention-path="app://example" app-mention-display-name="Codex Native2" contenteditable="false">表示名</span>';
+  expect(await selected(mention)).toBeTrue();
+  expect(await selected(mention.replace("app://example", "https://example.com"))).toBeFalse();
+  expect(await selected(mention.replace('display-name="Codex Native2"', 'display-name="Codex Native2 DEV"'))).toBeFalse();
+  await expect(selected(mention + mention)).rejects.toThrow("duplicate");
   const pill = '<span data-id="plugin:configured" data-keyword="Codex Native2">表示名</span>';
   expect(await selected(pill)).toBeTrue();
   expect(await selected('<span data-id="plugin:other" data-keyword="Other">Codex Native2</span>')).toBeFalse();
@@ -1448,7 +1453,7 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
   ]);
 });
 
-test("connector selection moves highlight to the exact hidden-viewport row before Enter", async () => {
+test.each(["data-highlighted", "aria-current"])("connector selection honors %s on the exact hidden-viewport row before Enter", async attribute => {
   const keys: string[] = [];
   let arrowCount = 0;
   let selected = false;
@@ -1456,7 +1461,7 @@ test("connector selection moves highlight to the exact hidden-viewport row befor
   const appResult = {
     waitFor: async () => {},
     count: async () => 1,
-    getAttribute: async () => arrowCount >= 2 ? "" : null,
+    getAttribute: async (name: string) => name === attribute && arrowCount >= 2 ? (attribute === "aria-current" ? "true" : "") : null,
   };
   const menuRows = {
     evaluateAll: async () => [],
