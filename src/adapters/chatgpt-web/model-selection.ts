@@ -16,7 +16,7 @@ function familyOption(menu: EffortMenu, family: ChatGptWebModelFamily) {
   return menu.menu.getByRole("menuitemradio", {
     name: family === "5.6" ? /^GPT[-\s]?5\.6\s+Sol(?:\s+Pro)?$/i
       // Simplified/Traditional Chinese and Japanese share 最新; Korean uses 최신.
-      : /^(?:Latest|最新|최신|GPT[-\s]?6(?:\s+Astra)?(?:\s+Pro)?)$/i,
+      : /^(?:Latest|Recente|最新|최신|GPT[-\s]?6(?:\s+Astra)?(?:\s+Pro)?)$/i,
     exact: true,
     includeHidden: true,
   });
@@ -34,9 +34,15 @@ export async function selectChatGptModelFamily(
     if (await option.count() > 1) throw familyError(family);
     if (await option.count() === 1 && await option.getAttribute("aria-checked") === "true") return menu;
     // The attached radio rows are inert while this composer-owned advanced view is collapsed.
-    const trigger = menu.menu.locator('[role="menuitem"][aria-expanded][aria-hidden="false"]');
+    const trigger = menu.menu.locator(
+      '[role="menuitem"][aria-expanded][aria-hidden="false"], '
+      + '[data-model-picker-view="simple"] [role="menuitem"][data-model-picker-view-toggle="true"][aria-hidden="false"]',
+    );
     if (await trigger.count() !== 1) throw familyError(family);
-    if (await trigger.getAttribute("aria-expanded") === "false") await trigger.click({ timeout: 5_000 });
+    if (await trigger.getAttribute("aria-expanded") === "false"
+      || await trigger.getAttribute("data-model-picker-view-toggle") === "true") {
+      await trigger.click({ timeout: 5_000 });
+    }
     await option.waitFor({ state: "visible", timeout: 5_000 });
     await option.click({ timeout: 5_000 });
     await page.keyboard.press("Escape");
