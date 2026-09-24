@@ -108,6 +108,40 @@ test("exported launcher logs remove local usernames, private ChatGPT titles, and
   }
 });
 
+test("exporting diagnostics cannot overwrite source logs through filesystem links", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-export-alias-"));
+  const filePath = path.join(root, "launcher.jsonl");
+  const rotatedPath = `${filePath}.1`;
+  const original = `${JSON.stringify({
+    at: "2026-09-24T00:00:00.000Z", level: "info", event: "launcher.started",
+    detail: { url: "https://chatgpt.com/c/private-conversation" },
+  })}\nnot-json\n`;
+  try {
+    fs.writeFileSync(filePath, original);
+    fs.writeFileSync(rotatedPath, original);
+    for (const [name, source] of [["current", filePath], ["rotated", rotatedPath]]) {
+      const destinationPath = path.join(root, `${name}-alias.jsonl`);
+      fs.linkSync(source, destinationPath);
+      assert.throws(
+        () => exportSanitizedLogs({ filePath, destinationPath }),
+        /Refusing to overwrite a launcher source log/,
+      );
+      assert.equal(fs.readFileSync(source, "utf8"), original);
+    }
+    if (process.platform !== "win32") {
+      const destinationPath = path.join(root, "symbolic-alias.jsonl");
+      fs.symlinkSync(filePath, destinationPath);
+      assert.throws(
+        () => exportSanitizedLogs({ filePath, destinationPath }),
+        /Refusing to overwrite a launcher source log/,
+      );
+      assert.equal(fs.readFileSync(filePath, "utf8"), original);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a closed Windows diagnostic pipe is recorded without becoming an uncaught process error", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-process-pipe-"));
   const filePath = path.join(root, "process-stream-errors.log");

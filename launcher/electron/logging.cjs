@@ -54,7 +54,17 @@ function sanitizeForExport(value, seen = new WeakSet()) {
 function exportSanitizedLogs({ filePath, destinationPath }) {
   const sourcePaths = [`${filePath}.1`, filePath];
   const destination = path.resolve(destinationPath);
-  if (sourcePaths.some(sourcePath => path.resolve(sourcePath) === destination)) {
+  const destinationStat = fs.statSync(destination, { throwIfNoEntry: false });
+  const destinationRealPath = destinationStat ? fs.realpathSync(destination) : null;
+  if (sourcePaths.some(sourcePath => {
+    if (path.resolve(sourcePath) === destination) return true;
+    if (!destinationStat) return false;
+    const sourceStat = fs.statSync(sourcePath, { throwIfNoEntry: false });
+    if (!sourceStat) return false;
+    return fs.realpathSync(sourcePath) === destinationRealPath
+      || (destinationStat.ino !== 0
+        && sourceStat.dev === destinationStat.dev && sourceStat.ino === destinationStat.ino);
+  })) {
     throw new Error("Refusing to overwrite a launcher source log with an exported diagnostic");
   }
   const records = [];
