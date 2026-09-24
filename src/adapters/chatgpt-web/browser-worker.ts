@@ -3062,6 +3062,14 @@ export class ChatGptBrowserWorker {
         continue;
       }
       recoveryAttempts = 0;
+      // The current UI can defer its assistant heading until reasoning and tool work
+      // finish. Its composer stop control still proves that generation is in progress.
+      if (state.visibleStopButtonCount > 0) {
+        responseDeadline = Math.min(
+          deadline ?? Number.POSITIVE_INFINITY,
+          Math.max(responseDeadline, Date.now() + graceMs),
+        );
+      }
       // A tool batch can arrive while the DOM probe is in flight. Read progress again before
       // acknowledging its boundary; the pre-probe snapshot can otherwise leave the broker waiting
       // despite this exact iteration having successfully observed the page.

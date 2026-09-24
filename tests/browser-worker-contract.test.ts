@@ -1100,6 +1100,45 @@ test("missing-assistant expiry checks fresh DOM after a delayed wake while prese
   }
 });
 
+test.each(["response", "missing", "deadline", "abort"])("a deferred assistant heading preserves generation liveness and termination (%s)", async scenario => {
+  const realDateNow = Date.now;
+  let now = 1_000;
+  const controller = new AbortController();
+  const hidden: any = { filter: () => hidden, last: () => hidden, isVisible: async () => false };
+  const page: any = { isClosed: () => false, locator: () => hidden };
+  let observations = 0;
+  let waits = 0;
+  const worker: any = Object.create(ChatGptBrowserWorker.prototype);
+  worker.submissionDomState = async () => {
+    observations++;
+    return {
+      turnIdentities: ["user", "assistant"], userIdentities: ["user"],
+      responseIdentities: scenario === "response" && waits >= 3 ? ["assistant"] : [],
+      visibleStopButtonCount: waits < 3 ? 1 : 0,
+    };
+  };
+  worker.waitForTurnDomOrExternalProgress = async () => {
+    if (++waits > 4) throw new Error("Stopped generation must not wait forever");
+    now += CHATGPT_RESPONSE_DOM_GRACE_MS + 1;
+    if (scenario === "abort") controller.abort();
+  };
+  Date.now = () => now;
+  try {
+    const result = worker.waitForNewAssistantTurn(page, { initialTurnIdentities: [], domCache: {} },
+      scenario === "deadline" ? now + CHATGPT_RESPONSE_DOM_GRACE_MS : undefined, controller.signal);
+    if (scenario === "response") {
+      await expect(result).resolves.toMatchObject({ identity: "assistant" });
+      expect(observations).toBe(4);
+    } else {
+      await expect(result).rejects.toThrow(scenario === "missing" ? "did not expose its assistant turn"
+        : scenario === "deadline" ? "turn timed out" : "aborted");
+      expect(observations).toBe(scenario === "missing" ? 4 : 1);
+    }
+  } finally {
+    Date.now = realDateNow;
+  }
+});
+
 test("a failed stale-browser disconnect prevents the replacement connection", async () => {
   let replacementAttempts = 0;
   const disconnectFailure = new Error("stale CDP transport did not close");

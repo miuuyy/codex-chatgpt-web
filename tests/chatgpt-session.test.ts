@@ -3,6 +3,7 @@ import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker
 import {
   CHATGPT_COMPOSER_SELECTOR,
   CHATGPT_SEND_BUTTON_SELECTOR,
+  CHATGPT_STOP_BUTTON_SELECTOR,
   readChatGptEffortAvailability,
   CHATGPT_EFFORT_CONTROL_SELECTOR,
   CHATGPT_EFFORT_MENU_SELECTOR,
@@ -382,6 +383,15 @@ test("modern composer, reasoning control and submit retain structural ownership"
   expect(Array.from(document.querySelectorAll(CHATGPT_COMPOSER_SELECTOR), (e: any) => e.id)).toEqual(["modern"]);
   expect(Array.from(document.querySelectorAll(CHATGPT_EFFORT_CONTROL_SELECTOR), (e: any) => e.id)).toEqual(["reasoning"]);
   expect(document.querySelector("form").querySelector(CHATGPT_SEND_BUTTON_SELECTOR).id).toBe("send");
+});
+
+test("generation stop controls retain the legacy ID and scope the observed Portuguese label to the composer", () => {
+  const { createDocument } = require("@mixmark-io/domino");
+  const document = createDocument(`<button aria-label="Parar" id="unrelated"></button>
+    <button data-testid="stop-button" id="legacy"></button>
+    <form data-chatgpt-composer><button aria-label="Parar" id="modern"></button>
+    <button aria-label="Enviar" id="send"></button></form>`);
+  expect(Array.from(document.querySelectorAll(CHATGPT_STOP_BUTTON_SELECTOR), (e: any) => e.id)).toEqual(["legacy", "modern"]);
 });
 
 test("modern slider accepts enabled ticks, preserves locks and rejects malformed evidence", async () => {
