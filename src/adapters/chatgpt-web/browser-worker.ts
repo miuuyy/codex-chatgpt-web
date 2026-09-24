@@ -17,6 +17,7 @@ import {
 } from "../../config";
 import { estimateTokens } from "../../lib/token-estimate";
 import { CHATGPT_STOPPED_THINKING_LABELS } from "./ui-labels";
+import { throwIfChatGptThinkingFailed, waitForChatGptConnectorReview } from "./turn-ui";
 import type { CodexProviderConfig } from "../../types";
 import { parseDataUrl } from "../image";
 import {
@@ -144,8 +145,9 @@ export const CHATGPT_UI_SETTLE_MS = 250;
 export const CHATGPT_SEND_ENABLE_GRACE_MS = 5_000;
 
 function chatGptTurnSelector(identity: string): string {
-  return identity.startsWith("modern:assistant:")
-    ? `[data-turn-key=${JSON.stringify(identity.slice("modern:assistant:".length))}]`
+  const modern = /^modern:(?:assistant|user):/.exec(identity);
+  return modern
+    ? `[data-turn-key=${JSON.stringify(identity.slice(modern[0].length))}]`
     : `[data-turn-id=${JSON.stringify(identity)}]`;
 }
 
@@ -3002,6 +3004,7 @@ export class ChatGptBrowserWorker {
     graceMs: number = CHATGPT_RESPONSE_DOM_GRACE_MS,
     completionTracker?: ChatGptCompletionTracker,
     recoverObservation?: ChatGptObservationRecovery,
+    inspectPendingTurn?: (turn: Locator, timeoutMs: number) => Promise<boolean>,
   ): Promise<ChatGptAssistantTurnBinding> {
     let observationPage = page;
     let observationBaseline = baseline;
@@ -3062,6 +3065,16 @@ export class ChatGptBrowserWorker {
         continue;
       }
       recoveryAttempts = 0;
+      // Review cards can replace generation before the assistant heading exists. Scope
+      // them to this submission so an older turn or a quoted prompt cannot pause it.
+      const submittedUser = chatGptNewTurnIdentity(observationBaseline.initialTurnIdentities, state.userIdentities);
+      if (submittedUser && inspectPendingTurn && await inspectPendingTurn(
+        observationPage.locator(chatGptTurnSelector(submittedUser)),
+        Math.min(CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS, Math.max(0, (deadline ?? Infinity) - Date.now())),
+      )) {
+        responseDeadline = Math.min(deadline ?? Infinity, Date.now() + graceMs);
+        continue;
+      }
       // The current UI can defer its assistant heading until reasoning and tool work
       // finish. Its composer stop control still proves that generation is in progress.
       if (state.visibleStopButtonCount > 0) {
@@ -5107,6 +5120,18 @@ export class ChatGptBrowserWorker {
         ),
       );
       console.info(`[chatgpt-web] browser turn ${turn.traceId} submission accepted evidence=${finalSubmissionEvidence}`);
+      const inspectPendingTurn = async (scope: Locator, timeoutMs: number) => {
+        await throwIfChatGptThinkingFailed(scope);
+        if (!turn.nativeConnector && !mode.localTools) return false;
+        return waitForChatGptConnectorReview(
+          scope, this.config.appName, turn.abortSignal, timeoutMs,
+          async () => {
+            console.warn(`[chatgpt-web] browser turn ${turn.traceId} is waiting for manual connector review`);
+            await diagnostics.capture(scope.page(), "connector-review-required");
+            turn.onCommentary?.("ChatGPT requests connector approval. Review the request in the launcher browser; no decision will be made automatically.");
+          },
+        );
+      };
       let responseTurn = await this.waitForNewAssistantTurn(
         page,
         submissionBaseline,
@@ -5122,6 +5147,7 @@ export class ChatGptBrowserWorker {
             return recovered;
           }
           : undefined,
+        inspectPendingTurn,
       );
       await diagnostics.capture(page, "send-accepted");
 
@@ -5183,6 +5209,11 @@ export class ChatGptBrowserWorker {
         await throwIfChatGptSessionFailureAlert(page);
         await throwIfChatGptTerminalErrorAlert(responseTurn.locator);
 
+        if (inspectPendingTurn && await inspectPendingTurn(responseTurn.locator,
+          Math.min(CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS, Math.max(0, (deadline ?? Infinity) - Date.now())))) {
+          internalObservationFaults = 0;
+          continue;
+        }
         if (mode.localTools && await resolveChatGptToolConfirmation(
           page,
           this.config.appName,

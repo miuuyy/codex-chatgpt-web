@@ -1139,6 +1139,40 @@ test.each(["response", "missing", "deadline", "abort"])("a deferred assistant he
   }
 });
 
+test.each(["resume", "deadline", "abort"])("connector review before the assistant heading stays bound and bounded (%s)", async scenario => {
+  const realNow = Date.now;
+  let now = 1_000;
+  const abort = new AbortController();
+  const hidden: any = { filter: () => hidden, last: () => hidden, isVisible: async () => false };
+  const current = { currentTurn: true };
+  const page: any = { isClosed: () => false, locator: (selector: string) => selector === '[data-turn-key="new"]' ? current : hidden };
+  const worker: any = Object.create(ChatGptBrowserWorker.prototype);
+  let reviewed = false;
+  worker.submissionDomState = async () => ({
+    turnIdentities: ["modern:user:old", "modern:assistant:old", "modern:user:new", "modern:assistant:new"],
+    userIdentities: ["modern:user:old", "modern:user:new"],
+    responseIdentities: reviewed ? ["modern:assistant:old", "modern:assistant:new"] : ["modern:assistant:old"],
+    visibleStopButtonCount: 0,
+  });
+  Date.now = () => now;
+  try {
+    const result = worker.waitForNewAssistantTurn(page,
+      { initialTurnIdentities: ["modern:user:old", "modern:assistant:old"], domCache: {} },
+      scenario === "deadline" ? now + 100 : undefined, abort.signal, undefined, 60,
+      undefined, undefined, async (scope: unknown, timeout: number) => {
+        expect(scope).toBe(current);
+        if (reviewed) return false;
+        expect(timeout).toBe(scenario === "deadline" ? 100 : 60_000);
+        reviewed = true;
+        now += 200;
+        if (scenario === "abort") abort.abort();
+        return true;
+      });
+    if (scenario === "resume") await expect(result).resolves.toMatchObject({ identity: "modern:assistant:new" });
+    else await expect(result).rejects.toThrow(scenario === "deadline" ? "turn timed out" : "aborted");
+  } finally { Date.now = realNow; }
+});
+
 test("a failed stale-browser disconnect prevents the replacement connection", async () => {
   let replacementAttempts = 0;
   const disconnectFailure = new Error("stale CDP transport did not close");
