@@ -2344,71 +2344,73 @@ test("retained tool turns insert into the connector-bound composer without selec
   expect(calls).toEqual(["fill", "focus", "insert", "assert"]);
 });
 
-test("image attachment readiness uses exact file tiles and not localized remove-button text", async () => {
-  const imageUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
-  const calls: Array<[string, string?]> = [];
-  const send = {
-    isEnabled: async () => {
-      calls.push(["sendEnabled"]);
-      return true;
-    },
-  };
-  const composerForm = {
-    getByRole: (role: string, options: { name: string; exact: boolean }) => {
-      expect(role).toBe("group");
-      expect(options).toEqual({ name: "codex-input-image-1.png", exact: true });
-      return {
-        waitFor: async (state: { state: string; timeout: number }) => {
-          expect(state).toEqual({ state: "visible", timeout: 60_000 });
-          calls.push(["fileTile", options.name]);
-        },
-      };
-    },
-    locator: (selector: string) => {
-      expect(selector).toBe(CHATGPT_SEND_BUTTON_SELECTOR);
-      return send;
-    },
-  };
-  const composer = {
-    locator: (selector: string) => {
-      expect(selector).toBe("xpath=ancestor::form[1]");
-      return composerForm;
-    },
-  };
-  const input = {
-    waitFor: async (state: { state: string; timeout: number }) => {
-      expect(state).toEqual({ state: "attached", timeout: 20_000 });
-      calls.push(["inputReady"]);
+test.each(["legacy", "modern", "missing-input", "duplicate-input", "wrong-preview"])("attachments use the owned upload input and exact preview (%s)", async variant => {
+  const { createDocument } = require("@mixmark-io/domino");
+  const name = "codex-input-image-1.png";
+  const legacy = variant === "legacy";
+  const fileInput = '<input id="owned" type="file" multiple>';
+  const document = createDocument(`
+    <input id="unrelated" type="file" multiple>
+    <form id="inactive"><input type="file" multiple></form>
+    <form id="active" data-chatgpt-composer>
+      <input type="file" accept="image/*,video/*" multiple>
+      <input type="file" accept="image/*" multiple>
+      ${legacy ? '<input id="owned" type="file" data-testid="upload-photos-input">' : variant === "missing-input" ? '' : fileInput}
+      ${variant === "duplicate-input" ? fileInput.replace('id="owned"', 'id="duplicate"') : ''}
+      <div role="${legacy ? 'group' : 'button'}" class="composer-attachment-surface" aria-label="${variant === 'wrong-preview' ? 'other.png' : name}"></div>
+      <button aria-label="${name}">Unrelated button</button>
+    </form>`);
+  const calls: string[] = [];
+  const wrap = (elements: Element[]): any => ({
+    elements,
+    or: (other: { elements: Element[] }) => wrap([...new Set([...elements, ...other.elements])]),
+    and: (other: { elements: Element[] }) => wrap(elements.filter(e => other.elements.includes(e))),
+    waitFor: async ({ state }: { state: string }) => {
+      if (elements.length !== 1) throw new Error("Missing or ambiguous attachment control");
+      if (state === "attached") {
+        expect(elements[0]!.id).toBe("owned");
+        calls.push("inputReady");
+      } else {
+        expect(state).toBe("visible");
+        expect(elements[0]!.getAttribute("aria-label")).toBe(name);
+        calls.push("fileTile");
+      }
     },
     setInputFiles: async (files: Array<{ name: string }>) => {
-      calls.push(["setFiles", files.map(file => file.name).join(",")]);
+      expect(elements[0]!.id).toBe("owned");
+      expect(files.map(file => file.name)).toEqual([name]);
+      calls.push("setFiles");
     },
-  };
-  const page = {
-    locator: (selector: string) => {
-      if (selector === 'input[data-testid="upload-photos-input"]') return input;
-      if (selector === '[role="alert"]') {
-        return { allInnerTexts: async () => [] };
-      }
-      return { last: () => composer };
+  });
+  const form = document.querySelector('#active');
+  const composerForm = {
+    getByRole: (role: string, options: { name: string; exact: boolean }) => {
+      expect(options.exact).toBeTrue();
+      return wrap(Array.from(form.querySelectorAll(`[role="${role}"], ${role === 'button' ? 'button' : '[role="group"]'}`) as NodeListOf<Element>)
+        .filter(e => e.getAttribute('aria-label') === options.name));
     },
+    locator: (selector: string) => selector === CHATGPT_SEND_BUTTON_SELECTOR ? {
+      isEnabled: async () => { calls.push("sendEnabled"); return true; },
+    } : wrap(Array.from(form.querySelectorAll(selector))),
   };
+  const composer = { locator: () => composerForm };
+  const page = { locator: (selector: string) => selector === '[role="alert"]'
+    ? { allInnerTexts: async () => [] } : wrap(Array.from(document.querySelectorAll(selector))) };
   const attachFiles = (ChatGptBrowserWorker.prototype as unknown as {
     attachFiles(page: unknown, prompt: unknown): Promise<void>;
   }).attachFiles;
-
-  await attachFiles.call({ activeComposer: async () => composer }, page, {
-    images: [{ ref: "codex-input-image-1", imageUrl }],
+  const result = attachFiles.call({ activeComposer: async () => composer }, page, {
+    images: [{ ref: "codex-input-image-1", imageUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" }],
   });
-
-  expect(calls).toEqual([
-    ["inputReady"],
-    ["setFiles", "codex-input-image-1.png"],
-    ["fileTile", "codex-input-image-1.png"],
-    ["sendEnabled"],
-  ]);
+  if (variant === "legacy" || variant === "modern") {
+    await result;
+    expect(calls).toEqual(["inputReady", "setFiles", "fileTile", "sendEnabled"]);
+  } else {
+    await expect(result).rejects.toThrow();
+    expect(calls.includes("sendEnabled")).toBeFalse();
+    if (variant !== "wrong-preview") expect(calls.includes("setFiles")).toBeFalse();
+  }
 });
-
 test("effort slider ARIA state fails closed on malformed and unsupported ranges", () => {
   expect(parseChatGptEffortSliderState("0", "4", "3")).toEqual({ min: 0, max: 4, value: 3 });
   for (const attributes of [

@@ -3929,12 +3929,16 @@ export class ChatGptBrowserWorker {
     if (files.length === 0) return;
     const composer = await this.activeComposer(page);
     const composerForm = composer.locator("xpath=ancestor::form[1]");
-    const input = page.locator('input[data-testid="upload-photos-input"]');
+    const input = page.locator('input[data-testid="upload-photos-input"]').or(
+      composerForm.locator('input[type="file"][multiple]:not([accept])'),
+    );
     await input.waitFor({ state: "attached", timeout: 20_000 });
     await input.setInputFiles(files);
     try {
       await Promise.all(files.map(file => (
         composerForm.getByRole("group", { name: file.name, exact: true })
+          .or(composerForm.getByRole("button", { name: file.name, exact: true })
+            .and(composerForm.locator(".composer-attachment-surface")))
           .waitFor({ state: "visible", timeout: 60_000 })
       )));
     } catch {
