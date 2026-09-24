@@ -56,3 +56,81 @@ test("unsupported plans and payment problems never activate browser plan inspect
   needsAttention = true;
   await expect(detectChatGptLimitsPlan(page as never)).rejects.toThrow("subscription payment problem");
 });
+
+function planInspectionFixture(modern: boolean, plan: string, options: { duplicate?: boolean; switchAccount?: boolean } = {}) {
+  const { createDocument } = require("@mixmark-io/domino");
+  const row = `<div class="@container/settings-row"><div>${plan}</div><button>Alterar plano</button></div>`;
+  const document = createDocument(`<main>${row}${options.duplicate ? row : ''}
+    <table><tr><td>ChatGPT Pro 5x</td></tr><tr><td>ChatGPT Pro 20x</td></tr></table>
+    <div class="@container/settings-row"><div>ChatGPT Pro 5x</div><button>Upgrade</button></div>
+  </main>`);
+  const original = 'https://chatgpt.com/?temporary-chat=true';
+  let url = original;
+  let reads = 0;
+  const actions: string[] = [];
+  const profile: any = {
+    or: () => profile,
+    and: (ready: { selector: string }) => { expect(ready.selector).toBe(':not([aria-busy="true"])'); return profile; },
+    filter: () => profile,
+    press: async (key: string) => { expect(key).toBe('Enter'); actions.push('profile'); },
+  };
+  const item: any = {
+    or: () => item, filter: () => item, isVisible: async () => false,
+    click: async () => { actions.push('settings'); if (modern) url = 'https://chatgpt.com/settings/general-settings'; },
+  };
+  const billing: any = {
+    filter: () => billing,
+    click: async () => { actions.push('billing'); if (modern) url = 'https://chatgpt.com/settings/billing'; },
+  };
+  const settings: any = {
+    filter: () => settings, count: async () => 0, isVisible: async () => !modern,
+    or: () => ({ first: () => ({ waitFor: async () => {} }) }),
+    waitFor: async ({ state }: { state: string }) => { expect(state).toBe('hidden'); },
+    locator: (selector: string) => selector.includes('trigger-Billing') ? billing : {
+      getByRole: () => ({ waitFor: async () => {}, allTextContents: async () => [plan] }),
+    },
+  };
+  const page = {
+    url: () => url,
+    evaluate: async () => ({ userId: 'u', accountId: options.switchAccount && ++reads > 1 ? 'other' : 'a', planType: 'pro', structure: 'personal', needsAttention: false }),
+    getByTestId: (id: string) => id === 'accounts-profile-button' ? profile : item,
+    getByRole: (role: string, query?: { name?: string }) => role === 'dialog' ? settings : { name: query?.name },
+    locator: (selector: string): any => {
+      if (selector === ':not([aria-busy="true"])') return { selector };
+      if (selector.includes('trigger-Billing')) return billing;
+      if (selector === 'button[data-settings-panel-slug="billing"]') return billing;
+      return { filter: ({ has }: { has: { name: string } }) => {
+        const rows = Array.from(document.querySelectorAll(selector) as NodeListOf<Element>)
+          .filter(e => Array.from(e.querySelectorAll('button')).some(b => b.textContent === has.name));
+        return {
+          waitFor: async () => { if (rows.length !== 1) throw new Error('Ambiguous current subscription'); },
+          getByText: (name: RegExp) => ({ allTextContents: async () => rows.flatMap(row =>
+            Array.from(row.querySelectorAll('*')).filter(e => e.children.length === 0 && name.test(e.textContent ?? '')).map(e => e.textContent!),
+          ) }),
+        };
+      } };
+    },
+    waitForURL: async (match: (url: URL) => boolean) => { expect(match(new URL(url))).toBe(true); },
+    goto: async (target: string) => { expect(target).toBe(original); url = target; actions.push('return'); },
+    keyboard: { press: async (key: string) => { expect(key).toBe('Escape'); actions.push('dismiss'); } },
+  };
+  return { page, actions, original };
+}
+
+test.each([false, true])("Limits checks the current subscription and restores its UI (modern=%s)", async modern => {
+  for (const [label, expected] of [['ChatGPT Pro 5x', 'pro_100'], ['ChatGPT Pro 20x', 'pro_200']] as const) {
+    const { page, actions, original } = planInspectionFixture(modern, label!);
+    expect((await detectChatGptLimitsPlan(page as never)).plan).toBe(expected);
+    expect(actions).toEqual(['profile', 'settings', 'billing', modern ? 'return' : 'dismiss']);
+    expect(page.url()).toBe(original);
+  }
+});
+
+test.each(['unknown', 'duplicate', 'account-change'])("Limits rejects %s evidence and restores the chat", async failure => {
+  const { page, actions, original } = planInspectionFixture(true, failure === 'unknown' ? 'ChatGPT Pro' : 'ChatGPT Pro 20x', {
+    duplicate: failure === 'duplicate', switchAccount: failure === 'account-change',
+  });
+  await expect(detectChatGptLimitsPlan(page as never)).rejects.toThrow();
+  expect(actions.at(-1)).toBe('return');
+  expect(page.url()).toBe(original);
+});

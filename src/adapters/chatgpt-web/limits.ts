@@ -62,16 +62,37 @@ export async function detectChatGptLimitsPlan(page: Page): Promise<{ accountKey:
     throw new Error("Close the open ChatGPT dialog and retry Limits setup.");
   }
   let settings: Locator | undefined;
+  const returnUrl = page.url();
+  const settingsItem = page.getByTestId("settings-menu-item")
+    .or(page.getByRole("menuitem", { name: "Configurações", exact: true }));
   try {
     // Enter targets the profile control itself; a center click can hit its nested payment button.
-    await page.getByTestId("accounts-profile-button").filter({ visible: true }).last().press("Enter", { timeout: 5_000 });
-    await page.getByTestId("settings-menu-item").click({ timeout: 5_000 });
+    await page.getByTestId("accounts-profile-button")
+      .or(page.getByRole("button", { name: "Abrir menu do perfil", exact: true }))
+      .and(page.locator(':not([aria-busy="true"])'))
+      .filter({ visible: true }).press("Enter", { timeout: 10_000 });
+    await settingsItem.filter({ visible: true }).click({ timeout: 5_000 });
     settings = page.getByRole("dialog").filter({ has: page.locator('[role="tab"][id$="-trigger-Billing"]') });
-    await settings.waitFor({ state: "visible", timeout: 10_000 });
-    await settings.locator('[role="tab"][id$="-trigger-Billing"]').click({ timeout: 5_000 });
-    const panel = settings.locator('[role="tabpanel"][id$="-content-Billing"]');
-    await panel.getByRole("heading", { name: /^ChatGPT Pro\b/i }).waitFor({ state: "visible", timeout: 10_000 });
-    const plan = chatGptLimitsPlanFromHeadings(await panel.getByRole("heading").allTextContents());
+    const billing = page.locator('button[data-settings-panel-slug="billing"]').filter({ visible: true });
+    await settings.or(billing).first().waitFor({ state: "visible", timeout: 10_000 });
+    let headings: string[];
+    if (await settings.isVisible()) {
+      await settings.locator('[role="tab"][id$="-trigger-Billing"]').click({ timeout: 5_000 });
+      const panel = settings.locator('[role="tabpanel"][id$="-content-Billing"]');
+      await panel.getByRole("heading", { name: /^ChatGPT Pro\b/i }).waitFor({ state: "visible", timeout: 10_000 });
+      headings = await panel.getByRole("heading").allTextContents();
+    } else {
+      await billing.click({ timeout: 5_000 });
+      await page.waitForURL(url => url.origin === "https://chatgpt.com" && url.pathname === "/settings/billing", { timeout: 10_000 });
+      // The current subscription is a settings row, not a heading. Invoice rows may
+      // mention previous plans, so only read the row owning the Change plan control.
+      const currentPlan = page.locator('main [class~="@container/settings-row"]').filter({
+        has: page.getByRole("button", { name: "Alterar plano", exact: true }),
+      });
+      await currentPlan.waitFor({ state: "visible", timeout: 10_000 });
+      headings = await currentPlan.getByText(/^ChatGPT Pro\b/i).allTextContents();
+    }
+    const plan = chatGptLimitsPlanFromHeadings(headings);
     const after = await readChatGptUsageAccount(page);
     if (after.accountKey !== before.accountKey || after.planType !== "pro" || !after.personal || after.needsAttention) {
       throw new Error("The ChatGPT account or subscription changed during Limits setup. Retry the check.");
@@ -79,10 +100,13 @@ export async function detectChatGptLimitsPlan(page: Page): Promise<{ accountKey:
     return { accountKey: after.accountKey, plan };
   } finally {
     // Only dismiss the UI opened by this inspection; no subscription controls are activated.
-    if (settings && await settings.isVisible().catch(() => false)) {
+    if (page.url() !== returnUrl && new URL(page.url()).origin === "https://chatgpt.com"
+      && new URL(page.url()).pathname.startsWith("/settings/")) {
+      await page.goto(returnUrl, { waitUntil: "domcontentloaded", timeout: 15_000 });
+    } else if (settings && await settings.isVisible().catch(() => false)) {
       await page.keyboard.press("Escape");
       await settings.waitFor({ state: "hidden", timeout: 5_000 });
-    } else if (await page.getByTestId("settings-menu-item").isVisible().catch(() => false)) {
+    } else if (await settingsItem.isVisible().catch(() => false)) {
       await page.keyboard.press("Escape");
     }
   }
