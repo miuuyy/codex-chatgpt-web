@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
 import {
   CHATGPT_COMPOSER_SELECTOR,
+  CHATGPT_SEND_BUTTON_SELECTOR,
+  readChatGptEffortAvailability,
   CHATGPT_EFFORT_CONTROL_SELECTOR,
   CHATGPT_EFFORT_MENU_SELECTOR,
   CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
@@ -367,4 +369,31 @@ test("Pro selection verifies the persisted hidden slider through its visible own
     expect(fixture.keys).toEqual(["ArrowRight", "ArrowRight", "ArrowRight", "ArrowRight"]);
     expect(fixture.value()).toBe(loseSelectionOnClose ? 0 : 4);
   }
+});
+
+
+test("modern composer, reasoning control and submit retain structural ownership", () => {
+  const { createDocument } = require("@mixmark-io/domino");
+  const document = createDocument(`<div contenteditable="true" role="textbox" data-composer-markdown id="unrelated"></div>
+    <form data-chatgpt-composer><div contenteditable="true" role="textbox" data-composer-markdown id="modern"></div>
+    <button aria-haspopup="menu" data-composer-navigation-target="reasoning" id="reasoning"></button>
+    <button aria-haspopup="menu" data-composer-navigation-target="add-context"></button>
+    <button type="submit" id="send"></button></form>`);
+  expect(Array.from(document.querySelectorAll(CHATGPT_COMPOSER_SELECTOR), (e: any) => e.id)).toEqual(["modern"]);
+  expect(Array.from(document.querySelectorAll(CHATGPT_EFFORT_CONTROL_SELECTOR), (e: any) => e.id)).toEqual(["reasoning"]);
+  expect(document.querySelector("form").querySelector(CHATGPT_SEND_BUTTON_SELECTOR).id).toBe("send");
+});
+
+test("modern slider accepts enabled ticks, preserves locks and rejects malformed evidence", async () => {
+  const { createDocument } = require("@mixmark-io/domino");
+  const availability = (ticks: string, disabled = "false") => {
+    const document = createDocument(`<div data-model-picker-power-slider><span data-orientation="horizontal" aria-disabled="${disabled}">${ticks}</span></div>`);
+    const locator = { evaluate: (callback: Function) => callback(document.querySelector("div")) };
+    return readChatGptEffortAvailability(locator as never, { min: 0, max: 2, value: 0 });
+  };
+  const ticks = '<span data-selected="true"></span><span data-selected="false"></span><span data-selected="false" data-locked="true"></span>';
+  await expect(availability(ticks)).resolves.toEqual([true, true, false]);
+  await expect(availability(ticks, "true")).rejects.toThrow("availability");
+  await expect(availability(ticks.replace('data-locked="true"', 'data-locked="unknown"'))).rejects.toThrow("availability");
+  await expect(availability('<span data-selected="true"></span>')).rejects.toThrow("availability");
 });

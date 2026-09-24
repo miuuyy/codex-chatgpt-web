@@ -122,3 +122,20 @@ test("DIL response extraction preserves ownership, commentary and completion bou
   expect(noCopy.visibleText).toBe("CODEX WEB GPT READY");
   expect(noCopy.completionActionVisible).toBeFalse();
 });
+
+
+test("modern grouped turn extracts only the assistant and requires its completion action", async () => {
+  for (const label of ["Copiar", "Copy"]) {
+    const html = `<div id="turn" data-turn-key="stable-id"><div data-user-message-bubble>User prompt</div>
+      <div class="turn-action-controls"><button aria-label="Copiar mensagem"></button></div>
+      <h4 data-conversation-role="assistant">ChatGPT disse:</h4>
+      <div data-markdown-text-style="assistant-message"><p>CODEX WEB GPT READY</p></div>
+      <div class="turn-action-controls"><button aria-label="${label}"></button></div></div>`;
+    const response = await snapshot(html);
+    expect(response.visibleText).toBe("CODEX WEB GPT READY");
+    expect(response.completionActionVisible).toBeTrue();
+    const pending = await snapshot(html.replace(`aria-label="${label}"`, 'aria-label="Other action"'));
+    expect(pending.visibleText).toBe("CODEX WEB GPT READY");
+    expect(pending.completionActionVisible).toBeFalse();
+  }
+});

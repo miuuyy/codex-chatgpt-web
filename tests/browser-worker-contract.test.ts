@@ -11,7 +11,7 @@ import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter
 import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
-import { parseChatGptEffortSliderState } from "../src/chatgpt-session";
+import { CHATGPT_SEND_BUTTON_SELECTOR, parseChatGptEffortSliderState } from "../src/chatgpt-session";
 import { ChatGptExternalTurnProgress, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
 import type { CodexProviderConfig } from "../src/types";
 import { compileChatGptWebPrompt, formatChatGptWebMultipartCommit, formatChatGptWebMultipartStage } from "../src/adapters/chatgpt-web/prompt";
@@ -150,6 +150,55 @@ test("submission DOM tracks logical identities and retains virtualized history i
   turns.push({ ...turns[3]!, index: 20 });
   observers.forEach(notify => notify());
   await expect(worker.submissionDomState(page, baseline.domCache)).rejects.toThrow("duplicate");
+});
+
+test("modern grouped turns keep stable user and assistant identities across virtualization", async () => {
+  type Turn = { key: string; user: boolean; assistant: boolean };
+  let turns: Turn[] = [{ key: "previous", user: false, assistant: false }];
+  const observers: (() => void)[] = [];
+  const context = createContext({
+    performance: { timeOrigin: 1 },
+    document: {
+      documentElement: {},
+      querySelector: () => null,
+      querySelectorAll: (selector: string) => selector === "[data-turn-key]" ? turns.map(turn => ({
+        getAttribute: (name: string) => name === "data-turn-key" ? turn.key : null,
+        querySelector: (child: string) => (child === "[data-user-message-bubble]" ? turn.user : turn.assistant) ? {} : null,
+      })) : [],
+    },
+    MutationObserver: class {
+      constructor(callback: () => void) { observers.push(callback); }
+      observe() {}
+    },
+  });
+  const page = {
+    evaluate: async (callback: Function, options: unknown) => runInContext(`(${callback.toString()})`, context)(options),
+    locator: () => ({}),
+  } as unknown as Page;
+  const worker = Object.create(ChatGptBrowserWorker.prototype) as {
+    captureSubmissionBaseline(page: Page): Promise<{ initialTurnIdentities: string[]; domCache: object }>;
+    currentSubmissionEvidence(page: Page, baseline: unknown): Promise<string | undefined>;
+    submissionDomState(page: Page, cache: unknown): Promise<{ responseIdentities: string[] }>;
+  };
+  const baseline = await worker.captureSubmissionBaseline(page);
+  expect([...baseline.initialTurnIdentities]).toEqual(["modern:user:previous", "modern:assistant:previous"]);
+  turns[0] = { key: "previous", user: true, assistant: true };
+  observers.forEach(notify => notify());
+  expect(await worker.currentSubmissionEvidence(page, baseline)).toBeUndefined();
+  turns.push({ key: "submitted", user: true, assistant: false });
+  observers.forEach(notify => notify());
+  expect(await worker.currentSubmissionEvidence(page, baseline)).toBe("user_turn");
+  turns[1]!.assistant = true;
+  observers.forEach(notify => notify());
+  const response = await worker.submissionDomState(page, baseline.domCache);
+  expect([...response.responseIdentities]).toEqual(["modern:assistant:previous", "modern:assistant:submitted"]);
+  expect(chatGptNewTurnIdentity(baseline.initialTurnIdentities, response.responseIdentities)).toBe("modern:assistant:submitted");
+  turns.push({ ...turns[1]! });
+  observers.forEach(notify => notify());
+  await expect(worker.submissionDomState(page, baseline.domCache)).rejects.toThrow("duplicate");
+  turns = [{ key: "", user: true, assistant: true }];
+  observers.forEach(notify => notify());
+  await expect(worker.submissionDomState(page, baseline.domCache)).rejects.toThrow("no stable");
 });
 
 test("assistant tracking rebinds only one proven replacement after React detaches its node", () => {
@@ -622,7 +671,7 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
     press: async () => { sendPresses += 1; },
   };
   const composer = {
-    locator: () => ({ getByTestId: () => sendButton }),
+    locator: () => ({ locator: (selector: string) => { expect(selector).toBe(CHATGPT_SEND_BUTTON_SELECTOR); return sendButton; } }),
   };
   worker.activeComposer = async () => composer;
 
@@ -744,7 +793,7 @@ test("Bigger Context send activation keeps the outer stage budget instead of res
     },
   };
   worker.activeComposer = async () => ({
-    locator: () => ({ getByTestId: () => sendButton }),
+    locator: () => ({ locator: (selector: string) => { expect(selector).toBe(CHATGPT_SEND_BUTTON_SELECTOR); return sendButton; } }),
   });
   worker.waitForSubmissionAcceptedWithRecovery = async () => "user_turn";
 
@@ -2310,8 +2359,8 @@ test("image attachment readiness uses exact file tiles and not localized remove-
         },
       };
     },
-    getByTestId: (testId: string) => {
-      expect(testId).toBe("send-button");
+    locator: (selector: string) => {
+      expect(selector).toBe(CHATGPT_SEND_BUTTON_SELECTOR);
       return send;
     },
   };
