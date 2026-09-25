@@ -329,6 +329,27 @@ test("the four-step browser range keeps Extra High available when Pro is unavail
     .resolves.toEqual({ solAvailable: true, extraHighAvailable: true, proAvailable: false });
 });
 
+test("capabilities probe stabilizes when slider ARIA max transitions during hydration to match rendered ticks", async () => {
+  let reads = 0;
+  const fixture = reasoningPicker({
+    max: "3",
+    locks: ["false", "false", "false", "false"],
+  });
+  const container = (fixture.page as any).locator(CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR);
+  const slider = container.locator();
+  const origGetAttribute = slider.getAttribute;
+  slider.getAttribute = async (name: string) => {
+    if (name === "aria-valuemax") {
+      reads += 1;
+      return reads === 1 ? "4" : "3";
+    }
+    return origGetAttribute(name);
+  };
+  await expect(detectChatGptAccountCapabilities(fixture.page as never))
+    .resolves.toEqual({ solAvailable: true, extraHighAvailable: true, proAvailable: false });
+  expect(reads).toBeGreaterThanOrEqual(2);
+});
+
 test("capabilities exclude the observed locked Plus upsell and reject unknown lock state", async () => {
   await expect(detectChatGptAccountCapabilities(reasoningPicker({
     max: "3", locks: ["false", "false", "false", "true"],

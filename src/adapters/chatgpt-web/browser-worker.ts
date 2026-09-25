@@ -2605,7 +2605,7 @@ export class ChatGptBrowserWorker {
       await effortSlider.getAttribute("aria-valuenow"),
     );
     if (!selectedState || selectedState.min !== sliderState.min
-      || selectedState.max !== sliderState.max || selectedState.value !== targetValue) {
+      || selectedState.value !== targetValue) {
       throw chatGptModelControlUnavailableAdapterError("ChatGPT changed its effort range or selection before the menu closed");
     }
     await captureDiagnostic?.("effort-selected");
@@ -2627,7 +2627,7 @@ export class ChatGptBrowserWorker {
       await confirmation.slider.getAttribute("aria-valuenow"),
     );
     if (!confirmedState || confirmedState.min !== selectedState.min
-      || confirmedState.max !== selectedState.max || confirmedState.value !== targetValue) {
+      || confirmedState.value !== targetValue) {
       throw chatGptModelControlUnavailableAdapterError("ChatGPT did not persist the requested effort after closing its menu");
     }
     if (modelFamily) await assertChatGptModelFamily(confirmation, modelFamily, mode.effort, uiEffortIndex, 1_000);

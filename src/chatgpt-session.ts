@@ -179,21 +179,47 @@ export async function readChatGptEffortAvailability(
   sliderContainer: Locator,
   state: ChatGptEffortSliderState,
 ): Promise<boolean[]> {
-  // Plus exposes a fourth ARIA position for a locked Pro upsell. Only the ticks
-  // carry both attributes; the slider root also has data-locked and is not a choice.
-  const locks = await sliderContainer.evaluate(container => {
-    // The power picker omits data-locked on available ticks; the old picker always
-    // declares it. Accept that omission only inside the observed enabled power control.
-    const power = container.hasAttribute("data-model-picker-power-slider")
-      && Boolean(container.querySelector('[data-orientation="horizontal"][aria-disabled="false"]'));
-    return Array.from(container.querySelectorAll("[data-selected]"), tick =>
-      tick.getAttribute("data-locked") ?? (power ? "false" : null));
-  });
-  if (locks.length !== state.max - state.min + 1
-    || locks.some(lock => lock !== "true" && lock !== "false")) {
+  // During client hydration (e.g. right after an uncached page reload), the Radix
+  // slider may initially mount with an unhydrated transition range before settling.
+  // Poll briefly for the slider ARIA range and its rendered ticks to match.
+  const slider = sliderContainer.locator('[role="slider"]');
+  const deadline = Date.now() + 400;
+  let lastLocks: (string | null)[] = [];
+
+  while (true) {
+    const rawMin = await slider.getAttribute("aria-valuemin").catch(() => null);
+    const rawMax = await slider.getAttribute("aria-valuemax").catch(() => null);
+    const rawValue = await slider.getAttribute("aria-valuenow").catch(() => null);
+    const freshState = parseChatGptEffortSliderState(rawMin, rawMax, rawValue);
+    if (freshState) {
+      state.min = freshState.min;
+      state.max = freshState.max;
+      state.value = freshState.value;
+    }
+
+    lastLocks = await sliderContainer.evaluate(container => {
+      // The power picker omits data-locked on available ticks; the old picker always
+      // declares it. Accept that omission only inside the observed enabled power control.
+      const power = container.hasAttribute("data-model-picker-power-slider")
+        && Boolean(container.querySelector('[data-orientation="horizontal"][aria-disabled="false"]'));
+      return Array.from(container.querySelectorAll("[data-selected]"), tick =>
+        tick.getAttribute("data-locked") ?? (power ? "false" : null));
+    });
+
+    const expectedCount = state.max - state.min + 1;
+    if (lastLocks.length === expectedCount && lastLocks.every(lock => lock === "true" || lock === "false")) {
+      return lastLocks.map(lock => lock === "false");
+    }
+
+    if (Date.now() >= deadline) break;
+    await new Promise(resolveSleep => setTimeout(resolveSleep, 50));
+  }
+
+  if (lastLocks.length !== state.max - state.min + 1
+    || lastLocks.some(lock => lock !== "true" && lock !== "false")) {
     throw new Error("ChatGPT effort availability could not be verified from its slider ticks");
   }
-  return locks.map(lock => lock === "false");
+  return lastLocks.map(lock => lock === "false");
 }
 
 async function anyVisible(locator: Locator): Promise<boolean> {
