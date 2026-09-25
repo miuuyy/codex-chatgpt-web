@@ -413,8 +413,9 @@ function exactManagedWorkspaceWriteProfile(
   const uniqueExpectedWritableRoots = [...new Map(expectedWritableRoots.map(path => (
     [pathIdentity(path), path] as const
   ))).values()];
-  if (uniqueExpectedWritableRoots.length !== expectedWritableRoots.length
-    || uniqueExpectedWritableRoots.some(path => !roots.some(root => contains(root, path)))) return undefined;
+  // Workspace roots identify projects, not every filesystem grant. Desktop can explicitly
+  // authorize output directories outside them and repeat cwd while composing its policies.
+  // Authenticate the deduplicated grants against every profile write below instead.
 
   let rootRead = 0;
   let projectRootsWrite = 0;
@@ -475,7 +476,7 @@ function exactManagedWorkspaceWriteProfile(
   const uniqueDirectWrites = [...new Map(directWrites.map(path => (
     [pathIdentity(path), path] as const
   ))).values()];
-  if (uniqueDirectWrites.length !== directWrites.length) return undefined;
+  // Identical write grants are idempotent; no additional path is authorized by deduplication.
   const expectedIdentities = new Set(uniqueExpectedWritableRoots.map(pathIdentity));
   if (uniqueDirectWrites.some(path => !expectedIdentities.has(pathIdentity(path)))) return undefined;
   if (projectRootsWrite === 0 && uniqueDirectWrites.length !== uniqueExpectedWritableRoots.length) return undefined;

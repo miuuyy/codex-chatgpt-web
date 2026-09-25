@@ -75,7 +75,13 @@ function sandboxPolicy(value: unknown, roots: string[], writableRoots: string[])
     return { type: "dangerFullAccess" };
   }
   if (parsed?.type === "workspaceWrite") {
-    if (typeof parsed.networkAccess !== "boolean" || writableRoots.some(path => !roots.some(root => contains(root, path)))) {
+    const policyRoots = absolutePaths(parsed.writableRoots, "workspace-write policy writable roots");
+    const policyIdentities = new Set(policyRoots.map(pathIdentity));
+    // Explicit grants recovered from the native rollout can lie outside project roots.
+    // Both stored representations must still describe exactly the same writable authority.
+    if (typeof parsed.networkAccess !== "boolean"
+      || policyRoots.length !== writableRoots.length
+      || writableRoots.some(path => !policyIdentities.has(pathIdentity(path)))) {
       throw new Error("Invalid persisted ChatGPT workspace-write policy");
     }
     return { type: "workspaceWrite", writableRoots, networkAccess: parsed.networkAccess };

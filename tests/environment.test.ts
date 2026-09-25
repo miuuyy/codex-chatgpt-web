@@ -10,6 +10,7 @@ import { encodeCompactionSummary, SUMMARY_PREFIX } from "../src/responses/compac
 import { parseRequest } from "../src/responses/parser";
 import { ChatGptThreadEnvironmentStore } from "../src/adapters/chatgpt-web/thread-environment";
 import type { CodexParsedRequest, CodexTool } from "../src/types";
+import type { ChatGptTurnEnvironment } from "../src/adapters/chatgpt-web/environment";
 
 const root = resolve(process.cwd());
 const temporaryRoots: string[] = [];
@@ -1667,6 +1668,109 @@ describe("trusted Codex task environment continuity", () => {
     expect(new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(
       environmentlessChild(rolloutTurnId, "read-only"),
     ).sandboxPolicy).toEqual({ type: "readOnly", networkAccess: true });
+  });
+
+  function desktopWorkspaceWriteFixture(external: boolean, duplicates: boolean, child: boolean) {
+    const fixture = resumedRootFixture();
+    const auxiliaryRoot = external
+      ? resolve(root, "..", "explicit-visualization-output")
+      : resolve(root, "explicit-visualization-output");
+    const workspaceEntries = [
+      { path: { type: "special", value: { kind: "root" } }, access: "read" },
+      { path: { type: "path", path: root }, access: "write" },
+      { path: { type: "path", path: auxiliaryRoot }, access: "write" },
+      { path: { type: "special", value: { kind: "slash_tmp" } }, access: "write" },
+      { path: { type: "special", value: { kind: "tmpdir" } }, access: "write" },
+      { path: { type: "path", path: join(root, ".git") }, access: "read", missing_path_behavior: "skip" },
+      { path: { type: "glob_pattern", pattern: `${root}/private/**` }, access: "deny" },
+    ];
+    if (duplicates) workspaceEntries.push(structuredClone(workspaceEntries[1]));
+    const context = childTurnContext(rolloutTurnId, {
+      workspace_roots: [root],
+      sandbox_policy: {
+        type: "workspace-write",
+        writable_roots: duplicates ? [root, auxiliaryRoot, auxiliaryRoot] : [auxiliaryRoot],
+        network_access: true,
+        exclude_tmpdir_env_var: false,
+        exclude_slash_tmp: false,
+      },
+      permission_profile: {
+        type: "managed",
+        file_system: { type: "restricted", entries: workspaceEntries },
+        network: "enabled",
+      },
+      file_system_sandbox_policy: { kind: "restricted", entries: structuredClone(workspaceEntries) },
+    });
+    const session = child ? childSessionMeta()
+      : { type: "session_meta", payload: { id: rolloutThreadId, source: "vscode" } };
+    const save = () => writeFileSync(fixture.rolloutPath,
+      [session, context].map(value => JSON.stringify(value)).join("\n") + "\n");
+    const request = child ? environmentlessChild(rolloutTurnId, "workspace-write") : fixture.request;
+    if (!child) {
+      const body = request._rawBody as { client_metadata: Record<string, string> };
+      const metadata = JSON.parse(body.client_metadata["x-codex-turn-metadata"]);
+      metadata.sandbox_mode = "workspace-write";
+      body.client_metadata["x-codex-turn-metadata"] = JSON.stringify(metadata);
+    }
+    save();
+    return { ...fixture, request, auxiliaryRoot, context, save };
+  }
+
+  for (const child of [false, true]) for (const [external, duplicates] of [[true, false], [false, true], [true, true]]) {
+    test(`desktop workspace-write accepts exact authority: child=${child} external=${external} duplicates=${duplicates}`, () => {
+      const fixture = desktopWorkspaceWriteFixture(external, duplicates, child);
+      const cache = join(fixture.codexHome, "thread-environments.json");
+      const expected: ChatGptTurnEnvironment = {
+        cwd: root,
+        roots: [root],
+        writableRoots: [root, fixture.auxiliaryRoot],
+        sandboxPolicy: { type: "workspaceWrite", writableRoots: [root, fixture.auxiliaryRoot], networkAccess: true },
+        tools: [],
+      };
+      expect(new ChatGptThreadEnvironmentStore(cache, Date.now, fixture.codexHome).resolve(fixture.request)).toEqual(expected);
+      // Loading the stored authority after a restart must retain the same boundary.
+      expect(new ChatGptThreadEnvironmentStore(cache, Date.now, fixture.codexHome).resolve(fixture.request)).toEqual(expected);
+    });
+  }
+
+  for (const mismatch of ["extra-profile-write", "extra-sandbox-root", "missing-profile-write", "split-policy", "network"]) {
+    test(`desktop workspace-write rejects divergent authority: ${mismatch}`, () => {
+      const fixture = desktopWorkspaceWriteFixture(true, true, false);
+      const payload = fixture.context.payload as {
+        sandbox_policy: { writable_roots: string[]; network_access: boolean };
+        permission_profile: { file_system: { entries: unknown[] } };
+        file_system_sandbox_policy: { entries: unknown[] };
+      };
+      const unapproved = resolve(root, "..", "unapproved-output");
+      if (mismatch === "extra-profile-write") {
+        payload.permission_profile.file_system.entries.push({ path: { type: "path", path: unapproved }, access: "write" });
+      } else if (mismatch === "extra-sandbox-root") {
+        payload.sandbox_policy.writable_roots.push(unapproved);
+      } else if (mismatch === "missing-profile-write") {
+        payload.permission_profile.file_system.entries.splice(2, 1);
+      } else if (mismatch === "network") {
+        payload.sandbox_policy.network_access = false;
+      }
+      if (mismatch !== "split-policy") {
+        payload.file_system_sandbox_policy.entries = structuredClone(payload.permission_profile.file_system.entries);
+      } else {
+        payload.file_system_sandbox_policy.entries.pop();
+      }
+      fixture.save();
+      expect(() => new ChatGptThreadEnvironmentStore(undefined, Date.now, fixture.codexHome).resolve(fixture.request))
+        .toThrow("workspace-write permission profile is inconsistent");
+    });
+  }
+
+  test("desktop workspace-write rejects inconsistent writable authority in its persisted cache", () => {
+    const fixture = desktopWorkspaceWriteFixture(true, true, false);
+    const cache = join(fixture.codexHome, "thread-environments.json");
+    new ChatGptThreadEnvironmentStore(cache, Date.now, fixture.codexHome).resolve(fixture.request);
+    const stored = JSON.parse(readFileSync(cache, "utf8"));
+    stored.threads[rolloutThreadId].sandboxPolicy.writableRoots.push(resolve(root, "..", "unapproved-output"));
+    writeFileSync(cache, JSON.stringify(stored));
+    expect(() => new ChatGptThreadEnvironmentStore(cache, Date.now, fixture.codexHome).resolve(fixture.request))
+      .toThrow("Invalid persisted ChatGPT workspace-write policy");
   });
 
   test("fails closed when canonical rollout proof is absent or permission fields diverge", () => {
