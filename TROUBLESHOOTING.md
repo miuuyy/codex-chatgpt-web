@@ -310,6 +310,19 @@ To remove the integration safely:
 Deleting the application before step 1 can leave Codex pointed at a local route that no longer
 exists.
 
+## ChatGPT won't let me send a Zero Risk prompt
+
+Zero Risk mode intentionally does not read, inspect, or automate the ChatGPT web page. As a result, the launcher cannot automatically detect if the selected ChatGPT model has exhausted its message quota, hit rate limits, or disabled the Send button.
+
+If ChatGPT refuses to send your prompt or displays a quota limit:
+
+1. **Wait to confirm Sent until ChatGPT accepts the prompt.** Users should normally click **Sent** only after ChatGPT actually accepts and starts processing the message. If you already clicked **Sent** prematurely, the prompt remains copyable in the launcher: switch to another connector-capable model in ChatGPT, click **Copy prompt** again, paste and send the prompt, and continue the same Codex turn.
+2. **Switch models in ChatGPT.** Select another model available to your ChatGPT account (e.g. switch between GPT-4o, GPT-4o mini, or other available models). The prepared Zero Risk prompt and its `request_id` are completely model-agnostic and work with any model that supports the `Codex Zero Risk` connector.
+3. **Copy the prompt again if needed.** If ChatGPT clears the composer when switching models, return to the launcher and click **Copy prompt**. Clicking **Copy prompt** while awaiting submission also refreshes the 60-second manual deadline, giving you extra time to complete the send.
+4. **Paste and send in ChatGPT.** Paste the prompt into the newly selected model and send it.
+5. **Confirm Sent.** Once ChatGPT successfully accepts and sends the message, click **Sent** in the launcher to let Codex connect and proceed.
+6. **If the turn times out:** If you take too long without copying or sending while awaiting confirmation, the manual handoff will expire cleanly (`manual_handoff_timeout`). Simply retry the turn in Codex.
+
 ## Open a useful bug report
 
 Use the repository's bug-report form and attach the privacy-safe export from **Activity → Export

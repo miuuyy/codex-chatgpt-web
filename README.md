@@ -73,7 +73,7 @@ Automatic modes offer Luna/Think when the account has no reasoning selector; oth
 | **Full harness (With Automation)** | Automatic | Yes, through MCP |
 | **Zero Risk** | Paste and send manually | Yes, through a separate MCP connector |
 
-Zero Risk does not read or operate the ChatGPT page. Choose the model and `Codex Zero Risk` connector yourself, paste and send the prepared prompt, then confirm **Sent** in the launcher. Automatic models ending in **(Web)** expose their supported Effort choices in Codex. Instant and each Pro version have separate entries to preserve their context budgets; older saved model entries keep their original fixed mode.
+Zero Risk does not read or operate the ChatGPT page. Choose the model and `Codex Zero Risk` connector yourself, paste and send the prepared prompt, then confirm **Sent** in the launcher. If ChatGPT won't let you send because the selected model is unavailable or has reached its limit, you can switch to another available model in ChatGPT that supports the connector and re-copy the prompt without losing your Codex task. Automatic models ending in **(Web)** expose their supported Effort choices in Codex. Instant and each Pro version have separate entries to preserve their context budgets; older saved model entries keep their original fixed mode.
 
 <a id="full-harness"></a>
 

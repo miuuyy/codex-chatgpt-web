@@ -3206,6 +3206,67 @@ test("manual Copy and Sent confirmation remain isolated across concurrent tabs",
   for (const tab of fixture.turnTabs.values()) clearTimeout(tab.manualDeadlineTimer);
 });
 
+test("copyManualPrompt refreshes manual send deadline and re-arms deadline timer while awaiting-user", async () => {
+  const { fixture, clipboardWrites } = manualTurnFixture();
+  const lease = fixture.beginManualTurn("manual_refresh_deadline", process.pid, "model-retry prompt");
+  const tab = fixture.turnTabs.get(lease.tabId);
+  const initialDeadlineAt = tab.manualDeadlineAt;
+
+  // Simulate time passing: set deadline into the past so it would fire immediately if not refreshed
+  clearTimeout(tab.manualDeadlineTimer);
+  tab.manualDeadlineAt = Date.now() - 100;
+
+  // User copies prompt again (e.g. after switching models due to quota)
+  const snapshot = fixture.copyManualPrompt(lease.tabId);
+
+  // Assert deadline was refreshed into the future
+  assert.ok(tab.manualDeadlineAt > initialDeadlineAt || tab.manualDeadlineAt > Date.now());
+  assert.equal(snapshot.tabs.find(t => t.id === lease.tabId).manualDeadlineAt, new Date(tab.manualDeadlineAt).toISOString());
+  assert.deepEqual(clipboardWrites, ["model-retry prompt", "model-retry prompt"]);
+
+  // Tab remains awaiting-user and timer is active (does not time out immediately)
+  assert.equal(tab.manualState, "awaiting-user");
+  assert.ok(tab.manualDeadlineTimer !== null);
+
+  clearTimeout(tab.manualDeadlineTimer);
+});
+
+test("premature Sent keeps prompt copyable until connector starts, then clears on running", () => {
+  const { fixture, clipboardWrites } = manualTurnFixture();
+  const lease = fixture.beginManualTurn("manual_premature_sent", process.pid, "safe-recovery prompt");
+  const tab = fixture.turnTabs.get(lease.tabId);
+
+  // User confirms Sent before ChatGPT actually accepts the prompt
+  const sentSnapshot = fixture.confirmManualSent(lease.tabId);
+  assert.equal(tab.manualState, "sent");
+  const sentTabSnapshot = sentSnapshot.tabs.find(t => t.id === lease.tabId);
+  assert.equal(sentTabSnapshot.canConfirmSent, false);
+  // Prompt remains copyable while in sent state before connector binds
+  assert.equal(sentTabSnapshot.canCopyPrompt, true);
+  assert.equal(typeof tab.prompt, "string");
+
+  // User realizes ChatGPT rejected sending (e.g. quota exhausted), switches model, and copies prompt again
+  const copiedSnapshot = fixture.copyManualPrompt(lease.tabId);
+  assert.deepEqual(clipboardWrites, ["safe-recovery prompt", "safe-recovery prompt"]);
+  assert.equal(copiedSnapshot.tabs.find(t => t.id === lease.tabId).canCopyPrompt, true);
+  assert.equal(tab.manualDeadlineAt, null);
+  assert.equal(tab.manualDeadlineTimer, null);
+
+  // Duplicate confirmManualSent remains idempotent
+  const dupSnapshot = fixture.confirmManualSent(lease.tabId);
+  assert.equal(dupSnapshot.tabs.find(t => t.id === lease.tabId).manualState, "sent");
+
+  // ChatGPT finally accepts message and connects: markManualTurnStarted transitions to running and clears prompt
+  const runningSnapshot = fixture.markManualTurnStarted("manual_premature_sent", process.pid);
+  assert.equal(tab.manualState, "running");
+  assert.equal(tab.prompt, null);
+  assert.equal(tab.promptDigest, null);
+  assert.equal(runningSnapshot.tabs.find(t => t.id === lease.tabId).canCopyPrompt, false);
+
+  // After starting, copying prompt is cleanly rejected as prompt is no longer available
+  assert.throws(() => fixture.copyManualPrompt(lease.tabId), /no longer available/);
+});
+
 test("manual Sent timeout and explicit cancellation are terminal", async () => {
   const { fixture } = manualTurnFixture();
   const timed = fixture.beginManualTurn("manual_timeout", process.pid, "timeout prompt");
