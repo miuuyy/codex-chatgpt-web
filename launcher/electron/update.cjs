@@ -1,8 +1,10 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const http = require("node:http");
 const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
+const tls = require("node:tls");
 const { spawn, spawnSync } = require("node:child_process");
 const { pipeline } = require("node:stream/promises");
 
@@ -71,6 +73,91 @@ function validateReleaseAssetUrl(raw, version, assetName) {
   return url.toString();
 }
 
+class HttpsProxyAgent extends https.Agent {
+  constructor(proxyUrl, options) {
+    super(options);
+    this.proxy = new URL(proxyUrl);
+  }
+
+  createConnection(options, callback) {
+    const isHttpsProxy = this.proxy.protocol === "https:";
+    const transport = isHttpsProxy ? https : http;
+    const connectReq = transport.request({
+      host: this.proxy.hostname,
+      port: Number(this.proxy.port) || (isHttpsProxy ? 443 : 80),
+      method: "CONNECT",
+      path: `${options.hostname || options.host}:${options.port || 443}`,
+      headers: {
+        Host: `${options.hostname || options.host}:${options.port || 443}`,
+        ...(this.proxy.username || this.proxy.password ? {
+          "Proxy-Authorization": `Basic ${Buffer.from(`${decodeURIComponent(this.proxy.username)}:${decodeURIComponent(this.proxy.password)}`).toString("base64")}`,
+        } : {}),
+      },
+    });
+    connectReq.on("connect", (res, socket) => {
+      if (res.statusCode !== 200) {
+        socket.destroy();
+        callback(new Error(`Proxy CONNECT failed with HTTP ${res.statusCode}`));
+        return;
+      }
+      const tlsSocket = tls.connect({
+        socket,
+        servername: options.servername || options.hostname || options.host,
+      });
+      callback(null, tlsSocket);
+    });
+    connectReq.on("error", (err) => callback(err));
+    connectReq.end();
+  }
+}
+
+function shouldBypassProxy(hostname) {
+  const noProxy = (process.env.NO_PROXY || process.env.no_proxy || "").trim();
+  if (!noProxy) return false;
+  if (noProxy === "*") return true;
+  const entries = noProxy.split(",").map((entry) => entry.trim().toLowerCase()).filter(Boolean);
+  const host = (hostname || "").toLowerCase();
+  for (const entry of entries) {
+    if (entry === host) return true;
+    if (entry.startsWith(".") && host.endsWith(entry)) return true;
+    if (host.endsWith(`.${entry}`)) return true;
+  }
+  return false;
+}
+
+function resolveProxyUrl(hostname) {
+  if (shouldBypassProxy(hostname)) return null;
+  const keys = ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"];
+  for (const key of keys) {
+    const value = process.env[key]?.trim();
+    if (value) {
+      try {
+        const parsed = new URL(value);
+        if (["http:", "https:"].includes(parsed.protocol) && parsed.hostname) return value;
+      } catch {}
+    }
+  }
+  return null;
+}
+
+function resolveProxyAgent(hostname) {
+  const proxyUrl = resolveProxyUrl(hostname);
+  if (!proxyUrl) return undefined;
+  return new HttpsProxyAgent(proxyUrl);
+}
+
+function resolveAssetDownloadUrl(url) {
+  const mirror = (process.env.CODEX_RELEASE_MIRROR || process.env.GITHUB_MIRROR || "").trim().replace(/\/+$/, "");
+  if (!mirror) return url;
+  try {
+    const mirrorParsed = new URL(mirror);
+    if (mirrorParsed.protocol !== "https:") return url;
+    return `${mirror}/${url}`;
+  } catch {
+    return url;
+  }
+}
+
 function request(url, redirects = 0) {
   return new Promise((resolve, reject) => {
     if (redirects > MAX_REDIRECTS) {
@@ -82,7 +169,9 @@ function request(url, redirects = 0) {
       reject(new Error(`Refusing non-HTTPS update URL: ${parsed.protocol}`));
       return;
     }
+    const agent = resolveProxyAgent(parsed.hostname);
     const req = https.get(parsed, {
+      ...(agent ? { agent } : {}),
       headers: {
         Accept: "application/vnd.github+json",
         "User-Agent": USER_AGENT,
@@ -119,6 +208,16 @@ async function downloadText(url, maxBytes = 2 * 1024 * 1024) {
 }
 
 async function downloadFile(url, destination) {
+  const mirrorUrl = resolveAssetDownloadUrl(url);
+  if (mirrorUrl !== url) {
+    try {
+      const response = await request(mirrorUrl);
+      await pipeline(response, fs.createWriteStream(destination, { flags: "wx", mode: 0o600 }));
+      return;
+    } catch {
+      try { fs.rmSync(destination, { force: true }); } catch {}
+    }
+  }
   const response = await request(url);
   await pipeline(response, fs.createWriteStream(destination, { flags: "wx", mode: 0o600 }));
 }
@@ -394,5 +493,8 @@ module.exports = {
   parseVersion,
   releaseAssetName,
   releaseVersion,
+  resolveAssetDownloadUrl,
+  resolveProxyUrl,
+  shouldBypassProxy,
   validateReleaseAssetUrl,
 };

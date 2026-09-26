@@ -295,6 +295,8 @@ On Linux, automatic updates require the installed launcher created by `install-l
 If Update reports that the stable wrapper is missing, quit the app, run the installer command
 from the README, and reopen Codex Web GPT from the applications menu. This preserves settings and browser data.
 
+If automatic launcher update downloads are slow or time out in your network environment, configure standard proxy environment variables (`HTTPS_PROXY` or `HTTP_PROXY`) or an HTTPS acceleration mirror via `CODEX_RELEASE_MIRROR` (or `GITHUB_MIRROR`). Staged assets continue to verify against published SHA-256 checksums before installation.
+
 To repair a valid integration, open **Setup → Install into Codex**, click **Reinstall** once,
 and fully restart Codex. Avoid deleting configuration until **Run doctor** and a safe log identify
 which layer failed.

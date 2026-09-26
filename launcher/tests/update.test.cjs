@@ -11,6 +11,9 @@ const {
   expectedChecksum,
   macApplicationPath,
   releaseAssetName,
+  resolveAssetDownloadUrl,
+  resolveProxyUrl,
+  shouldBypassProxy,
   validateReleaseAssetUrl,
 } = require("../electron/update.cjs");
 
@@ -304,5 +307,66 @@ test("detached worker replaces an installed Linux AppImage and removes the old v
     assert.match(fs.readFileSync(logPath, "utf8"), /installed and relaunched/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("proxy environment variables are resolved and respected", () => {
+  const proxyKeys = ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy"];
+  const previous = Object.fromEntries(proxyKeys.map(k => [k, process.env[k]]));
+  try {
+    for (const k of proxyKeys) delete process.env[k];
+    assert.equal(resolveProxyUrl("github.com"), null);
+
+    process.env.HTTPS_PROXY = "http://127.0.0.1:7890";
+    assert.equal(resolveProxyUrl("github.com"), "http://127.0.0.1:7890");
+
+    process.env.NO_PROXY = "github.com";
+    assert.equal(resolveProxyUrl("github.com"), null);
+    assert.equal(resolveProxyUrl("example.com"), "http://127.0.0.1:7890");
+
+    process.env.NO_PROXY = ".github.com";
+    assert.equal(shouldBypassProxy("api.github.com"), true);
+    assert.equal(shouldBypassProxy("github.com"), false);
+    assert.equal(shouldBypassProxy("objects.githubusercontent.com"), false);
+
+    process.env.NO_PROXY = "*";
+    assert.equal(shouldBypassProxy("objects.githubusercontent.com"), true);
+  } finally {
+    for (const k of proxyKeys) {
+      if (previous[k] === undefined) delete process.env[k];
+      else process.env[k] = previous[k];
+    }
+  }
+});
+
+test("mirror environment variable resolves release asset URLs and ignores non-HTTPS", () => {
+  const previousMirror = process.env.CODEX_RELEASE_MIRROR;
+  const previousGhMirror = process.env.GITHUB_MIRROR;
+  try {
+    delete process.env.CODEX_RELEASE_MIRROR;
+    delete process.env.GITHUB_MIRROR;
+    const original = "https://github.com/miuuyy/codex-chatgpt-web/releases/download/v1.2.0/launcher.zip";
+    assert.equal(resolveAssetDownloadUrl(original), original);
+
+    process.env.CODEX_RELEASE_MIRROR = "https://ghfast.top";
+    assert.equal(resolveAssetDownloadUrl(original), `https://ghfast.top/${original}`);
+
+    // Trailing slash normalized
+    process.env.CODEX_RELEASE_MIRROR = "https://ghfast.top/";
+    assert.equal(resolveAssetDownloadUrl(original), `https://ghfast.top/${original}`);
+
+    // GITHUB_MIRROR fallback
+    delete process.env.CODEX_RELEASE_MIRROR;
+    process.env.GITHUB_MIRROR = "https://mirror.example.com";
+    assert.equal(resolveAssetDownloadUrl(original), `https://mirror.example.com/${original}`);
+
+    // Insecure mirror rejected
+    process.env.CODEX_RELEASE_MIRROR = "http://insecure.example.com";
+    assert.equal(resolveAssetDownloadUrl(original), original);
+  } finally {
+    if (previousMirror === undefined) delete process.env.CODEX_RELEASE_MIRROR;
+    else process.env.CODEX_RELEASE_MIRROR = previousMirror;
+    if (previousGhMirror === undefined) delete process.env.GITHUB_MIRROR;
+    else process.env.GITHUB_MIRROR = previousGhMirror;
   }
 });
