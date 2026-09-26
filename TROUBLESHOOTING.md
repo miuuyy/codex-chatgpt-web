@@ -178,11 +178,18 @@ Also try recreating **Codex Native2** as a new connector with the same Tunnel an
 actions**, then run **Verify runtime**. If tools are already missing in a fresh chat, report that
 separately with a safe log and the browser's actual connector/tool state.
 
-### Windows: `unable to verify the first certificate`
+### Windows: `unable to verify the first certificate` or `SELF_SIGNED_CERT_IN_CHAIN`
 
-For this error during **Connect harness**, check the affected host with Windows `curl.exe -Iv`
-(for example, `curl.exe -Iv https://api.openai.com/`). If it uses Schannel and receives an HTTP
-response, Windows trusts that connection. Fully quit the launcher, then start it from PowerShell:
+On Windows, corporate proxies, network inspection roots, and security software (e.g. Kaspersky,
+Bitdefender) install their root certificates into the Windows System Certificate Store. The
+Windows launcher and CLI wrapper enable `NODE_USE_SYSTEM_CA=1` by default so Node and Bun validate
+against Windows-trusted root certificates while keeping TLS verification enabled.
+
+If you are running an older copy or need to verify whether Windows trusts the connection, check the
+affected host with Windows `curl.exe -Iv` (for example, `curl.exe -Iv https://chatgpt.com/` or
+`curl.exe -Iv https://api.openai.com/`). If it uses Schannel and receives an HTTP response, Windows
+trusts that connection. If your environment requires an additional PEM bundle not present in the
+Windows certificate store, set `NODE_EXTRA_CA_CERTS` before starting the launcher from PowerShell:
 
 ```powershell
 $env:NODE_USE_SYSTEM_CA = "1"

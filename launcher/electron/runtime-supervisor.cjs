@@ -496,6 +496,9 @@ class RuntimeSupervisor {
       cwd: invocation.cwd,
       detached: DETACH_OWNED_CHILD,
       env: {
+        ...(this.platform === "win32" && process.env.NODE_USE_SYSTEM_CA === undefined
+          ? { NODE_USE_SYSTEM_CA: "1" }
+          : {}),
         ...process.env,
         CODEX_CHATGPT_WEB_BROWSER_HOST_DESCRIPTOR: this.browserDescriptorPath,
       },
