@@ -390,9 +390,21 @@ code {
 }
 
 .sidebar-item.is-update {
+  position: relative;
+  overflow: hidden;
   margin-bottom: 5px;
   background: rgb(51 156 255 / 14%);
   color: var(--blue-100);
+}
+
+.sidebar-item-progress {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: rgb(51 156 255 / 24%);
+  border-radius: var(--radius-sm);
+  pointer-events: none;
+  transition: width 120ms ease-out;
+  z-index: 0;
 }
 
 .sidebar-item.is-update:hover {
@@ -402,6 +414,14 @@ code {
 
 .sidebar-item.is-update > svg {
   color: var(--blue-300);
+}
+
+.sidebar-item.is-update > svg,
+.sidebar-item.is-update > .mcp-mark,
+.sidebar-item.is-update > span,
+.sidebar-item.is-update > .sidebar-item-badge {
+  position: relative;
+  z-index: 1;
 }
 
 .sidebar-item > svg {

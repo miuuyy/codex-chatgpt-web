@@ -6,6 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 const tls = require("node:tls");
 const { spawn, spawnSync } = require("node:child_process");
+const { Transform } = require("node:stream");
 const { pipeline } = require("node:stream/promises");
 
 const REPOSITORY = "miuuyy/codex-chatgpt-web";
@@ -207,19 +208,37 @@ async function downloadText(url, maxBytes = 2 * 1024 * 1024) {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-async function downloadFile(url, destination) {
+async function downloadFile(url, destination, onProgress) {
+  const pipeWithProgress = async (response) => {
+    const total = Number(response.headers["content-length"]) || 0;
+    let received = 0;
+    const writeStream = fs.createWriteStream(destination, { flags: "wx", mode: 0o600 });
+    if (typeof onProgress === "function" && total > 0) {
+      const tracker = new Transform({
+        transform(chunk, encoding, callback) {
+          received += chunk.length;
+          onProgress({ received, total });
+          callback(null, chunk);
+        },
+      });
+      await pipeline(response, tracker, writeStream);
+    } else {
+      await pipeline(response, writeStream);
+    }
+  };
+
   const mirrorUrl = resolveAssetDownloadUrl(url);
   if (mirrorUrl !== url) {
     try {
       const response = await request(mirrorUrl);
-      await pipeline(response, fs.createWriteStream(destination, { flags: "wx", mode: 0o600 }));
+      await pipeWithProgress(response);
       return;
     } catch {
       try { fs.rmSync(destination, { force: true }); } catch {}
     }
   }
   const response = await request(url);
-  await pipeline(response, fs.createWriteStream(destination, { flags: "wx", mode: 0o600 }));
+  await pipeWithProgress(response);
 }
 
 function sha256(filePath) {
@@ -425,7 +444,19 @@ function createUpdateController({
         const checksums = await deps.downloadText(available.checksumsUrl);
         const expected = expectedChecksum(checksums, available.assetName);
         const assetPath = path.join(tempRoot, available.assetName);
-        await deps.downloadFile(available.assetUrl, assetPath);
+        let lastPercent = -1;
+        await deps.downloadFile(available.assetUrl, assetPath, ({ received, total }) => {
+          if (!total || total <= 0) return;
+          const percentage = Math.min(100, Math.floor((received / total) * 100));
+          if (percentage !== lastPercent) {
+            lastPercent = percentage;
+            transition({
+              status: "downloading",
+              version: available.version,
+              percentage,
+            });
+          }
+        });
         const actual = deps.sha256(assetPath);
         if (actual !== expected) throw new Error(`SHA-256 verification failed for ${available.assetName}`);
 

@@ -630,8 +630,15 @@ function LauncherShell({
                   active={false}
                   disabled={updateBusy || operation?.status === "running" || browser?.status === "running"}
                   icon="update"
-                  label={updateBusy ? copy.updating : `${copy.updateAvailable} v${updateVersion}`}
+                  label={
+                    snapshot.update.status === "downloading" && typeof snapshot.update.percentage === "number"
+                      ? `${copy.updating} ${snapshot.update.percentage}%`
+                      : updateBusy
+                        ? copy.updating
+                        : `${copy.updateAvailable} v${updateVersion}`
+                  }
                   onClick={() => void installUpdate()}
+                  progress={snapshot.update.status === "downloading" ? snapshot.update.percentage : undefined}
                   tone="update"
                 />
               ) : null}
@@ -802,6 +809,7 @@ function SidebarItem({
   icon,
   label,
   onClick,
+  progress,
   tone,
 }: {
   active: boolean;
@@ -810,6 +818,7 @@ function SidebarItem({
   icon: IconName;
   label: string;
   onClick: () => void;
+  progress?: number;
   tone?: "update";
 }) {
   return (
@@ -820,6 +829,12 @@ function SidebarItem({
       onClick={onClick}
       type="button"
     >
+      {typeof progress === "number" ? (
+        <span
+          className="sidebar-item-progress"
+          style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
+        />
+      ) : null}
       {icon === "mcp" ? <McpMark /> : <Icon name={icon} />}
       <span>{label}</span>
       {badge ? <i className="sidebar-item-badge">{badge}</i> : null}

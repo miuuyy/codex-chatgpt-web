@@ -370,3 +370,63 @@ test("mirror environment variable resolves release asset URLs and ignores non-HT
     else process.env.GITHUB_MIRROR = previousGhMirror;
   }
 });
+
+test("download progress reports percentage during update installation", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "launcher-progress-test-"));
+  const assetBody = Buffer.from("simulated release asset bytes");
+  const hash = require("node:crypto").createHash("sha256").update(assetBody).digest("hex");
+  const emittedStates = [];
+  try {
+    const controller = createUpdateController({
+      currentVersion: "1.0.0",
+      platform: "darwin",
+      arch: "arm64",
+      packaged: true,
+      executablePath: "/Applications/Codex Web GPT.app/Contents/MacOS/Codex Web GPT",
+      runtimeExecutable: "/durable/bun",
+      logsDirectory: path.join(root, "logs"),
+      publish: (state) => emittedStates.push(state),
+      dependencies: {
+        fetchRelease: async () => ({
+          tag_name: "v1.1.0",
+          assets: [
+            {
+              name: "codex-web-gpt-1.1.0-mac-arm64.zip",
+              browser_download_url: "https://github.com/miuuyy/codex-chatgpt-web/releases/download/v1.1.0/codex-web-gpt-1.1.0-mac-arm64.zip",
+            },
+            {
+              name: "checksums.txt",
+              browser_download_url: "https://github.com/miuuyy/codex-chatgpt-web/releases/download/v1.1.0/checksums.txt",
+            },
+          ],
+        }),
+        downloadText: async () => `${hash}  codex-web-gpt-1.1.0-mac-arm64.zip\n`,
+        downloadFile: async (_url, destination, onProgress) => {
+          onProgress?.({ received: 50, total: 100 });
+          onProgress?.({ received: 100, total: 100 });
+          fs.writeFileSync(destination, assetBody);
+        },
+        sha256: () => hash,
+        extractMac: (_archive, target) => {
+          const exe = path.join(target, "Codex Web GPT.app", "Contents", "MacOS", "Codex Web GPT");
+          fs.mkdirSync(path.dirname(exe), { recursive: true });
+          fs.writeFileSync(exe, "mock");
+        },
+        spawnWorker: () => ({ pid: 999, unref() {}, kill() {} }),
+      },
+    });
+
+    await controller.checkOnce();
+    await controller.beginInstall();
+
+    const downloadingStates = emittedStates.filter((s) => s.status === "downloading");
+    assert.equal(downloadingStates.length >= 3, true);
+    assert.deepEqual(downloadingStates[0], { status: "downloading", version: "1.1.0" });
+    assert.deepEqual(downloadingStates[1], { status: "downloading", version: "1.1.0", percentage: 50 });
+    assert.deepEqual(downloadingStates[2], { status: "downloading", version: "1.1.0", percentage: 100 });
+    assert.equal(emittedStates.some((s) => s.status === "installing"), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
