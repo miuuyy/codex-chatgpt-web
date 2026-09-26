@@ -98,6 +98,7 @@ const launcherName = process.platform === "win32" ? "codex-chatgpt-web.cmd" : "c
 const launcher = process.platform === "win32" ? `@echo off
 setlocal
 chcp 65001 >nul
+if not defined NODE_USE_SYSTEM_CA set "NODE_USE_SYSTEM_CA=1"
 set "ROOT=%~dp0.."
 set "CODEX_CHATGPT_WEB_LAUNCHER=%~f0"
 "%ROOT%\\runtime\\bun.exe" "%ROOT%\\app\\cli.js" %*

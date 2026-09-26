@@ -619,6 +619,9 @@ class RuntimeHost {
         const environment = options.environment
           ? { ...options.environment }
           : { ...process.env };
+        if (this.platform === "win32" && environment.NODE_USE_SYSTEM_CA === undefined) {
+          environment.NODE_USE_SYSTEM_CA = "1";
+        }
         Object.assign(environment, {
           CODEX_CHATGPT_WEB_BROWSER_HOST_DESCRIPTOR: this.browserDescriptorPath,
           ...(options.env || {}),

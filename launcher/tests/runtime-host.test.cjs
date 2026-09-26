@@ -1343,3 +1343,45 @@ test("fresh-conversation preference uses production and DEV setup without forcin
     assert.equal(fixture.invocation(), undefined);
   }
 });
+
+test("Windows runtime host defaults NODE_USE_SYSTEM_CA to 1 while preserving explicit overrides", async () => {
+  const savedCa = process.env.NODE_USE_SYSTEM_CA;
+  try {
+    const makePlatformHost = (platform) => {
+      const host = new RuntimeHost({
+        app: {
+          getPath: () => path.join(os.tmpdir(), "codex-web-gpt-ca-test"),
+          getVersion: () => "6.1.1",
+        },
+        logger: { info() {}, warn() {}, error() {} },
+        sourceRoot: "/source",
+        browserDescriptorPath: "/runtime/launcher-browser.json",
+        supervisor: {
+          readConfig: () => ({ mode: "browser-only" }),
+          readSetupConfig: () => ({ mode: "browser-only" }),
+        },
+        platform,
+      });
+      host.command = () => ({
+        executable: process.execPath,
+        args: ["-e", "process.stdout.write(String(process.env.NODE_USE_SYSTEM_CA ?? 'unset'))"],
+        cwd: process.cwd(),
+      });
+      return host;
+    };
+
+    delete process.env.NODE_USE_SYSTEM_CA;
+    const winDefault = await makePlatformHost("win32").run("ca-check", []);
+    assert.equal(winDefault.stdout.trim(), "1");
+
+    const linuxDefault = await makePlatformHost("linux").run("ca-check", []);
+    assert.equal(linuxDefault.stdout.trim(), "unset");
+
+    process.env.NODE_USE_SYSTEM_CA = "0";
+    const winOverride = await makePlatformHost("win32").run("ca-check", []);
+    assert.equal(winOverride.stdout.trim(), "0");
+  } finally {
+    if (savedCa !== undefined) process.env.NODE_USE_SYSTEM_CA = savedCa;
+    else delete process.env.NODE_USE_SYSTEM_CA;
+  }
+});

@@ -377,8 +377,15 @@ test("Windows packages embed the checksummed Bun baseline runtime for CPUs witho
     path.join(repositoryRoot, "scripts", "prepare-windows-baseline-bun.ps1"),
     "utf8",
   );
+  const mainSource = fs.readFileSync(path.join(launcherRoot, "electron", "main.cjs"), "utf8");
+  const supervisorSource = fs.readFileSync(path.join(launcherRoot, "electron", "runtime-supervisor.cjs"), "utf8");
+  const runtimeSource = fs.readFileSync(path.join(launcherRoot, "electron", "runtime.cjs"), "utf8");
   assert.match(builder, /CODEX_CHATGPT_WEB_EMBEDDED_BUN/);
   assert.match(builder, /Embedded Bun must be/);
+  assert.match(builder, /if not defined NODE_USE_SYSTEM_CA set "NODE_USE_SYSTEM_CA=1"/);
+  assert.match(mainSource, /process\.env\.NODE_USE_SYSTEM_CA \?\?= "1"/);
+  assert.match(supervisorSource, /NODE_USE_SYSTEM_CA: "1"/);
+  assert.match(runtimeSource, /environment\.NODE_USE_SYSTEM_CA = "1"/);
   assert.match(baseline, /bun-windows-x64-baseline\.zip/);
   assert.match(baseline, /SHASUMS256\.txt/);
   assert.match(baseline, /Get-FileHash[^\n]+SHA256/);
