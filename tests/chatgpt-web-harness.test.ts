@@ -2,6 +2,7 @@ import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { createHash } from "node:crypto";
+import { createServer } from "node:net";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -2106,6 +2107,43 @@ describe("ChatGPT outer-native harness v4", () => {
     await expect(callTurnBroker(socketPath, { method: "claim", token }))
       .rejects.toThrow("has already finished");
     await broker.close();
+  });
+
+  test("settles a broker call from its complete response frame without waiting for socket close", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-h3-frame-settle-${process.pid}-${Date.now()}`);
+    const server = createServer(socket => {
+      let buffered = "";
+      socket.setEncoding("utf8");
+      socket.on("data", chunk => {
+        buffered += chunk;
+        const newline = buffered.indexOf("\n");
+        if (newline < 0) return;
+        const request = JSON.parse(buffered.slice(0, newline)) as { id: string };
+        socket.write(`${JSON.stringify({ id: request.id, result: { ready: true } })}\n`);
+        // Reproduce a peer/named-pipe whose physical close trails a complete response frame.
+        setTimeout(() => socket.end(), 250);
+      });
+    });
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once("error", rejectListen);
+      server.listen(socketPath, () => {
+        server.off("error", rejectListen);
+        resolveListen();
+      });
+    });
+    try {
+      await expect(callTurnBroker<{ ready: boolean }>(
+        socketPath,
+        { method: "owner_status" },
+        50,
+      )).resolves.toEqual({ ready: true });
+    } finally {
+      await new Promise<void>((resolveClose, rejectClose) => server.close(error => {
+        if (error) rejectClose(error);
+        else resolveClose();
+      }));
+      if (process.platform !== "win32") rmSync(socketPath, { force: true });
+    }
   });
 
   test("activity cleanup is idempotent and tombstones an ambiguously delayed claim", async () => {
