@@ -471,11 +471,13 @@ export async function runChatGptMcpServer(options: {
       try {
         await settleTurnActivity(turnToken, activityId);
       } catch (cleanupError) {
-        throw new AggregateError(
-          [error, cleanupError],
-          "Codex Native claim failed and its broker activity could not be retired",
+        console.error(
+          `[chatgpt-web-mcp] ${toolName} claim failed and activity cleanup also failed: `
+          + `${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
         );
       }
+      // Preserve the claim failure as the user-visible error. Cleanup is best-effort here: its
+      // purpose is to tombstone an ambiguously delivered activity, not to replace the root cause.
       throw error;
     }
   };
