@@ -4145,6 +4145,16 @@ export class ChatGptBrowserWorker {
       // CHATGPT_MARKDOWN_CONTENT_BEGIN
       const chatGptMarkdownContent = (markdownRoot: HTMLElement): HTMLElement => {
         const content = markdownRoot.cloneNode(true) as HTMLElement;
+        // Writing blocks wrap the answer in editable UI whose labels and controls can hydrate
+        // after the text has already been streamed. Keep only ChatGPT's owned copy-content
+        // projection so those UI changes cannot rewrite a committed answer block.
+        const richBlockSelector = '[data-markdown-copy="rich-block"]';
+        for (const block of Array.from(content.querySelectorAll<HTMLElement>(richBlockSelector))) {
+          if (block.parentElement?.closest(richBlockSelector)) continue;
+          const copyContent = block.querySelector<HTMLElement>('[data-markdown-copy-content="true"]');
+          if (!copyContent) continue;
+          block.replaceChildren(...Array.from(copyContent.childNodes, node => node.cloneNode(true)));
+        }
         // These are embedded renderers, not Markdown answer text. Their loading labels, controls
         // and plot axes change independently of generation (including after a later paragraph).
         // Keep their UI out of both the emitted HTML and the text consistency fingerprint.
