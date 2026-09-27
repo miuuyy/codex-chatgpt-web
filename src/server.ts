@@ -381,8 +381,21 @@ interface ModelCatalogFailure {
 }
 
 function modelCatalogFailure(stage: ModelCatalogFailure["stage"], error: unknown): ModelCatalogFailure {
-  const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
-  return { stage, ...(typeof code === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(code) ? { code } : {}) };
+  let code: string | undefined;
+  if (error && typeof error === "object") {
+    if ("code" in error && typeof error.code === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(error.code)) {
+      code = error.code;
+    } else if ("cause" in error && error.cause && typeof error.cause === "object" && "code" in error.cause
+      && typeof (error.cause as { code?: unknown }).code === "string"
+      && /^[A-Za-z0-9_.-]{1,64}$/.test((error.cause as { code: string }).code)) {
+      code = (error.cause as { code: string }).code;
+    } else if (error instanceof DOMException || ("name" in error && typeof (error as { name?: unknown }).name === "string")) {
+      const name = (error as { name: string }).name;
+      if (name === "AbortError") code = "client_aborted";
+      else if (name === "TimeoutError") code = "ETIMEDOUT";
+    }
+  }
+  return { stage, ...(code !== undefined ? { code } : {}) };
 }
 
 export async function modelsRequest(

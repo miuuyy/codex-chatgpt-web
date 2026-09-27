@@ -179,3 +179,46 @@ test("ChatGPT-only native catalog rows do not turn model discovery into a 502", 
   expect(body.models.filter(model => model.slug.startsWith("chatgpt-web/"))
     .every(model => model.supported_in_api === true)).toBe(true);
 });
+
+test("modelsRequest extracts specific error codes and classifies client abort vs transport timeout", async () => {
+  const config = defaultConfig("browser-only");
+  const req = () => new Request("http://127.0.0.1:17841/v1/models", {
+    headers: { authorization: "Bearer chatgpt-session-token" },
+  });
+
+  let failureReported: { stage: string; code?: string } | undefined;
+  await modelsRequest(
+    req(),
+    config,
+    async () => {
+      throw new DOMException("The connection was closed.", "AbortError");
+    },
+    undefined,
+    f => { failureReported = f; },
+  );
+  expect(failureReported).toEqual({ stage: "transport", code: "client_aborted" });
+
+  failureReported = undefined;
+  await modelsRequest(
+    req(),
+    config,
+    async () => {
+      throw new DOMException("The operation timed out.", "TimeoutError");
+    },
+    undefined,
+    f => { failureReported = f; },
+  );
+  expect(failureReported).toEqual({ stage: "transport", code: "ETIMEDOUT" });
+
+  failureReported = undefined;
+  await modelsRequest(
+    req(),
+    config,
+    async () => {
+      throw Object.assign(new TypeError("Unable to connect"), { code: "ConnectionRefused" });
+    },
+    undefined,
+    f => { failureReported = f; },
+  );
+  expect(failureReported).toEqual({ stage: "transport", code: "ConnectionRefused" });
+});
