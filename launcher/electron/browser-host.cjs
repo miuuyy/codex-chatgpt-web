@@ -1259,6 +1259,21 @@ class BrowserHost {
         if (this.destroyed || browserInteractionModeFor(this) !== "automatic") return;
         if (revision !== this.authenticationRevision) continue;
         if (this.reauthenticationRequired) return;
+        if (result.sessionCheckError) {
+          // Native session.fetch can be rejected while the same authenticated endpoint
+          // succeeds in its page context. Recheck there; an HTTP error is not sign-out.
+          // An older page probe was invalidated by this refresh, so let it settle first.
+          if (this.authenticationProbe) await this.authenticationProbe;
+          if (this.destroyed || this.reauthenticationRequired || browserInteractionModeFor(this) !== "automatic") return;
+          if (revision !== this.authenticationRevision) continue;
+          if (!this.view.webContents.isDestroyed()
+            && this.view.webContents.getURL().startsWith(`${CHATGPT_ORIGIN}/`)) {
+            await this.probeAuthentication();
+            // A newer cookie removal still owns authentication and must be checked again.
+            continue;
+          }
+          // The idle document has no authenticated endpoint; retain the native error.
+        }
         const availability = this.activeTraceId || this.manualOperation ? {} : result.sessionCheckError
           ? { status: "error", message: result.sessionCheckError }
           : result.sessionAuthenticated

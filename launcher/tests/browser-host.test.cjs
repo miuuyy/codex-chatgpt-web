@@ -1150,6 +1150,104 @@ test("a later sign-out wins over pending native and page authentication probes",
   assert.equal(updates.some(update => update.authenticated === true), false);
 });
 
+test("native session errors recheck the page after an older authentication probe settles", async () => {
+  let finishOldPage;
+  let pageChecks = 0;
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    authenticationRevision: 0, state: { authenticated: false }, turnTabs: new Map(),
+    view: { webContents: {
+      getURL: () => "https://chatgpt.com/?temporary-chat=true", isDestroyed: () => false,
+      executeJavaScript: async () => {
+        pageChecks++;
+        if (pageChecks === 1) await new Promise(resolve => { finishOldPage = resolve; });
+        return { composer: true, temporary: true, sessionAuthenticated: true, readyState: "complete" };
+      },
+      session: { fetch: async () => ({ ok: false, status: 403 }) },
+    } },
+    setState(patch) { this.state = { ...this.state, ...patch }; },
+    snapshot() { return this.state; }, logger: { info() {}, warn() {} },
+  });
+  const oldPage = fixture.probeAuthentication();
+  const native = fixture.refreshAuthenticationFromSession();
+  finishOldPage();
+  await Promise.all([oldPage, native]);
+  assert.equal(pageChecks, 2);
+  assert.equal(fixture.state.authenticated, true);
+  assert.equal(fixture.state.status, "ready");
+});
+
+test("native session errors cannot authenticate a guest or a failed page check", async () => {
+  for (const sessionCheckError of [null, "ChatGPT session verification failed (HTTP 403)."]) {
+    let pageChecks = 0;
+    const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+      authenticationRevision: 0, state: { authenticated: true }, turnTabs: new Map(),
+      view: { webContents: {
+        getURL: () => "https://chatgpt.com/?temporary-chat=true", isDestroyed: () => false,
+        executeJavaScript: async () => {
+          pageChecks++;
+          return { sessionAuthenticated: false, sessionCheckError, readyState: "complete" };
+        },
+        session: { fetch: async () => ({ ok: false, status: 403 }) },
+      } },
+      setState(patch) { this.state = { ...this.state, ...patch }; },
+      snapshot() { return this.state; }, logger: { info() {}, warn() {} },
+    });
+    await fixture.refreshAuthenticationFromSession();
+    assert.equal(pageChecks, 1);
+    assert.equal(fixture.state.authenticated, false);
+    assert.equal(fixture.state.status, sessionCheckError ? "error" : "signed-out");
+  }
+});
+
+test("a native session error on the idle surface cannot reuse cached authentication", async () => {
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    authenticationRevision: 0, state: { authenticated: true }, turnTabs: new Map(),
+    view: { webContents: {
+      getURL: () => IDLE_BROWSER_URL, isDestroyed: () => false,
+      executeJavaScript: async () => { assert.fail("An idle document cannot verify a server session"); },
+      session: { fetch: async () => ({ ok: false, status: 403 }) },
+    } },
+    setState(patch) { this.state = { ...this.state, ...patch }; },
+    snapshot() { return this.state; }, logger: { info() {}, warn() {} },
+  });
+  await fixture.refreshAuthenticationFromSession();
+  assert.equal(fixture.state.authenticated, false);
+  assert.equal(fixture.state.status, "error");
+});
+
+test("a later sign-out invalidates a pending page fallback after a native session error", async () => {
+  let finishPage;
+  let pageStarted;
+  const started = new Promise(resolve => { pageStarted = resolve; });
+  let nativeChecks = 0;
+  const updates = [];
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    authenticationRevision: 0, state: { authenticated: false }, turnTabs: new Map(),
+    view: { webContents: {
+      getURL: () => "https://chatgpt.com/?temporary-chat=true", isDestroyed: () => false,
+      executeJavaScript: async () => {
+        pageStarted();
+        return await new Promise(resolve => { finishPage = resolve; });
+      },
+      session: { fetch: async () => ++nativeChecks === 1
+        ? { ok: false, status: 403 }
+        : { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({}) } },
+    } },
+    setState(patch) { updates.push(patch); this.state = { ...this.state, ...patch }; },
+    snapshot() { return this.state; }, logger: { info() {}, warn() {} },
+  });
+  const first = fixture.refreshAuthenticationFromSession();
+  // The old implementation never starts a page fallback.
+  const observed = await Promise.race([started.then(() => true), first.then(() => false)]);
+  assert.equal(observed, true);
+  const second = fixture.refreshAuthenticationFromSession();
+  finishPage({ sessionAuthenticated: true, composer: true, temporary: true });
+  await Promise.all([first, second]);
+  assert.equal(nativeChecks, 2);
+  assert.equal(fixture.state.authenticated, false);
+  assert.equal(updates.some(update => update.authenticated === true), false);
+});
+
 test("in-page account navigation schedules authentication refresh only for the main frame", async () => {
   const contents = Object.assign(new EventEmitter(), { setWindowOpenHandler() {} });
   let checks = 0;
