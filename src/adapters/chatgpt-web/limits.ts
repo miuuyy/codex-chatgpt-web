@@ -52,7 +52,7 @@ export async function readChatGptUsageAccount(page: Page): Promise<{
 /** Read the current subscription heading, not upgrade offers, invoices, or a bare 'Pro' badge. */
 export function chatGptLimitsPlanFromHeadings(headings: readonly string[]): "pro_100" | "pro_200" {
   const plans = headings.map(text => text.trim()).filter(text => /^ChatGPT Pro\b/i.test(text));
-  if (plans.length === 1 && /^ChatGPT Pro 20x$/i.test(plans[0]!)) return "pro_200";
+  if (plans.length === 1 && /^ChatGPT Pro(?: 20x|: More usage)$/i.test(plans[0]!)) return "pro_200";
   if (plans.length === 1 && /^ChatGPT Pro 5x$/i.test(plans[0]!)) return "pro_100";
   throw new Error("Could not distinguish Pro $100 from Pro $200 in ChatGPT billing settings. Limits tracking was not enabled.");
 }

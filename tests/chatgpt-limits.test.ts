@@ -26,6 +26,15 @@ test("Limits identifies actual selected Pro family and keeps missing or conflict
   }
 });
 
+test("Limits recognizes the current Billing More usage tier without accepting offers or ambiguity", () => {
+  expect(chatGptLimitsPlanFromHeadings(["ChatGPT Pro: More usage"])).toBe("pro_200");
+  for (const headings of [["More usage"], ["Upgrade to ChatGPT Pro: More usage"],
+    ["ChatGPT Pro: More usage", "ChatGPT Pro 5x"], ["ChatGPT Pro: Unknown usage"],
+    ["ChatGPT Pro: More usage for $200"]]) {
+    expect(() => chatGptLimitsPlanFromHeadings(headings)).toThrow("Could not distinguish");
+  }
+});
+
 test("Limits exposes only hashed account identity and distinguishes personal and workspace accounts", async () => {
   let accountId = "account-personal";
   let structure = "personal";

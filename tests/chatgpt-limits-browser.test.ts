@@ -5,12 +5,14 @@ import { detectChatGptLimitsPlan } from "../src/adapters/chatgpt-web/limits";
 // Optional real-browser contract, with all requests served from fixtures and no account.
 const executablePath = process.env.CHATGPT_DOM_TEST_BROWSER;
 for (const planType of ["pro", "prolite"]) for (const modern of [false, true])
-for (const scenario of ["5x", "20x", "unknown", "account-change", ...(modern ? ["plan-change"] : [])])
+for (const scenario of ["5x", "20x", "unknown", "account-change", ...(modern ? ["plan-change", "more-usage"] : [])])
 test.skipIf(!executablePath)(`Billing ${planType}/${modern ? "page" : "dialog"}/${scenario} preserves account and page`, async () => {
   const browser = await chromium.launch({ executablePath, headless: true });
   try {
     const context = await browser.newContext();
-    const plan = `ChatGPT Pro ${["5x", "20x", "unknown"].includes(scenario) ? scenario : "5x"}`;
+    // Observed in the current subscription row of the modern Billing page.
+    const plan = scenario === "more-usage" ? "ChatGPT Pro: More usage"
+      : `ChatGPT Pro ${["5x", "20x", "unknown"].includes(scenario) ? scenario : "5x"}`;
     const changedPlan = scenario === "plan-change";
     const changedAccount = scenario === "account-change";
     let sessionReads = 0;
