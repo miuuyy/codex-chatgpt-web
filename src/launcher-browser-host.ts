@@ -264,7 +264,9 @@ export async function connectLauncherBrowserHost(
   await assertCdpReady(descriptor, Math.min(timeoutMs, 5_000));
   let browser: Browser;
   try {
-    browser = await chromium.connectOverCDP(descriptor.endpoint, { timeout: timeoutMs });
+    // CDP defaults emulate a light color scheme on every existing page. Keep
+    // the host's native appearance, including pages owned by other workers.
+    browser = await chromium.connectOverCDP(descriptor.endpoint, { timeout: timeoutMs, noDefaults: true });
   } catch (error) {
     throw new Error(`Could not connect Playwright to the launcher browser: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -281,6 +283,12 @@ export async function connectLauncherBrowserHost(
       surfaceId,
       abortSignal,
     );
+    // Preserve background input on the owned page without applying media or
+    // download overrides to the shared browser context.
+    const inputSession = await context.newCDPSession(page);
+    await inputSession.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+    // Detaching here would immediately undo the focus override. The browser
+    // connection owns this session until the worker disconnects.
     return { descriptor, browser, context, page };
   } catch (error) {
     await browser.close().catch(() => {});
