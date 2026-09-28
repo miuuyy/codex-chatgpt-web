@@ -99,6 +99,9 @@ class BrowserControlServer {
       || request.url === "/v1/turn/heartbeat"
       || request.url === "/v1/turn/usage"
       || request.url === "/v1/turn/approval"
+      || request.url === "/v1/turn/arm"
+      || request.url === "/v1/turn/bind"
+      || request.url === "/v1/turn/submitted"
       || request.url === "/v1/turn/end";
     const isTurnRelease = request.url === "/v1/turn/release";
     const isSessionInspect = request.url === "/v1/session/inspect";
@@ -193,6 +196,10 @@ class BrowserControlServer {
       }
       if (body.refreshViewport !== undefined && request.url !== "/v1/turn/heartbeat") {
         throw new Error("refreshViewport is only valid for a turn heartbeat");
+      }
+      if (request.url === "/v1/turn/bind" && (typeof body.url !== "string"
+        || body.url.length > 256 || !/^[a-f0-9]{64}$/.test(body.accountKey || ""))) {
+        throw new Error("Saved conversation binding is invalid");
       }
       if (manualAction) {
         if (manualAction === "start") {
@@ -336,6 +343,18 @@ class BrowserControlServer {
         }
         this.logger.info("browser.turn_started", { traceId: body.traceId });
         writeJson(response, 200, { ok: true, ...lease, trackUsage: this.limits?.enabled() === true });
+        return;
+      } else if (request.url === "/v1/turn/arm") {
+        host.armConversation(body.traceId, body.helperPid);
+        writeJson(response, 200, { ok: true });
+        return;
+      } else if (request.url === "/v1/turn/bind") {
+        host.bindConversation(body.traceId, body.helperPid, body.url, body.accountKey);
+        writeJson(response, 200, { ok: true });
+        return;
+      } else if (request.url === "/v1/turn/submitted") {
+        host.confirmConversationSubmission(body.traceId, body.helperPid);
+        writeJson(response, 200, { ok: true });
         return;
       } else if (request.url === "/v1/turn/heartbeat") {
         host.heartbeatTurn(body.traceId, body.helperPid, body.refreshViewport === true, body.progress);

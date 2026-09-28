@@ -13,6 +13,7 @@ const { validatePasskeyLoginState } = require("./passkey-login-state.cjs");
 const { configureChatGptAnnouncementDismissal } = require("./browser-announcements.cjs");
 const { readChatGptAuthSession } = require("./chatgpt-auth-session.cjs");
 const { runBrowserPageScript } = require("./browser-page-script.cjs");
+const { ConversationRegistry } = require("./conversation-registry.cjs");
 const {
   refreshTurnLeasesAfterSuspension,
   shouldBlockSleepForTurns,
@@ -332,6 +333,7 @@ class BrowserHost {
     clipboardApi = clipboard,
     getBrowserInteractionMode = () => "automatic",
     getUseSavedChats = () => false,
+    conversationRegistryPath,
   }) {
     if (typeof getConnectorName !== "function") {
       throw new Error("Browser host connector-name resolver is unavailable");
@@ -362,6 +364,7 @@ class BrowserHost {
     this.clipboard = clipboardApi;
     this.getBrowserInteractionMode = getBrowserInteractionMode;
     this.getUseSavedChats = getUseSavedChats;
+    this.conversationRegistry = conversationRegistryPath ? new ConversationRegistry(conversationRegistryPath) : null;
     this.runBrowserHelperOperation = runBrowserHelperOperation;
     this.verifyConnectorWithBrowserHelper = verifyConnectorWithBrowserHelper;
     this.surfaceId = randomBytes(24).toString("base64url");
@@ -2538,6 +2541,30 @@ class BrowserHost {
       throw new Error(`ChatGPT retained conversation ${conversationKey} owns multiple browser tabs`);
     }
     const exactRetained = retainedMatches[0];
+    // Persisted recovery is opt-in: a user who selected Temporary Chat must not have
+    // their task history silently written into normal ChatGPT saved history.
+    const registryEnabled = Boolean(conversationKey && this.getUseSavedChats?.() === true);
+    const mapping = registryEnabled ? this.conversationRegistry?.get(conversationKey) : null;
+    if (mapping?.status === "pending") {
+      const error = new Error("The previous ChatGPT send may have created a conversation before its URL was saved. Recover the original chat before retrying; another chat will not be created.");
+      error.code = "retained_conversation_unavailable";
+      throw error;
+    }
+    if (mapping?.pendingTraceId) {
+      const error = new Error("A previous ChatGPT message may have been submitted without a confirmed receipt. Recover the original turn before another send.");
+      error.code = "retained_conversation_unavailable";
+      throw error;
+    }
+    if (mapping?.lastSubmittedTraceId === traceId) {
+      const error = new Error("This Codex turn was already submitted to its saved ChatGPT conversation. Refusing to send it twice.");
+      error.code = "retained_conversation_unavailable";
+      throw error;
+    }
+    if (mapping && sameTrace?.status === "running") {
+      const error = new Error("A browser helper already owns this saved ChatGPT turn. Reconcile its state before starting another writer.");
+      error.code = "retained_conversation_unavailable";
+      throw error;
+    }
     if (sameTrace?.status === "ready" && sameTrace !== exactRetained) {
       throw new Error(`ChatGPT browser turn ${traceId} is retained under different conversation metadata`);
     }
@@ -2583,15 +2610,26 @@ class BrowserHost {
         tabId: existing.id,
         reused,
         connectorBound: existing.connectorBound === true,
+        ...(mapping?.status === "bound" ? { conversationUrl: mapping.url, accountKey: mapping.accountKey } : {}),
       };
     }
-    if (requireRetainedConversation) {
+    if (requireRetainedConversation && mapping?.status !== "bound") {
       const error = new Error("The retained ChatGPT conversation is no longer available");
       error.code = "retained_conversation_unavailable";
       throw error;
     }
     // A retry may reuse the trace, but never the failed document or its incremental history.
     if (sameTrace?.failedAt !== undefined) this.removeTurnTab(sameTrace, false);
+    // A new native turn cannot share a running browser owner, even while that owner has
+    // not yet received its first saved conversation URL.
+    if (registryEnabled && this.conversationRegistry && conversationKey && [...this.turnTabs.values()].some(tab => (
+      tab.interactionMode === "automatic" && tab.status === "running"
+      && tab.conversationKey === conversationKey && tab.traceId !== traceId
+    ))) {
+      const error = new Error("Another Codex turn is still writing to this ChatGPT conversation");
+      error.code = "retained_conversation_unavailable";
+      throw error;
+    }
     const tab = await this.createTurnTab(traceId, helperPid, conversationKey, connectorIdentity, signal);
     this.selectedTabId = tab.id;
     if (reveal) this.show();
@@ -2599,7 +2637,45 @@ class BrowserHost {
     this.publishState?.(this.snapshot());
     this.logger.info("browser.tab_created", { tabId: tab.id, traceId, tabCount: this.turnTabs.size });
     this.writeDescriptor();
-    return { surfaceId: tab.surfaceId, tabId: tab.id, reused: false, connectorBound: false };
+    return {
+      surfaceId: tab.surfaceId, tabId: tab.id,
+      reused: mapping?.status === "bound", connectorBound: false,
+      ...(mapping?.status === "bound" ? {
+        recoveredUrl: mapping.url, conversationUrl: mapping.url, accountKey: mapping.accountKey,
+      } : {}),
+    };
+  }
+
+  armConversation(traceId, helperPid) {
+    const tab = [...this.turnTabs.values()].find(candidate => candidate.traceId === traceId);
+    if (!tab || tab.helperPid !== helperPid || tab.status !== "running" || !tab.conversationKey) {
+      throw new Error("ChatGPT conversation reservation has no active owner");
+    }
+    if (this.getUseSavedChats?.() !== true) throw new Error("Saved ChatGPT conversations are disabled");
+    if (!this.conversationRegistry) throw new Error("ChatGPT conversation registry is unavailable");
+    this.conversationRegistry.arm(tab.conversationKey, traceId);
+  }
+
+  bindConversation(traceId, helperPid, url, accountKey) {
+    const tab = [...this.turnTabs.values()].find(candidate => candidate.traceId === traceId);
+    if (!tab || tab.helperPid !== helperPid || tab.status !== "running" || !tab.conversationKey) {
+      throw new Error("ChatGPT conversation binding has no active owner");
+    }
+    if (this.getUseSavedChats?.() !== true) throw new Error("Saved ChatGPT conversations are disabled");
+    if (!this.conversationRegistry) throw new Error("ChatGPT conversation registry is unavailable");
+    const bound = this.conversationRegistry.bind(tab.conversationKey, url, accountKey, traceId);
+    this.logger.info("browser.conversation_bound", { traceId, tabId: tab.id });
+    return bound;
+  }
+
+  confirmConversationSubmission(traceId, helperPid) {
+    const tab = [...this.turnTabs.values()].find(candidate => candidate.traceId === traceId);
+    if (!tab || tab.helperPid !== helperPid || tab.status !== "running" || !tab.conversationKey) {
+      throw new Error("ChatGPT submission receipt has no active owner");
+    }
+    if (this.getUseSavedChats?.() !== true) throw new Error("Saved ChatGPT conversations are disabled");
+    if (!this.conversationRegistry) throw new Error("ChatGPT conversation registry is unavailable");
+    this.conversationRegistry.submitted(tab.conversationKey, traceId);
   }
 
   async endTurn(

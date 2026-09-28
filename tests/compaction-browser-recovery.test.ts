@@ -66,8 +66,10 @@ test.each([
       // Context ingestion cannot mistake tool activity for acknowledgement of a part.
       expect(args[4]).toBe(stage === "send" ? progress : undefined);
       const lifecycle = args[5] as { onSendActivated(): Promise<void>; onSubmitted?: () => void };
-      if (stage !== "send") expect(lifecycle.onSubmitted).toBeUndefined();
+      // Multipart stages also acknowledge actual Sends so the first saved URL can be bound.
+      expect(typeof lifecycle.onSubmitted).toBe("function");
       await lifecycle.onSendActivated();
+      if (!(sizeRejected && stage === "multipart_stage_2_send")) await lifecycle.onSubmitted?.();
       if (cancellationCase || (sizeRejected && stage === "multipart_stage_2_send")) {
         // An observed size rejection must not replace the user's explicit tab-close verdict.
         const request = { method: () => "POST", url: () => "https://chatgpt.com/backend-api/f/conversation", frame: () => frame };

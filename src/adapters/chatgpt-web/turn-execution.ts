@@ -618,18 +618,18 @@ export class ChatGptTurnSessions {
     return session;
   }
 
-  /** Wait for a retained conversation epoch that has been detached but not physically released. */
+  /** Wait for a retained conversation owner that has been detached but not physically settled. */
   async waitForConversationRetirement(conversationKey: string, signal?: AbortSignal): Promise<void> {
     const pending = this.conversationRetirements.get(conversationKey);
     if (pending) await awaitWithAbort(pending, signal);
   }
 
-  async retireConversationAndWait(conversationKey: string): Promise<number> {
-    return this.closeConversationAndWait(conversationKey);
+  async retireConversationAndWait(conversationKey: string, keepBrowser = false): Promise<number> {
+    return this.closeConversationAndWait(conversationKey, undefined, keepBrowser);
   }
 
   /**
-   * Close the physical retained-chat epoch without discarding a terminal response that won the
+   * Retire the logical source without discarding a terminal response that won the
    * compaction race before any compaction instruction reached that response. The detached logical
    * session remains addressable by its exact Responses execution key, so the post-compaction
    * native round can consume the already-committed answer instead of opening another browser turn.
@@ -638,6 +638,7 @@ export class ChatGptTurnSessions {
     conversationKey: string,
     preserved: ChatGptTurnSession,
     preservedExecutionKey: string,
+    keepBrowser = false,
   ): Promise<number> {
     if (!preservedExecutionKey) throw new Error("Preserved ChatGPT response execution key is required");
     const outcome = preserved.settledOutcome();
@@ -647,12 +648,13 @@ export class ChatGptTurnSessions {
     return this.closeConversationAndWait(conversationKey, {
       session: preserved,
       executionKey: preservedExecutionKey,
-    });
+    }, keepBrowser);
   }
 
   private async closeConversationAndWait(
     conversationKey: string,
     preserved?: { session: ChatGptTurnSession; executionKey: string },
+    keepBrowser = false,
   ): Promise<number> {
     const pending = this.conversationRetirements.get(conversationKey);
     if (pending) {
@@ -686,7 +688,7 @@ export class ChatGptTurnSessions {
       session.runtime.releaseRetainedConversation !== undefined
     ))?.[1].runtime.releaseRetainedConversation;
     const retirement = Promise.all(matches.map(([, session]) => session.physicalSettlement))
-      .then(async () => { await release?.(); });
+      .then(async () => { if (!keepBrowser) await release?.(); });
     this.conversationRetirements.set(conversationKey, retirement);
     try {
       await retirement;

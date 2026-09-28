@@ -328,6 +328,9 @@ export async function requestRetainedCompactionHandoff(
       prepare,
       prepareResume: prepare,
       conversationKey,
+      // Keep this exact tab after an accepted checkpoint. The next native turn will resume
+      // from its existing transcript, even though Codex has replaced its own context.
+      retainConversation: true,
       requireRetainedConversation: true,
       compaction: true,
       abortSignal: browserAbort.signal,

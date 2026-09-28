@@ -377,6 +377,7 @@ describe("fixed ChatGPT Web model routes", () => {
       expect(chatGptConversationKey({ ...request, _compactionRequest: true }, "provider")).toBe(key);
       expect(() => routeChatGptWebRequest(parsed(model, "max"), { ...config, proAvailable: false })).toThrow("not available");
     }
-    expect(new Set(keys).size).toBe(3);
+    // A Codex thread must keep its original ChatGPT conversation when switching models.
+    expect(new Set(keys).size).toBe(1);
   });
 });

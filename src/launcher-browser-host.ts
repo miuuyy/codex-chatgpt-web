@@ -388,6 +388,9 @@ export type LauncherTurnActivity =
       connectorIdentity?: string;
       requireRetainedConversation?: boolean;
     }
+  | { phase: "arm"; traceId: string; helperPid: number }
+  | { phase: "bind"; traceId: string; helperPid: number; url: string; accountKey: string }
+  | { phase: "submitted"; traceId: string; helperPid: number }
   | {
       phase: "heartbeat";
       traceId: string;
@@ -650,6 +653,9 @@ export async function notifyLauncherTurn(
   surfaceId?: string;
   reused?: boolean;
   connectorBound?: boolean;
+  recoveredUrl?: string;
+  conversationUrl?: string;
+  accountKey?: string;
   cancelledByUser?: boolean;
   authenticationRequired?: boolean;
   trackUsage?: boolean;
@@ -693,11 +699,23 @@ export async function notifyLauncherTurn(
       if (typeof body.connectorBound !== "boolean") {
         throw new Error("Launcher browser control channel returned an invalid connector state");
       }
+      for (const field of ["recoveredUrl", "conversationUrl"] as const) {
+        if (body[field] !== undefined && (typeof body[field] !== "string"
+          || !/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9_-]{8,128}$/.test(body[field]))) {
+          throw new Error("Launcher returned an invalid saved conversation URL");
+        }
+      }
+      if (body.accountKey !== undefined && (typeof body.accountKey !== "string" || !/^[a-f0-9]{64}$/.test(body.accountKey))) {
+        throw new Error("Launcher returned an invalid saved conversation account");
+      }
       return {
         surfaceId: body.surfaceId,
         reused: body.reused,
         connectorBound: body.connectorBound,
         trackUsage: body.trackUsage === true,
+        ...(typeof body.recoveredUrl === "string" ? { recoveredUrl: body.recoveredUrl } : {}),
+        ...(typeof body.conversationUrl === "string" ? { conversationUrl: body.conversationUrl } : {}),
+        ...(typeof body.accountKey === "string" ? { accountKey: body.accountKey } : {}),
       };
     }
     if (activity.phase === "end") {

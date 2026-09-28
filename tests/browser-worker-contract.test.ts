@@ -1325,6 +1325,7 @@ test("large Markdown-rich context uses one plain-text editing command before exa
 
   await attachPrompt.call({
     activeComposer: async () => composer,
+    attachedPromptText: async () => "",
     insertPromptText,
     assertPromptAttached: async (_page: unknown, value: string) => { asserted = value; },
   }, dialogPage("").page, prompt, false);
@@ -1335,6 +1336,38 @@ test("large Markdown-rich context uses one plain-text editing command before exa
     ["evaluateOptions", { timeout: 20_000 }],
   ]);
   expect(asserted).toBe(prompt);
+});
+
+test("a restored non-connector draft is cleared before attaching the next prompt", async () => {
+  const previous = "Act as the model backend: " + "old".repeat(80_000);
+  const prompt = "Act as the model backend: " + "new".repeat(80_000);
+  let draft = previous;
+  let verifiedResets = 0;
+  let fillCalls = 0;
+  let insertCalls = 0;
+  const composer = {
+    // The browser can rehydrate a persisted Lexical draft after a Playwright fill("").
+    fill: async () => { fillCalls += 1; },
+    focus: async () => {},
+  };
+  const attachPrompt = (ChatGptBrowserWorker.prototype as unknown as {
+    attachPrompt(page: unknown, prompt: string, localTools: boolean): Promise<void>;
+  }).attachPrompt;
+
+  await attachPrompt.call({
+    activeComposer: async () => composer,
+    attachedPromptText: async () => draft,
+    clearChatGptComposerState: async () => { verifiedResets += 1; draft = ""; },
+    insertPromptText: async (_page: unknown, text: string) => { insertCalls += 1; draft += text; },
+    assertPromptAttached: async (_page: unknown, expected: string) => {
+      expect(draft).toBe(expected);
+    },
+  }, dialogPage("").page, prompt, false);
+
+  expect(verifiedResets).toBe(1);
+  expect(fillCalls).toBe(0);
+  expect(insertCalls).toBe(1);
+  expect(draft).toBe(prompt);
 });
 
 test("plain-text editing command fails closed when the focused composer rejects it", async () => {
@@ -2670,6 +2703,7 @@ test("Think attachment preserves the plugin on first and follow-up messages and 
     const submitted: boolean[] = [];
     const worker = {
       activeComposer: async () => ui.composer,
+      attachedPromptText: async () => ui.state.draft,
       selectConnector: async () => { connectorSelections += 1; ui.state.connectors = ["Codex Native2"]; return ui.composer; },
       insertPromptText: async () => { submitted.push(ui.state.pressed); },
       assertPromptAttached: async () => {}, clearChatGptComposerState: async () => { ui.state.draft = ""; ui.state.connectors = []; },

@@ -98,11 +98,11 @@ label does not itself replace a remote connector's cached schema; legacy connect
 ## Browser lifecycle
 
 The desktop launcher owns one persistent Electron partition and up to five task-bound browser
-tabs. Each task/model/effort/compaction epoch owns one exact `WebContentsView` lease; sequential
+tabs. Each task/model/effort identity owns one exact `WebContentsView` lease; sequential
 native messages reuse that surface, while each message receives a fresh turn-bound MCP token and
 keeps all of its MCP tool rounds inside one ChatGPT response. Compaction asks the same retained Web
 agent for a one-shot structured checkpoint, waits for the response and physical helper cleanup,
-then closes the old surface. The next epoch gets a new browser chat. Model messages never copy
+then retires the old logical turn while retaining the same browser tab. Model messages never copy
 state between tabs. Tabs share only the local login
 partition and keep independent documents and lifecycles. Closing a running tab destroys its page
 and terminates that browser turn. A sixth concurrent turn fails explicitly; the cap avoids excessive
@@ -152,11 +152,23 @@ retain their measured adapter-owned limits.
 
 **Save chats in ChatGPT** (`setup --saved-chats`; `--temporary-chats` restores the default)
 uses ordinary saved conversations for task turns in Automatic and Zero Risk modes. This is
-independent of conversation reuse. Changing it releases idle retained tabs, and its provider
-configuration participates in conversation identity. Saved history does not authorize reopening
-an arbitrary ChatGPT conversation. Compaction still starts the next context epoch in a new chat;
-account inspection continues to use an empty Temporary Chat. ChatGPT memory and custom instructions
-may apply to saved conversations.
+independent of conversation reuse. Changing it releases idle retained tabs. In Automatic retained
+Full mode with saved chats enabled, the Launcher binds each Codex thread to the exact ChatGPT
+conversation assigned after its first accepted message. The binding is stored in
+`<launcher userData>/conversation-registry.json` through private, atomic file writes; it contains
+hashed account identity, conversation URL/ID, and submission ownership, without prompt content,
+cookies, or credentials. A retained in-memory tab is preferred; after its removal or a Launcher
+restart, the worker opens the saved URL and verifies the conversation, existing user history,
+authenticated account, and composer before sending only the new Codex suffix. Model and effort
+changes do not change the conversation identity. An unresolved first Send, in-flight retry,
+missing conversation, or account mismatch fails explicitly instead of silently creating a
+replacement chat. An unavailable compaction source in this mode also fails without falling back
+to a separate chat. This guarantee requires both saved chats and retained Automatic Full mode;
+Temporary Chat, Zero Risk, Luna, and explicit fresh-per-turn mode keep their existing lifecycles.
+Existing Temporary Chat sessions cannot be recovered retroactively after restarting the Launcher.
+Account inspection still uses an empty Temporary Chat. ChatGPT memory and custom instructions may
+apply to saved conversations. Changing saved-chat mode mid-thread can interrupt durable continuity;
+complete the thread before switching that preference.
 
 Automatic mode also offers an explicit **New browser chat for each turn** setting, disabled by
 default (`setup --fresh-conversation`; `--retained-conversation` restores reuse). Each native turn
@@ -176,7 +188,9 @@ reduce message size, not the amount of history retained.
 
 In Full mode, routed compaction v1/v2 uses the exact retained source agent and a one-shot MCP control
 capability that accepts only the bound checkpoint; it cannot claim or invoke the ordinary Codex tool
-environment. Zero Risk always advertises a fixed three-times compaction interval without enabling
+environment. When the handoff is accepted, the source's logical turn retires but the Launcher keeps
+the browser tab, so subsequent native turns use that same chat. Failed handoffs still release the tab.
+Zero Risk always advertises a fixed three-times compaction interval without enabling
 Bigger Context multipart transport. At that boundary its active ChatGPT response receives the
 checkpoint instruction as an MCP result, returns the compacted context through its bound completion
 control, and ends. The old manual chat is retired; the next compacted Codex request owns a fresh

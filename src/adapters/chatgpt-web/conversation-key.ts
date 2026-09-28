@@ -1,28 +1,24 @@
 import { createHash } from "node:crypto";
-import { SUMMARY_PREFIX } from "../../responses/compaction";
+import { isReadableCompactionSummaryText, OPAQUE_COMPACTION_NOTE } from "../../responses/compaction";
 import type { CodexParsedRequest } from "../../types";
 import { extractChatGptTurnIdentity } from "./environment";
 
-function messageText(item: Record<string, unknown>): string | undefined {
-  const content = item.content;
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return undefined;
-  return content.flatMap(block => {
-    if (!block || typeof block !== "object" || Array.isArray(block)) return [];
-    const text = (block as { text?: unknown }).text;
-    return typeof text === "string" ? [text] : [];
-  }).join("\n");
-}
-
-/** Native compaction remains part of the exact identity of a replayed Codex turn. */
-function compactionEpoch(input: unknown[] | undefined): unknown {
-  return input?.findLast(item => {
+/** Zero Risk creates a fresh manual owner after compaction, even though Automatic retains its chat. */
+export function chatGptCompactionEpoch(parsed: CodexParsedRequest): unknown {
+  const raw = parsed._rawBody as { input?: unknown[] } | undefined;
+  return raw?.input?.findLast(item => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return false;
     const record = item as Record<string, unknown>;
-    return record.type === "compaction"
-      || record.type === "compaction_summary"
-      || record.type === "context_compaction"
-      || (record.role === "user" && messageText(record)?.startsWith(`${SUMMARY_PREFIX}\n`));
+    if (["compaction", "compaction_summary", "context_compaction"].includes(String(record.type))) {
+      return true;
+    }
+    if (record.role !== "user") return false;
+    const content = record.content;
+    const text = typeof content === "string" ? content : Array.isArray(content)
+      ? content.flatMap(part => part && typeof part === "object" && typeof part.text === "string"
+        ? [part.text] : []).join("\n")
+      : "";
+    return isReadableCompactionSummaryText(text);
   }) ?? null;
 }
 
@@ -32,28 +28,38 @@ export function chatGptConversationKey(
 ): string | undefined {
   const identity = extractChatGptTurnIdentity(parsed);
   if (!identity.threadId) return undefined;
-  const raw = parsed._rawBody as { input?: unknown[] } | undefined;
   return createHash("sha256").update(JSON.stringify({
     namespace,
     threadId: identity.threadId,
-    modelId: parsed.modelId,
-    reasoning: parsed.options.reasoning,
-    ...(parsed._chatgptModelFamily ? { modelFamily: parsed._chatgptModelFamily } : {}),
-    compaction: compactionEpoch(raw?.input),
   })).digest("hex");
 }
 
-/** Full history remains canonical; a retained epoch receives only the suffix after its last assistant reply. */
+/** Full history remains canonical; an exact retained chat receives only messages it has not seen. */
 export function retainedConversationResumeRequest(
   parsed: CodexParsedRequest,
 ): CodexParsedRequest | undefined {
+  // After native compaction the replacement history can have no assistant response at all.
+  // Its checkpoint was delivered in the same retained ChatGPT tab, so never resend the
+  // potentially huge summary (v1 text or v2 opaque compaction item) into that tab.
+  const lastCheckpoint = parsed.context.messages.findLastIndex(message => message.role === "user"
+    && (typeof message.content === "string"
+      ? isReadableCompactionSummaryText(message.content) || message.content === OPAQUE_COMPACTION_NOTE
+      : message.content.some(part => part.type === "text"
+        && (isReadableCompactionSummaryText(part.text) || part.text === OPAQUE_COMPACTION_NOTE))));
   const lastAssistant = parsed.context.messages.findLastIndex(message => message.role === "assistant");
-  if (lastAssistant < 0 || lastAssistant === parsed.context.messages.length - 1) return undefined;
+  const lastSeen = Math.max(lastAssistant, lastCheckpoint);
+  if (lastSeen < 0) return undefined;
+  const suffix = parsed.context.messages.slice(lastSeen + 1);
+  if (suffix.length === 0 && lastCheckpoint < 0) return undefined;
   return {
     ...parsed,
     context: {
       ...parsed.context,
-      messages: parsed.context.messages.slice(lastAssistant + 1),
+      messages: suffix.length ? suffix : [{
+        role: "user",
+        content: "Codex compacted its local context. Continue the active task in this retained ChatGPT conversation.",
+        timestamp: Date.now(),
+      }],
     },
   };
 }

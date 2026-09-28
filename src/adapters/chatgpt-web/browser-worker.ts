@@ -54,6 +54,7 @@ import {
   assertAuthenticatedChatGptPage,
   assertNewChatPage,
   chatGptNewChatUrl,
+  chatGptSavedConversationUrl,
   chatGptAssistantTurnSelector,
   CHATGPT_ASSISTANT_TURN_SELECTOR,
   CHATGPT_COMPLETION_ACTION_SELECTOR,
@@ -2847,6 +2848,30 @@ export class ChatGptBrowserWorker {
     return composer;
   }
 
+  private async prepareExistingChatSurface(
+    page: Page,
+    url: string,
+    captureDiagnostic?: (checkpoint: string) => Promise<void>,
+  ): Promise<Locator> {
+    const canonical = chatGptSavedConversationUrl(url);
+    if (!canonical) throw new Error("The saved ChatGPT conversation URL is invalid");
+    if (chatGptSavedConversationUrl(page.url()) !== canonical) {
+      await page.goto(canonical, { waitUntil: "domcontentloaded", timeout: 60_000 });
+      await captureDiagnostic?.("saved-conversation-reopened");
+    }
+    const composer = await this.activeComposer(page);
+    await throwIfChatGptSessionFailureAlert(page);
+    await assertAuthenticatedChatGptPage(page);
+    if (chatGptSavedConversationUrl(page.url()) !== canonical) {
+      throw new Error("ChatGPT redirected away from the original saved conversation");
+    }
+    // A deleted or inaccessible chat can still render a blank composer at its old URL.
+    await page.locator(CHATGPT_USER_TURN_SELECTOR).first()
+      .waitFor({ state: "attached", timeout: 15_000 });
+    await captureDiagnostic?.("saved-conversation-verified");
+    return composer;
+  }
+
   private async waitForTurnDomMutation(page: Page, timeoutMs = 50): Promise<void> {
     await page.evaluate(({ timeout, attributeFilter }) => new Promise<void>(resolveMutation => {
       let settled = false;
@@ -3771,10 +3796,25 @@ export class ChatGptBrowserWorker {
         // collapse to the first paragraph on the launcher-owned Electron surface. Clear separately,
         // then transport the complete text through the browser's plain-text editing command.
         composerMutationStarted = true;
-        await composer.fill("", { signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
-        await composer.focus({ signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
+        if ((await this.attachedPromptText(page, abortSignal)).length > 0) {
+          // An ambiguous earlier Send can leave its entire prompt as a persisted draft.
+          // A plain fill("") may be overwritten by Lexical's delayed draft restoration;
+          // clear the owned editor and verify that it stays empty before attaching again.
+          await this.clearChatGptComposerState(page);
+        } else {
+          await composer.fill("", { signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
+        }
+        throwIfPromptAttachmentAborted(abortSignal);
+        const readyComposer = await this.activeComposer(page, 30_000, abortSignal);
+        await readyComposer.focus({ signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
         if (requireThink) {
-          await setChatGptThinkMode(composer, true, captureDiagnostic, abortSignal);
+          await setChatGptThinkMode(readyComposer, true, captureDiagnostic, abortSignal);
+        }
+        const remainingDraft = await this.attachedPromptText(page, abortSignal);
+        if (remainingDraft.length > 0) {
+          throw new ChatGptPromptAttachmentIntegrityError(
+            `ChatGPT restored a previous draft before prompt insertion (actualChars=${remainingDraft.length})`,
+          );
         }
         await this.insertPromptText(page, prompt, abortSignal);
         await this.assertPromptAttached(page, prompt, abortSignal);
@@ -5033,7 +5073,11 @@ export class ChatGptBrowserWorker {
           sendHeartbeat();
           await turn.onSubmitted?.();
         },
-      }, surfaceId, undefined, reused, lease.trackUsage === true);
+      }, surfaceId, undefined, reused, lease.trackUsage === true, {
+        recoveredUrl: lease.recoveredUrl,
+        conversationUrl: lease.conversationUrl,
+        accountKey: lease.accountKey,
+      });
     } catch (error) {
       originalError = error;
       terminal = error instanceof ChatGptCompactionHandoffAccepted
@@ -5085,6 +5129,7 @@ export class ChatGptBrowserWorker {
     maintenancePage?: Page,
     reuseConversation = false,
     trackUsage = false,
+    retained?: { recoveredUrl?: string; conversationUrl?: string; accountKey?: string },
   ): Promise<string> {
     if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
     if ((turn.externalProgress !== undefined) !== (turn.completionFence !== undefined)) {
@@ -5343,7 +5388,18 @@ export class ChatGptBrowserWorker {
           + ` maxStageMessageTokens=${maxStageMessageTokens} maxStageChars=${maxStageChars}`,
         );
       }
-      if (!reuseConversation) {
+      if (retained?.recoveredUrl) {
+        await this.runStage(
+          turn.traceId,
+          "saved_conversation_recovery",
+          browserStageTimeouts.temporaryChatPreparation,
+          () => this.prepareExistingChatSurface(
+            page,
+            retained.recoveredUrl!,
+            checkpoint => diagnostics.capture(page, checkpoint),
+          ),
+        );
+      } else if (!reuseConversation) {
         await this.runStage(
           turn.traceId,
           "temporary_chat_preparation",
@@ -5358,6 +5414,55 @@ export class ChatGptBrowserWorker {
       }
       // A retained lease proves conversation ownership. Model selection and plugin attachment
       // must still be established for each new submission on that page.
+      let verifiedAccountKey: string | undefined;
+      if (turn.conversationKey && launcherSurfaceId && this.config.useSavedChats) {
+        verifiedAccountKey = (await readChatGptUsageAccount(page)).accountKey;
+        if (retained?.accountKey && verifiedAccountKey !== retained.accountKey) {
+          throw new Error("The authenticated ChatGPT account differs from the account that owns this Codex conversation");
+        }
+        if (reuseConversation && retained?.conversationUrl
+          && chatGptSavedConversationUrl(page.url()) !== retained.conversationUrl) {
+          throw new Error("ChatGPT is no longer displaying the saved conversation assigned to this Codex session");
+        }
+      }
+      const armFirstSend = async () => {
+        if (!turn.conversationKey || !launcherSurfaceId || !this.config.useSavedChats
+          || (reuseConversation && !retained?.accountKey)) return;
+        await notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
+          phase: "arm", traceId: turn.traceId, helperPid: process.pid,
+        });
+      };
+      const bindFirstSend = async () => {
+        if (!turn.conversationKey || !launcherSurfaceId || !this.config.useSavedChats) return;
+        if (reuseConversation) {
+          if (retained?.accountKey) {
+            await notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
+              phase: "submitted", traceId: turn.traceId, helperPid: process.pid,
+            });
+          }
+          return;
+        }
+        const deadline = Date.now() + 10_000;
+        let conversationUrl: string | undefined;
+        do {
+          conversationUrl = chatGptSavedConversationUrl(page.url());
+          if (conversationUrl) break;
+          await withBrowserTurnAbort(new Promise(resolveSleep => setTimeout(resolveSleep, 100)), turn.abortSignal);
+        } while (Date.now() < deadline);
+        if (!conversationUrl) {
+          throw new Error("ChatGPT accepted the message without exposing a recoverable saved conversation URL; the send requires manual reconciliation");
+        }
+        const accountKey = (await readChatGptUsageAccount(page)).accountKey;
+        if (accountKey !== verifiedAccountKey) {
+          throw new Error("ChatGPT account changed while creating the saved Codex conversation");
+        }
+        await notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
+          phase: "bind", traceId: turn.traceId, helperPid: process.pid,
+          url: conversationUrl, accountKey,
+        });
+      };
+      // A retained lease proves the connector binding, not the current model selection.
+      // Reconcile the live control before every submission, including retained continuations.
       const selectStagingMode = () => (
         this.selectModelAndEffort(
           page,
@@ -5443,9 +5548,13 @@ export class ChatGptBrowserWorker {
               checkpoint => diagnostics.capture(page, `multipart-${index + 1}-${checkpoint}`),
               turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal,
               undefined,
-              { onSubmitted: recordStageUsage, onSendActivated: async () => {
+              { onSubmitted: async () => {
+                recordStageUsage?.();
+                await bindFirstSend();
+              }, onSendActivated: async () => {
                 await this.assertSelectedEffort(page, mode);
                 submissionRejection.begin(page);
+                await armFirstSend();
               } },
               undefined,
               launcherObservationRecovery
@@ -5615,10 +5724,11 @@ export class ChatGptBrowserWorker {
           turn.externalProgress,
           { ...turn, onSubmitted: () => {
             recordFinalUsage?.();
-            return turn.onSubmitted?.();
+            return bindFirstSend().then(() => turn.onSubmitted?.());
           }, onSendActivated: async () => {
             await this.assertSelectedEffort(page, mode);
             submissionRejection.begin(page);
+            await armFirstSend();
             await turn.onSendActivated?.();
           } },
           completionTracker,

@@ -2776,7 +2776,8 @@ describe("ChatGPT outer-native harness v4", () => {
     const socketPath = brokerTestEndpoint(`cgw-h3-pro-${process.pid}-${Date.now()}`);
     const provider: CodexProviderConfig = {
       adapter: "chatgpt-web",
-      baseUrl: "browser://chatgpt-pro-test",
+      // These are independent threads; switching a setting within one thread now retains identity.
+      baseUrl: `browser://chatgpt-pro-test-${freshConversation ? "fresh" : "retained"}`,
       contextWindow: 256_000,
       chatgptWeb: { brokerSocketPath: socketPath, turnTimeoutMs: 30_000, localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true,
         experimentalFreshConversationPerTurn: freshConversation },
