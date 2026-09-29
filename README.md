@@ -30,6 +30,12 @@ Full harness mode connects ChatGPT to the current task’s files, terminal, tool
 
 <div id="get-started"><a id="quick-start"></a></div>
 
+## Launch video
+
+<a href="assets/codex-chatgpt-web-launch.mp4"><img src="assets/codex-chatgpt-web-launch.jpg" width="280" alt="Codex ChatGPT Web launch video"></a>
+
+A 22-second 9:16 launch video with sound ([captions](assets/codex-chatgpt-web-launch.srt)). Click the poster to play.
+
 ## Get started
 
 **Available models:** Free/Go → **Luna / Think**. Accounts with reasoning controls → **Instant–High**, plus **Extra High** and **Pro** when available. The launcher detects what your account can use.
