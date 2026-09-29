@@ -175,6 +175,35 @@ export function parseChatGptEffortSliderState(
   return { min, max, value };
 }
 
+/**
+ * Model evidence of the open effort picker, read in one DOM revision. Older pickers announced the
+ * version with the effort on the slider ("6 Pro, 5 of 5."). The current picker announces only the
+ * effort ("Pro, 5 of 5.") and shows the version in its visible "Select model" header ("6" + "Pro").
+ * Both sources are returned; callers still require every versioned statement to agree.
+ */
+export async function readChatGptModelAnnouncements(slider: Locator): Promise<string[]> {
+  return await slider.evaluate(element => {
+    const doc = element.ownerDocument;
+    const announcements = (element.closest('[role="menuitem"]')?.getAttribute("aria-describedby") ?? "")
+      .split(/\s+/).filter(Boolean)
+      .map(id => doc.getElementById(id)?.textContent ?? "");
+    const headers = Array.from(element.closest('[role="menu"]')
+      ?.querySelectorAll('[data-model-picker-view-toggle="true"][aria-hidden="false"]') ?? [])
+      .filter(header => !header.closest('[aria-hidden="true"], [inert]'));
+    if (headers.length === 1) {
+      const content = headers[0]!.querySelector("[data-menu-row-content]") ?? headers[0]!;
+      const words: string[] = [];
+      const walker = doc.createTreeWalker(content, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const word = node.textContent?.replace(/\s+/g, " ").trim();
+        if (word) words.push(word);
+      }
+      if (words.length > 0) announcements.push(words.join(" "));
+    }
+    return announcements;
+  });
+}
+
 export async function readChatGptEffortSnapshot(
   sliderContainer: Locator,
   timeoutMs = 1_000,

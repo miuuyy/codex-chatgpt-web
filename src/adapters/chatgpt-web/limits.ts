@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Locator, Page } from "playwright-core";
+import { readChatGptModelAnnouncements } from "../../chatgpt-session";
 
 export type ChatGptLimitsPlan = "pro_100" | "pro_200" | "unsupported";
 export type ChatGptUsageModel = "gpt-6-pro" | "gpt-5.6-pro" | "pro-unknown" | "other";
@@ -72,11 +73,7 @@ export async function detectChatGptLimitsPlan(page: Page): Promise<{ accountKey:
 /** The slider's own accessibility announcement names the selected family, even for 'Latest'. */
 export async function readChatGptUsageModel(slider: Locator, isPro: boolean): Promise<ChatGptUsageModel> {
   if (!isPro) return "other";
-  const announcements = await slider.locator("xpath=ancestor::*[@role='menuitem'][1]").evaluate(element => (
-    (element.getAttribute("aria-describedby") ?? "").split(/\s+/).filter(Boolean)
-      .map(id => element.ownerDocument.getElementById(id)?.textContent ?? "")
-  ));
-  return chatGptUsageModelFromAnnouncements(announcements);
+  return chatGptUsageModelFromAnnouncements(await readChatGptModelAnnouncements(slider));
 }
 
 export function chatGptUsageModelFromAnnouncements(announcements: readonly string[]): ChatGptUsageModel {

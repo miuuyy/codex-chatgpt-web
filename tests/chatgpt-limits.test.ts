@@ -21,8 +21,9 @@ test("Limits identifies actual selected Pro family and keeps missing or conflict
   expect(chatGptUsageModelFromAnnouncements(["6 Pro, 5 of 5.", "Use Left and Right arrow keys to adjust power."])).toBe("gpt-6-pro");
   expect(chatGptUsageModelFromAnnouncements(["5.6 Pro, 5 of 5."])).toBe("gpt-5.6-pro");
   expect(chatGptUsageModelFromAnnouncements(["GPT-5.6 Sol Pro, 5 of 5."])).toBe("gpt-5.6-pro");
+  expect(chatGptUsageModelFromAnnouncements(["Pro, 5 of 5.", "Use Left and Right arrow keys to adjust power", "6 Pro"])).toBe("gpt-6-pro");
   for (const descriptions of [[], ["Latest"], ["Pro"], ["5.6 Extra High, 4 of 5."],
-    ["5.5 Pro"], ["6 Pro", "5.6 Pro"], ["Use 6 Pro"]]) {
+    ["5.5 Pro"], ["6 Pro", "5.6 Pro"], ["Use 6 Pro"], ["Pro, 5 of 5."]]) {
     expect(chatGptUsageModelFromAnnouncements(descriptions)).toBe("pro-unknown");
   }
 });
