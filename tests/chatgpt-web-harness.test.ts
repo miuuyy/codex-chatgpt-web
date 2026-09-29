@@ -1939,6 +1939,36 @@ describe("ChatGPT outer-native harness v4", () => {
     });
   });
 
+  test("distinguishes repeated paragraphs without source ranges by occurrence", () => {
+    const buffer = new ChatGptMarkdownBuffer(markdown => markdown, 0);
+    const segment = (index: number, text: string, streamable: boolean) => ({
+      key: `${index}:p`,
+      tag: "p",
+      html: `<p>${text}</p>`,
+      text,
+      streamable,
+    });
+    const initial = [
+      segment(0, "First paragraph.", true),
+      segment(1, "Same paragraph.", true),
+      segment(2, "Middle paragraph.", false),
+    ];
+    expect(buffer.observe(initial, 0)).toBe("First paragraph.\n\nSame paragraph.");
+
+    const complete = [
+      segment(0, "First paragraph.", true),
+      segment(1, "Same paragraph.", true),
+      segment(2, "Middle paragraph.", true),
+      segment(3, "Same paragraph.", false),
+    ];
+    expect(buffer.observe(complete, 1)).toBe("\n\nMiddle paragraph.");
+    expect(buffer.currentSnapshotIsConsistent()).toBeTrue();
+    expect(buffer.finish()).toEqual({
+      markdown: "First paragraph.\n\nSame paragraph.\n\nMiddle paragraph.\n\nSame paragraph.",
+      delta: "\n\nSame paragraph.",
+    });
+  });
+
   test("fails closed when a DOM snapshot reverses ChatGPT source order", () => {
     const buffer = new ChatGptMarkdownBuffer(markdown => markdown, 0);
     const first = {
