@@ -2680,6 +2680,9 @@ describe("ChatGPT outer-native harness v4", () => {
       expect(listed.tools.map(tool => tool.name).sort()).toEqual([
         "codex_apply_patch",
         "codex_exec",
+        "codex_list_dir",
+        "codex_read_file",
+        "codex_search_files",
         "codex_tool_call",
         "codex_tool_inventory",
         "codex_view_image",
@@ -2696,7 +2699,7 @@ describe("ChatGPT outer-native harness v4", () => {
       // ChatGPT caches the complete tools/list contract under a connector identity.
       // An intentional hash change therefore requires an explicit connector refresh or identity migration.
       expect(createHash("sha256").update(canonicalJson(publicConnectorAbi)).digest("hex"))
-        .toBe("f4c9b6d6cf5822028f139aa33749ea4d9f834d4f8ea27359b404a17ca93d068a");
+        .toBe("7d008c95d8b60d8dd6ae02ae34a6dff9ccc4da11ac3a9c9f559e09b9cf8662d2");
       expect(listed.tools.find(tool => tool.name === "codex_tool_call")?.description)
         .toContain("reserved codex.control.compaction_handoff operation, which is not listed by inventory");
       for (const tool of listed.tools) {
@@ -2721,6 +2724,20 @@ describe("ChatGPT outer-native harness v4", () => {
         readOnlyHint: false,
         destructiveHint: true,
         idempotentHint: false,
+        openWorldHint: false,
+      });
+      for (const readOnlyTool of ["codex_list_dir", "codex_search_files"]) {
+        expect(listed.tools.find(tool => tool.name === readOnlyTool)?.annotations).toMatchObject({
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        });
+      }
+      expect(listed.tools.find(tool => tool.name === "codex_read_file")?.annotations).toMatchObject({
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
         openWorldHint: false,
       });
       expect(listed.tools.find(tool => tool.name === "codex_view_image")?.annotations).toMatchObject({

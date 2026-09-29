@@ -215,6 +215,29 @@ async function waitForPackagedRuntimeSource({
   throw new Error(`Packaged runtime did not fully materialize within ${timeoutMs}ms: ${detail}`);
 }
 
+function removeStaleRuntimeDirectory(directory) {
+  try {
+    fs.rmSync(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function cleanupStaleRuntimeCopies(versionsRoot, versionDirectoryName) {
+  let entries;
+  try {
+    entries = fs.readdirSync(versionsRoot, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  const prefixes = [`${versionDirectoryName}.previous-`];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !prefixes.some(prefix => entry.name.startsWith(prefix))) continue;
+    removeStaleRuntimeDirectory(path.join(versionsRoot, entry.name));
+  }
+}
+
 function ensurePackagedRuntime({ app, coreHome, resourcesPath }) {
   if (!app.isPackaged) return null;
   const identity = {
@@ -230,6 +253,7 @@ function ensurePackagedRuntime({ app, coreHome, resourcesPath }) {
     versionsRoot,
     `${identity.version}-${identity.platform}-${identity.arch}`,
   );
+  cleanupStaleRuntimeCopies(versionsRoot, `${identity.version}-${identity.platform}-${identity.arch}`);
   if (fs.existsSync(destination)) {
     try {
       return validateRuntimeBundle(destination, expectedIdentity);
@@ -274,7 +298,10 @@ function ensurePackagedRuntime({ app, coreHome, resourcesPath }) {
       throw error;
     }
     if (previousMoved) {
-      fs.rmSync(previous, { recursive: true, force: true });
+      // The new runtime is already in place. Removing the old copy is only cleanup: a process from
+      // the previous runtime (for example a lingering daemon) can still hold files open on Windows.
+      // Never fail startup for that; a later launch removes the leftover directory.
+      removeStaleRuntimeDirectory(previous);
       previousMoved = false;
     }
   } finally {
@@ -289,6 +316,7 @@ function ensurePackagedRuntime({ app, coreHome, resourcesPath }) {
 }
 
 module.exports = {
+  cleanupStaleRuntimeCopies,
   ensurePackagedRuntime,
   validateRuntimeBundle,
   waitForPackagedRuntimeSource,

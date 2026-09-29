@@ -6,6 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { runtimeInvocation } = require("../electron/runtime-command.cjs");
 const {
+  cleanupStaleRuntimeCopies,
   ensurePackagedRuntime,
   validateRuntimeBundle,
   waitForPackagedRuntimeSource,
@@ -350,4 +351,28 @@ test("packaged runtime replaces stale files when a release is refreshed under th
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+
+test("stale previous runtime copies are removed without touching the active runtime", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "runtime-stale-"));
+  try {
+    const active = path.join(root, "6.1.3-win32-x64");
+    const stale = path.join(root, "6.1.3-win32-x64.previous-11812-1790641867641");
+    const otherVersion = path.join(root, "6.1.1-win32-x64");
+    for (const directory of [active, stale, otherVersion]) {
+      fs.mkdirSync(path.join(directory, "app"), { recursive: true });
+      fs.writeFileSync(path.join(directory, "app", "cli.js"), "x");
+    }
+    cleanupStaleRuntimeCopies(root, "6.1.3-win32-x64");
+    assert.equal(fs.existsSync(stale), false);
+    assert.equal(fs.existsSync(active), true);
+    assert.equal(fs.existsSync(otherVersion), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("stale runtime cleanup tolerates a missing versions directory", () => {
+  assert.doesNotThrow(() => cleanupStaleRuntimeCopies(path.join(os.tmpdir(), "missing-versions-root-xyz"), "6.1.3-win32-x64"));
 });

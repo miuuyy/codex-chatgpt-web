@@ -1,4 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
+import { isAbsolute, join as joinPath, relative, resolve as resolvePath } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod/v4";
@@ -23,6 +25,9 @@ const BRIDGE_TOOL_NAMES = new Set([
   "codex_write_stdin",
   "codex_apply_patch",
   "codex_view_image",
+  "codex_read_file",
+  "codex_list_dir",
+  "codex_search_files",
   "codex_tool_inventory",
   "codex_tool_call",
   "codex_turn_complete",
@@ -102,6 +107,136 @@ function result(value: Record<string, unknown>, isError = false) {
     content: [{ type: "text" as const, text: JSON.stringify(value) }],
     structuredContent: value,
     ...(isError ? { isError: true } : {}),
+  };
+}
+
+export const CODEX_READ_FILE_MAX_BYTES = 2 * 1024 * 1024;
+export const CODEX_READ_FILE_MAX_LINES = 2_000;
+
+function pathIsInside(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/** Resolve a path (following symlinks) and require it to stay inside the turn's workspace roots. */
+async function resolveWorkspacePath(
+  environment: Pick<ChatGptTurnEnvironment, "cwd" | "roots">,
+  requestedPath: string,
+): Promise<string> {
+  const target = await realpath(resolvePath(environment.cwd, requestedPath));
+  const roots = environment.roots.length > 0 ? environment.roots : [environment.cwd];
+  const realRoots = await Promise.all(roots.map(root => realpath(root).catch(() => resolvePath(root))));
+  if (!realRoots.some(root => pathIsInside(root, target))) {
+    throw new Error(`Only paths inside the Codex workspace roots can be read: ${requestedPath}`);
+  }
+  return target;
+}
+
+export const CODEX_LIST_DIR_MAX_ENTRIES = 1_000;
+export const CODEX_SEARCH_MAX_RESULTS = 500;
+export const CODEX_SEARCH_MAX_FILES = 20_000;
+const SEARCH_SKIPPED_DIRECTORIES = new Set([".git", "node_modules", ".venv", "__pycache__", "dist", "build", ".next"]);
+
+/** Read-only directory listing inside the workspace roots. */
+export async function listWorkspaceDirectory(
+  environment: Pick<ChatGptTurnEnvironment, "cwd" | "roots">,
+  requestedPath: string,
+  limit = CODEX_LIST_DIR_MAX_ENTRIES,
+): Promise<Record<string, unknown>> {
+  const target = await resolveWorkspacePath(environment, requestedPath);
+  if (!(await stat(target)).isDirectory()) throw new Error(`Not a directory: ${requestedPath}`);
+  const dirents = (await readdir(target, { withFileTypes: true }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+  const selected = dirents.slice(0, limit);
+  const entries = await Promise.all(selected.map(async entry => {
+    const type = entry.isDirectory() ? "dir" : entry.isFile() ? "file" : entry.isSymbolicLink() ? "symlink" : "other";
+    const size = entry.isFile() ? await stat(joinPath(target, entry.name)).then(info => info.size, () => undefined) : undefined;
+    return { name: entry.name, type, ...(size !== undefined ? { size } : {}) };
+  }));
+  return { path: target, total_entries: dirents.length, truncated: dirents.length > selected.length, entries };
+}
+
+/** Read-only recursive text search inside the workspace roots (no shell). */
+export async function searchWorkspaceFiles(
+  environment: Pick<ChatGptTurnEnvironment, "cwd" | "roots">,
+  query: string,
+  requestedPath = ".",
+  options: { regex?: boolean; caseSensitive?: boolean; maxResults?: number } = {},
+): Promise<Record<string, unknown>> {
+  const root = await resolveWorkspacePath(environment, requestedPath);
+  const maxResults = Math.min(options.maxResults ?? 100, CODEX_SEARCH_MAX_RESULTS);
+  const flags = options.caseSensitive ? "" : "i";
+  const matcher = options.regex
+    ? new RegExp(query, flags)
+    : new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), flags);
+  const matches: { file: string; line: number; text: string }[] = [];
+  let filesScanned = 0;
+  let truncated = false;
+  const visit = async (directory: string): Promise<void> => {
+    let dirents;
+    try { dirents = await readdir(directory, { withFileTypes: true }); } catch { return; }
+    for (const entry of dirents.sort((left, right) => left.name.localeCompare(right.name))) {
+      if (truncated) return;
+      const full = joinPath(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (!SEARCH_SKIPPED_DIRECTORIES.has(entry.name)) await visit(full);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (++filesScanned > CODEX_SEARCH_MAX_FILES) { truncated = true; return; }
+      const info = await stat(full).catch(() => undefined);
+      if (!info || info.size > CODEX_READ_FILE_MAX_BYTES) continue;
+      const bytes = await readFile(full).catch(() => undefined);
+      if (!bytes || bytes.includes(0)) continue;
+      const lines = bytes.toString("utf8").split(/\r?\n/);
+      for (let index = 0; index < lines.length; index++) {
+        if (!matcher.test(lines[index]!)) continue;
+        matches.push({ file: relative(root, full) || entry.name, line: index + 1, text: lines[index]!.slice(0, 500) });
+        if (matches.length >= maxResults) { truncated = true; return; }
+      }
+    }
+  };
+  if ((await stat(root)).isFile()) {
+    const bytes = await readFile(root);
+    if (!bytes.includes(0)) {
+      bytes.toString("utf8").split(/\r?\n/).forEach((text, index) => {
+        if (matches.length < maxResults && matcher.test(text)) matches.push({ file: root, line: index + 1, text: text.slice(0, 500) });
+      });
+    }
+  } else {
+    await visit(root);
+  }
+  return { path: root, files_scanned: filesScanned, truncated, matches };
+}
+
+/**
+ * Pure read of a UTF-8 text file confined to the turn's workspace roots. No shell, no writes,
+ * no network: this is what justifies readOnlyHint=true on codex_read_file.
+ */
+export async function readWorkspaceTextFile(
+  environment: Pick<ChatGptTurnEnvironment, "cwd" | "roots">,
+  requestedPath: string,
+  offset = 1,
+  limit = CODEX_READ_FILE_MAX_LINES,
+): Promise<Record<string, unknown>> {
+  const target = await resolveWorkspacePath(environment, requestedPath);
+  const metadata = await stat(target);
+  if (!metadata.isFile()) throw new Error(`Not a regular file: ${requestedPath}`);
+  if (metadata.size > CODEX_READ_FILE_MAX_BYTES) {
+    throw new Error(`File is larger than ${CODEX_READ_FILE_MAX_BYTES} bytes; use codex_exec for partial reads: ${requestedPath}`);
+  }
+  const bytes = await readFile(target);
+  if (bytes.includes(0)) throw new Error(`Binary file is not supported by codex_read_file: ${requestedPath}`);
+  const lines = bytes.toString("utf8").split(/\r?\n/);
+  const start = Math.max(1, offset);
+  const selected = lines.slice(start - 1, start - 1 + limit);
+  return {
+    path: target,
+    start_line: start,
+    end_line: start - 1 + selected.length,
+    total_lines: lines.length,
+    truncated: start - 1 + selected.length < lines.length,
+    content: selected.join("\n"),
   };
 }
 
@@ -766,6 +901,94 @@ export async function runChatGptMcpServer(options: {
       },
     ),
   );
+
+  if (contract === "native") {
+    server.registerTool(
+      "codex_read_file",
+      {
+        title: "Read a text file from the Codex workspace",
+        description: "Read a UTF-8 text file inside the current Codex workspace roots without running a shell command. Prefer this over codex_exec (cat, Get-Content, head) whenever you only need to read a file. Paths are resolved from the turn cwd; offset is the 1-based first line.",
+        inputSchema: {
+          ...turnReferenceInput(contract),
+          path: z.string().min(1).max(16_384),
+          offset: z.number().int().min(1).max(10_000_000).default(1),
+          limit: z.number().int().min(1).max(CODEX_READ_FILE_MAX_LINES).default(CODEX_READ_FILE_MAX_LINES),
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      },
+      async (input, extra) => withClaimedTurn(
+        "codex_read_file",
+        turnReference(contract, input),
+        extra,
+        async claimed => {
+          try {
+            return result(await readWorkspaceTextFile(claimed.environment, input.path, input.offset, input.limit));
+          } catch (error) {
+            return result({ error: error instanceof Error ? error.message : String(error) }, true);
+          }
+        },
+      ),
+    );
+
+    server.registerTool(
+      "codex_list_dir",
+      {
+        title: "List a directory in the Codex workspace",
+        description: "List files and folders of a directory inside the current Codex workspace roots without running a shell command. Prefer this over codex_exec (dir, ls, Get-ChildItem) when you only need to see what a folder contains.",
+        inputSchema: {
+          ...turnReferenceInput(contract),
+          path: z.string().min(1).max(16_384).default("."),
+          limit: z.number().int().min(1).max(CODEX_LIST_DIR_MAX_ENTRIES).default(200),
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      },
+      async (input, extra) => withClaimedTurn(
+        "codex_list_dir",
+        turnReference(contract, input),
+        extra,
+        async claimed => {
+          try {
+            return result(await listWorkspaceDirectory(claimed.environment, input.path, input.limit));
+          } catch (error) {
+            return result({ error: error instanceof Error ? error.message : String(error) }, true);
+          }
+        },
+      ),
+    );
+
+    server.registerTool(
+      "codex_search_files",
+      {
+        title: "Search text in Codex workspace files",
+        description: "Search text files inside the current Codex workspace roots for a literal string (or a regular expression when regex=true) without running a shell command. Returns file, line number and line text. Prefer this over codex_exec (grep, Select-String, findstr) for read-only searches.",
+        inputSchema: {
+          ...turnReferenceInput(contract),
+          query: z.string().min(1).max(1_000),
+          path: z.string().min(1).max(16_384).default("."),
+          regex: z.boolean().default(false),
+          case_sensitive: z.boolean().default(false),
+          max_results: z.number().int().min(1).max(CODEX_SEARCH_MAX_RESULTS).default(100),
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      },
+      async (input, extra) => withClaimedTurn(
+        "codex_search_files",
+        turnReference(contract, input),
+        extra,
+        async claimed => {
+          try {
+            return result(await searchWorkspaceFiles(claimed.environment, input.query, input.path, {
+              regex: input.regex,
+              caseSensitive: input.case_sensitive,
+              maxResults: input.max_results,
+            }));
+          } catch (error) {
+            return result({ error: error instanceof Error ? error.message : String(error) }, true);
+          }
+        },
+      ),
+    );
+  }
 
   server.registerTool(
     "codex_tool_inventory",
