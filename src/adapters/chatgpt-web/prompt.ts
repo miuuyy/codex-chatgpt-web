@@ -52,6 +52,34 @@ export function isChatGptWebMultipartPartCount(value: number): value is ChatGptW
   return value === 2 || value === CHATGPT_BIGGER_CONTEXT_PARTS;
 }
 
+export const HISTORICAL_TOKEN_BLOCK_PATTERNS: readonly RegExp[] = [
+  /<codex_native_binding_json>[\s\S]*?<\/codex_native_binding_json>/g,
+  /<codex_zero_risk_request_json>[\s\S]*?<\/codex_zero_risk_request_json>/g,
+  /<codex_compaction_control>[\s\S]*?<\/codex_compaction_control>/g,
+];
+
+export function stripHistoricalTurnTokens(text: string): string {
+  if (!text || typeof text !== "string") return text;
+  let cleaned = text;
+  for (const pattern of HISTORICAL_TOKEN_BLOCK_PATTERNS) {
+    cleaned = cleaned.replace(pattern, "");
+  }
+  return cleaned.replace(/[ \t]*\n[ \t]*\n\s*\n+/g, "\n\n").trim();
+}
+
+export const TOKEN_REJECTION_PATTERNS: readonly RegExp[] = [
+  /turn token is invalid,\s*expired,\s*or revoked/i,
+  /request id is invalid,\s*expired,\s*or revoked/i,
+  /runtime turn token[^\n]*invalid,\s*expired,\s*or revoked/i,
+  /(?:turn_token|request_id)\s+was issued for\s+[^,]+,\s*which has already finished/i,
+  /turn token is invalid or expired/i,
+];
+
+export function isChatGptTokenRejection(text: string): boolean {
+  if (!text || typeof text !== "string") return false;
+  return TOKEN_REJECTION_PATTERNS.some(pattern => pattern.test(text));
+}
+
 export interface ChatGptWebMultipartPrompt {
   parts: ChatGptWebMultipartParts;
   commit: string;
@@ -201,15 +229,15 @@ function inputContent(
   images: ChatGptWebPromptImage[],
   budget: ImageBudget,
 ): unknown {
-  if (typeof content === "string") return content;
+  if (typeof content === "string") return stripHistoricalTurnTokens(content);
   const semantic = content.filter(part =>
     part.type !== "image" || !isOnePixelPngDataUrl(part.imageUrl)
   );
   if (!semantic.some(part => part.type === "image")) {
-    return semantic.filter(part => part.type === "text").map(part => part.text).join("\n");
+    return stripHistoricalTurnTokens(semantic.filter(part => part.type === "text").map(part => part.text).join("\n"));
   }
   return semantic.map(part => {
-    if (part.type === "text") return { type: "text", text: part.text };
+    if (part.type === "text") return { type: "text", text: stripHistoricalTurnTokens(part.text) };
     budget.seen += 1;
     if (budget.seen <= budget.dropped) return { type: "text", text: DROPPED_IMAGE_NOTE };
     const ref = `codex-input-image-${images.length + 1}`;
@@ -231,7 +259,7 @@ export function countChatGptContextImages(messages: readonly CodexMessage[]): nu
 
 function assistantContent(content: CodexAssistantContentPart[]): unknown[] {
   return content.map(part => {
-    if (part.type === "text") return { type: "text", text: part.text };
+    if (part.type === "text") return { type: "text", text: stripHistoricalTurnTokens(part.text) };
     if (part.type === "thinking") return { type: "thinking_summary", text: part.thinking };
     return {
       type: "tool_call",
@@ -440,7 +468,10 @@ export function compileChatGptWebPrompt(
   }
   const mode = manualControl
     ? { localTools: true, effort: "low" as const, displayLabel: "Zero Risk" as const }
-    : resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
+    : resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, {
+        ...capabilities,
+        localToolsEnabled: parsed._compactionRequest ? false : capabilities.localToolsEnabled,
+      });
   const captureLunaCheckpoint = options?.captureLunaCheckpoint === true;
   const multipartParts = options?.experimentalMultipartParts;
   const multipartEnabled = multipartParts !== undefined;
@@ -472,7 +503,7 @@ export function compileChatGptWebPrompt(
   if (!mode.localTools && turnToken !== undefined) {
     throw new Error("A read-only ChatGPT Web effort must not receive a local-tool capability token");
   }
-  const system = parsed.context.systemPrompt ?? [];
+  const system = (parsed.context.systemPrompt ?? []).map(stripHistoricalTurnTokens);
   const sharedContract = [
     "Act as the model backend for the Codex task encoded below.",
     multipartEnabled
@@ -498,11 +529,11 @@ export function compileChatGptWebPrompt(
     ? manualControl
       ? [
         "This is a Codex history-compaction checkpoint, not a normal task turn.",
-        "Do not call work tools or ChatGPT-native tools. Summarize only the supplied task context according to the final compaction instruction.",
+        "Do not call work tools, MCP tools, or ChatGPT-native tools (including codex_tool_inventory or codex_exec). Summarize only the supplied task context according to the final compaction instruction.",
       ]
       : [
       "This is a Codex history-compaction checkpoint, not a normal task turn.",
-      "Do not call local or ChatGPT-native tools. Summarize only the supplied task context according to the final compaction instruction.",
+      "Do not call local, MCP, or ChatGPT-native tools (including codex_tool_inventory or codex_exec). Summarize only the supplied task context according to the final compaction instruction.",
       "Return only the checkpoint summary that the next model needs to resume the task.",
       ]
     : mode.localTools
