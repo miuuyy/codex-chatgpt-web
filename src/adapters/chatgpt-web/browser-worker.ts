@@ -225,6 +225,24 @@ function chatGptModelControlUnavailableAdapterError(
   );
 }
 
+export function isChatGptMultipartAcknowledgement(actual: string, expectedAck: string): boolean {
+  const trimmed = actual.trim();
+  if (trimmed === expectedAck) return true;
+  // Strip code fences: ``` or ```text or ```bash
+  const stripped = trimmed.replace(/^```[a-z0-9_-]*\s*/i, "").replace(/\s*```$/, "").trim();
+  if (stripped === expectedAck) return true;
+  // Strip surrounding quotes or backticks
+  const unquoted = stripped.replace(/^[`"']+|[`"']+$/g, "").trim();
+  if (unquoted === expectedAck) return true;
+  // Substring check
+  if (trimmed.includes(expectedAck)) return true;
+  // Normalized whitespace check
+  const normalizedActual = trimmed.replace(/\s+/g, " ");
+  const normalizedExpected = expectedAck.replace(/\s+/g, " ");
+  if (normalizedActual.includes(normalizedExpected)) return true;
+  return false;
+}
+
 export async function chatGptUnavailableProDetail(menu: Locator): Promise<string | undefined> {
   // Pro is the product label in the picker. Its linked tooltip supplies the site's own
   // localized explanation/date; do not search the conversation or infer a reset time.
@@ -3854,14 +3872,14 @@ export class ChatGptBrowserWorker {
         externalToolCallsInFlight,
       })) {
         const actual = snapshot.visibleText.trim();
-        if (actual !== stage.acknowledgement) {
+        if (!isChatGptMultipartAcknowledgement(actual, stage.acknowledgement)) {
           throw new ChatGptWebAdapterError(
             "ChatGPT did not confirm the Bigger Context handoff. Disable Bigger Context or retry the task.",
             {
               status: 502,
               errorType: "server_error",
               code: "multipart_protocol_violation",
-              retryable: false,
+              retryable: true,
               cause: new Error(
                 `Bigger Context acknowledgement mismatch (actualChars=${actual.length.toLocaleString("en-US")})`,
               ),
