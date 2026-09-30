@@ -508,9 +508,15 @@ export function compileChatGptWebPrompt(
     : mode.localTools
     ? [
       "For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.",
+      "The Codex Native bridge is attached to this tool-capable response. Missing directly visible outer Codex functions is not evidence that the bridge or capability is unavailable.",
+      "When a required outer Codex tool is not directly visible, use codex_tool_inventory with a focused query and include_schema=true, then invoke the exact returned wire_name through codex_tool_call with arguments matching that schema. Do not guess tool names or stop at a missing direct function.",
       "These tools are connected by the user to their Codex runtime; local actions execute on that runtime's device under its configured sandbox and approval rules. Assess each action by its actual effects and the user's authorization; an authenticated connection does not make every action low risk.",
       "Call a Codex Native tool only when the latest active request requires a local effect or fresh local evidence that is not already present in the supplied context; otherwise answer the request directly without a tool call.",
       "Use actual Codex Native results as evidence for local observations and effects.",
+      ...(!manualControl ? [
+        "The current turn_token is capability data supplied only by the codex_native_binding_json block below. Copy it exactly; never infer, shorten, regenerate, or reuse a token from task history.",
+        "If a Codex Native call is rejected before execution with 'turn token is invalid, expired, or revoked', reread codex_native_binding_json and retry that call exactly once with the exact current turn_token. If that retry is rejected, stop dependent work and report the exact error. Never reactivate or extend a retired token.",
+      ] : []),
       "Report the actual error when a tool fails. Do not claim a safety or permission block without an explicit tool result or platform error supporting it. If approval is required, use the declared Codex approval flow; a denial does not authorize retrying the action through another tool. Without an error or execution result, say the action was not executed and its cause is unconfirmed.",
       "A Codex Native MCP tool result may require context compaction. If it does, follow the compaction instructions in that result exactly.",
       "After a deterministic tool failure, update the working hypothesis from that result and inspect the relevant repository or environment before choosing a different next action; do not repeat the same call unless its inputs or observable state changed.",
@@ -563,6 +569,13 @@ export function compileChatGptWebPrompt(
       "</codex_zero_risk_request_json>",
     ]
     : [];
+  const nativeBindingContract = !parsed._compactionRequest && mode.localTools && !manualControl
+    ? [
+      "<codex_native_binding_json>",
+      JSON.stringify({ turn_token: turnToken, token_chars: turnToken!.length }),
+      "</codex_native_binding_json>",
+    ]
+    : [];
   const transportResume = parsed._compactionRequest
     ? manualControl
       ? [
@@ -584,7 +597,7 @@ export function compileChatGptWebPrompt(
     : mode.localTools
     ? [
       "<codex_transport_resume>",
-      `The task context is complete. Pass turn_token ${turnToken} unchanged to every Codex Native call in this response, including continuations after tool results; do not expose it in the answer. Execute the latest active user request now.`,
+      "The task context is complete. Use only the exact turn_token from codex_native_binding_json for every Codex Native call in this response, including continuations after tool results; do not expose it in the answer. Execute the latest active user request now.",
       "</codex_transport_resume>",
     ]
     : [
@@ -634,6 +647,7 @@ export function compileChatGptWebPrompt(
           ...transportContract,
           ...outputControlContract,
           ...manualControlContract,
+          ...nativeBindingContract,
           ...checkpointContract,
           answerContract,
           ...transportResume,
@@ -671,6 +685,7 @@ export function compileChatGptWebPrompt(
       ...transportContract,
       ...outputControlContract,
       ...manualControlContract,
+      ...nativeBindingContract,
       ...checkpointContract,
       answerContract,
       "<codex_context_json>",

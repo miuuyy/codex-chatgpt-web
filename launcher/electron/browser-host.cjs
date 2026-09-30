@@ -1,7 +1,8 @@
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { createHash, randomBytes } = require("node:crypto");
-const { clipboard, WebContentsView, powerMonitor, powerSaveBlocker, shell } = require("electron");
+const { clipboard, session, WebContentsView, powerMonitor, powerSaveBlocker, shell } = require("electron");
 const { writePrivateFileAtomic } = require("./atomic-file.cjs");
 const {
   runBrowserHelperOperation,
@@ -34,7 +35,7 @@ const MAX_BROWSER_VIEW_DIMENSION = 16_384;
 const MAX_BROWSER_TABS = 5;
 const MAX_CANCELLED_TURN_TRACES = 256;
 const MANUAL_SUBMIT_TIMEOUT_MS = 60_000;
-const MANUAL_COMPACTION_SUBMIT_TIMEOUT_MS = 120_000;
+const MANUAL_COMPACTION_SUBMIT_TIMEOUT_MS = 600_000;
 const MAX_MANUAL_TERMINAL_SIGNALS = 256;
 const MAX_MANUAL_PROMPT_CHARS = 1_000_000;
 const INTERACTION_MODE_CHANGE_OPERATION = "browser interaction mode change";
@@ -361,6 +362,10 @@ class BrowserHost {
     this.manualCompletionSignals = new Map();
     this.interactionModeOverride = null;
     this.selectedTabId = "home";
+    this.accountPool = this.loadAccountPool();
+    this.accountRoundRobinIndex = 0;
+    this.stickyConversations = this.loadStickyMap();
+    this.accountStatuses = new Map();
     this.manualOperation = null;
     this.loginOperation = null;
     this.sessionRefreshOperation = null;
@@ -522,7 +527,7 @@ class BrowserHost {
     const snapshot = {
       id: tab.id,
       traceId: tab.traceId,
-      title: tab.label,
+      title: tab.assignedAccount ? `${tab.assignedAccount} - ${tab.label}` : tab.label,
       status: tab.status,
       loading: tab.loading === true,
       active: this.selectedTabId === tab.id,
@@ -538,6 +543,89 @@ class BrowserHost {
       });
     }
     return snapshot;
+  }
+
+  loadAccountPool() {
+    try {
+      const configPath = path.join(
+        os.homedir(),
+        ".codex-chatgpt-web",
+        "switcher",
+        "accounts-config.json",
+      );
+      if (fs.existsSync(configPath)) {
+        const data = JSON.parse(fs.readFileSync(configPath, "utf8"));
+        if (data.accounts && typeof data.accounts === "object") {
+          const list = Object.keys(data.accounts);
+          if (list.length > 0) return list;
+        }
+      }
+    } catch {}
+    return [];
+  }
+
+  loadStickyMap() {
+    try {
+      const stickyPath = path.join(
+        process.env.APPDATA || (process.platform === "darwin" ? path.join(os.homedir(), "Library", "Application Support") : path.join(os.homedir(), ".config")),
+        "Codex Web GPT",
+        "conversations-sticky.json",
+      );
+      if (fs.existsSync(stickyPath)) {
+        const raw = JSON.parse(fs.readFileSync(stickyPath, "utf8"));
+        return new Map(Object.entries(raw));
+      }
+    } catch {}
+    return new Map();
+  }
+
+  saveStickyMap() {
+    try {
+      const stickyPath = path.join(
+        process.env.APPDATA || (process.platform === "darwin" ? path.join(os.homedir(), "Library", "Application Support") : path.join(os.homedir(), ".config")),
+        "Codex Web GPT",
+        "conversations-sticky.json",
+      );
+      const dir = path.dirname(stickyPath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const obj = Object.fromEntries(this.stickyConversations);
+      fs.writeFileSync(stickyPath, JSON.stringify(obj, null, 2), "utf8");
+    } catch {}
+  }
+
+  resolveAccountForConversation(conversationKey) {
+    if (!this.accountPool || this.accountPool.length === 0) return null;
+    const pool = this.accountPool;
+    const now = Date.now();
+    const isAvailable = (acc) => {
+      const s = this.accountStatuses?.get(acc);
+      if (s && s.authenticated === false) return false;
+      return !s || !s.cooldownUntil || s.cooldownUntil <= now;
+    };
+
+    if (conversationKey && this.stickyConversations?.has(conversationKey)) {
+      const bound = this.stickyConversations.get(conversationKey);
+      if (pool.includes(bound)) {
+        if (isAvailable(bound)) {
+          return bound;
+        }
+        this.logger?.warn?.("browser.sticky_account_cooling_failover", { conversationKey, bound });
+      }
+    }
+
+    const available = pool.filter(isAvailable);
+    const candidates = available.length > 0 ? available : pool;
+    const currentIndex = this.accountRoundRobinIndex || 0;
+    const chosen = candidates[currentIndex % candidates.length];
+    this.accountRoundRobinIndex = (currentIndex + 1) % candidates.length;
+
+    if (conversationKey) {
+      if (!this.stickyConversations) this.stickyConversations = new Map();
+      this.stickyConversations.set(conversationKey, chosen);
+      this.saveStickyMap();
+    }
+
+    return chosen;
   }
 
   selectedTurnTab() {
@@ -557,9 +645,17 @@ class BrowserHost {
     const ordinal = Array.from({ length: MAX_BROWSER_TABS }, (_unused, index) => index + 1)
       .find(candidate => ![...this.turnTabs.values()].some(tab => tab.ordinal === candidate));
     if (!ordinal) throw new Error("ChatGPT Web browser tab allocation is inconsistent");
+    const assignedAccount = this.resolveAccountForConversation(conversationKey);
+    const assignedPartition = assignedAccount
+      ? `persist:codex-web-gpt-chatgpt-${assignedAccount}`
+      : this.partition;
+    try {
+      const partSession = session.fromPartition(assignedPartition);
+      this.configureLocalePreferences(partSession);
+    } catch {}
     const view = new WebContentsView({
       webPreferences: {
-        partition: this.partition,
+        partition: assignedPartition,
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
@@ -572,6 +668,7 @@ class BrowserHost {
       surfaceId,
       traceId,
       conversationKey,
+      assignedAccount,
       connectorIdentity,
       connectorBound: false,
       helperPid,
@@ -645,9 +742,17 @@ class BrowserHost {
     const ordinal = Array.from({ length: MAX_BROWSER_TABS }, (_unused, index) => index + 1)
       .find(candidate => ![...this.turnTabs.values()].some(tab => tab.ordinal === candidate));
     if (!ordinal) throw new Error("ChatGPT Web browser tab allocation is inconsistent");
+    const assignedAccount = this.resolveAccountForConversation(conversationKey);
+    const assignedPartition = assignedAccount
+      ? `persist:codex-web-gpt-chatgpt-${assignedAccount}`
+      : this.partition;
+    try {
+      const partSession = session.fromPartition(assignedPartition);
+      this.configureLocalePreferences(partSession);
+    } catch {}
     const view = new WebContentsView({
       webPreferences: {
-        partition: this.partition,
+        partition: assignedPartition,
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
@@ -660,6 +765,7 @@ class BrowserHost {
       surfaceId: null,
       traceId,
       conversationKey,
+      assignedAccount,
       connectorIdentity: null,
       connectorBound: false,
       helperPid,

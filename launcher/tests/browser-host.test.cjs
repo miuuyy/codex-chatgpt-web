@@ -25,9 +25,9 @@ const {
   navigationOriginForLog,
 } = require("../electron/browser-host.cjs");
 
-test("manual prompt handoff keeps ordinary turns at one minute and compaction at two minutes", () => {
+test("manual prompt handoff keeps ordinary turns at one minute and compaction extended to ten minutes", () => {
   assert.equal(MANUAL_SUBMIT_TIMEOUT_MS, 60_000);
-  assert.equal(MANUAL_COMPACTION_SUBMIT_TIMEOUT_MS, 120_000);
+  assert.equal(MANUAL_COMPACTION_SUBMIT_TIMEOUT_MS, 600_000);
 });
 
 test("Electron and Bun agree on the exact launcher idle surface", () => {
@@ -3086,7 +3086,7 @@ test("manual confirmation deadlines end at Sent so slow model startup can still 
   const ordinaryTab = fixture.turnTabs.get(ordinary.tabId);
   const compactionTab = fixture.turnTabs.get(compaction.tabId);
   assert.equal(ordinaryTab.manualSubmitTimeoutMs, 60_000);
-  assert.equal(compactionTab.manualSubmitTimeoutMs, 120_000);
+  assert.equal(compactionTab.manualSubmitTimeoutMs, 600_000);
   t.mock.timers.tick(31_000);
   assert.equal(ordinaryTab.manualState, "awaiting-user");
   t.mock.timers.tick(29_000);
@@ -3699,4 +3699,38 @@ test("off-on-off fresh conversation changes retire completed history before it c
     assert.equal(state[property], false);
     assert.equal(fixture.turnTabs.get(manual.id), savedChats ? undefined : manual);
   }
+});
+
+test("account pool round-robin, sticky binding, and cooling failover", () => {
+  const { fixture } = manualTurnFixture();
+  assert.equal(fixture.resolveAccountForConversation("conv-1"), null);
+
+  fixture.accountPool = ["alpha", "beta"];
+  fixture.stickyConversations = new Map();
+  fixture.accountRoundRobinIndex = 0;
+
+  // First resolution round-robins to alpha and binds sticky
+  const first = fixture.resolveAccountForConversation("conv-key-1");
+  assert.equal(first, "alpha");
+  assert.equal(fixture.stickyConversations.get("conv-key-1"), "alpha");
+
+  // Subsequent turn on same conversation reuses alpha (sticky)
+  const second = fixture.resolveAccountForConversation("conv-key-1");
+  assert.equal(second, "alpha");
+
+  // New conversation round-robins to beta
+  const third = fixture.resolveAccountForConversation("conv-key-2");
+  assert.equal(third, "beta");
+  assert.equal(fixture.stickyConversations.get("conv-key-2"), "beta");
+
+  // If alpha is marked unauthenticated, conv-key-1 fails over to beta
+  fixture.accountStatuses = new Map();
+  fixture.accountStatuses.set("alpha", { authenticated: false });
+  const failedOver = fixture.resolveAccountForConversation("conv-key-1");
+  assert.equal(failedOver, "beta");
+
+  // If alpha has active cooldown, it also fails over to beta
+  fixture.accountStatuses.set("alpha", { cooldownUntil: Date.now() + 60_000 });
+  const coolingFailover = fixture.resolveAccountForConversation("conv-key-1");
+  assert.equal(coolingFailover, "beta");
 });

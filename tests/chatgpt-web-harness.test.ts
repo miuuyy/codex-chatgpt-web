@@ -343,7 +343,7 @@ describe("ChatGPT outer-native harness v4", () => {
       expect(turn.capabilities.localToolsEnabled).toBe(true);
       const prepared = await turn.prepare();
       expect(prepared.text).toContain("<codex_context_json>");
-      expect(prepared.text).toMatch(/turn_token turn_[A-Za-z0-9_-]+/);
+      expect(prepared.text).toMatch(/"turn_token":"turn_[A-Za-z0-9_-]+"/);
       const answer = "Canonical metadata accepted";
       turn.onTextDelta(answer);
       return answer;
@@ -397,7 +397,7 @@ describe("ChatGPT outer-native harness v4", () => {
       const prepared = browserMessages === 0 || freshConversation ? await turn.prepare() : await turn.prepareResume!();
       preparedPrompts.push(prepared.text);
       conversationKeys.push(turn.conversationKey!);
-      const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
+      const token = prepared.text.match(/"turn_token":"(turn_[A-Za-z0-9_-]+)"/)?.[1];
       if (!token) throw new Error("retained message prompt has no current turn token");
       tokens.push(token);
       prepared.release();
@@ -449,6 +449,8 @@ describe("ChatGPT outer-native harness v4", () => {
         ? undefined : chatGptConversationKey(first, chatGptWebExecutionNamespace(provider))!);
       expect(conversationKeys[1]).toBe(conversationKeys[0]);
       expect(tokens[1]).not.toBe(tokens[0]);
+      expect(preparedPrompts[1]).not.toContain(tokens[0]!);
+      expect([...preparedPrompts[1]!.matchAll(/\"turn_token\":\"turn_[A-Za-z0-9_-]+\"/g)]).toHaveLength(1);
       expect(preparedPrompts[0]).toContain("Inspect the project");
       expect(preparedPrompts[1]).toContain("Continue in the same repository");
       if (freshConversation) {
@@ -2230,7 +2232,7 @@ describe("ChatGPT outer-native harness v4", () => {
       browserStarts += 1;
       const prepared = await turn.prepare();
       try {
-        const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
+        const token = prepared.text.match(/"turn_token":"(turn_[A-Za-z0-9_-]+)"/)?.[1];
         if (!token) throw new Error("turn token missing from compiled prompt");
         const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
         const nativeResult = await invokeAfterBrowserBoundary(turn, () => callTurnBroker<BrokerToolResult>(socketPath, {
@@ -2355,7 +2357,7 @@ describe("ChatGPT outer-native harness v4", () => {
       }
       const prepared = await turn.prepare();
       try {
-        const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
+        const token = prepared.text.match(/"turn_token":"(turn_[A-Za-z0-9_-]+)"/)?.[1];
         if (!token) throw new Error("turn token missing from compiled prompt");
         const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
         if (prepared.text.includes("The project was inspected and the pending command completed.")) {
@@ -2534,7 +2536,7 @@ describe("ChatGPT outer-native harness v4", () => {
       try {
         expect(prepared.text).toContain("For local work required by the task, use the attached Codex Native tools directly");
         expect(prepared.text).not.toContain("with no Codex Native bridge");
-        const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
+        const token = prepared.text.match(/"turn_token":"(turn_[A-Za-z0-9_-]+)"/)?.[1];
         if (!token) throw new Error("turn token missing from compiled Pro prompt");
         const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
         turn.onReasoningSummary?.("Pro requested live workspace evidence");
@@ -3501,7 +3503,7 @@ describe("ChatGPT outer-native harness v4", () => {
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
       const prepared = await turn.prepare();
       try {
-        const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
+        const token = prepared.text.match(/"turn_token":"(turn_[A-Za-z0-9_-]+)"/)?.[1];
         if (!token) throw new Error("missing test turn token");
         turn.onSubmitted?.();
         const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
@@ -3597,7 +3599,7 @@ describe("ChatGPT outer-native harness v4", () => {
       const ordinal = browserStarts;
       const prepared = await turn.prepare();
       try {
-        const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
+        const token = prepared.text.match(/"turn_token":"(turn_[A-Za-z0-9_-]+)"/)?.[1];
         if (!token) throw new Error("missing test turn token");
         turn.onSubmitted?.();
         if (ordinal === 1) {

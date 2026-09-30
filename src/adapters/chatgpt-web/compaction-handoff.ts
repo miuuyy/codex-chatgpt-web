@@ -128,7 +128,7 @@ function currentToolResults(
   return results;
 }
 
-export const MAX_COMPACTION_HANDOFF_TIMEOUT_MS = 5 * 60_000;
+export const MAX_COMPACTION_HANDOFF_TIMEOUT_MS = 15 * 60_000;
 
 function boundedCompactionTimeout(timeoutMs: number): number {
   return Math.min(timeoutMs, MAX_COMPACTION_HANDOFF_TIMEOUT_MS);
@@ -292,7 +292,6 @@ export async function requestRetainedCompactionHandoff(
     () => deadline.abort(new Error(`ChatGPT compaction handoff timed out after ${operationTimeoutMs}ms`)),
     operationTimeoutMs,
   );
-  deadlineTimer.unref?.();
   const operationSignal = signal
     ? AbortSignal.any([signal, deadline.signal])
     : deadline.signal;

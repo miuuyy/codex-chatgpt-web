@@ -1024,6 +1024,7 @@ class RuntimeSupervisor {
       if (!this.tunnel) throw new Error("Tunnel runtime became ready without a managed process identity");
       await this.waitForTunnelMcpTransport(config);
       this.startTunnelMonitor(config);
+      await this.startAllAccountTunnels(config);
     } catch (error) {
       let cleanupError;
       try {
@@ -1045,6 +1046,89 @@ class RuntimeSupervisor {
       }
       throw error;
     }
+  }
+
+  async startAllAccountTunnels(config) {
+    if (!config?.tunnel || config.mode !== "full" || !config.brokerSocketPath) return;
+    try {
+      const accountsConfigPath = path.join(
+        os.homedir(),
+        ".codex-chatgpt-web",
+        "switcher",
+        "accounts-config.json",
+      );
+      if (!fs.existsSync(accountsConfigPath)) return;
+      let accountsData;
+      try {
+        accountsData = JSON.parse(fs.readFileSync(accountsConfigPath, "utf8"));
+      } catch {
+        return;
+      }
+      const accounts = accountsData.accounts || {};
+      const contract = config.browserInteractionMode === "manual" ? "safe" : "native";
+      const invocation = this.runtimeCommand([
+        "mcp",
+        "--contract",
+        contract,
+        "--broker-socket",
+        config.brokerSocketPath,
+      ]);
+      const mcpCommand = managedTunnelMcpCommand(invocation);
+
+    for (const [accountName, acc] of Object.entries(accounts)) {
+      if (!acc.tunnelId || !acc.keyFile || !fs.existsSync(acc.keyFile)) continue;
+      if (acc.tunnelId === config.tunnel.tunnelId && config.tunnel.alias === "codex-chatgpt-web") {
+        continue;
+      }
+      const alias = `codex-chatgpt-web-${accountName}`;
+      const profileName = alias;
+      const args = [
+        "runtimes", "connect",
+        "--alias", alias,
+        "--profile", profileName,
+        "--profile-dir", config.tunnel.profileDir,
+        "--tunnel-client-bin", config.tunnel.binaryPath,
+        "--tunnel-id", acc.tunnelId,
+        "--runtime-api-key", `file:${acc.keyFile}`,
+        "--mcp-command", mcpCommand,
+        "--json",
+      ];
+      try {
+        this.logger.info("runtime.tunnel_connecting_account", { account: accountName, alias, tunnelId: acc.tunnelId });
+        const res = await this.runTunnelCommand(config, args, 15_000, `Account ${accountName} tunnel connect`);
+        if (res.code === 0) {
+          this.logger.info("runtime.tunnel_account_connected", { account: accountName, alias });
+        } else {
+          this.logger.warn("runtime.tunnel_account_connect_non_zero", { account: accountName, alias, output: res.output });
+        }
+      } catch (err) {
+        this.logger.warn("runtime.tunnel_account_connect_failed", { account: accountName, error: String(err) });
+      }
+    }
+  } catch (err) {
+    this.logger?.warn?.("runtime.tunnel_all_accounts_start_failed", { error: String(err) });
+  }
+}
+
+  async stopAllAccountTunnels(config) {
+    if (!config?.tunnel) return;
+    const accountsConfigPath = path.join(
+      os.homedir(),
+      ".codex-chatgpt-web",
+      "switcher",
+      "accounts-config.json",
+    );
+    if (!fs.existsSync(accountsConfigPath)) return;
+    try {
+      const accountsData = JSON.parse(fs.readFileSync(accountsConfigPath, "utf8"));
+      const accounts = accountsData.accounts || {};
+      for (const accountName of Object.keys(accounts)) {
+        const alias = `codex-chatgpt-web-${accountName}`;
+        try {
+          await this.runTunnelCommand(config, ["runtimes", "stop", alias, "--json"], 5_000, `Stop tunnel ${alias}`);
+        } catch {}
+      }
+    } catch {}
   }
 
   async runTunnelConnectCommand(config) {
@@ -1566,6 +1650,7 @@ class RuntimeSupervisor {
       this.startTunnelMonitor(config);
       throw error;
     }
+    await this.stopAllAccountTunnels(config);
     this.tunnel = null;
   }
 
