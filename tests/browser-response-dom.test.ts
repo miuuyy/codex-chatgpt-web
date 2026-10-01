@@ -12,6 +12,7 @@ const powerStreamingHtml = readFileSync(new URL("./fixtures/chatgpt-power-stream
 // normalize before inserting test variants so they exercise the same DOM everywhere.
 const powerActivityHtml = readFileSync(new URL("./fixtures/chatgpt-power-activity.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const activitySummariesHtml = readFileSync(new URL("./fixtures/chatgpt-activity-summaries.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const katexAnswerHtml = readFileSync(new URL("./fixtures/chatgpt-katex-answer.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 type Snapshot = {
   responsePresent: boolean;
   visibleText: string;
@@ -280,6 +281,43 @@ test("ordinary prose, inline code and legacy fenced code keep their meaning", as
   const buffer = new ChatGptMarkdownBuffer();
   buffer.observe(response.markdownSegments, 0);
   expect(buffer.finish().markdown).toBe("Code: [/tmp/file.ts](</tmp/file.ts>)\n\n````text\n/tmp/file.ts\n\n[[note]]\n```\nend\n````\n\nDone.");
+});
+
+test("KaTeX answers reach Codex as one exact LaTeX source per formula", async () => {
+  const response = await snapshot(`<section id="turn"><div class="markdown">${katexAnswerHtml}</div></section>`);
+  const buffer = new ChatGptMarkdownBuffer(markdown => markdown, 0);
+  buffer.observe(response.markdownSegments, 0);
+  buffer.observe(response.markdownSegments, 1000);
+  expect(buffer.currentSnapshotIsConsistent()).toBeTrue();
+  expect(buffer.finish().markdown).toBe([
+    String.raw`Inline: \(E = mc^2\) and \(\operatorname{softmax}(z)_i = \frac{e^{z_i}}{\sum_j e^{z_j}}\) beside a [link](https://example.com/notes) and literal a\_b.`,
+    "",
+    "\\[",
+    String.raw`r_{\mathrm{eff}} = \exp\left(-\sum_i q_i \log q_i\right)`,
+    "\\]",
+    "",
+    String.raw`- Item with \(\alpha + \beta\)`,
+    "- Display in a list:",
+    "  ",
+    "  \\[",
+    String.raw`  \int_0^1 x^2 \,dx = \tfrac{1}{3}`,
+    "  \\]",
+    "",
+    "Unicode input \\(α ≤ β\\) and an Iverson bracket \\([[P]] = 1\\) next to [Notes](<Notes.md>).",
+    "",
+    "> Quoted derivation:",
+    "> ",
+    "> \\[",
+    "> \\begin{aligned}",
+    "> a &= b + c \\\\",
+    ">   &= d",
+    "> \\end{aligned}",
+    "> \\]",
+    "",
+    "```latex",
+    "\\[ E = mc^2 \\]",
+    "```",
+  ].join("\n"));
 });
 
 test("DIL response extraction preserves ownership, commentary and completion boundaries", async () => {
