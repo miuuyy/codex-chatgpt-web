@@ -21,6 +21,18 @@ turndown.addRule("removeSvg", {
   filter: node => node.nodeName === "SVG",
   replacement: () => "",
 });
+turndown.addRule("katexSource", {
+  filter: node => katexSource(node) !== undefined,
+  replacement: (_content, node) => {
+    // KaTeX renders a MathML layer, the x-tex annotation and a visual HTML layer. Only the
+    // annotation is the answer; the other layers would repeat each formula as plain text.
+    // Codex Desktop renders these delimiters itself, and they keep LaTeX free of escaping.
+    const source = katexSource(node)!;
+    return (node.parentNode as HTMLElement | null)?.classList?.contains("katex-display")
+      ? `\n\n\\[\n${source}\n\\]\n\n`
+      : `\\(${source}\\)`;
+  },
+});
 turndown.addRule("preserveCodexPlanBlockTags", {
   filter: "p",
   replacement: content => {
@@ -55,6 +67,12 @@ turndown.addRule("compactListItem", {
     return `${prefix}${normalized}${node.nextSibling ? "\n" : ""}`;
   },
 });
+
+function katexSource(node: Node): string | undefined {
+  if (node.nodeName !== "SPAN" || !(node as HTMLElement).classList?.contains("katex")) return undefined;
+  const annotation = (node as HTMLElement).querySelector('annotation[encoding="application/x-tex"]');
+  return annotation?.textContent?.trim() || undefined;
+}
 
 function inlineFilePath(node: Node): string | undefined {
   if (node.nodeName !== "CODE") return undefined;

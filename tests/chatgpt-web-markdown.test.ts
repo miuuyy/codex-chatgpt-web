@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { chatGptHtmlToMarkdown } from "../src/adapters/chatgpt-web/markdown";
 
 test("turns observed inline file path formats into Markdown links", () => {
@@ -119,4 +121,27 @@ test("preserving plan markers does not rewrite mentions or literal code", () => 
     "`<proposed_plan>` `</proposed_plan>`", "",
     "```", "<proposed\\_plan>", "</proposed\\_plan>", "```",
   ].join("\n"));
+});
+
+test("converts each KaTeX formula to one LaTeX source", () => {
+  const markdown = chatGptHtmlToMarkdown(
+    readFileSync(join(import.meta.dir, "fixtures/chatgpt-katex-answer.html"), "utf8"),
+  );
+
+  // U+2061 occurs only in the MathML layer and U+200B only in the visual katex-html layer.
+  expect(markdown).not.toMatch(/[\u2061\u200b]/);
+  for (const block of [
+    String.raw`Inline: \(E = mc^2\) and \(\operatorname{softmax}(z)_i = \frac{e^{z_i}}{\sum_j e^{z_j}}\) beside a [link](https://example.com/notes) and literal a\_b.`,
+    ["\\[", String.raw`r_{\mathrm{eff}} = \exp\left(-\sum_i q_i \log q_i\right)`, "\\]"].join("\n"),
+    [
+      String.raw`- Item with \(\alpha + \beta\)`,
+      "- Display in a list:",
+      "  ",
+      "  \\[",
+      String.raw`  \int_0^1 x^2 \,dx = \tfrac{1}{3}`,
+      "  \\]",
+    ].join("\n"),
+    "Unicode input \\(α ≤ β\\)",
+    ["```latex", "\\[ E = mc^2 \\]", "```"].join("\n"),
+  ]) expect(markdown).toContain(block);
 });
