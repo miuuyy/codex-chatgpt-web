@@ -70,8 +70,11 @@ turndown.addRule("compactListItem", {
 
 function katexSource(node: Node): string | undefined {
   if (node.nodeName !== "SPAN" || !(node as HTMLElement).classList?.contains("katex")) return undefined;
-  const annotation = (node as HTMLElement).querySelector('annotation[encoding="application/x-tex"]');
-  return annotation?.textContent?.trim() || undefined;
+  const formula = node as HTMLElement;
+  // The browser projection records the annotation before Turndown collapses its whitespace.
+  const source = formula.getAttribute("data-codex-latex")
+    ?? formula.querySelector('annotation[encoding="application/x-tex"]')?.textContent;
+  return source?.trim() || undefined;
 }
 
 function inlineFilePath(node: Node): string | undefined {

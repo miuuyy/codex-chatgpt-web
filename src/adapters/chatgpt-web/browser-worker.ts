@@ -4207,6 +4207,13 @@ export class ChatGptBrowserWorker {
           pre.appendChild(code);
           if (pre !== block) block.appendChild(pre);
         }
+        // KaTeX keeps each formula's LaTeX in an x-tex annotation. Record it on the formula
+        // while its line breaks are intact: Markdown conversion collapses whitespace in text,
+        // and in LaTeX a line break ends a % comment.
+        for (const formula of Array.from(content.querySelectorAll(".katex"))) {
+          const source = formula.querySelector('annotation[encoding="application/x-tex"]')?.textContent;
+          if (source) formula.setAttribute("data-codex-latex", source);
+        }
         return content;
       };
       // ChatGPT may merge adjacent `.markdown` roots or virtualize an earlier prefix while a streamed

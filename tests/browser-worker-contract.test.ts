@@ -4137,7 +4137,11 @@ test("the shipped commentary classifier separates answer Markdown from reasoning
   expect(answerFor('<div class="markdown">ONLY ANSWER</div>')).toBe("ONLY ANSWER");
 });
 
-test("embedded chart hydration cannot replace Markdown answer content with renderer UI", () => {
+function markdownContentProjection(): {
+  createDocument(html: string): { body: HTMLElement };
+  contentFor(root: HTMLElement): HTMLElement;
+  textFor(root: HTMLElement): string;
+} {
   const { createDocument, createWindow } = require("@mixmark-io/domino") as {
     createDocument(html: string): { body: HTMLElement };
     createWindow(): { HTMLElement: unknown; Node: unknown };
@@ -4153,6 +4157,11 @@ test("embedded chart hydration cannot replace Markdown answer content with rende
     contentFor(root: HTMLElement): HTMLElement;
     textFor(root: HTMLElement): string;
   };
+  return { createDocument, contentFor, textFor };
+}
+
+test("embedded chart hydration cannot replace Markdown answer content with renderer UI", () => {
+  const { createDocument, contentFor, textFor } = markdownContentProjection();
   const prose = '<p data-start="0" data-end="20">Keep 正在加载图表… literally.</p>';
   const code = '<pre data-start="22" data-end="80"><code class="language-vega-lite">{"mark":"line"}</code></pre>';
   const tail = '<ol start="3"><li><p>Actual answer</p></li></ol><span>Inline tail</span>';
@@ -4200,6 +4209,25 @@ test("embedded chart hydration cannot replace Markdown answer content with rende
   expect(textFor(projectedFiles)).toBe("Report: report.pdf report.pdf");
   expect(projectedFiles.querySelectorAll("button, a, svg").length).toBe(0);
   expect(files.innerHTML).toBe(originalFiles);
+});
+
+test("Markdown projection keeps each KaTeX formula's LaTeX line breaks", () => {
+  const { createDocument, contentFor } = markdownContentProjection();
+  const answer = createDocument(readFileSync("tests/fixtures/chatgpt-katex-answer.html", "utf8")).body;
+  const original = answer.innerHTML;
+  const markdown = chatGptHtmlToMarkdown(contentFor(answer).innerHTML);
+
+  expect(answer.innerHTML).toBe(original);
+  // Text conversion alone collapses the annotation to one line; the projection keeps its source.
+  expect(markdown).toContain([
+    "> \\[",
+    "> \\begin{aligned}",
+    "> a &= b + c \\\\",
+    ">   &= d",
+    "> \\end{aligned}",
+    "> \\]",
+  ].join("\n"));
+  expect(markdown).toContain(String.raw`Inline: \(E = mc^2\)`);
 });
 
 test("proven MCP progress vetoes completion, not only the health verdicts", () => {
