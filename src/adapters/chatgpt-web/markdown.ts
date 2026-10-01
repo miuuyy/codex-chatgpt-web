@@ -27,7 +27,7 @@ turndown.addRule("katexSource", {
     // KaTeX renders a MathML layer, the x-tex annotation and a visual HTML layer. Only the
     // annotation is the answer; the other layers would repeat each formula as plain text.
     // Codex Desktop renders these delimiters itself, and they keep LaTeX free of escaping.
-    const source = katexSource(node)!;
+    const source = holdFormulaSource(katexSource(node)!);
     return (node.parentNode as HTMLElement | null)?.classList?.contains("katex-display")
       ? `\n\n\\[\n${source}\n\\]\n\n`
       : `\\(${source}\\)`;
@@ -67,6 +67,20 @@ turndown.addRule("compactListItem", {
     return `${prefix}${normalized}${node.nextSibling ? "\n" : ""}`;
   },
 });
+
+// Formula source is final Markdown, but the Obsidian post-processing below would turn LaTeX such
+// as `[[P]]` into a link. Hold each source line behind a placeholder until that has run; line
+// breaks stay visible so list and quote prefixes still apply. HTML parsing never yields U+0000,
+// so a placeholder cannot collide with answer content.
+let heldFormulaLines: string[] = [];
+
+function holdFormulaSource(source: string): string {
+  return source.split("\n").map(line => `\0${heldFormulaLines.push(line) - 1}\0`).join("\n");
+}
+
+function restoreFormulaSource(markdown: string): string {
+  return markdown.replace(/\0(\d+)\0/g, (_placeholder, index: string) => heldFormulaLines[Number(index)]!);
+}
 
 function katexSource(node: Node): string | undefined {
   if (node.nodeName !== "SPAN" || !(node as HTMLElement).classList?.contains("katex")) return undefined;
@@ -162,7 +176,12 @@ function linkObsidianWikiLinks(markdown: string): string {
 
 export function chatGptHtmlToMarkdown(html: string): string {
   if (!html.trim()) return "";
-  return linkObsidianWikiLinks(preserveObsidianWikiLinks(turndown.turndown(html))).trim();
+  heldFormulaLines = [];
+  try {
+    return restoreFormulaSource(linkObsidianWikiLinks(preserveObsidianWikiLinks(turndown.turndown(html))).trim());
+  } finally {
+    heldFormulaLines = [];
+  }
 }
 
 export interface ChatGptMarkdownSegment {

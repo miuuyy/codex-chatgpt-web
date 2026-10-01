@@ -130,18 +130,39 @@ test("converts each KaTeX formula to one LaTeX source", () => {
 
   // U+2061 occurs only in the MathML layer and U+200B only in the visual katex-html layer.
   expect(markdown).not.toMatch(/[\u2061\u200b]/);
-  for (const block of [
+  expect(markdown).toBe([
     String.raw`Inline: \(E = mc^2\) and \(\operatorname{softmax}(z)_i = \frac{e^{z_i}}{\sum_j e^{z_j}}\) beside a [link](https://example.com/notes) and literal a\_b.`,
-    ["\\[", String.raw`r_{\mathrm{eff}} = \exp\left(-\sum_i q_i \log q_i\right)`, "\\]"].join("\n"),
-    [
-      String.raw`- Item with \(\alpha + \beta\)`,
-      "- Display in a list:",
-      "  ",
-      "  \\[",
-      String.raw`  \int_0^1 x^2 \,dx = \tfrac{1}{3}`,
-      "  \\]",
-    ].join("\n"),
-    "Unicode input \\(α ≤ β\\)",
-    ["```latex", "\\[ E = mc^2 \\]", "```"].join("\n"),
-  ]) expect(markdown).toContain(block);
+    "",
+    "\\[",
+    String.raw`r_{\mathrm{eff}} = \exp\left(-\sum_i q_i \log q_i\right)`,
+    "\\]",
+    "",
+    String.raw`- Item with \(\alpha + \beta\)`,
+    "- Display in a list:",
+    "  ",
+    "  \\[",
+    String.raw`  \int_0^1 x^2 \,dx = \tfrac{1}{3}`,
+    "  \\]",
+    "",
+    // LaTeX is never read as an Obsidian link, while the prose link beside it still is.
+    "Unicode input \\(α ≤ β\\) and an Iverson bracket \\([[P]] = 1\\) next to [Notes](<Notes.md>).",
+    "",
+    // Without the browser projection, Turndown has already collapsed the annotation to one line.
+    "> Quoted derivation:",
+    "> ",
+    "> \\[",
+    String.raw`> \begin{aligned} a &= b + c \\ &= d \end{aligned}`,
+    "> \\]",
+    "",
+    "```latex",
+    "\\[ E = mc^2 \\]",
+    "```",
+  ].join("\n"));
+});
+
+test("formula placeholders cannot collide with answer text", () => {
+  const answer = readFileSync(join(import.meta.dir, "fixtures/chatgpt-katex-answer.html"), "utf8");
+  // HTML parsing drops a raw U+0000 and decodes &#0; to U+FFFD, so neither can name a formula.
+  expect(chatGptHtmlToMarkdown(`<p>Literal \0${"0"}\0 and &#0;1&#0;</p>${answer}`))
+    .toBe(`Literal 0 and �1�\n\n${chatGptHtmlToMarkdown(answer)}`);
 });
