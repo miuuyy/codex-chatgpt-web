@@ -72,7 +72,12 @@ function abortError(signal?: AbortSignal): Error {
 
 function withAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   if (!signal) return promise;
-  if (signal.aborted) return Promise.reject(abortError(signal));
+  // Keep the promise observed once the abort wins the race, so a later
+  // browser-side rejection cannot surface as an unhandled rejection.
+  if (signal.aborted) {
+    promise.catch(() => {});
+    return Promise.reject(abortError(signal));
+  }
   return new Promise<T>((resolveWait, rejectWait) => {
     const onAbort = () => rejectWait(abortError(signal));
     signal.addEventListener("abort", onAbort, { once: true });

@@ -1235,9 +1235,25 @@ function throwIfPromptAttachmentAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new DOMException("ChatGPT prompt attachment aborted", "AbortError");
 }
 
-function withBrowserTurnAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+/**
+ * Report `reason` to the caller while still keeping `promise` observed.
+ *
+ * Once an abort wins the race the caller stops listening, so the abandoned
+ * promise must keep a rejection handler of its own instead of becoming an
+ * unhandled rejection.
+ */
+function observe<T>(promise: Promise<T>, reason: () => Error): Promise<T> {
+  promise.catch(() => {});
+  return Promise.reject(reason());
+}
+
+export function withBrowserTurnAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise;
-  if (signal.aborted) return Promise.reject(new DOMException("ChatGPT web turn aborted", "AbortError"));
+  // The caller observes this rejection, not the promise handed in. An early
+  // return would leave that promise unobserved, so a browser failure arriving
+  // afterwards becomes an unhandled rejection that ends the helper process
+  // and every concurrent turn with it.
+  if (signal.aborted) return observe(promise, () => new DOMException("ChatGPT web turn aborted", "AbortError"));
   return new Promise<T>((resolvePromise, rejectPromise) => {
     const onAbort = () => rejectPromise(new DOMException("ChatGPT web turn aborted", "AbortError"));
     signal.addEventListener("abort", onAbort, { once: true });
