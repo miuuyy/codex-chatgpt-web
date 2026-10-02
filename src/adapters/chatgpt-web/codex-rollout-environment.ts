@@ -25,6 +25,14 @@ import type {
 
 type RolloutIdentity = ChatGptRootThreadMetadata | ChatGptThreadSpawnLineage;
 
+/** A native writer is still appending; this is not evidence of missing authority. */
+export class NativeSnapshotPendingError extends Error {
+  constructor(readonly rolloutPath: string) {
+    super("Native Codex control snapshot is still being written");
+    this.name = "NativeSnapshotPendingError";
+  }
+}
+
 const CODEX_ID_SOURCE = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const CODEX_ID = new RegExp(`^${CODEX_ID_SOURCE}$`, "i");
 const ROLLOUT_READ_CHUNK_BYTES = 64 * 1024;
@@ -687,6 +695,7 @@ export function readCurrentCodexCompactionSnapshot(options: {
   model: string;
   reasoning?: string;
   tools?: readonly CodexTool[];
+  rejectPending?: boolean;
 }): { environment: ChatGptTurnEnvironment; history: unknown[]; continuationItems: unknown[] } | undefined {
   const { codexHome, lineage, turnId } = options;
   if (!CODEX_ID.test(lineage.threadId) || !CODEX_ID.test(turnId)
@@ -756,7 +765,10 @@ export function readCurrentCodexCompactionSnapshot(options: {
       }
       // A partial appended record may replace the checkpoint or revoke its owner. Wait for a
       // complete native snapshot rather than accepting an earlier record behind that append.
-      if (carry.length > 0 || fstatSync(fd).size !== size) continue;
+      if (carry.length > 0 || fstatSync(fd).size !== size) {
+        if (options.rejectPending) throw new NativeSnapshotPendingError(candidate);
+        continue;
+      }
       if (history) snapshots.push({ environment, history, continuationItems });
     } finally { closeSync(fd); }
   }

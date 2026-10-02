@@ -3,7 +3,9 @@ import { getCodexHome } from "../../codex-integration-shared";
 import { decodeCompactionSummary, isReadableCompactionSummaryText, SUMMARY_PREFIX } from "../../responses/compaction";
 import type { CodexParsedRequest } from "../../types";
 import { rememberCompactionContinuation } from "./compaction-continuation";
-import { readCurrentCodexCompactionSnapshot } from "./codex-rollout-environment";
+import { NativeSnapshotPendingError, readCurrentCodexCompactionSnapshot } from "./codex-rollout-environment";
+import { watch } from "node:fs";
+import { ChatGptWebAdapterError } from "./adapter-error";
 import {
   chatGptTurnUserRevisionHistory, extractChatGptRootThreadMetadata, extractChatGptThreadSpawnLineage,
   extractChatGptTurnIdentity, type ChatGptTurnEnvironment,
@@ -46,7 +48,7 @@ export function admittedNativeCompactionEnvironment(parsed: CodexParsedRequest):
  * survives transport reconnects and daemon restarts; process-local handoff caches are an optimization.
  * This restores neither a tool call nor browser work, and never synthesizes a missing instruction.
  */
-export function admitNativeCompactionContinuation(parsed: CodexParsedRequest, codexHome = getCodexHome(), sqliteHome?: string): boolean {
+export function admitNativeCompactionContinuation(parsed: CodexParsedRequest, codexHome = getCodexHome(), sqliteHome?: string, rejectPending = false): boolean {
   snapshots.delete(parsed);
   if (parsed._compactionRequest) return false;
   const body = record(parsed._rawBody);
@@ -58,7 +60,7 @@ export function admitNativeCompactionContinuation(parsed: CodexParsedRequest, co
   if (!requestedCheckpoint) return false;
   try {
     const native = readCurrentCodexCompactionSnapshot({codexHome, ...(sqliteHome ? {sqliteHome} : {}),
-      lineage, turnId: identity.turnId, model: body.model, reasoning: parsed.options.reasoning, tools: parsed.context.tools});
+      lineage, turnId: identity.turnId, model: body.model, reasoning: parsed.options.reasoning, tools: parsed.context.tools, rejectPending});
     if (!native) return false;
     const installedCheckpoint = checkpoint(native.history, identity.turnId);
     if (installedCheckpoint?.summary !== requestedCheckpoint.summary) return false;
@@ -94,8 +96,55 @@ export function admitNativeCompactionContinuation(parsed: CodexParsedRequest, co
     rememberCompactionContinuation({...parsed, _compactionRequest:true}, identity, [nativeSource], requestedCheckpoint.summary);
     snapshots.set(parsed, {body:structuredClone(parsed._rawBody), environment:structuredClone(native.environment)});
     return true;
-  } catch {
+  } catch (error) {
+    if (error instanceof NativeSnapshotPendingError) throw error;
     // Recovery never replaces normal validation errors with a guessed environment or checkpoint.
     return false;
   }
+}
+
+function waitForNativeAppend(file: string, timeoutMs: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(signal.reason); return; }
+    let watcher: ReturnType<typeof watch> | undefined;
+    let timer: ReturnType<typeof setTimeout>;
+    let settled = false;
+    const finish = (error?: unknown) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      watcher?.close();
+      signal?.removeEventListener("abort", abort);
+      error === undefined ? resolve() : reject(error);
+    };
+    const abort = () => finish(signal?.reason ?? new DOMException("Aborted", "AbortError"));
+    try {
+      watcher = watch(file, () => finish());
+      watcher.once("error", () => finish());
+    } catch { /* The next authenticated read detects replacement or removal. */ }
+    timer = setTimeout(() => finish(), timeoutMs);
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
+/** Await only incomplete native writes; never retry conflicting control evidence. */
+export async function prepareNativeCompactionContinuation(
+  parsed: CodexParsedRequest,
+  options: { codexHome?: string; sqliteHome?: string; signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<boolean> {
+  const deadline = Date.now() + Math.max(0, Math.min(1_000, options.timeoutMs ?? 1_000));
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (options.signal?.aborted) throw options.signal.reason;
+    try {
+      return admitNativeCompactionContinuation(parsed, options.codexHome, options.sqliteHome, true);
+    } catch (error) {
+      if (!(error instanceof NativeSnapshotPendingError)) throw error;
+      const remaining = deadline - Date.now();
+      if (attempt === 2 || remaining <= 0) break;
+      await waitForNativeAppend(error.rolloutPath, Math.min(500, remaining), options.signal);
+    }
+  }
+  throw new ChatGptWebAdapterError("Native Codex control records are still being written. Retry when the snapshot is complete.", {
+    status: 503, errorType: "server_error", code: "native_snapshot_not_ready", retryable: true,
+  });
 }

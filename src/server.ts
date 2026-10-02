@@ -2,6 +2,7 @@ import { chatGptWebTraceId, createChatGptWebAdapter } from "./adapters/chatgpt-w
 import { closeChatGptBrowserWorkers } from "./adapters/chatgpt-web/browser-worker";
 import { closeTurnBrokers, TurnBroker } from "./adapters/chatgpt-web/turn-broker";
 import { timingSafeEqual } from "node:crypto";
+import { recordCosUsage } from "./cos/dashboard";
 import { chatGptTurnSessions } from "./adapters/chatgpt-web/turn-execution";
 import {
   cancelAllStructuredCompactions,
@@ -17,7 +18,7 @@ import {
   isChatGptCompactionContinuation,
 } from "./adapters/chatgpt-web/environment";
 import { rememberCompactionContinuation } from "./adapters/chatgpt-web/compaction-continuation";
-import { admitNativeCompactionContinuation } from "./adapters/chatgpt-web/native-compaction-admission";
+import { prepareNativeCompactionContinuation } from "./adapters/chatgpt-web/native-compaction-admission";
 import { authenticateNativeFailedTurnRetry } from "./adapters/chatgpt-web/native-turn-retry";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse } from "./bridge";
 import type { AppConfig } from "./config";
@@ -550,6 +551,7 @@ export async function responseRequest(
   const compaction = parsed._compactionRequest === true;
   const compactionItem = compaction && parsed._compactionResponseFormat !== "message";
   const rememberCompletedResponse = (response: Record<string, unknown>): void => {
+    recordCosUsage(response, compaction);
     if (!compaction) {
       if (options.rememberState !== false) rememberResponseState(parsed._rawBody, response, { force: true });
       return;
@@ -579,7 +581,16 @@ export async function responseRequest(
   };
   // Native checkpoint + current turn_context are the durable control plane. Reconstruct their
   // exact authority before transcript-derived trace/revision validation can reject a reconnect.
-  if (!compaction && !isChatGptCompactionContinuation(parsed)) admitNativeCompactionContinuation(parsed);
+  if (!compaction) {
+    try {
+      await prepareNativeCompactionContinuation(parsed, { signal: req.signal });
+    } catch (error) {
+      if (!(error instanceof ChatGptWebAdapterError)) throw error;
+      return Response.json({ error: { type: error.errorType, code: error.code, message: error.message } }, {
+        status: error.status, headers: { "retry-after": "1" },
+      });
+    }
+  }
   if (compaction && route.backendModel === CHATGPT_WEB_LUNA_BACKEND_MODEL) {
     return formatErrorResponse(
       409,

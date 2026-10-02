@@ -4,7 +4,7 @@ import {tmpdir} from "node:os";
 import {dirname, join, resolve} from "node:path";
 import {parseRequest} from "../src/responses/parser";
 import {encodeCompactionSummary} from "../src/responses/compaction";
-import {admitNativeCompactionContinuation, admittedNativeCompactionEnvironment} from "../src/adapters/chatgpt-web/native-compaction-admission";
+import {admitNativeCompactionContinuation, admittedNativeCompactionEnvironment, prepareNativeCompactionContinuation} from "../src/adapters/chatgpt-web/native-compaction-admission";
 import {ChatGptThreadEnvironmentStore} from "../src/adapters/chatgpt-web/thread-environment";
 import {extractChatGptTurnUserRevision} from "../src/adapters/chatgpt-web/environment";
 import {responseRequest} from "../src/server";
@@ -46,6 +46,46 @@ function fixture() {
   const request=parseRequest(body);
   return {home,file,save,records,context,body,request,source,environment,cwd,turnId};
 }
+
+test("native admission waits for a partial append without guessing authority", async () => {
+  const f = fixture();
+  appendFileSync(f.file, '{"type":"event_msg","payload":{"type":"progress"');
+  const pending = prepareNativeCompactionContinuation(f.request, { codexHome: f.home });
+  const writer = setTimeout(() => appendFileSync(f.file, '}}\n'), 20);
+  try { expect(await pending).toBe(true); }
+  finally { clearTimeout(writer); }
+});
+
+test("native admission rechecks a completed cancellation append before granting authority", async () => {
+  const f = fixture();
+  appendFileSync(f.file, '{"type":"event_msg","payload":{"type":"turn_aborted"');
+  const pending = prepareNativeCompactionContinuation(f.request, { codexHome: f.home });
+  const writer = setTimeout(() => appendFileSync(f.file, `,"turn_id":"${f.turnId}"}}\n`), 20);
+  try { expect(await pending).toBe(false); expect(admittedNativeCompactionEnvironment(f.request)).toBeUndefined(); }
+  finally { clearTimeout(writer); }
+});
+
+test("native admission returns a bounded temporary failure for unfinished control records", async () => {
+  const f = fixture();
+  appendFileSync(f.file, '{"type":');
+  try {
+    await prepareNativeCompactionContinuation(f.request, { codexHome: f.home, timeoutMs: 30 });
+    throw new Error("expected a temporary admission failure");
+  } catch (error) {
+    expect(error).toBeInstanceOf(ChatGptWebAdapterError);
+    expect(error).toMatchObject({ status: 503, code: "native_snapshot_not_ready", retryable: true });
+  }
+});
+
+test("native admission aborts its append observer without admitting a browser", async () => {
+  const f = fixture();
+  appendFileSync(f.file, '{"type":');
+  const controller = new AbortController();
+  const pending = prepareNativeCompactionContinuation(f.request, { codexHome: f.home, signal: controller.signal });
+  controller.abort(new Error("cancelled while awaiting native writer"));
+  await expect(pending).rejects.toThrow("cancelled while awaiting native writer");
+  expect(admittedNativeCompactionEnvironment(f.request)).toBeUndefined();
+});
 
 test("native admission separates current authority from an older retained instruction after cache loss",()=>{
   const f=fixture();
@@ -188,6 +228,21 @@ for (const stream of [false, true]) for (const steering of [false, true]) test(`
   } finally {
     if(previousHome===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previousHome;
   }
+});
+
+test("HTTP pending snapshot returns 503 before creating an adapter or SSE stream", async () => {
+  const f = fixture(), previousHome = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = f.home;
+  appendFileSync(f.file, '{"type":"event_msg","payload":');
+  let starts = 0;
+  try {
+    const response = await responseRequest(new Request("http://127.0.0.1/v1/responses", { method: "POST", body: JSON.stringify({ ...f.body, stream: true }) }),
+      defaultConfig("full"), () => { starts++; throw new Error("Must not start"); }, { rememberState: false });
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("1");
+    expect((await response.json()).error.code).toBe("native_snapshot_not_ready");
+    expect(starts).toBe(0);
+  } finally { if (previousHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previousHome; }
 });
 
 for (const stream of [false, true]) test(`invalid execution authority returns HTTP 400 before opening a stream (stream=${stream})`,async()=>{

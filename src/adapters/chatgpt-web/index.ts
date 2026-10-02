@@ -22,6 +22,7 @@ import type { ProviderAdapter } from "../base";
 import { parseDataUrl } from "../image";
 import { ChatGptWebAdapterError, chatGptToolTimeoutError } from "./adapter-error";
 import { ChatGptBrowserWorker } from "./browser-worker";
+import { PreparedChatGptTurnStore } from "./prepared-turn";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt, isChatGptTokenRejection } from "./prompt";
@@ -821,7 +822,7 @@ export function createChatGptWebAdapter(
     };
   };
 
-  const preparedEnvironments = new WeakMap<CodexParsedRequest, ReturnType<typeof extractChatGptTurnEnvironment>>();
+  const preparedEnvironments = new PreparedChatGptTurnStore();
   return {
     name: "chatgpt-web",
     prepareTurn(parsed) {
@@ -832,7 +833,7 @@ export function createChatGptWebAdapter(
       const localTools = manualRequest || resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities).localTools;
       if (!localTools) return;
       try {
-        preparedEnvironments.set(parsed, environmentStore.resolve(parsed));
+        preparedEnvironments.prepare(parsed, environmentStore.resolve(parsed));
       } catch (error) {
         throw new ChatGptWebAdapterError(error instanceof Error ? error.message : String(error), {
           status: 400, errorType: "invalid_request_error", code: "trusted_environment_unavailable", retryable: false, cause: error,
