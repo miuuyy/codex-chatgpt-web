@@ -60,3 +60,43 @@ test("DEV launcher ignores generic production path overrides", () => {
   assert.equal(development.codexHome, path.join(homeDir, "isolated-dev", "codex-home"));
   assert.equal(development.userData, path.join(homeDir, "isolated-dev", "launcher"));
 });
+
+test("custom production homes have separate default launcher data and partitions", () => {
+  const homeDir = path.resolve("/Users/tester");
+  const appData = path.join(homeDir, "AppData");
+  const ordinary = resolveLauncherProfile({ argv: [], env: {}, homeDir, appData });
+  const custom = resolveLauncherProfile({ argv: [], env: { CODEX_CHATGPT_WEB_HOME: path.join(homeDir, "custom") }, homeDir, appData });
+  assert.notEqual(custom.userData, ordinary.userData);
+  assert.notEqual(custom.browserPartition, ordinary.browserPartition);
+  assert.equal(custom.userData, path.join(custom.coreHome, "launcher"));
+});
+
+test("a launcher-data-only override also isolates account configuration and secrets", () => {
+  const homeDir = path.resolve("/Users/tester");
+  const appData = path.join(homeDir, "AppData");
+  const userData = path.join(homeDir, "custom-launcher");
+  const custom = resolveLauncherProfile({ argv: [], env: { CODEX_WEB_GPT_LAUNCHER_DATA_DIR: userData }, homeDir, appData });
+  assert.equal(custom.coreHome, path.join(userData, "core"));
+  assert.notEqual(custom.browserPartition, "persist:codex-web-gpt-chatgpt");
+});
+
+test("explicit custom profiles reject either production storage collision", () => {
+  const homeDir = path.resolve("/Users/tester");
+  const appData = path.join(homeDir, "AppData");
+  for (const env of [
+    { CODEX_CHATGPT_WEB_HOME: path.join(homeDir, ".codex-chatgpt-web"), CODEX_WEB_GPT_LAUNCHER_DATA_DIR: path.join(homeDir, "custom-launcher") },
+    { CODEX_CHATGPT_WEB_HOME: path.join(homeDir, "custom-core"), CODEX_WEB_GPT_LAUNCHER_DATA_DIR: path.join(appData, "Codex Web GPT") },
+  ]) {
+    assert.throws(() => resolveLauncherProfile({ argv: [], env, homeDir, appData }), /separate core and launcher data homes/);
+  }
+});
+
+test("DEV home collision detection follows Windows case-insensitive paths", {skip:process.platform !== "win32"}, () => {
+  const homeDir = path.resolve("/Users/tester");
+  const shared = path.join(homeDir, "production-core");
+  assert.throws(() => resolveLauncherProfile({
+    argv: ["electron", ".", "--dev-profile"],
+    env: { CODEX_CHATGPT_WEB_HOME: shared, CODEX_WEB_GPT_DEV_HOME: shared.toUpperCase() },
+    homeDir, appData: path.join(homeDir, "AppData"),
+  }), /must differ from the production/);
+});

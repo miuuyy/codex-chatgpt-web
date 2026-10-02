@@ -121,6 +121,39 @@ test("packaged runtime is installed once into a durable versioned directory", ()
   }
 });
 
+test("cached dependency corruption of the same size is detected at validation and process start", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "runtime-hash-cache-"));
+  try {
+    const resourcesPath = runtimeFixture(root);
+    const app = { isPackaged: true, getVersion: () => "0.2.0" };
+    const coreHome = path.join(root, "home");
+    const installed = ensurePackagedRuntime({ app, coreHome, resourcesPath });
+    const manifest = JSON.parse(fs.readFileSync(path.join(installed, "manifest.json"), "utf8"));
+    fs.writeFileSync(path.join(path.dirname(installed), ".codex-runtime-verification.json"), JSON.stringify({
+      [path.basename(installed)]: { bundleId: manifest.bundleId, fileCount: manifest.files.length, verifiedAt: Date.now() },
+    }));
+    const dependency = path.join(installed, "app/node_modules/zod/v4/index.js");
+    fs.writeFileSync(dependency, "BAD-V4");
+    assert.throws(() => validateRuntimeBundle(installed, { version: "0.2.0", platform: process.platform, arch: process.arch }), /checksum mismatch/);
+    assert.throws(() => runtimeInvocation({ app, sourceRoot: root, installedRuntimeRoot: installed, args: ["serve"] }), /checksum mismatch/);
+    assert.equal(ensurePackagedRuntime({ app, coreHome, resourcesPath }), installed);
+    assert.equal(fs.readFileSync(dependency, "utf8"), "zod-v4");
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a parent-directory junction escaping the runtime is rejected despite matching file hashes", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "runtime-junction-"));
+  try {
+    const resourcesPath = runtimeFixture(root);
+    const source = path.join(resourcesPath, "runtime");
+    const original = path.join(source, "app/node_modules/zod");
+    const outside = path.join(root, "outside-zod");
+    fs.renameSync(original, outside);
+    fs.symlinkSync(outside, original, process.platform === "win32" ? "junction" : "dir");
+    assert.throws(() => validateRuntimeBundle(source, { version: "0.2.0", platform: process.platform, arch: process.arch }), /escapes the bundle/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("packaged runtime installation rejects a platform or version mismatch", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-runtime-mismatch-"));
   const resourcesPath = runtimeFixture(root, "0.1.0");
@@ -347,6 +380,28 @@ test("packaged runtime replaces stale files when a release is refreshed under th
     assert.equal(ensurePackagedRuntime({ app, coreHome, resourcesPath }), installed);
     assert.equal(fs.readFileSync(path.join(installed, "app", "cli.js"), "utf8"), "new cli");
     assert.equal(fs.existsSync(path.join(installed, "old-release-marker")), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("packaged runtime uses fast cache on subsequent calls and repairs critical binary tampering", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-runtime-fastcache-"));
+  const resourcesPath = runtimeFixture(root);
+  const coreHome = path.join(root, "core-home");
+  const app = { isPackaged: true, getVersion: () => "0.2.0" };
+  try {
+    const installed = ensurePackagedRuntime({ app, coreHome, resourcesPath });
+    // Second invocation hits fast cache
+    const second = ensurePackagedRuntime({ app, coreHome, resourcesPath });
+    assert.equal(second, installed);
+
+    // Tampering with critical binary (app/cli.js) fails validation and triggers repair
+    const cli = path.join(installed, "app", "cli.js");
+    fs.writeFileSync(cli, "tampered-cli");
+    const repaired = ensurePackagedRuntime({ app, coreHome, resourcesPath });
+    assert.equal(repaired, installed);
+    assert.equal(fs.readFileSync(cli, "utf8"), "cli");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

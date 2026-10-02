@@ -114,7 +114,8 @@ function assertDescriptorShape(value: unknown): LauncherBrowserHostDescriptor {
   const expectedPartition = descriptor.profile === "development"
     ? "persist:codex-web-gpt-dev-chatgpt"
     : "persist:codex-web-gpt-chatgpt";
-  if (descriptor.partition !== expectedPartition) {
+  if (descriptor.partition !== expectedPartition && !(descriptor.profile === "production"
+    && typeof descriptor.partition === "string" && /^persist:codex-web-gpt-custom-[a-f0-9]{16}-chatgpt$/.test(descriptor.partition))) {
     throw new Error("Launcher browser descriptor identifies an unexpected browser partition");
   }
   if (descriptor.idleUrl !== LAUNCHER_BROWSER_IDLE_URL) {
@@ -207,6 +208,14 @@ export async function inspectLauncherBrowserHostLiveness(
   return descriptor;
 }
 
+function pageTargetId(page: Page): string | undefined {
+  const delegate = (page as unknown as { _delegate?: { _targetId?: string } })._delegate;
+  if (typeof delegate?._targetId === "string") {
+    return delegate._targetId;
+  }
+  return undefined;
+}
+
 export async function selectLauncherPage(
   browser: Browser,
   descriptor: LauncherBrowserHostDescriptor,
@@ -225,6 +234,13 @@ export async function selectLauncherPage(
       throw new DOMException("Launcher browser connection aborted", "AbortError");
     }
     const candidates = browser.contexts().flatMap(context => context.pages().map(page => ({ context, page })));
+    const directMatches = candidates.filter(candidate => pageTargetId(candidate.page) === targetId);
+    if (directMatches.length === 1) {
+      return { context: directMatches[0]!.context, page: directMatches[0]!.page };
+    }
+    if (directMatches.length > 1) {
+      throw new Error(`Launcher browser host exposed ${directMatches.length} surfaces with the same ownership id`);
+    }
     // Target metadata belongs to the browser process. Evaluating every page here makes an
     // unrelated busy/paused renderer block acquisition of an already-responsive owned page.
     const inspected = await Promise.all(candidates.map(async candidate => {
