@@ -81,12 +81,27 @@ export function App() {
       setOperation(next);
       if (next.status === "failed" && next.name !== "mcp-verification") setError(next.message);
     });
-    const unsubscribeLog = api.onLog((record) => setLogs((current) => [...current.slice(-299), record]));
+    // Runtime output can arrive hundreds of lines at once. Bound the backlog and render a batch.
+    let pendingLogs: LogRecord[] = [];
+    let logTimer: ReturnType<typeof setTimeout> | undefined;
+    const unsubscribeLog = api.onLog((record) => {
+      pendingLogs.push(record);
+      if (pendingLogs.length > 300) pendingLogs.splice(0, pendingLogs.length - 300);
+      if (logTimer !== undefined) return;
+      logTimer = setTimeout(() => {
+        logTimer = undefined;
+        const batch = pendingLogs;
+        pendingLogs = [];
+        if (!cancelled) setLogs(current => [...current, ...batch].slice(-300));
+      }, 100);
+    });
     const unsubscribeUpdate = api.onUpdateState((update) => {
       setSnapshot((current) => current ? { ...current, update } : current);
     });
     return () => {
       cancelled = true;
+      clearTimeout(logTimer);
+      pendingLogs = [];
       unsubscribeState();
       unsubscribeConnectorNames();
       unsubscribeBrowser();
@@ -1594,6 +1609,13 @@ function ActivitySurface({
   setError: (error: string | null) => void;
 }) {
   const [now, setNow] = useState(Date.now);
+  const logKeys = useRef(new WeakMap<LogRecord, number>());
+  const nextLogKey = useRef(0);
+  const logKey = (record: LogRecord) => {
+    let key = logKeys.current.get(record);
+    if (key === undefined) { key = ++nextLogKey.current; logKeys.current.set(record, key); }
+    return key;
+  };
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1_000);
     return () => clearInterval(timer);
@@ -1651,8 +1673,8 @@ function ActivitySurface({
             <span>{copy.noLogs}</span>
           </div>
         ) : null}
-        {[...logs].reverse().map((record, index) => (
-          <div className="activity-row" key={`${record.at}-${record.event}-${index}`}>
+        {[...logs].reverse().map((record) => (
+          <div className="activity-row" key={logKey(record)}>
             <StateDot state={record.level === "error" ? "error" : record.level === "warning" ? "busy" : "ready"} />
             <div>
               <strong>{humanEvent(record.event)}</strong>

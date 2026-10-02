@@ -596,10 +596,10 @@ async function ensureChatGptPersonalizedConnectorAccessWithinDeadline(
   // The visible sheet can be aria-hidden during hydration. Include those controls in the role
   // query but still require visibility; never select a hidden duplicate or switch locator rules.
   const personalized = page
-    .getByRole("button", { name: /^(?:Personalized|个性化)$/, exact: true, includeHidden: true })
+    .getByRole("button", { name: /^(?:Personalized|个性化|개인화|개인 맞춤 설정)$/, exact: true, includeHidden: true })
     .filter({ visible: true });
   const unpersonalized = page
-    .getByRole("button", { name: /^(?:Unpersonalized|非个性化)$/, exact: true, includeHidden: true })
+    .getByRole("button", { name: /^(?:Unpersonalized|非个性化|비개인화|개인 맞춤 설정 안 함)$/, exact: true, includeHidden: true })
     .filter({ visible: true });
   let personalizedCount = await runChatGptPersonalizationStep(() => personalized.count(), deadline, abortSignal);
   let unpersonalizedCount = await runChatGptPersonalizationStep(() => unpersonalized.count(), deadline, abortSignal);
@@ -674,7 +674,7 @@ async function ensureChatGptPersonalizedConnectorAccessWithinDeadline(
     );
     const choice = menu
       .locator(CHATGPT_PERSONALIZATION_CHOICE_SELECTOR)
-      .filter({ hasText: /^(?:Personalized|个性化)/ });
+      .filter({ hasText: /^(?:Personalized|个性化|개인화|개인 맞춤 설정)/ });
     if (await runChatGptPersonalizationStep(() => choice.count(), deadline, abortSignal) !== 1) {
       throw chatGptConnectorUnavailableError(
         "ChatGPT personalization menu did not expose one exact Personalized choice",
@@ -1410,9 +1410,11 @@ export function chatGptTurnIsComplete(state: {
   currentText: string;
   currentHtml?: string;
   completionActionVisible: boolean;
+  boundMessageStatus?: string;
 }): boolean {
   return state.responsePresent
     && !state.running
+    && state.boundMessageStatus !== "in_progress"
     && state.currentText.length > 0
     && state.completionActionVisible;
 }
@@ -1737,6 +1739,7 @@ interface ChatGptResponseDomSnapshot {
   fullHtml: string;
   markdownSegments: ChatGptMarkdownSegment[];
   completionActionVisible: boolean;
+  boundMessageStatus?: string;
   stoppedThinkingVisible: boolean;
   traceBlocks: ChatGptVisibleTraceBlock[];
 }
@@ -3898,6 +3901,7 @@ export class ChatGptBrowserWorker {
       if (domError) throw new Error(domError);
       if (completionTracker.update({
         responsePresent: snapshot.responsePresent,
+        boundMessageStatus: snapshot.boundMessageStatus,
         running,
         currentText: snapshot.visibleText,
         currentHtml: snapshot.fullHtml,
@@ -4135,6 +4139,29 @@ export class ChatGptBrowserWorker {
   ): Promise<ChatGptResponseDomSnapshot> {
     const observed = await responseTurn.evaluate((element, options) => {
       const root = element as HTMLElement;
+      // CHATGPT_BOUND_FIBER_BEGIN
+      // Private React state is auxiliary evidence only. Never read a global/latest message.
+      const boundFiberStatus = (root: HTMLElement): string | undefined => {
+        const messages = [root, ...root.querySelectorAll<HTMLElement>("[data-message-id]")]
+          .filter(node => node.getAttribute("data-message-id"));
+        const ids = new Set(messages.map(node => node.getAttribute("data-message-id")));
+        if (ids.size !== 1) return;
+        const id = [...ids][0];
+        const statuses = new Set<string>();
+        for (const message of messages) for (let element: HTMLElement | null = message, depth = 0; element && depth < 5; element = element.parentElement, depth++) {
+          if (element !== root && !root.contains(element)) break;
+          const key = Object.keys(element).find(key => key.startsWith("__reactFiber$"));
+          let fiber = key ? (element as unknown as Record<string, any>)[key] : undefined;
+          for (let step = 0; fiber && step < 20; step++, fiber = fiber.return) {
+            const msg = fiber.memoizedProps?.message;
+            if (msg?.id === id && msg.author?.role === "assistant"
+              && ["in_progress", "finished_successfully"].includes(msg.status)) statuses.add(msg.status);
+          }
+        }
+        return statuses.size === 1 ? [...statuses][0] : undefined;
+      };
+      // CHATGPT_BOUND_FIBER_END
+      const boundMessageStatus = boundFiberStatus(root);
       type ObserverState = {
         id: number;
         revision: number;
@@ -4191,7 +4218,7 @@ export class ChatGptBrowserWorker {
           break;
         }
       }
-      const observerKey = `${registry.documentId}:${observerState.id}:${observerState.revision}`;
+      const observerKey = `${registry.documentId}:${observerState.id}:${observerState.revision}:${boundMessageStatus ?? "unknown"}`;
       if (options.knownKey === observerKey) return { key: observerKey };
       observerState.rendered.clear();
       const renderedInDom = (candidate: HTMLElement): boolean => {
@@ -4655,6 +4682,7 @@ export class ChatGptBrowserWorker {
           fullHtml: renderedRoots.map(candidate => candidate.innerHTML).join(""),
           markdownSegments,
           completionActionVisible: completionAction !== undefined,
+          boundMessageStatus,
           stoppedThinkingVisible,
           traceBlocks,
         },
@@ -5583,6 +5611,7 @@ export class ChatGptBrowserWorker {
           if (domError) throw new Error(domError);
           const completionReady = completionTracker.update({
             responsePresent: snapshot.responsePresent,
+            boundMessageStatus: snapshot.boundMessageStatus,
             running,
             currentText: snapshot.visibleText,
             currentHtml: snapshot.fullHtml,

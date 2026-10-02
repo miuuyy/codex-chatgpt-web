@@ -1931,6 +1931,20 @@ test("a replacement helper takes over only after the previous owner exited", asy
   assert.equal(warnings[0][1].previousHelperPid, deadPid);
 });
 
+test("unchanged heartbeat progress does not flood the launcher renderer", () => {
+  const tab = { traceId: "trace", helperPid: 42, status: "running", interactionMode: "automatic" };
+  let updates = 0;
+  const fixture = { turnTabs: new Map([["tab", tab]]), snapshot: () => ({}), publishState: () => updates++ };
+  for (let i = 0; i < 1000; i++) BrowserHost.prototype.heartbeatTurn.call(fixture, "trace", 42, false, { stage: "chatgpt", activeToolCalls: 0 });
+  assert.equal(updates, 1);
+  assert.ok(tab.lastHeartbeatAt > 0);
+  tab.lastProgressPublishedAt = Date.now() - 5_001;
+  BrowserHost.prototype.heartbeatTurn.call(fixture, "trace", 42, false, { stage: "chatgpt", activeToolCalls: 0 });
+  assert.equal(updates, 2);
+  BrowserHost.prototype.heartbeatTurn.call(fixture, "trace", 42, false, { stage: "chatgpt", activeToolCalls: 1 });
+  assert.equal(updates, 3);
+});
+
 test("a live turn heartbeat refreshes its lease and rejects another helper", () => {
   const tab = {
     id: "tab-heartbeat",
