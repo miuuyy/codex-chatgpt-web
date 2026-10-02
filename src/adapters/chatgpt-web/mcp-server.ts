@@ -9,6 +9,9 @@ import { CODEX_COMPACTION_CONTROL_WIRE_NAME } from "./native-compaction-control"
 import { callTurnBroker, TurnBrokerTimeoutError, type BrokerToolResult } from "./turn-broker";
 import { observeMcpToolCalls } from "./mcp-observation";
 import { isChatGptTokenRejection } from "./prompt";
+import { readCosConfig } from "../../cos/config";
+import { limitMcpTextContent } from "../../cos/output-limit";
+import { captureWindow } from "../../cos/window-capture";
 
 interface ClaimedTurn {
   bindingId: string;
@@ -24,6 +27,7 @@ const BRIDGE_TOOL_NAMES = new Set([
   "codex_write_stdin",
   "codex_apply_patch",
   "codex_view_image",
+  "observe_window",
   "codex_tool_inventory",
   "codex_tool_call",
   "codex_turn_complete",
@@ -227,7 +231,7 @@ export function chatGptMcpInvocationTimeout(
 
 function asMcpResult(value: BrokerToolResult) {
   return {
-    content: value.content as never,
+    content: (readCosConfig().outputLimit ? limitMcpTextContent(value.content) : value.content) as never,
     ...(value.structuredContent !== undefined && value.structuredContent !== null && typeof value.structuredContent === "object"
       ? { structuredContent: value.structuredContent as Record<string, unknown> }
       : {}),
@@ -788,6 +792,23 @@ export async function runChatGptMcpServer(options: {
           : invokeNestedNative(claimed.bindingId, bound, "view_image", false, payload, extra.signal);
       },
     ),
+  );
+
+  if (process.platform === "win32" && readCosConfig().observeWindow) server.registerTool(
+    "observe_window",
+    {
+      title: "Observe a Windows application window",
+      description: afterSafeStart(contract, "Capture one visible window by its title or process name."),
+      inputSchema: { ...turnReferenceInput(contract), target: z.string().min(1).max(512), width: z.number().int().min(320).max(2560).default(1280) },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (input, extra) => withClaimedTurn("observe_window", turnReference(contract, input), extra, async () => {
+      const capture = await captureWindow(input.target, input.width, extra.signal);
+      return { content: [
+        { type: "text" as const, text: JSON.stringify({ path: capture.path, title: capture.title, pid: capture.pid }) },
+        { type: "image" as const, mimeType: "image/png", data: capture.data },
+      ] };
+    }),
   );
 
   server.registerTool(

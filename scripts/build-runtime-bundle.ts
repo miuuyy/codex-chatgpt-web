@@ -81,6 +81,7 @@ if (!browserHelperBuild.success) {
 }
 
 copyFileSync(join(root, "package.json"), join(appDir, "package.json"));
+copyFileSync(join(root, "src", "cos", "WindowCapture.cs"), join(appDir, "WindowCapture.cs"));
 copyFileSync(join(root, "bun.lock"), join(appDir, "bun.lock"));
 const install = Bun.spawnSync([process.execPath, "install", "--production", "--frozen-lockfile", "--ignore-scripts"], {
   cwd: appDir,
