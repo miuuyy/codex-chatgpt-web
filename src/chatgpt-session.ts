@@ -42,7 +42,9 @@ export async function readChatGptModelAnnouncements(slider: Locator): Promise<st
       for (let parent: Element | null = node; parent; parent = parent.parentElement) {
         if (parent.matches('[hidden], [inert], [aria-hidden="true"]')) return false;
         const style = getComputedStyle(parent);
-        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+        // Active offscreen/transitioning pickers can be transparent. Opacity
+        // does not revoke their checked family or ARIA state.
+        if (style.display === "none" || style.visibility === "hidden") return false;
       }
       return true;
     };
@@ -60,6 +62,19 @@ export async function readChatGptModelAnnouncements(slider: Locator): Promise<st
         }
       }
       descriptions.push(words.join(" "));
+      // Some 5.6-only accounts deliberately omit the version from this header.
+      // The explicit checked family row remains authoritative while its advanced
+      // view is collapsed; Latest does not prove a concrete model version.
+      const effortOnly = content.querySelector('[data-effort-only="true"]');
+      if (effortOnly && rendered(effortOnly)) {
+        const selected = [...menu!.querySelectorAll('[role="menuitemradio"][aria-checked="true"]')]
+          .filter(row => row.closest('[role="menu"]') === menu);
+        if (selected.length > 1) throw new Error("ChatGPT model picker exposes multiple selected model families");
+        const label = selected[0]?.getAttribute("aria-label") ?? selected[0]?.textContent?.trim() ?? "";
+        if (/^GPT[-\s]?5\.6(?:\s+Sol)?(?:\s*\((?:Web|웹)\))?$/i.test(label)) {
+          descriptions.push(`${label} ${effortOnly.textContent?.trim() ?? ""}`);
+        }
+      }
     }
     return descriptions;
   });

@@ -6,7 +6,7 @@ type EffortMenu = Awaited<ReturnType<typeof activateChatGptEffortMenu>>;
 
 function familyError(family: ChatGptWebModelFamily, cause?: unknown): ChatGptWebAdapterError {
   return new ChatGptWebAdapterError(
-    `ChatGPT model ${family} could not be selected and verified. The pending message was not sent. Check the model in the browser; if ChatGPT uses an unsupported language, select English in Settings → General → Language and reload it.`,
+    `ChatGPT model ${family} could not be selected and verified. The pending message was not sent. Check the selected model and account availability in the browser, then retry.`,
     { status: 400, errorType: "invalid_request_error", code: "model_version_unavailable", retryable: false, cause },
   );
 }
