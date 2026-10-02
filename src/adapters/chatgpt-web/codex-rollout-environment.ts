@@ -687,13 +687,13 @@ export function readCurrentCodexCompactionSnapshot(options: {
   model: string;
   reasoning?: string;
   tools?: readonly CodexTool[];
-}): { environment: ChatGptTurnEnvironment; history: unknown[] } | undefined {
+}): { environment: ChatGptTurnEnvironment; history: unknown[]; continuationItems: unknown[] } | undefined {
   const { codexHome, lineage, turnId } = options;
   if (!CODEX_ID.test(lineage.threadId) || !CODEX_ID.test(turnId)
     || ("parentThreadId" in lineage && !CODEX_ID.test(lineage.parentThreadId))) return undefined;
   const indexed = indexedRollout(configuredSqliteHome(codexHome, options.sqliteHome), lineage);
   const candidates = indexed.kind === "found" ? [indexed.path] : scanCanonicalRollouts(codexHome, lineage.threadId);
-  const snapshots: Array<{ environment: ChatGptTurnEnvironment; history: unknown[] }> = [];
+  const snapshots: Array<{ environment: ChatGptTurnEnvironment; history: unknown[]; continuationItems: unknown[] }> = [];
   for (const candidate of candidates) {
     const fd = openSync(validateRolloutPath(codexHome, candidate, lineage.threadId), "r");
     try {
@@ -708,6 +708,7 @@ export function readCurrentCodexCompactionSnapshot(options: {
       validateMetadataConsistency(lineage, environment);
       let owner: unknown;
       let history: unknown[] | undefined;
+      let continuationItems: unknown[] = [];
       let position = 0;
       let carry = Buffer.alloc(0);
       while (position < size) {
@@ -728,15 +729,26 @@ export function readCurrentCodexCompactionSnapshot(options: {
           if (item.type === "event_msg" && payload?.type === "task_started") {
             owner = payload.turn_id;
             history = undefined;
+            continuationItems = [];
           } else if (item.type === "compacted") {
             // The last installed checkpoint replaces older checkpoints even when malformed.
             history = owner === turnId && Array.isArray(payload?.replacement_history)
               && typeof payload.compaction_response_id === "string" && payload.compaction_response_id.length > 0
               ? payload.replacement_history : undefined;
+            continuationItems = [];
+          } else if (item.type === "response_item" && history && owner === turnId) {
+            // Only instruction/context candidates are needed. Ordinary tool outputs are not
+            // replayed or retained here. Native cross-task steering is a synthetic output
+            // without call_id; environment.ts validates its producer-defined envelope.
+            if ((payload?.type === "message" && payload.role === "user")
+              || (payload?.type === "function_call_output" && payload.call_id === undefined)) {
+              continuationItems.push(payload);
+            }
           } else if (item.type === "event_msg"
             && ["task_complete", "task_aborted", "turn_aborted"].includes(String(payload?.type))
             && (payload?.turn_id === turnId || (payload?.turn_id == null && owner === turnId))) {
             history = undefined;
+            continuationItems = [];
           }
         }
         carry = Buffer.from(data.subarray(start));
@@ -745,7 +757,7 @@ export function readCurrentCodexCompactionSnapshot(options: {
       // A partial appended record may replace the checkpoint or revoke its owner. Wait for a
       // complete native snapshot rather than accepting an earlier record behind that append.
       if (carry.length > 0 || fstatSync(fd).size !== size) continue;
-      if (history) snapshots.push({ environment, history });
+      if (history) snapshots.push({ environment, history, continuationItems });
     } finally { closeSync(fd); }
   }
   return snapshots.length === 1 ? snapshots[0] : undefined;

@@ -71,6 +71,59 @@ test("tool-result rounds retain current tools and never replay a tool call durin
   expect(admittedNativeCompactionEnvironment(f.request)!.tools).toEqual([]);
 });
 
+function appendSteering(f: ReturnType<typeof fixture>, kind: "human" | "cross-task", id: string) {
+  const metadata = {turn_id:f.turnId,content_item_kinds:["user.text"]};
+  const item = kind === "human"
+    ? {type:"message",role:"user",id,content:[{type:"input_text",text:`New instruction ${id}`}],internal_chat_message_metadata_passthrough:metadata}
+    : {type:"function_call_output",id,name:"send_message_to_thread",namespace:"codex_app",
+      output:`<codex_delegation>\n<source_thread_id>01a0d610-c7e4-7d60-8d59-e4a91f3d7bc4</source_thread_id>\n<input>New instruction ${id}</input>\n</codex_delegation>`,
+      internal_chat_message_metadata_passthrough:metadata};
+  f.body.input.push(structuredClone(item) as any);
+  f.records.push({type:"response_item",payload:structuredClone(item)});
+  f.save();
+  return item;
+}
+
+for (const kind of ["human", "cross-task"] as const) {
+  test(`native admission accepts authenticated ${kind} steering after compaction`,()=>{
+    const f=fixture();appendSteering(f,kind,"msg_first");appendSteering(f,kind,"msg_latest");
+    const request=parseRequest(f.body);
+    const store=new ChatGptThreadEnvironmentStore(undefined,Date.now,f.home);
+    expect(()=>store.resolve(request)).toThrow("missing cwd");
+    expect(admitNativeCompactionContinuation(request,f.home)).toBe(true);
+    expect(store.resolve(request).cwd).toBe(f.cwd);
+    expect(extractChatGptTurnUserRevision(request)).toEqual(kind === "human"
+      ? [{type:"input_text",text:"New instruction msg_latest"}]
+      : (f.body.input.at(-1) as any).output);
+    // A new request for the next tool-result round survives the warm receipt too.
+    const next=parseRequest(structuredClone(f.body));
+    expect(admitNativeCompactionContinuation(next,f.home)).toBe(true);
+    expect(store.resolve(next).cwd).toBe(f.cwd);
+  });
+
+  for (const variant of ["missing-native", "changed-text", "changed-id", "foreign-turn", "delayed-request", "changed-checkpoint-source"])
+  test(`native ${kind} steering rejects ${variant} evidence`,()=>{
+    const f=fixture();appendSteering(f,kind,"msg_first");appendSteering(f,kind,"msg_latest");
+    const latest=f.body.input.at(-1) as any;
+    if(variant==="missing-native")f.records.pop();
+    if(variant==="changed-text"){
+      if(kind==="human")latest.content[0].text="Different instruction";
+      else latest.output=latest.output.replace("New instruction","Different instruction");
+    }
+    if(variant==="changed-id")latest.id="msg_forged";
+    if(variant==="foreign-turn"){
+      latest.internal_chat_message_metadata_passthrough.turn_id="01a0fc2e-ffff-7513-bdbd-d433d07db2dd";
+      f.records.at(-1).payload=structuredClone(latest);
+    }
+    if(variant==="delayed-request")f.body.input.pop();
+    if(variant==="changed-checkpoint-source")f.body.input[1]!.content=[{type:"input_text",text:"Changed old instruction"}];
+    f.save();
+    const request=parseRequest(f.body);
+    expect(admitNativeCompactionContinuation(request,f.home)).toBe(false);
+    expect(admittedNativeCompactionEnvironment(request)).toBeUndefined();
+  });
+}
+
 for(const variant of ["summary","source","environment","model","effort","aliases","owner","permissions","completed","aborted","replacement","partial","ambiguous"])
 test(`native admission refuses ${variant} evidence`,()=>{
   const f=fixture();
@@ -107,8 +160,9 @@ test("an admitted snapshot cannot survive a later request-body mutation",()=>{
   expect(()=>new ChatGptThreadEnvironmentStore(undefined,Date.now,f.home).resolve(f.request)).toThrow();
 });
 
-for (const stream of [false, true]) test(`HTTP admission restores native authority before trace/revision parsing (stream=${stream})`, async()=>{
+for (const stream of [false, true]) for (const steering of [false, true]) test(`HTTP admission restores native authority before trace/revision parsing (stream=${stream}, steering=${steering})`, async()=>{
   const f=fixture();
+  if(steering)appendSteering(f,"cross-task","fco_native_steering");
   const previousHome=process.env.CODEX_HOME;
   process.env.CODEX_HOME=f.home;
   let starts=0;
@@ -118,7 +172,7 @@ for (const stream of [false, true]) test(`HTTP admission restores native authori
     }),defaultConfig("full"),()=>({name:"native-admission-fixture",async runTurn(parsed,_incoming,emit){
       starts+=1;
       expect(new ChatGptThreadEnvironmentStore(undefined,Date.now,f.home).resolve(parsed).cwd).toBe(f.cwd);
-      expect(extractChatGptTurnUserRevision(parsed)).toEqual(f.source.content);
+      expect(extractChatGptTurnUserRevision(parsed)).toEqual(steering?(f.body.input.at(-1) as any).output:f.source.content);
       emit({type:"text_delta",text:"Restored checkpoint",phase:"final_answer"});
       emit({type:"done",stopReason:"stop",endTurn:true});
     }}),{rememberState:false});

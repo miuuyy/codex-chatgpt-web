@@ -13,7 +13,7 @@ function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
-function checkpoint(input: unknown[], turnId: string): string | undefined {
+function checkpoint(input: unknown[], turnId: string): { summary: string; index: number } | undefined {
   for (let index = input.length - 1; index >= 0; index -= 1) {
     const item = record(input[index]);
     if (!item) continue;
@@ -27,7 +27,7 @@ function checkpoint(input: unknown[], turnId: string): string | undefined {
       summary = text.slice(SUMMARY_PREFIX.length + 1);
     } else continue;
     const owner = record(item.internal_chat_message_metadata_passthrough)?.turn_id;
-    return summary && (owner === undefined || owner === turnId) ? summary : undefined;
+    return summary && (owner === undefined || owner === turnId) ? { summary, index } : undefined;
   }
   return undefined;
 }
@@ -54,17 +54,27 @@ export function admitNativeCompactionContinuation(parsed: CodexParsedRequest, co
   const identity = extractChatGptTurnIdentity(parsed);
   const lineage = extractChatGptThreadSpawnLineage(parsed) ?? extractChatGptRootThreadMetadata(parsed);
   if (!Array.isArray(input) || typeof body?.model !== "string" || !identity.turnId || !lineage) return false;
-  const summary = checkpoint(input, identity.turnId);
-  if (!summary) return false;
+  const requestedCheckpoint = checkpoint(input, identity.turnId);
+  if (!requestedCheckpoint) return false;
   try {
     const native = readCurrentCodexCompactionSnapshot({codexHome, ...(sqliteHome ? {sqliteHome} : {}),
       lineage, turnId: identity.turnId, model: body.model, reasoning: parsed.options.reasoning, tools: parsed.context.tools});
-    if (!native || checkpoint(native.history, identity.turnId) !== summary) return false;
-    const source = chatGptTurnUserRevisionHistory(parsed).at(-1);
-    const nativeSource = chatGptTurnUserRevisionHistory({...parsed, _rawBody:{...body, input:native.history}}).at(-1);
+    if (!native) return false;
+    const installedCheckpoint = checkpoint(native.history, identity.turnId);
+    if (installedCheckpoint?.summary !== requestedCheckpoint.summary) return false;
+    const revisions = (items: unknown[]) => chatGptTurnUserRevisionHistory({...parsed, _rawBody:{...body, input:items}});
+    const source = revisions(input.slice(0, requestedCheckpoint.index + 1)).at(-1);
+    const nativeSource = revisions(native.history.slice(0, installedCheckpoint.index + 1)).at(-1);
     if (!source || !nativeSource || !isDeepStrictEqual(source, nativeSource)) return false;
+    // A valid checkpoint does not freeze its instruction forever. Native Codex can append
+    // human steering or a cross-task message after compaction. Authenticate the complete
+    // instruction sequence after that checkpoint against the same active native task.
+    const postCheckpoint = revisions(input.slice(requestedCheckpoint.index + 1));
+    const nativePostCheckpoint = revisions(native.continuationItems);
+    if (!isDeepStrictEqual(postCheckpoint, nativePostCheckpoint)
+      || postCheckpoint.some(revision => revision.turnId !== identity.turnId)) return false;
     // Context claims must be the actual native preamble, not user-authored XML or a forged id.
-    const nativeMessages = new Map(native.history.flatMap(value => {
+    const nativeMessages = new Map([...native.history, ...native.continuationItems].flatMap(value => {
       const item = record(value);
       return item?.type === "message" && typeof item.id === "string" ? [[item.id, item] as const] : [];
     }));
@@ -81,7 +91,7 @@ export function admitNativeCompactionContinuation(parsed: CodexParsedRequest, co
       if (context && (typeof item.id !== "string" || !isDeepStrictEqual(item, nativeMessages.get(item.id)))) return false;
       if (/^<turn_aborted>[\s\S]*<\/turn_aborted>$/.test(text.trim())) return false;
     }
-    rememberCompactionContinuation({...parsed, _compactionRequest:true}, identity, [nativeSource], summary);
+    rememberCompactionContinuation({...parsed, _compactionRequest:true}, identity, [nativeSource], requestedCheckpoint.summary);
     snapshots.set(parsed, {body:structuredClone(parsed._rawBody), environment:structuredClone(native.environment)});
     return true;
   } catch {

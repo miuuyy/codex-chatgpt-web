@@ -21,6 +21,11 @@ native rollout and verifies:
 - The request's checkpoint summary and retained human source revision match the
   native checkpoint exactly. Current environment messages must match the native
   preamble's item identity and content, including permissions.
+- Later instructions are a separate sequence: current-turn human steering and
+  native cross-task messages after the checkpoint must match the native journal's
+  appended instruction records in order. A new instruction does not replace or
+  invalidate the authenticated checkpoint source. Missing, changed, foreign-turn
+  or delayed steering fails admission.
 
 The verified execution environment is retained only for that parsed request in
 an internal `WeakMap`. A changed request body invalidates it. Current tools come
@@ -43,5 +48,6 @@ does not cache conversations or capabilities across requests.
 `tests/native-compaction-admission.test.ts` covers cold recovery, completed and
 aborted ownership, altered summaries/source/context/model/effort/permissions,
 ambiguous and partial journals, request mutation, tool-result rounds, and HTTP
-admission for streaming and non-streaming requests. No real ChatGPT request is
+admission for streaming and non-streaming requests with post-compaction steering.
+No real ChatGPT request is
 required for these checks.
