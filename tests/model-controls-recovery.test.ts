@@ -2,6 +2,24 @@ import { expect, test } from "bun:test";
 import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-error";
 
+test.each([
+  new ChatGptWebAdapterError("Selected model is unavailable", {
+    status: 400, errorType: "invalid_request_error", code: "model_version_unavailable", retryable: false,
+  }),
+  new DOMException("Selection was cancelled", "AbortError"),
+])("model recovery preserves terminal rejection without reloading: %s", async original => {
+  let attempts = 0;
+  let reloads = 0;
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    selectModelAndEffort: async () => { attempts++; throw original; },
+  });
+  await expect(worker.selectModelAndEffortWithRecovery(
+    { reload: async () => { reloads++; } }, "gpt-5.6-sol", "high", {},
+  )).rejects.toBe(original);
+  expect(attempts).toBe(1);
+  expect(reloads).toBe(0);
+});
+
 test("selectModelAndEffortWithRecovery reloads page and retries on transient control error", async () => {
   let attempts = 0;
   let reloads = 0;

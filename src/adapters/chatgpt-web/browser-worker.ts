@@ -2719,6 +2719,8 @@ export class ChatGptBrowserWorker {
         modelFamily,
       );
     } catch (error) {
+      if ((error instanceof ChatGptWebAdapterError && !error.retryable)
+        || (error instanceof Error && error.name === "AbortError")) throw error;
       const isUsageLimit = error instanceof ChatGptWebAdapterError
         && (error.code === "chatgpt_effort_locked" || error.message.includes("usage limit") || error.message.includes("locks the browser option"));
       if (isUsageLimit) {
