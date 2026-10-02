@@ -77,6 +77,14 @@ the main event loop stays responsive and same-size dependency corruption still f
 No integrity cache or renderer Node integration is introduced. Stopping during verification
 prevents the delayed child from being started after shutdown.
 
+Chromium debugging switches are configured synchronously before startup yields to a
+worker. Chromium allocates the loopback debugging port; startup reads the current
+profile's fresh `DevToolsActivePort` record and checks its browser websocket identity.
+The owned primary page must also appear in the CDP target inventory before runtime
+startup. A missing endpoint fails startup instead of advertising an unusable browser.
+Packaged smoke connects to the owned page websocket, navigates an isolated data document
+and reads its marker through CDP; it never opens ChatGPT or sends a prompt.
+
 Daemon and tunnel recovery track consecutive failed attempts independently of the existing
 60-second burst limit. Five failed recoveries open the circuit even if attempts take more
 than a minute. Fully successful recovery clears its budget; explicit startup/Repair also
