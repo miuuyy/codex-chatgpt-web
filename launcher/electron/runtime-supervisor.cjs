@@ -358,6 +358,8 @@ class RuntimeSupervisor {
     this.startPromise = null;
     this.stopPromise = null;
     this.restartHistory = { daemon: [], tunnel: [] };
+    this.consecutiveRecoveryFailures = { daemon: 0, tunnel: 0 };
+    this.recoveryDisabled = { daemon: false, tunnel: false };
     this.restartTimers = { daemon: null, tunnel: null };
     this.tunnelMonitorTimer = null;
     this.tunnelMonitorInFlight = false;
@@ -1178,6 +1180,10 @@ class RuntimeSupervisor {
   async startIfConfigured() {
     if (this.stopPromise) await this.stopPromise;
     if (this.startPromise) return this.startPromise;
+    // Explicit startup/Repair grants a fresh recovery budget; background retries do not.
+    this.consecutiveRecoveryFailures = { daemon: 0, tunnel: 0 };
+    this.recoveryDisabled = { daemon: false, tunnel: false };
+    this.restartHistory = { daemon: [], tunnel: [] };
     this.startPromise = this.startConfigured();
     try {
       return await this.startPromise;
@@ -1276,6 +1282,8 @@ class RuntimeSupervisor {
       if (!tunnelOnly) await this.startDaemon(config);
       this.restartHistory.daemon = [];
       this.restartHistory.tunnel = [];
+      this.consecutiveRecoveryFailures = { daemon: 0, tunnel: 0 };
+      this.recoveryDisabled = { daemon: false, tunnel: false };
       this.writeState("ready");
       this.publishOperation?.({
         name: "runtime-start",
@@ -1313,21 +1321,28 @@ class RuntimeSupervisor {
 
   scheduleRecovery(name) {
     if (this.stopping) return;
+    if (this.recoveryDisabled[name]) return;
     if (this.restartTimers[name]) return;
     const attempts = this.recordRestart(name);
-    if (attempts > MAX_RESTARTS_PER_WINDOW) {
+    if (attempts > MAX_RESTARTS_PER_WINDOW || this.consecutiveRecoveryFailures[name] >= MAX_RESTARTS_PER_WINDOW) {
+      this.recoveryDisabled[name] = true;
       const cause = this.lastChildFailure[name];
-      const message = `${name} stopped more than ${MAX_RESTARTS_PER_WINDOW} times in 60 seconds; automatic restart is disabled`
+      const message = `${name} exhausted its restart budget (${MAX_RESTARTS_PER_WINDOW} consecutive failures or stops in 60 seconds); automatic restart is disabled`
         + (cause ? `; last failure: ${cause}` : "");
       this.tryWriteState("failed", message);
       this.publishOperation?.({ name: "runtime-recovery", status: "failed", message });
       return;
     }
-    const delay = Math.min(attempts * 1_000, 5_000);
+    const delay = Math.min(2 ** this.consecutiveRecoveryFailures[name] * 1_000, 30_000);
     this.restartTimers[name] = setTimeout(() => {
       this.restartTimers[name] = null;
-      const recovery = this.recover(name).catch((error) => {
+      const recovery = this.recover(name).then(() => {
+        this.consecutiveRecoveryFailures[name] = 0;
+        this.restartHistory[name] = [];
+      }).catch((error) => {
+        this.consecutiveRecoveryFailures[name] += 1;
         const message = errorMessage(error);
+        this.lastChildFailure[name] = message;
         this.logger.error(`runtime.${name}_recovery_failed`, { message });
         if (this.tryWriteState("failed", message)) this.scheduleRecovery(name);
       });
