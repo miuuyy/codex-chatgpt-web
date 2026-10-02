@@ -2849,28 +2849,70 @@ export class ChatGptBrowserWorker {
     page: Page,
     captureDiagnostic?: (checkpoint: string) => Promise<void>,
     useSavedChats = false,
+    abortSignal?: AbortSignal,
   ): Promise<Locator> {
     // Launcher verification refreshes its owned page before attaching Playwright so a newly added
     // connector is present in the catalog. Navigating again here destroys that freshly hydrated
     // document and made the first verification race a second SPA bootstrap. A leased turn starts on
     // about:blank and therefore still performs exactly one navigation through this same method.
     const targetUrl = chatGptNewChatUrl(useSavedChats);
+    let securityCheckPending = false;
+    throwIfPromptAttachmentAborted(abortSignal);
     if (page.url() !== targetUrl) {
-      const response = await page.goto(targetUrl, {
+      const response = await withBrowserTurnAbort(page.goto(targetUrl, {
         waitUntil: "domcontentloaded",
         timeout: 60_000,
-      });
-      if (response?.status() === 403 && response.headers()["cf-mitigated"]?.trim().toLowerCase() === "challenge") {
-        throw new ChatGptWebAdapterError(
-          "ChatGPT security check is blocking this account. Complete the check in the launcher, then resume the task.",
-          { status: 409, errorType: "invalid_request_error", code: "chatgpt_security_check_required", retryable: false },
-        );
-      }
+      }), abortSignal);
+      securityCheckPending = response?.status() === 403
+        && response.headers()["cf-mitigated"]?.trim().toLowerCase() === "challenge";
+      // This is a pre-submission document, not a rejected message. Keep this exact
+      // page alive while its normal browser verification completes; never reload,
+      // click a challenge control, or retry Send here.
+      if (securityCheckPending) await captureDiagnostic?.("security-check-pending");
       await captureDiagnostic?.(useSavedChats ? "saved-chat-navigation-complete" : "temporary-chat-navigation-complete");
     }
     // A failed page read is not evidence of an expired login. Preserve the actual
     // observation error; the authenticated-session check below owns login failures.
-    const composer = await this.activeComposer(page);
+    let composer: Locator;
+    try {
+      composer = await this.activeComposer(page, securityCheckPending ? 45_000 : 30_000, abortSignal);
+    } catch (error) {
+      if (!securityCheckPending || !(error instanceof ChatGptWebAdapterError)
+        || error.code !== "browser_composer_unavailable") throw error;
+      throw new ChatGptWebAdapterError(
+        "ChatGPT security check did not finish before submission. Complete the check in the launcher, then resume the task.",
+        { status: 409, errorType: "invalid_request_error", code: "chatgpt_security_check_required", retryable: false },
+      );
+    }
+    if (securityCheckPending) {
+      await assertNewChatPage(page, useSavedChats);
+      const session = await withBrowserTurnAbort(withChatGptBrowserObservationTimeout(page.evaluate(async () => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 5_000);
+        try {
+          const response = await fetch("/api/auth/session", { credentials: "include", signal: controller.signal });
+          const challenge = response.status === 403 && response.headers.get("cf-mitigated") === "challenge";
+          if (!response.ok || !response.headers.get("content-type")?.includes("application/json")) {
+            return { verified: false, challenge, signedOut: false };
+          }
+          const session = await response.json() as { user?: { id?: string; email?: string } };
+          const verified = Boolean(session.user?.id || session.user?.email);
+          return { verified, challenge: false, signedOut: !verified };
+        } finally {
+          clearTimeout(timer);
+        }
+      }), 6_000), abortSignal);
+      throwIfPromptAttachmentAborted(abortSignal);
+      await assertNewChatPage(page, useSavedChats);
+      if (!session.verified) {
+        throw new ChatGptWebAdapterError(session.signedOut
+          ? "ChatGPT requested sign-in. Open sign in in the launcher, then retry."
+          : "ChatGPT security check has not established a ready session. Complete the check in the launcher, then resume the task.",
+        { status: session.signedOut ? 401 : 409, errorType: session.signedOut ? "authentication_error" : "invalid_request_error",
+          code: session.signedOut ? "chatgpt_sign_in_required" : "chatgpt_security_check_required", retryable: false });
+      }
+      await captureDiagnostic?.("security-check-complete");
+    }
     if (!useSavedChats && await dismissChatGptTemporaryChatOnboarding(page)) {
       await captureDiagnostic?.("temporary-chat-onboarding-dismissed");
     }
@@ -5181,10 +5223,11 @@ export class ChatGptBrowserWorker {
           turn.traceId,
           "temporary_chat_preparation",
           browserStageTimeouts.temporaryChatPreparation,
-          () => this.prepareChatSurface(
+          stageSignal => this.prepareChatSurface(
             page,
             checkpoint => diagnostics.capture(page, checkpoint),
             this.config.useSavedChats,
+            turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal,
           ),
         );
       }
@@ -5396,12 +5439,13 @@ export class ChatGptBrowserWorker {
             turn.traceId,
             "connector_catalog_refresh",
             browserStageTimeouts.temporaryChatPreparation,
-            async () => {
+            async stageSignal => {
               await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
               await this.prepareChatSurface(
                 page,
                 checkpoint => diagnostics.capture(page, checkpoint),
                 this.config.useSavedChats,
+                turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal,
               );
               mode = await this.selectModelAndEffort(
                 page,

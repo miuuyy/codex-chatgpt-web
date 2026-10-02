@@ -105,8 +105,13 @@ Offline fixture tests, builds and hashes are not evidence that a user's resumed 
 succeeded. That result must be observed separately after the user resumes it.
 # Security checks and submission failures
 
-New document challenges return `chatgpt_security_check_required` before prompt
-attachment. A rejected current conversation POST or a visible error in the
+An initial new-document challenge preserves the same page for up to 45 seconds
+so normal browser verification can finish. It does not reload or activate challenge
+controls. A visible composer, the requested new-chat URL, and one authenticated
+session check are required before prompt attachment. Cancellation still ends the
+wait immediately. An unresolved check returns `chatgpt_security_check_required`;
+a signed-out session returns `chatgpt_sign_in_required`.
+A rejected current conversation POST or a visible error in the
 accepted user group returns `chatgpt_submission_failed` without waiting for an
 assistant that will never appear. Historical errors and quoted message content
 do not reject the current turn. These failures are terminal for the exact trace;

@@ -7,7 +7,7 @@ import { createContext, runInContext } from "node:vm";
 import type { Page } from "playwright-core";
 import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
 import { ensureChatGptPersonalizedConnectorAccess, chatGptUnavailableProDetail } from "../src/adapters/chatgpt-web/browser-worker";
-import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
+import { ChatGptWebAdapterError, chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
@@ -2916,13 +2916,80 @@ test("only the current conversation POST can report a security or HTTP submissio
   observer.dispose();
 });
 
-test("a challenged new document stops before touching the composer", async () => {
+function documentChallengeFixture() {
+  let url = "about:blank";
+  const calls: string[] = [];
+  const composer = {};
+  const hidden = { filter() { return this; }, last() { return this; }, isVisible: async () => false };
+  const visible = { count: async () => 1, nth() { return this; }, isVisible: async () => true };
+  const page = {
+    url: () => url,
+    goto: async (target: string) => {
+      calls.push("navigate"); url = target;
+      return { status: () => 403, headers: () => ({ "cf-mitigated": "challenge", "content-type": "text/html" }) };
+    },
+    locator: (selector: string) => selector.includes("prompt-textarea") ? visible : hidden,
+    evaluate: async () => { calls.push("verify-session"); return { verified: true, challenge: false, signedOut: false }; },
+    reload: async () => { throw Error("verification must not reload"); },
+  };
   const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
-    activeComposer: async () => { throw Error("composer must not be touched"); },
+    activeComposer: async (_page: unknown, timeout: number, signal?: AbortSignal) => {
+      calls.push(`composer:${timeout}`);
+      if (signal?.aborted) throw new DOMException("cancelled", "AbortError");
+      return composer;
+    },
   }) as any;
-  const page = { url: () => "about:blank", goto: async () => ({ status: () => 403,
-    headers: () => ({ "cf-mitigated": "challenge", "content-type": "text/html" }) }) };
+  return { worker, page, calls, composer, move: (target: string) => { url = target; } };
+}
+
+test("a challenged new document can finish normal verification on the same page before any submission", async () => {
+  const { worker, page, calls, composer } = documentChallengeFixture();
+  const checkpoints: string[] = [];
+  expect(await worker.prepareChatSurface(page, async (name: string) => { checkpoints.push(name); })).toBe(composer);
+  expect(calls).toEqual(["navigate", "composer:45000", "verify-session"]);
+  expect(checkpoints).toContain("security-check-pending");
+  expect(checkpoints).toContain("security-check-complete");
+  expect(checkpoints.at(-1)).toBe("session-verified");
+});
+
+test("a document challenge with no ready composer still fails closed within its grace budget", async () => {
+  const { worker, page, calls } = documentChallengeFixture();
+  worker.activeComposer = async (_page: unknown, timeout: number) => {
+    expect(timeout).toBe(45_000);
+    throw new ChatGptWebAdapterError("composer unavailable", {
+      status: 409, errorType: "invalid_request_error", code: "browser_composer_unavailable", retryable: false,
+    });
+  };
   await expect(worker.prepareChatSurface(page)).rejects.toMatchObject({ code: "chatgpt_security_check_required", retryable: false });
+  expect(calls).toEqual(["navigate"]);
+});
+
+test("document verification keeps cancellation and observation failures instead of relabelling them as security blocks", async () => {
+  for (const error of [new DOMException("cancelled", "AbortError"), new ChatGptBrowserObservationTimeoutError(5_000)]) {
+    const { worker, page, calls } = documentChallengeFixture();
+    worker.activeComposer = async () => { throw error; };
+    await expect(worker.prepareChatSurface(page)).rejects.toBe(error);
+    expect(calls).toEqual(["navigate"]);
+  }
+  const { worker, page, calls } = documentChallengeFixture();
+  const controller = new AbortController(); controller.abort();
+  await expect(worker.prepareChatSurface(page, undefined, false, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+  expect(calls).toEqual([]);
+});
+
+test("document verification cannot use a different conversation or an unauthenticated composer", async () => {
+  const moved = documentChallengeFixture();
+  moved.worker.activeComposer = async () => { moved.move("https://chatgpt.com/c/another-conversation"); return moved.composer; };
+  await expect(moved.worker.prepareChatSurface(moved.page)).rejects.toThrow("left the requested new");
+  expect(moved.calls).toEqual(["navigate"]);
+  for (const signedOut of [false, true]) {
+    const { worker, page, calls } = documentChallengeFixture();
+    page.evaluate = async () => { calls.push("verify-session"); return { verified: false, challenge: !signedOut, signedOut }; };
+    await expect(worker.prepareChatSurface(page)).rejects.toMatchObject({
+      code: signedOut ? "chatgpt_sign_in_required" : "chatgpt_security_check_required", retryable: false,
+    });
+    expect(calls).toEqual(["navigate", "composer:45000", "verify-session"]);
+  }
 });
 
 test("effort readback rejects a changed selection or surface before activating Send", async () => {
