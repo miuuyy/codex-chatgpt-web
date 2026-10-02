@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { atomicWriteFile, getConfigDir } from "../config";
 
@@ -17,28 +17,23 @@ const SNAPSHOT_TOTAL_MAX_BYTES = 24 * 1024 * 1024;
 interface StoredResponseState {
   createdAt: number;
   items: unknown[];
-  /** Approximate in-memory size, computed locally at insert time (never trusted from disk). */
+  /** UTF-8 serialized entry size, computed locally (never trusted from disk). */
   sizeBytes?: number;
 }
 
 const states = new Map<string, StoredResponseState>();
 let storedResponseBytes = 0;
 
-/** The ONLY size computation: approximate entry weight from its items payload. */
-function measuredEntry(entry: Omit<StoredResponseState, "sizeBytes">): StoredResponseState {
-  let sizeBytes = 0;
-  try {
-    sizeBytes = JSON.stringify(entry.items).length;
-  } catch {
-    /* unserializable items: weightless rather than fatal */
-  }
+/** The ONLY size computation: serialized UTF-8 entry weight. */
+function measuredEntry(id: string, entry: Omit<StoredResponseState, "sizeBytes">): StoredResponseState {
+  const sizeBytes = Buffer.byteLength(JSON.stringify([id, entry]), "utf8");
   return { ...entry, sizeBytes };
 }
 
 /** The ONLY insertion point: keeps the byte counter consistent on replacement. */
 function setEntry(id: string, entry: Omit<StoredResponseState, "sizeBytes">): void {
   deleteEntry(id);
-  const measured = measuredEntry(entry);
+  const measured = measuredEntry(id, entry);
   storedResponseBytes += measured.sizeBytes ?? 0;
   states.set(id, measured);
 }
@@ -59,6 +54,11 @@ const replayedInputPrefixLengths = new WeakMap<object, number>();
 let loaded = false;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingPersistPath: string | null = null;
+const blockedSnapshotPaths = new Set<string>();
+
+function snapshotDiagnostic(path: string, error: unknown): void {
+  console.warn("Response snapshot preserved:", path, error instanceof Error ? error.message : String(error));
+}
 
 function now(): number {
   return Date.now();
@@ -73,22 +73,28 @@ function snapshotPath(): string {
  * dominant expansion-miss cause: an in-memory-only store dies with the process, and the next
  * chained turn then reaches the upstream as a naked delta). Load is lazy on first store access;
  * persistence is debounced + unref'd so the hot path never blocks and the process can exit.
- * Every disk failure is swallowed — the snapshot is a cache, not a source of truth.
+ * Invalid originals stay in place and block replacement; diagnostics contain no conversation text.
  */
 function ensureLoaded(): void {
   if (loaded) return;
   loaded = true;
+  const path = snapshotPath();
   try {
-    const path = snapshotPath();
     if (!existsSync(path)) return;
+    if (statSync(path).size > SNAPSHOT_TOTAL_MAX_BYTES) throw new Error("Snapshot exceeds UTF-8 byte limit");
     const raw = JSON.parse(readFileSync(path, "utf-8")) as { version?: unknown; states?: unknown };
-    if (raw.version !== 1 || !Array.isArray(raw.states)) return;
+    if (raw.version !== 1 || !Array.isArray(raw.states)) throw new Error("Invalid v1 snapshot");
+    const seen = new Set<string>();
     for (const entry of raw.states) {
-      if (!Array.isArray(entry) || entry.length !== 2) continue;
+      if (!Array.isArray(entry) || entry.length !== 2) throw new Error("Invalid snapshot entry");
       const [id, state] = entry as [unknown, unknown];
-      if (typeof id !== "string" || !state || typeof state !== "object") continue;
+      if (typeof id !== "string" || seen.has(id) || !state || typeof state !== "object") throw new Error("Invalid snapshot identity");
       const rec = state as StoredResponseState;
-      if (typeof rec.createdAt !== "number" || !Array.isArray(rec.items)) continue;
+      if (!Number.isFinite(rec.createdAt) || !Array.isArray(rec.items)) throw new Error("Invalid snapshot state");
+      seen.add(id);
+    }
+    for (const entry of raw.states as [string, StoredResponseState][]) {
+      const [id, rec] = entry;
       // Recompute sizes locally while loading; persisted sizeBytes is never trusted.
       setEntry(id, {
         createdAt: rec.createdAt,
@@ -96,8 +102,9 @@ function ensureLoaded(): void {
       });
     }
     pruneResponses();
-  } catch {
-    /* missing/corrupt snapshot: start empty */
+  } catch (error) {
+    blockedSnapshotPaths.add(path);
+    snapshotDiagnostic(path, error);
   }
 }
 
@@ -107,19 +114,21 @@ function persistNow(path: string): void {
     persistTimer = null;
   }
   pendingPersistPath = null;
+  if (blockedSnapshotPaths.has(path)) return;
   try {
     const entries: [string, StoredResponseState][] = [];
-    let total = 0;
+    let total = Buffer.byteLength(JSON.stringify({ version: 1, states: [] }), "utf8");
     // Newest-first so the most recent chains survive both caps.
     for (const entry of [...states].reverse()) {
       // sizeBytes is in-memory accounting only; keep it out of the disk snapshot.
       const [id, state] = entry;
       const { sizeBytes: _sizeBytes, ...persistable } = state;
       const persistEntry: [string, StoredResponseState] = [id, persistable];
-      const size = JSON.stringify(persistEntry).length;
+      const size = Buffer.byteLength(JSON.stringify(persistEntry), "utf8");
       if (size > SNAPSHOT_ENTRY_MAX_BYTES) continue;
-      if (total + size > SNAPSHOT_TOTAL_MAX_BYTES) break;
-      total += size;
+      const comma = entries.length ? 1 : 0;
+      if (total + size + comma > SNAPSHOT_TOTAL_MAX_BYTES) break;
+      total += size + comma;
       entries.push(persistEntry);
     }
     entries.reverse();
@@ -128,8 +137,8 @@ function persistNow(path: string): void {
     // conversation-content snapshot never lands in a group/world-readable directory.
     try { chmodSync(dirname(path), 0o700); } catch { /* best-effort (e.g. Windows) */ }
     atomicWriteFile(path, JSON.stringify({ version: 1, states: entries }));
-  } catch {
-    /* best-effort: disk trouble must never affect request handling */
+  } catch (error) {
+    snapshotDiagnostic(path, error);
   }
 }
 
@@ -167,7 +176,7 @@ function pruneResponses(at = now()): void {
     deleteEntry(oldest);
   }
   // Byte high-water eviction, oldest-first (Map preserves insertion order).
-  while (storedResponseBytes > MAX_STORED_RESPONSE_BYTES && states.size > 1) {
+  while (storedResponseBytes > MAX_STORED_RESPONSE_BYTES && states.size > 0) {
     const oldest = states.keys().next().value;
     if (!oldest) break;
     deleteEntry(oldest);
