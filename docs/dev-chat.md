@@ -137,9 +137,11 @@ commit is sent, and a retry starts again from part one in a fresh Temporary Chat
 and auto-compaction ceilings are reported as 3× while the switch is active, but every individual
 stage must still fit the selected ChatGPT mode's measured one-message boundary.
 
-Small turns use one request. Two-part turns use one inert staging request and one final request;
-six-part turns use five staging requests and one final request. Browser-only compaction also uses
-six parts. Inert stages use the fastest available mode that fits their complete messages; the final
+Small turns use one request. Larger turns use an even number of parts from two through thirty-two,
+with one final execution request and the preceding parts sent as inert staging requests. Browser-only
+compaction starts at six parts and adds parts when needed. Plus messages use a conservative
+60,000-character server transport bound; adding parts does not enlarge the total context ceiling.
+Inert stages use the fastest available mode that fits their complete messages; the final
 part uses the selected execution effort. Large turns may increase the probability of
 rate limits or a temporary account cooldown. The experiment is intentionally unavailable for Luna:
 Luna's later requests still include the accumulated transcript inside the same measured

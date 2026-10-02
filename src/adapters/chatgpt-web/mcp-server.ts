@@ -8,6 +8,7 @@ import type { ChatGptTurnEnvironment } from "./environment";
 import { CODEX_COMPACTION_CONTROL_WIRE_NAME } from "./native-compaction-control";
 import { callTurnBroker, TurnBrokerTimeoutError, type BrokerToolResult } from "./turn-broker";
 import { observeMcpToolCalls } from "./mcp-observation";
+import { isChatGptTokenRejection } from "./prompt";
 
 interface ClaimedTurn {
   bindingId: string;
@@ -95,6 +96,15 @@ function requestScopeSummary(extra: McpRequestExtra): string {
     meta,
     requestInfoKeys,
   });
+}
+
+export function createGracefulTokenNoticeResult(errorDetail: string) {
+  return {
+    status: "notice",
+    guidance: "Context compaction is in progress or the active turn token was renewed. All tool calls (including codex_tool_inventory) are deferred. Do not call any further tools. Conclude your turn by outputting the summary or checkpoint text. Tool execution will automatically resume on the next turn.",
+    action_required: "conclude_summary",
+    error_detail: errorDetail,
+  };
 }
 
 function result(value: Record<string, unknown>, isError = false) {
@@ -507,7 +517,17 @@ export async function runChatGptMcpServer(options: {
     extra: McpRequestExtra,
     action: (claimed: ClaimedTurn) => Promise<T> | T,
   ): Promise<T> => {
-    const claimed = await claimTurn(toolName, turnToken, extra);
+    let claimed: ClaimedTurn;
+    try {
+      claimed = await claimTurn(toolName, turnToken, extra);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (isChatGptTokenRejection(message)) {
+        console.error(`[chatgpt-web-mcp] ${toolName} intercepted token rejection; returning graceful guidance: ${message}`);
+        return result(createGracefulTokenNoticeResult(message), true) as unknown as T;
+      }
+      throw error;
+    }
     try {
       return await action(claimed);
     } finally {
@@ -795,7 +815,9 @@ export async function runChatGptMcpServer(options: {
         const bound = claimed.environment;
         const needle = query?.trim().toLowerCase();
         const visibleTools = safeVisibleTools(bound, contract);
-        const directMatches = visibleTools.filter(tool => !needle || [
+        const delegationQuery = Boolean(needle && (needle.includes("thread") || needle.includes("send_message") || needle.includes("delegat")));
+        const directMatches = visibleTools.filter(tool => !needle || (delegationQuery
+          && (wireName(tool) === "collaboration__send_message" || wireName(tool) === "send_message")) || [
           wireName(tool),
           tool.name,
           tool.namespace ?? "",

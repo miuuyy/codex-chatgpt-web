@@ -24,7 +24,7 @@ import { ChatGptWebAdapterError, chatGptToolTimeoutError } from "./adapter-error
 import { ChatGptBrowserWorker } from "./browser-worker";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
-import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt";
+import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt, isChatGptTokenRejection } from "./prompt";
 import { createChatGptStructuredOutputValidator } from "./output-validation";
 import { chatGptWebTurnRetryPolicy } from "./retry-policy";
 import { TurnBroker, type BrokerToolRequest, type BrokerToolResult, type TurnBrokerOwner } from "./turn-broker";
@@ -1237,6 +1237,17 @@ export function createChatGptWebAdapter(
               if (session.runtime.text.value() !== settled.answer) {
                 throw new Error("ChatGPT browser Markdown stream did not reproduce the completed answer");
               }
+              if (isChatGptTokenRejection(settled.answer)) {
+                throw new ChatGptWebAdapterError(
+                  `ChatGPT turn stopped because active turn token was rejected: ${settled.answer.slice(0, 200)}`,
+                  {
+                    status: 409,
+                    errorType: "invalid_request_error",
+                    retryable: true,
+                    code: "turn_token_rejected",
+                  },
+                );
+              }
               structuredOutputValidator?.(settled.answer);
               if (bufferStructuredOutput) {
                 emitRoundBatch(buffer => emitTextDeltas([settled.answer], buffer));
@@ -1345,6 +1356,17 @@ export function createChatGptWebAdapter(
                 if (completedOutcome.type === "error") throw completedOutcome.error;
                 if (session.runtime.text.value() !== completedOutcome.answer) {
                   throw new Error("ChatGPT browser Markdown stream did not reproduce the completed answer");
+                }
+                if (isChatGptTokenRejection(completedOutcome.answer)) {
+                  throw new ChatGptWebAdapterError(
+                    `ChatGPT turn stopped because active turn token was rejected: ${completedOutcome.answer.slice(0, 200)}`,
+                    {
+                      status: 409,
+                      errorType: "invalid_request_error",
+                      retryable: true,
+                      code: "turn_token_rejected",
+                    },
+                  );
                 }
                 structuredOutputValidator?.(completedOutcome.answer);
                 if (bufferStructuredOutput) {

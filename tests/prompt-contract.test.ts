@@ -73,11 +73,17 @@ test("Full-mode Pro prompts pass one stable turn token directly to native action
   expect(transportOnly).toContain("do not repeat the same call unless its inputs or observable state changed.");
   expect(transportOnly).toContain("Continue using the available tools until the requested work is complete and verified.");
   expect(transportOnly).toContain("Write the user-facing final answer only after the last required tool result has settled.");
-  expect(transportOnly).toContain(`The task context is complete. Pass turn_token ${token} unchanged to every Codex Native call in this response, including continuations after tool results; do not expose it in the answer. Execute the latest active user request now.`);
+  expect(transportOnly).toContain("The Codex Native bridge is attached to this tool-capable response.");
+  expect(transportOnly).toContain("use codex_tool_inventory with a focused query and include_schema=true");
+  expect(transportOnly).toContain("invoke the exact returned wire_name through codex_tool_call");
+  expect(transportOnly).toContain(`<codex_native_binding_json>\n${JSON.stringify({ turn_token: token, token_chars: token.length })}\n</codex_native_binding_json>`);
+  expect(transportOnly.split(token)).toHaveLength(2);
+  expect(transportOnly).toContain("Use only the exact turn_token from codex_native_binding_json for every Codex Native call in this response");
+  expect(transportOnly).toContain("retry that call exactly once with the exact current turn_token");
   expect(transportOnly).not.toMatch(/codex_bind_turn|binding_id|outer_tool_gateway|command_tool/);
-  expect(transportOnly).not.toMatch(/codex_exec|codex_write_stdin|codex_apply_patch|codex_view_image|codex_tool_inventory|codex\.control\.turn_complete/);
+  expect(transportOnly).not.toMatch(/codex_exec|codex_write_stdin|codex_apply_patch|codex_view_image|codex\.control\.turn_complete/);
   expect(transportOnly).toContain("Do not claim a safety or permission block without an explicit tool result or platform error supporting it.");
-  expect(transportOnly).not.toMatch(/expired|invalid|revoked|blocked|security layer|permission gate/i);
+  expect(transportOnly).not.toMatch(/blocked|security layer|permission gate/i);
   expect(compiled.text).not.toContain("CODEX_INTERNAL_CONTEXT_COMPACT");
   expect(compiled.text).not.toContain("internally compacts this response");
 });
@@ -90,7 +96,8 @@ test("Pro preserves the same native Codex delegation contract as Extra High", ()
 
   for (const compiled of [pro, extraHigh]) {
     expect(compiled.text).toContain("For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.");
-    expect(compiled.text).toContain(`Pass turn_token ${token} unchanged to every Codex Native call in this response`);
+    expect(compiled.text).toContain(JSON.stringify({ turn_token: token, token_chars: token.length }));
+    expect(compiled.text).toContain("Use only the exact turn_token from codex_native_binding_json for every Codex Native call in this response");
     expect(compiled.text).not.toContain("Complete this task directly in the current parent response.");
     expect(compiled.text).not.toContain("Do not create, spawn, delegate to, or wait on sub-agents");
     expect(compiled.text).not.toContain("Use non-agent tools directly instead.");

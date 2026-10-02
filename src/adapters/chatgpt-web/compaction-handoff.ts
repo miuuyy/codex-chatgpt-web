@@ -128,7 +128,7 @@ function currentToolResults(
   return results;
 }
 
-export const MAX_COMPACTION_HANDOFF_TIMEOUT_MS = 5 * 60_000;
+export const MAX_COMPACTION_HANDOFF_TIMEOUT_MS = 15 * 60_000;
 
 function boundedCompactionTimeout(timeoutMs: number): number {
   return Math.min(timeoutMs, MAX_COMPACTION_HANDOFF_TIMEOUT_MS);
@@ -295,7 +295,6 @@ export async function requestRetainedCompactionHandoff(
     () => deadline.abort(new Error(`ChatGPT compaction handoff timed out after ${operationTimeoutMs}ms`)),
     operationTimeoutMs,
   );
-  deadlineTimer.unref?.();
   const operationSignal = signal
     ? AbortSignal.any([signal, deadline.signal])
     : deadline.signal;
@@ -381,6 +380,7 @@ interface CachedCompactionRun {
   nativeTurnId?: string;
   abort: AbortController;
   active: boolean;
+  resultCommitted: boolean;
   promise: Promise<string>;
   settlement: Promise<void>;
 }
@@ -469,7 +469,9 @@ export function runStructuredCompactionOnce(
   const promise = Promise.resolve().then(async () => {
     if (previousOwner) await withCompactionAbort(previousOwner, abort.signal);
     if (abort.signal.aborted) throw abortReason(abort.signal);
-    return start(abort.signal, settlement => { physicalSettlements.push(settlement); });
+    const summary = await start(abort.signal, settlement => { physicalSettlements.push(settlement); });
+    run.resultCommitted = true;
+    return summary;
   });
   // Return a deadline failure promptly, while its physical browser owner still blocks retries
   // and cancel-all completion. A cancelled queued run must also retain its predecessor's gate.
@@ -489,6 +491,7 @@ export function runStructuredCompactionOnce(
     ...(owner.nativeTurnId ? { nativeTurnId: owner.nativeTurnId } : {}),
     abort,
     active: true,
+    resultCommitted: false,
     promise,
     settlement: ownerSettlement,
   };
@@ -502,10 +505,13 @@ function beginCancelStructuredCompactionRuns(
   reason: Error,
 ): { cancelled: number; settlement: Promise<void> } {
   const runs = [...structuredCompactionRuns.values()].filter(run => run.active && matches(run));
-  for (const run of runs) {
+  const cancellable = runs.filter(run => !run.resultCommitted);
+  for (const run of cancellable) {
     if (!run.abort.signal.aborted) run.abort.abort(reason);
   }
-  return { cancelled: runs.length, settlement: Promise.allSettled(runs.map(run => run.settlement)).then(() => undefined) };
+  // A committed checkpoint remains replayable. Its physical owner still gates new work and
+  // cancellation settlement, even when there is no unfinished result left to abort.
+  return { cancelled: cancellable.length, settlement: Promise.allSettled(runs.map(run => run.settlement)).then(() => undefined) };
 }
 
 /** Begin cancelling the structured compaction owned by one exact native Codex turn. */
@@ -518,18 +524,9 @@ export function cancelStructuredCompactionNativeTurn(
   // boundary, so either registration wins and is aborted below, or interruption wins and the later
   // registration rejects without invoking its detached work.
   rememberStructuredCompactionInterruption(threadId, turnId, reason);
-  const runs = [...structuredCompactionRuns.values()].filter(run => (
-    run.active
-    && run.nativeThreadId === threadId
-    && run.nativeTurnId === turnId
-  ));
-  for (const run of runs) {
-    if (!run.abort.signal.aborted) run.abort.abort(reason);
-  }
-  return {
-    cancelled: runs.length,
-    settlement: Promise.allSettled(runs.map(run => run.settlement)).then(() => undefined),
-  };
+  return beginCancelStructuredCompactionRuns(run => (
+    run.nativeThreadId === threadId && run.nativeTurnId === turnId
+  ), reason);
 }
 
 /** Cancel a user-requested compaction without treating an HTTP observer disconnect as terminal. */
