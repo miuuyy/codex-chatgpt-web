@@ -60,9 +60,24 @@ function embeddedRuntimeInvocation({ app, sourceRoot, args }) {
   };
 }
 
+function runtimeInvocationAsync({ app, sourceRoot, installedRuntimeRoot, args, embedded = false }) {
+  if (!Array.isArray(args)) throw new Error("Runtime arguments must be an array");
+  const commandArgs = [...args];
+  if (!app.isPackaged) return sourceRuntimeInvocation(sourceRoot, commandArgs);
+  const root = embedded ? packagedRuntimePaths(process.resourcesPath).runtimeRoot : installedRuntimeRoot;
+  if (!root || !path.isAbsolute(root)) throw new Error("Packaged launcher runtime has not been installed into durable local storage");
+  return require("./runtime-verification.cjs").verifyRuntimeInWorker("validate", {
+    root, identity: { version: app.getVersion(), platform: process.platform, arch: process.arch },
+  }).then(() => {
+    const { runtimeRoot, executable, entrypoint } = runtimeBundlePaths(root);
+    return { executable, args: [entrypoint, ...commandArgs], cwd: runtimeRoot };
+  });
+}
+
 module.exports = {
   embeddedRuntimeInvocation,
   packagedRuntimePaths,
   runtimeBundlePaths,
   runtimeInvocation,
+  runtimeInvocationAsync,
 };

@@ -10,6 +10,7 @@ const {
   validateRuntimeBundle,
   waitForPackagedRuntimeSource,
 } = require("../electron/runtime-install.cjs");
+const { verifyRuntimeInWorker } = require("../electron/runtime-verification.cjs");
 
 function comparePaths(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
@@ -383,6 +384,22 @@ test("packaged runtime replaces stale files when a release is refreshed under th
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("worker verification keeps the event loop live and rejects same-size dependency corruption on every call", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "runtime-worker-"));
+  const resourcesPath = runtimeFixture(root), source = path.join(resourcesPath, "runtime");
+  const dependency = path.join(source, "app", "dependency.js");
+  fs.writeFileSync(dependency, "original");
+  writeRuntimeManifest(source);
+  let ticks = 0;
+  const timer = setInterval(() => ticks++, 1);
+  try {
+    await verifyRuntimeInWorker("validate", { root: source, identity: { version: "0.2.0", platform: process.platform, arch: process.arch } });
+    assert.ok(ticks > 0, "verification must not block the launcher event loop");
+    fs.writeFileSync(dependency, "tampered");
+    await assert.rejects(verifyRuntimeInWorker("validate", { root: source, identity: { version: "0.2.0", platform: process.platform, arch: process.arch } }), /checksum mismatch/);
+  } finally { clearInterval(timer); fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test("packaged runtime uses fast cache on subsequent calls and repairs critical binary tampering", () => {

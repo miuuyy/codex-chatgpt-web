@@ -71,6 +71,11 @@ new renderer state more often than every five seconds, keeping freshness indicat
 Real stage/tool-count changes still publish immediately. Renderer log
 delivery batches every 100 ms with a 300-record backlog. This bounds render work during
 large tool-output bursts without altering persisted logs.
+Log rows retain stable keys as new records arrive. Full runtime installation and SHA-256
+verification run in Node workers. Each process start performs a fresh full verification;
+the main event loop stays responsive and same-size dependency corruption still fails.
+No integrity cache or renderer Node integration is introduced. Stopping during verification
+prevents the delayed child from being started after shutdown.
 
 Daemon and tunnel recovery track consecutive failed attempts independently of the existing
 60-second burst limit. Five failed recoveries open the circuit even if attempts take more

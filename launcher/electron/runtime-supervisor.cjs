@@ -10,7 +10,7 @@ const {
   processRunning,
   terminateOwnedProcessTree,
 } = require("./process-tree.cjs");
-const { runtimeInvocation } = require("./runtime-command.cjs");
+const { runtimeInvocationAsync } = require("./runtime-command.cjs");
 const { windowsTrustEnvironment } = require("./windows-trust.cjs");
 
 const RESTART_WINDOW_MS = 60_000;
@@ -333,7 +333,7 @@ class RuntimeSupervisor {
     browserDescriptorPath,
     launcherProfile = "production",
     publishOperation,
-    runtimeInvocationFactory = runtimeInvocation,
+    runtimeInvocationFactory = runtimeInvocationAsync,
     onConfigRead,
   }) {
     this.app = app;
@@ -495,6 +495,7 @@ class RuntimeSupervisor {
   }
 
   spawnChild(name, invocation) {
+    if (this.stopping) throw new Error("Runtime startup was stopped before verification completed");
     const child = spawn(invocation.executable, invocation.args, {
       cwd: invocation.cwd,
       detached: DETACH_OWNED_CHILD,
@@ -1051,13 +1052,14 @@ class RuntimeSupervisor {
 
   async runTunnelConnectCommand(config) {
     const contract = config.browserInteractionMode === "manual" ? "safe" : "native";
-    const invocation = this.runtimeCommand([
+    const invocation = await this.runtimeCommand([
       "mcp",
       "--contract",
       contract,
       "--broker-socket",
       config.brokerSocketPath,
     ]);
+    if (this.stopping) throw new Error("Tunnel startup was stopped before verification completed");
     return await this.runTunnelCommand(
       config,
       managedTunnelConnectArgs(config, invocation),
@@ -1159,7 +1161,7 @@ class RuntimeSupervisor {
     }
     let child;
     try {
-      child = this.spawnChild("daemon", this.runtimeCommand(["serve"]));
+      child = this.spawnChild("daemon", await this.runtimeCommand(["serve"]));
       await this.waitForProxy(config);
       if (this.daemon !== child) throw new Error("Responses proxy exited immediately after becoming healthy");
       this.restartableChildren.add(child);

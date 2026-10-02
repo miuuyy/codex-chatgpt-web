@@ -33,6 +33,7 @@ const {
 } = require("./logging.cjs");
 const { RuntimeHost } = require("./runtime.cjs");
 const { ensurePackagedRuntime, waitForPackagedRuntimeSource } = require("./runtime-install.cjs");
+const { verifyRuntimeInWorker } = require("./runtime-verification.cjs");
 const { RuntimeSupervisor } = require("./runtime-supervisor.cjs");
 const { DEVELOPMENT_PROFILE, resolveLauncherProfile } = require("./profile.cjs");
 const { runtimeBundlePaths } = require("./runtime-command.cjs");
@@ -1088,7 +1089,8 @@ async function start() {
   app.on("second-instance", () => showMainWindow());
   app.on("activate", () => showMainWindow());
 
-  await waitForPackagedRuntimeSource({ app, resourcesPath: process.resourcesPath });
+  if (app.isPackaged) await verifyRuntimeInWorker("wait", { version: app.getVersion(), resourcesPath: process.resourcesPath });
+  else await waitForPackagedRuntimeSource({ app, resourcesPath: process.resourcesPath });
   let installedRuntimeRoot = null;
   let runtimeRootResolved = false;
   const runtimeRootProvider = () => {
@@ -1104,7 +1106,10 @@ async function start() {
     }
     return installedRuntimeRoot;
   };
-  installedRuntimeRoot = runtimeRootProvider();
+  if (app.isPackaged) {
+    installedRuntimeRoot = await verifyRuntimeInWorker("install", { version: app.getVersion(), coreHome: CORE_HOME, resourcesPath: process.resourcesPath });
+    runtimeRootResolved = true;
+  } else installedRuntimeRoot = runtimeRootProvider();
 
   cdpPort = await findFreePort();
   if (process.platform === "linux") {
@@ -1254,7 +1259,7 @@ async function start() {
     if (app.isPackaged && !smokeRuntimeRoot) {
       throw new Error("Packaged launcher smoke test could not install its durable runtime");
     }
-    const versionInvocation = runtimeSupervisor.runtimeCommand(["--version"]);
+    const versionInvocation = await runtimeSupervisor.runtimeCommand(["--version"]);
     const versionResult = spawnSync(versionInvocation.executable, versionInvocation.args, {
       cwd: versionInvocation.cwd,
       encoding: "utf8",
