@@ -14,8 +14,10 @@ import {
   extractChatGptTurnIdentity,
   extractCodexTurnIdentityFromBody,
   extractChatGptCompactionSourceRevision,
+  isChatGptCompactionContinuation,
 } from "./adapters/chatgpt-web/environment";
 import { rememberCompactionContinuation } from "./adapters/chatgpt-web/compaction-continuation";
+import { admitNativeCompactionContinuation } from "./adapters/chatgpt-web/native-compaction-admission";
 import { authenticateNativeFailedTurnRetry } from "./adapters/chatgpt-web/native-turn-retry";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse } from "./bridge";
 import type { AppConfig } from "./config";
@@ -575,6 +577,9 @@ export async function responseRequest(
     });
     rememberCompactionContinuation(parsed, identity, [source, v1Source], summary);
   };
+  // Native checkpoint + current turn_context are the durable control plane. Reconstruct their
+  // exact authority before transcript-derived trace/revision validation can reject a reconnect.
+  if (!compaction && !isChatGptCompactionContinuation(parsed)) admitNativeCompactionContinuation(parsed);
   if (compaction && route.backendModel === CHATGPT_WEB_LUNA_BACKEND_MODEL) {
     return formatErrorResponse(
       409,
@@ -625,6 +630,17 @@ export async function responseRequest(
     });
   }
   const adapter = adapterFactory(provider);
+  try {
+    await adapter.prepareTurn?.(parsed, { headers: req.headers, abortSignal: req.signal });
+  } catch (error) {
+    // An invalid control envelope is a terminal admission failure, not a broken SSE connection
+    // that native Codex retries five times. No browser or tool execution has been admitted yet.
+    return Response.json({ error: {
+      type: error instanceof ChatGptWebAdapterError ? error.errorType : "invalid_request_error",
+      message: error instanceof Error ? error.message : String(error),
+      code: error instanceof ChatGptWebAdapterError ? error.code : "turn_preflight_failed",
+    } }, { status: error instanceof ChatGptWebAdapterError ? error.status : 400 });
+  }
   const queue = new AsyncEventQueue<AdapterEvent>();
   const abort = new AbortController();
   if (req.signal.aborted) abort.abort();

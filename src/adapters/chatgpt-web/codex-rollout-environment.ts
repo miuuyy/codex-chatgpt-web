@@ -678,6 +678,79 @@ function validateMetadataConsistency(
   }
 }
 
+/** A checkpoint installed by native Codex, read with its current execution authority. */
+export function readCurrentCodexCompactionSnapshot(options: {
+  codexHome: string;
+  sqliteHome?: string;
+  lineage: RolloutIdentity;
+  turnId: string;
+  model: string;
+  reasoning?: string;
+  tools?: readonly CodexTool[];
+}): { environment: ChatGptTurnEnvironment; history: unknown[] } | undefined {
+  const { codexHome, lineage, turnId } = options;
+  if (!CODEX_ID.test(lineage.threadId) || !CODEX_ID.test(turnId)
+    || ("parentThreadId" in lineage && !CODEX_ID.test(lineage.parentThreadId))) return undefined;
+  const indexed = indexedRollout(configuredSqliteHome(codexHome, options.sqliteHome), lineage);
+  const candidates = indexed.kind === "found" ? [indexed.path] : scanCanonicalRollouts(codexHome, lineage.threadId);
+  const snapshots: Array<{ environment: ChatGptTurnEnvironment; history: unknown[] }> = [];
+  for (const candidate of candidates) {
+    const fd = openSync(validateRolloutPath(codexHome, candidate, lineage.threadId), "r");
+    try {
+      const size = fstatSync(fd).size;
+      validateSessionMeta(firstRolloutRecord(fd, size), lineage);
+      const latest = latestTurnContext(fd, size);
+      const nativeEffort = latest?.reasoning_effort ?? latest?.effort;
+      if (latest?.turn_id !== turnId || latest.model !== options.model
+        || (latest.reasoning_effort !== undefined && latest.effort !== undefined && latest.reasoning_effort !== latest.effort)
+        || (nativeEffort === "ultra" ? "max" : nativeEffort) !== options.reasoning) continue;
+      const environment = environmentFromTurnContext(latest, turnId, options.tools);
+      validateMetadataConsistency(lineage, environment);
+      let owner: unknown;
+      let history: unknown[] | undefined;
+      let position = 0;
+      let carry = Buffer.alloc(0);
+      while (position < size) {
+        const length = Math.min(ROLLOUT_READ_CHUNK_BYTES, size - position);
+        const chunk = Buffer.alloc(length);
+        const count = readSync(fd, chunk, 0, length, position);
+        if (count !== length) throw new Error("Codex rollout changed during checkpoint admission");
+        position += count;
+        const data = Buffer.concat([carry, chunk]);
+        let start = 0;
+        for (let end = data.indexOf(0x0a); end >= 0; end = data.indexOf(0x0a, start)) {
+          const line = data.subarray(start, end);
+          start = end + 1;
+          if (!line.length) continue;
+          if (line.length > MAX_ROLLOUT_JSON_LINE_BYTES) throw new Error("Codex rollout JSONL record exceeds the bounded record size");
+          const item = parseJsonLine(line);
+          const payload = record(item.payload);
+          if (item.type === "event_msg" && payload?.type === "task_started") {
+            owner = payload.turn_id;
+            history = undefined;
+          } else if (item.type === "compacted") {
+            // The last installed checkpoint replaces older checkpoints even when malformed.
+            history = owner === turnId && Array.isArray(payload?.replacement_history)
+              && typeof payload.compaction_response_id === "string" && payload.compaction_response_id.length > 0
+              ? payload.replacement_history : undefined;
+          } else if (item.type === "event_msg"
+            && ["task_complete", "task_aborted", "turn_aborted"].includes(String(payload?.type))
+            && (payload?.turn_id === turnId || (payload?.turn_id == null && owner === turnId))) {
+            history = undefined;
+          }
+        }
+        carry = Buffer.from(data.subarray(start));
+        if (carry.length > MAX_ROLLOUT_JSON_LINE_BYTES) throw new Error("Codex rollout JSONL record exceeds the bounded record size");
+      }
+      // A partial appended record may replace the checkpoint or revoke its owner. Wait for a
+      // complete native snapshot rather than accepting an earlier record behind that append.
+      if (carry.length > 0 || fstatSync(fd).size !== size) continue;
+      if (history) snapshots.push({ environment, history });
+    } finally { closeSync(fd); }
+  }
+  return snapshots.length === 1 ? snapshots[0] : undefined;
+}
+
 export function resolveCurrentCodexRolloutEnvironment(options: {
   codexHome: string;
   sqliteHome?: string;

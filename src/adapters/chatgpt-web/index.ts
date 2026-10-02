@@ -821,8 +821,24 @@ export function createChatGptWebAdapter(
     };
   };
 
+  const preparedEnvironments = new WeakMap<CodexParsedRequest, ReturnType<typeof extractChatGptTurnEnvironment>>();
   return {
     name: "chatgpt-web",
+    prepareTurn(parsed) {
+      const manualRequest = isChatGptWebZeroRiskBackendModel(parsed.modelId);
+      if (manualRequest !== manualInteraction) return;
+      const capabilities = parsed._compactionRequest && !manualRequest
+        ? { ...configuredCapabilities, localToolsEnabled: false } : configuredCapabilities;
+      const localTools = manualRequest || resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities).localTools;
+      if (!localTools) return;
+      try {
+        preparedEnvironments.set(parsed, environmentStore.resolve(parsed));
+      } catch (error) {
+        throw new ChatGptWebAdapterError(error instanceof Error ? error.message : String(error), {
+          status: 400, errorType: "invalid_request_error", code: "trusted_environment_unavailable", retryable: false, cause: error,
+        });
+      }
+    },
     async runTurn(parsed, incoming, emit) {
       const runChatGptWebTurn = async (): Promise<void> => {
         const manualRequest = isChatGptWebZeroRiskBackendModel(parsed.modelId);
@@ -865,7 +881,7 @@ export function createChatGptWebAdapter(
         let environment: ReturnType<typeof extractChatGptTurnEnvironment> | undefined;
         if (mode.localTools) {
           try {
-            environment = environmentStore.resolve(parsed);
+            environment = preparedEnvironments.get(parsed) ?? environmentStore.resolve(parsed);
           } catch (error) {
             const identity = extractChatGptTurnIdentity(parsed);
             console.warn(
