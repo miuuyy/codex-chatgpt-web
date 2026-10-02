@@ -2741,6 +2741,7 @@ describe("ChatGPT outer-native harness v4", () => {
       command: process.execPath,
       args: ["src/cli.ts", "mcp", "--broker-socket", socketPath],
       cwd: process.cwd(),
+      env: { CODEX_CHATGPT_WEB_HOME: join(tempRoot, "mcp-contract-profile") },
       stderr: "pipe",
     });
     const client = new Client({ name: "codex-chatgpt-web-harness-test", version: "1.0.0" });

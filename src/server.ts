@@ -624,6 +624,14 @@ export async function responseRequest(
       && !message.includes("requires a current-turn user message")) throw error;
   }
   const cancelledError = traceId ? chatGptTurnSessions.cancelledError(traceId) : undefined;
+  const submissionError = traceId ? chatGptTurnSessions.terminalSubmissionError(traceId) : undefined;
+  if (submissionError) {
+    // Native Codex retries unfamiliar streamed errors regardless of their retryable flag.
+    // Reject this exact failed trace at admission, before another browser can send it.
+    return Response.json({ error: {
+      type: "invalid_request_error", code: submissionError.code, message: submissionError.message,
+    } }, { status: 400 });
+  }
   if (cancelledError) {
     // Codex retries unknown streamed response.failed codes. A replay after the user explicitly
     // closed the only browser document is instead a terminal client state: repeating that exact

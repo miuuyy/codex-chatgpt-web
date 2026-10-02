@@ -861,8 +861,23 @@ export class ChatGptSubmissionRejectionObserver {
   };
 
   private readonly onResponse = (response: Response): void => {
-    if (!this.requests.delete(response.request()) || response.status() !== 413
-      || !response.headers()["content-type"]?.includes("application/json")) return;
+    if (!this.requests.delete(response.request())) return;
+    const status = response.status();
+    if (status >= 400 && status !== 413) {
+      const challenge = status === 403 && response.headers()["cf-mitigated"]?.trim().toLowerCase() === "challenge";
+      const error = new ChatGptWebAdapterError(challenge
+        ? "ChatGPT security check blocked the message. Complete the check in the launcher, then resume the task manually."
+        : `ChatGPT rejected the current message (HTTP ${status}). Check the ChatGPT tab before resuming the task.`, {
+        status: challenge ? 409 : status,
+        errorType: challenge ? "invalid_request_error" : "server_error",
+        code: challenge ? "chatgpt_security_check_required" : "chatgpt_submission_failed",
+        retryable: false,
+      });
+      this.checks.push(Promise.resolve(error));
+      this.onRejected?.(error);
+      return;
+    }
+    if (status !== 413 || !response.headers()["content-type"]?.includes("application/json")) return;
     const generation = this.generation;
     this.checks.push(withChatGptBrowserObservationTimeout(response.json(), 3_000)
       .then(body => {
@@ -1381,6 +1396,7 @@ interface ChatGptSubmissionDomState {
   turnIdentities: string[];
   userIdentities: string[];
   responseIdentities: string[];
+  failedUserIdentities?: string[];
 }
 
 interface ChatGptSubmissionDomCache {
@@ -2840,10 +2856,16 @@ export class ChatGptBrowserWorker {
     // about:blank and therefore still performs exactly one navigation through this same method.
     const targetUrl = chatGptNewChatUrl(useSavedChats);
     if (page.url() !== targetUrl) {
-      await page.goto(targetUrl, {
+      const response = await page.goto(targetUrl, {
         waitUntil: "domcontentloaded",
         timeout: 60_000,
       });
+      if (response?.status() === 403 && response.headers()["cf-mitigated"]?.trim().toLowerCase() === "challenge") {
+        throw new ChatGptWebAdapterError(
+          "ChatGPT security check is blocking this account. Complete the check in the launcher, then resume the task.",
+          { status: 409, errorType: "invalid_request_error", code: "chatgpt_security_check_required", retryable: false },
+        );
+      }
       await captureDiagnostic?.(useSavedChats ? "saved-chat-navigation-complete" : "temporary-chat-navigation-complete");
     }
     // A failed page read is not evidence of an expired login. Preserve the actual
@@ -3017,6 +3039,17 @@ export class ChatGptBrowserWorker {
           && style.visibility !== "hidden"
           && (bounds.width > 0 || bounds.height > 0);
       };
+      const hasSubmissionError = (container: Element): boolean => (
+        Array.from(container.querySelectorAll('[role="alert"]')).some(alert => {
+          // This error UI can replace the assistant entirely. Quoted errors in message
+          // prose cannot establish that the current browser submission was rejected.
+          if (alert.closest('[data-user-message-bubble], [data-message-author-role], .markdown')
+            || !visible(alert)
+            || !/^(?:Unknown error|Something went wrong|알 수 없는 오류|오류가 발생)/i.test(alert.textContent?.trim() ?? "")) return false;
+          return Array.from(alert.querySelectorAll("button")).some(button => visible(button)
+            && /^(?:Retry|다시 시도)$/i.test(button.textContent?.trim() ?? ""));
+        })
+      );
       // data-testid contains a display index: ChatGPT can renumber it while the same turn lives.
       // Virtualization removes a turn's section, but retains its outer identity container.
       const containers = [...document.querySelectorAll("[data-turn-id-container]")].filter(element =>
@@ -3034,6 +3067,10 @@ export class ChatGptBrowserWorker {
       }
       const groups = [...document.querySelectorAll("[data-turn-key]")];
       const groupKeys = identities(groups, "data-turn-key");
+      const failedUserIdentities = containers.flatMap((container, index) => (
+        userIdentities.includes(turnIdentities[index]!) && hasSubmissionError(container)
+          ? [turnIdentities[index]!] : []
+      ));
       groups.forEach((group, index) => {
         const user = `group:user:${groupKeys[index]}`;
         const assistant = `group:assistant:${groupKeys[index]}`;
@@ -3042,6 +3079,7 @@ export class ChatGptBrowserWorker {
         turnIdentities.push(user, assistant);
         if (group.querySelector("[data-user-message-bubble]")) userIdentities.push(user);
         if (group.querySelector('[data-conversation-role="assistant"], [data-chatgpt-agent-turn-start]')) responseIdentities.push(assistant);
+        if (group.querySelector("[data-user-message-bubble]") && hasSubmissionError(group)) failedUserIdentities.push(user);
       });
       return {
         key: observerKey,
@@ -3052,6 +3090,7 @@ export class ChatGptBrowserWorker {
           turnIdentities,
           userIdentities,
           responseIdentities,
+          failedUserIdentities,
         },
       };
     }, {
@@ -3203,6 +3242,14 @@ export class ChatGptBrowserWorker {
         observationBaseline.initialTurnIdentities,
         state.responseIdentities,
       );
+      const submittedUser = observationBaseline.acceptedUserIdentity
+        ?? chatGptNewTurnIdentity(observationBaseline.initialTurnIdentities, state.userIdentities);
+      if (submittedUser && state.failedUserIdentities?.includes(submittedUser)) {
+        throw new ChatGptWebAdapterError(
+          "ChatGPT rejected the current message before creating an answer. Check the ChatGPT tab, then resume the task manually; this message was not resent.",
+          { status: 502, errorType: "server_error", code: "chatgpt_submission_failed", retryable: false },
+        );
+      }
       if (progress
         && externalProgress
         && completionTracker?.needsToolBatchObservation(progress.lastToolBatchRevision)) {

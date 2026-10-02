@@ -102,6 +102,7 @@ test("submission DOM tracks logical identities and retains virtualized history i
   const observers: (() => void)[] = [];
   const element = (turn: Turn, container: boolean) => ({
     closest: () => null,
+    querySelectorAll: () => [],
     getAttribute: (name: string) => ({
       "data-turn-id": container ? null : turn.id,
       "data-turn-id-container": turn.id,
@@ -151,6 +152,61 @@ test("submission DOM tracks logical identities and retains virtualized history i
   turns.push({ ...turns[3]!, index: 20 });
   observers.forEach(notify => notify());
   await expect(worker.submissionDomState(page, baseline.domCache)).rejects.toThrow("duplicate");
+});
+
+test("a current submission error without an assistant fails immediately and ignores historical or quoted alerts", async () => {
+  const { createWindow } = require("@mixmark-io/domino");
+  const window = createWindow('<div data-turn-key="history"><div data-user-message-bubble>old</div><aside role="alert">Unknown error<button>Retry</button></aside></div>');
+  const prototype = Object.getPrototypeOf(window.document.querySelectorAll("[role=alert]"));
+  const originalBounds = Object.getOwnPropertyDescriptor(window.HTMLElement.prototype, "getBoundingClientRect");
+  const originalConnected = Object.getOwnPropertyDescriptor(window.HTMLElement.prototype, "isConnected");
+  Object.defineProperty(prototype, Symbol.iterator, { configurable: true, value: Array.prototype[Symbol.iterator] });
+  Object.defineProperty(window.HTMLElement.prototype, "isConnected", { configurable: true, get() { return true; } });
+  Object.defineProperty(window.HTMLElement.prototype, "getBoundingClientRect", { configurable: true,
+    value() { return { width: this.closest("[hidden]") ? 0 : 100, height: this.closest("[hidden]") ? 0 : 20 }; } });
+  const notifications: Array<() => void> = [];
+  const context = createContext({
+    document: window.document, performance: { timeOrigin: 1 },
+    getComputedStyle: () => ({ visibility: "visible" }),
+    MutationObserver: class { constructor(notify: () => void) { notifications.push(notify); } observe() {} },
+  });
+  const hiddenLocator = { filter() { return this; }, last() { return this; }, isVisible: async () => false };
+  const page = { isClosed: () => false, locator: () => hiddenLocator,
+    evaluate: async (callback: Function, options: unknown) => runInContext(`(${callback.toString()})`, context)(options),
+  } as unknown as Page;
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    waitForTurnDomOrExternalProgress: async () => { throw new Error("should not wait after a current submission error"); },
+  }) as any;
+  try {
+    const baseline = await worker.captureSubmissionBaseline(page);
+    const next = window.document.createElement("div"); next.setAttribute("data-turn-key", "next");
+    next.innerHTML = '<div data-user-message-bubble>new</div>'; window.document.body.appendChild(next);
+    notifications.forEach(notify => notify());
+    expect(await worker.currentSubmissionEvidence(page, baseline)).toBe("user_turn");
+    for (const html of [
+      '<div data-user-message-bubble><aside role="alert">Unknown error<button>Retry</button></aside></div>',
+      '<div data-user-message-bubble>new</div><div class="markdown"><aside role="alert">Unknown error<button>Retry</button></aside></div>',
+      '<div data-user-message-bubble>new</div><aside role="alert" hidden>Unknown error<button>Retry</button></aside>',
+      '<div data-user-message-bubble>new</div><aside role="alert">Projects could not be loaded<button>Retry</button></aside>',
+    ]) {
+      next.innerHTML = html; notifications.forEach(notify => notify());
+      expect(Array.from((await worker.submissionDomState(page)).failedUserIdentities)).toEqual(["group:user:history"]);
+      await expect(worker.waitForNewAssistantTurn(page, baseline)).rejects.toThrow("should not wait");
+    }
+    for (const text of ["Unknown error", "알 수 없는 오류"]) {
+      next.innerHTML = `<div data-user-message-bubble>new</div><aside role="alert">${text}<button>Retry</button></aside>`;
+      notifications.forEach(notify => notify());
+      await expect(worker.waitForNewAssistantTurn(page, baseline)).rejects.toMatchObject({
+        code: "chatgpt_submission_failed", retryable: false, status: 502,
+      });
+    }
+  } finally {
+    delete prototype[Symbol.iterator];
+    for (const [name, original] of [["getBoundingClientRect", originalBounds], ["isConnected", originalConnected]] as const) {
+      if (original) Object.defineProperty(window.HTMLElement.prototype, name, original);
+      else delete window.HTMLElement.prototype[name];
+    }
+  }
 });
 
 test("assistant tracking rebinds only one proven replacement after React detaches its node", () => {
@@ -2838,6 +2894,35 @@ test("only a size rejection of the current owned browser submission is non-retry
   observer.dispose();
   expect(page.listenerCount("request")).toBe(0);
   expect(page.listenerCount("response")).toBe(0);
+});
+
+test("only the current conversation POST can report a security or HTTP submission rejection", async () => {
+  const frame = {}, page = Object.assign(new EventEmitter(), { mainFrame: () => frame });
+  const failures: unknown[] = [];
+  const observer = new ChatGptSubmissionRejectionObserver(error => failures.push(error));
+  const request = { method: () => "POST", url: () => "https://chatgpt.com/backend-api/f/conversation", frame: () => frame };
+  const response = { request: () => request, status: () => 403, headers: () => ({ "cf-mitigated": "challenge" }),
+    json: () => { throw Error("must not read the response body"); } };
+  observer.begin(page as unknown as Page);
+  page.emit("response", response); expect(await observer.failure()).toBeUndefined();
+  page.emit("request", request); page.emit("response", response);
+  expect(await observer.failure()).toMatchObject({ code: "chatgpt_security_check_required", retryable: false });
+  expect(failures).toHaveLength(1);
+  for (const status of [400, 401, 429, 500, 503]) {
+    observer.begin(page as unknown as Page); page.emit("request", request);
+    page.emit("response", { ...response, status: () => status, headers: () => ({}) });
+    expect(await observer.failure()).toMatchObject({ code: "chatgpt_submission_failed", status, retryable: false });
+  }
+  observer.dispose();
+});
+
+test("a challenged new document stops before touching the composer", async () => {
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    activeComposer: async () => { throw Error("composer must not be touched"); },
+  }) as any;
+  const page = { url: () => "about:blank", goto: async () => ({ status: () => 403,
+    headers: () => ({ "cf-mitigated": "challenge", "content-type": "text/html" }) }) };
+  await expect(worker.prepareChatSurface(page)).rejects.toMatchObject({ code: "chatgpt_security_check_required", retryable: false });
 });
 
 test("effort readback rejects a changed selection or surface before activating Send", async () => {

@@ -103,3 +103,20 @@ preserved installation on failure. Active work leaves a prepared candidate pendi
 
 Offline fixture tests, builds and hashes are not evidence that a user's resumed Web task
 succeeded. That result must be observed separately after the user resumes it.
+# Account security checks and submission failures
+
+Each account partition observes its own ChatGPT responses. A `403` with
+`cf-mitigated: challenge` blocks new work on that account without changing its
+login cookies or another account. An idle sign-in tab may refresh once; running
+work and retained conversations are never refreshed. A persistent challenge is
+reported in the tab and requires the user to complete the normal browser check.
+An unrelated successful backend response does not establish recovery.
+
+New document challenges return `chatgpt_security_check_required` before prompt
+attachment. A rejected current conversation POST or a visible error in the
+accepted user group returns `chatgpt_submission_failed` without waiting for an
+assistant that will never appear. Historical errors and quoted message content
+do not reject the current turn. These failures are terminal for the exact trace;
+an automatic Responses replay returns HTTP 400 before constructing another
+browser. The user can resume with a new instruction after resolving the account
+error. No Retry button or model fallback is activated automatically.

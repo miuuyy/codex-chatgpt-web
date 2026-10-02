@@ -4,6 +4,7 @@ import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chatGptWebTraceId } from "../src/adapters/chatgpt-web";
+import { ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-error";
 import { runStructuredCompactionOnce } from "../src/adapters/chatgpt-web/compaction-handoff";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, closeTurnBrokers, RemoteTurnBroker, TurnBroker } from "../src/adapters/chatgpt-web/turn-broker";
@@ -916,6 +917,37 @@ test("a Codex retry after tab cancellation receives terminal HTTP 400 without a 
     expect(adapterConstructions).toBe(0);
   } finally {
     chatGptTurnSessions.clear();
+  }
+});
+
+test("a failed browser submission replay stops at HTTP admission without another browser", async () => {
+  const config = defaultConfig("browser-only"), turnId = "turn_security_check_replay";
+  const body = { model: "chatgpt-web/high", stream: true, client_metadata: {
+    "x-codex-turn-metadata": JSON.stringify({ thread_id: "thread_security_check_replay", turn_id: turnId }),
+  }, input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "current task" }],
+    internal_chat_message_metadata_passthrough: { turn_id: turnId } }] };
+  const parsed = parseRequest(body); routeChatGptWebRequest(parsed, config);
+  const traceId = chatGptWebTraceId(providerConfig(config), parsed);
+  for (const code of ["chatgpt_security_check_required", "chatgpt_submission_failed"]) {
+    chatGptTurnSessions.clear();
+    const failure = new ChatGptWebAdapterError("Current submission blocked", {
+      status: 409, errorType: "invalid_request_error", code, retryable: false,
+    });
+    const session = chatGptTurnSessions.getOrCreate("failed-submission-replay", () => ({
+      mode: "read-only", browser: Promise.reject(failure), physicalSettlement: Promise.resolve(),
+      trace: new ChatGptTraceFeed(), text: new ChatGptTextFeed(), cancel() {},
+    }), traceId);
+    await session.browserOutcome;
+    expect(chatGptTurnSessions.terminalSubmissionError("another-trace")).toBeUndefined();
+    let constructions = 0;
+    try {
+      const response = await responseRequest(new Request("http://127.0.0.1:17841/v1/responses", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+      }), config, () => { constructions++; throw Error("replay must not construct a browser"); });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { type: "invalid_request_error", code } });
+      expect(constructions).toBe(0);
+    } finally { chatGptTurnSessions.clear(); }
   }
 });
 
