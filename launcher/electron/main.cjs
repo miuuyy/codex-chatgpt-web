@@ -2,7 +2,6 @@ const { configureWindowsTrust } = require("./windows-trust.cjs");
 configureWindowsTrust();
 const languages = require("./languages.json");
 const fs = require("node:fs");
-const net = require("node:net");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { pathToFileURL } = require("node:url");
@@ -20,6 +19,7 @@ const {
   Tray,
 } = require("electron");
 const { BrowserHost, navigationErrorForLog } = require("./browser-host.cjs");
+const { configureBrowserDebugging, waitForBrowserDebugging, ownedDebuggingTarget, smokeBrowserDebugging } = require("./browser-debugging.cjs");
 const { BrowserControlServer } = require("./control-server.cjs");
 const { LimitsController } = require("./limits-controller.cjs");
 const { SOURCE_URL: LIMITS_SOURCE_URL } = require("./limits-store.cjs");
@@ -33,6 +33,7 @@ const {
 } = require("./logging.cjs");
 const { RuntimeHost } = require("./runtime.cjs");
 const { ensurePackagedRuntime, waitForPackagedRuntimeSource } = require("./runtime-install.cjs");
+const { verifyRuntimeInWorker } = require("./runtime-verification.cjs");
 const { RuntimeSupervisor } = require("./runtime-supervisor.cjs");
 const { DEVELOPMENT_PROFILE, resolveLauncherProfile } = require("./profile.cjs");
 const { runtimeBundlePaths } = require("./runtime-command.cjs");
@@ -108,19 +109,6 @@ let catalogVerificationTimer = null;
 let catalogVerificationInFlight = false;
 let updateController = null;
 let limitsController = null;
-
-function findFreePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      const port = address && typeof address === "object" ? address.port : 0;
-      server.close((error) => error ? reject(error) : resolve(port));
-    });
-  });
-}
 
 function send(channel, value) {
   if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
@@ -1087,8 +1075,13 @@ async function start() {
   }
   app.on("second-instance", () => showMainWindow());
   app.on("activate", () => showMainWindow());
+  const browserDebuggingStartup = configureBrowserDebugging(app);
+  if (process.platform === "linux") {
+    app.commandLine.appendSwitch("class", IS_DEV_PROFILE ? "codex-web-gpt-dev" : "codex-web-gpt");
+  }
 
-  await waitForPackagedRuntimeSource({ app, resourcesPath: process.resourcesPath });
+  if (app.isPackaged) await verifyRuntimeInWorker("wait", { version: app.getVersion(), resourcesPath: process.resourcesPath });
+  else await waitForPackagedRuntimeSource({ app, resourcesPath: process.resourcesPath });
   let installedRuntimeRoot = null;
   let runtimeRootResolved = false;
   const runtimeRootProvider = () => {
@@ -1104,16 +1097,13 @@ async function start() {
     }
     return installedRuntimeRoot;
   };
-  installedRuntimeRoot = runtimeRootProvider();
-
-  cdpPort = await findFreePort();
-  if (process.platform === "linux") {
-    app.commandLine.appendSwitch("class", IS_DEV_PROFILE ? "codex-web-gpt-dev" : "codex-web-gpt");
-  }
-  app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
-  app.commandLine.appendSwitch("remote-debugging-port", String(cdpPort));
+  if (app.isPackaged) {
+    installedRuntimeRoot = await verifyRuntimeInWorker("install", { version: app.getVersion(), coreHome: CORE_HOME, resourcesPath: process.resourcesPath });
+    runtimeRootResolved = true;
+  } else installedRuntimeRoot = runtimeRootProvider();
 
   await app.whenReady();
+  cdpPort = await waitForBrowserDebugging(browserDebuggingStartup);
 
   const stateStore = createStateStore(path.join(app.getPath("userData"), "launcher-state.json"));
   limitsController = new LimitsController(path.join(app.getPath("userData"), "limits.json"), {
@@ -1221,6 +1211,8 @@ async function start() {
     getBrowserInteractionMode: () => stateStore.read().browserInteractionMode,
   });
   await browserHost.ready();
+  const primaryTargetId = browserHost.view.webContents.getOrCreateDevToolsTargetId();
+  await ownedDebuggingTarget(cdpPort, primaryTargetId);
   const updaterRuntimeRoot = runtimeRootProvider();
   updateController = createUpdateController({
     currentVersion: app.getVersion(),
@@ -1250,11 +1242,12 @@ async function start() {
   await loadRenderer(mainWindow);
   if (!launcherSmokeTest) void updateController.checkOnce();
   if (launcherSmokeTest) {
+    await smokeBrowserDebugging(cdpPort, primaryTargetId);
     const smokeRuntimeRoot = runtimeRootProvider();
     if (app.isPackaged && !smokeRuntimeRoot) {
       throw new Error("Packaged launcher smoke test could not install its durable runtime");
     }
-    const versionInvocation = runtimeSupervisor.runtimeCommand(["--version"]);
+    const versionInvocation = await runtimeSupervisor.runtimeCommand(["--version"]);
     const versionResult = spawnSync(versionInvocation.executable, versionInvocation.args, {
       cwd: versionInvocation.cwd,
       encoding: "utf8",
@@ -1280,6 +1273,7 @@ async function start() {
       platform: process.platform,
       packaged: app.isPackaged,
       runtimeVerified: true,
+      browserCdpVerified: true,
     })}\n`);
     browserHost.destroy();
     await browserControl.close();

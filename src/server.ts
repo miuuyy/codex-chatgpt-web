@@ -2,6 +2,7 @@ import { chatGptWebTraceId, createChatGptWebAdapter } from "./adapters/chatgpt-w
 import { closeChatGptBrowserWorkers } from "./adapters/chatgpt-web/browser-worker";
 import { closeTurnBrokers, TurnBroker } from "./adapters/chatgpt-web/turn-broker";
 import { timingSafeEqual } from "node:crypto";
+import { recordCosUsage } from "./cos/dashboard";
 import { chatGptTurnSessions } from "./adapters/chatgpt-web/turn-execution";
 import {
   cancelAllStructuredCompactions,
@@ -14,8 +15,11 @@ import {
   extractChatGptTurnIdentity,
   extractCodexTurnIdentityFromBody,
   extractChatGptCompactionSourceRevision,
+  isChatGptCompactionContinuation,
 } from "./adapters/chatgpt-web/environment";
 import { rememberCompactionContinuation } from "./adapters/chatgpt-web/compaction-continuation";
+import { prepareNativeCompactionContinuation } from "./adapters/chatgpt-web/native-compaction-admission";
+import { authenticateNativeFailedTurnRetry } from "./adapters/chatgpt-web/native-turn-retry";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse } from "./bridge";
 import type { AppConfig } from "./config";
 import { providerConfig } from "./config";
@@ -547,6 +551,7 @@ export async function responseRequest(
   const compaction = parsed._compactionRequest === true;
   const compactionItem = compaction && parsed._compactionResponseFormat !== "message";
   const rememberCompletedResponse = (response: Record<string, unknown>): void => {
+    recordCosUsage(response, compaction);
     if (!compaction) {
       if (options.rememberState !== false) rememberResponseState(parsed._rawBody, response, { force: true });
       return;
@@ -574,6 +579,18 @@ export async function responseRequest(
     });
     rememberCompactionContinuation(parsed, identity, [source, v1Source], summary);
   };
+  // Native checkpoint + current turn_context are the durable control plane. Reconstruct their
+  // exact authority before transcript-derived trace/revision validation can reject a reconnect.
+  if (!compaction) {
+    try {
+      await prepareNativeCompactionContinuation(parsed, { signal: req.signal });
+    } catch (error) {
+      if (!(error instanceof ChatGptWebAdapterError)) throw error;
+      return Response.json({ error: { type: error.errorType, code: error.code, message: error.message } }, {
+        status: error.status, headers: { "retry-after": "1" },
+      });
+    }
+  }
   if (compaction && route.backendModel === CHATGPT_WEB_LUNA_BACKEND_MODEL) {
     return formatErrorResponse(
       409,
@@ -601,16 +618,20 @@ export async function responseRequest(
     // trace tombstone; preserve the adapter's existing strict validation/error path below.
     const message = error instanceof Error ? error.message : String(error);
     if (message === CHATGPT_TURN_REVISION_CONFLICT_MESSAGE) {
-      // Codex can reopen an interrupted task with only refreshed developer/skill context under a
-      // new turn_id. Its last human prompt still belongs to the stopped turn and must not be
-      // replayed as new work. HTTP 400 makes that malformed recovery request terminal instead of
-      // allowing Codex to retry it as an upstream 502.
-      return formatErrorResponse(400, "invalid_request_error", message);
-    }
-    if (!message.includes("requires native Codex turn_id metadata")
+      if (!authenticateNativeFailedTurnRetry(parsed)) return formatErrorResponse(400, "invalid_request_error", message);
+      traceId = chatGptWebTraceId(provider, parsed);
+    } else if (!message.includes("requires native Codex turn_id metadata")
       && !message.includes("requires a current-turn user message")) throw error;
   }
   const cancelledError = traceId ? chatGptTurnSessions.cancelledError(traceId) : undefined;
+  const submissionError = traceId ? chatGptTurnSessions.terminalSubmissionError(traceId) : undefined;
+  if (submissionError) {
+    // Native Codex retries unfamiliar streamed errors regardless of their retryable flag.
+    // Reject this exact failed trace at admission, before another browser can send it.
+    return Response.json({ error: {
+      type: "invalid_request_error", code: submissionError.code, message: submissionError.message,
+    } }, { status: 400 });
+  }
   if (cancelledError) {
     // Codex retries unknown streamed response.failed codes. A replay after the user explicitly
     // closed the only browser document is instead a terminal client state: repeating that exact
@@ -628,6 +649,17 @@ export async function responseRequest(
     });
   }
   const adapter = adapterFactory(provider);
+  try {
+    await adapter.prepareTurn?.(parsed, { headers: req.headers, abortSignal: req.signal });
+  } catch (error) {
+    // An invalid control envelope is a terminal admission failure, not a broken SSE connection
+    // that native Codex retries five times. No browser or tool execution has been admitted yet.
+    return Response.json({ error: {
+      type: error instanceof ChatGptWebAdapterError ? error.errorType : "invalid_request_error",
+      message: error instanceof Error ? error.message : String(error),
+      code: error instanceof ChatGptWebAdapterError ? error.code : "turn_preflight_failed",
+    } }, { status: error instanceof ChatGptWebAdapterError ? error.status : 400 });
+  }
   const queue = new AsyncEventQueue<AdapterEvent>();
   const abort = new AbortController();
   if (req.signal.aborted) abort.abort();

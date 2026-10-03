@@ -6,16 +6,16 @@ type EffortMenu = Awaited<ReturnType<typeof activateChatGptEffortMenu>>;
 
 function familyError(family: ChatGptWebModelFamily, cause?: unknown): ChatGptWebAdapterError {
   return new ChatGptWebAdapterError(
-    `ChatGPT model ${family} could not be selected and verified. The pending message was not sent. Check the model in the browser; if ChatGPT uses an unsupported language, select English in Settings → General → Language and reload it.`,
+    `ChatGPT model ${family} could not be selected and verified. The pending message was not sent. Check the selected model and account availability in the browser, then retry.`,
     { status: 400, errorType: "invalid_request_error", code: "model_version_unavailable", retryable: false, cause },
   );
 }
 
 function familyOption(menu: EffortMenu, family: ChatGptWebModelFamily) {
   return menu.menu.getByRole("menuitemradio", {
-    name: family === "5.6" ? /^GPT[-\s]?5\.6\s+Sol(?:\s+Pro)?$/i
+    name: family === "5.6" ? /^GPT[-\s]?5\.6(?:\s+Sol)?(?:\s*(?:\(Web\)|\(웹\)))?(?:\s+Pro)?$/i
       // Simplified/Traditional Chinese and Japanese share 最新; Korean uses 최신.
-      : /^(?:Latest|最新|최신|GPT[-\s]?6(?:\s+Astra)?(?:\s+Pro)?)$/i,
+      : /^(?:Latest|最新|최신|GPT[-\s]?6(?:\s+Astra)?)(?:\s*(?:\(Web\)|\(웹\)))?(?:\s+Pro)?$/i,
     exact: true,
     includeHidden: true,
   });

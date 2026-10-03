@@ -23,6 +23,7 @@ import {
 import { formatDoctorReport, runDoctor } from "./doctor";
 import { runChatGptMcpMain } from "./adapters/chatgpt-web/mcp-main";
 import { runCommand } from "./process";
+import { startCosDashboard } from "./cos/dashboard";
 import { startServer } from "./server";
 import { assertServiceIdle, cancelActiveTurns, getServiceStatus, installService, interruptActiveTurn, restartService, startService, stopService, uninstallService } from "./service";
 import { existingFullSetupCredentials, preflightSetup, setup, type SetupOptions } from "./setup";
@@ -604,6 +605,13 @@ async function main(): Promise<void> {
     assertNoArgs(args);
     const config = loadConfig();
     const server = startServer(config);
+    try {
+      startCosDashboard(async () => {
+        const health = await fetch(`http://127.0.0.1:${server.port}/healthz`, { signal: AbortSignal.timeout(2000) });
+        const value = await health.json() as Record<string, unknown>;
+        return { version: value.version, active_http_turns: value.active_http_turns, active_browser_turns: value.active_browser_turns, accepting_turns: value.accepting_turns };
+      });
+    } catch { process.stderr.write("CoS dashboard could not start; the core runtime remains available.\n"); }
     stdout.write(`codex-chatgpt-web ${VERSION} listening on http://${config.host}:${server.port}/v1 (${config.mode})\n`);
     await new Promise<void>(() => {});
   } else if (command === "dev") await runDevCommand(args);

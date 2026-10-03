@@ -14,7 +14,7 @@ const {
   validateConnectorName,
   validateConnectorNameSuffix,
 } = require("./connector-identity.cjs");
-const { embeddedRuntimeInvocation, runtimeInvocation } = require("./runtime-command.cjs");
+const { runtimeInvocationAsync } = require("./runtime-command.cjs");
 const { redactText } = require("./logging.cjs");
 const { DETACH_OWNED_CHILD, terminateOwnedProcessTree } = require("./process-tree.cjs");
 const { windowsTrustEnvironment } = require("./windows-trust.cjs");
@@ -385,7 +385,7 @@ class RuntimeHost {
 
   command(args) {
     if (this.runtimeRootProvider) this.installedRuntimeRoot = this.runtimeRootProvider();
-    return runtimeInvocation({
+    return runtimeInvocationAsync({
       app: this.app,
       sourceRoot: this.sourceRoot,
       installedRuntimeRoot: this.installedRuntimeRoot,
@@ -615,8 +615,8 @@ class RuntimeHost {
     this.logger.info("runtime.operation_started", { name, args: args.map((arg) => /key|token/i.test(arg) ? "[redacted]" : arg) });
     try {
       const invocation = options.embedded
-        ? embeddedRuntimeInvocation({ app: this.app, sourceRoot: this.sourceRoot, args })
-        : this.command(args);
+        ? await runtimeInvocationAsync({ app: this.app, sourceRoot: this.sourceRoot, args, embedded: true })
+        : await this.command(args);
       const result = await new Promise((resolve, reject) => {
         const environment = windowsTrustEnvironment({
           ...(options.environment ?? process.env),

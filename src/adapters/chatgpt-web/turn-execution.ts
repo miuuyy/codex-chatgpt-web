@@ -796,6 +796,19 @@ export class ChatGptTurnSessions {
     return undefined;
   }
 
+  terminalSubmissionError(traceId: string): ChatGptWebAdapterError | undefined {
+    for (const session of this.entries.values()) {
+      if (session.traceId !== traceId) continue;
+      const outcome = session.settledOutcome();
+      if (outcome?.type === "error" && outcome.error instanceof ChatGptWebAdapterError
+        && !outcome.error.retryable
+        && (outcome.error.code === "chatgpt_submission_failed" || outcome.error.code === "chatgpt_security_check_required")) {
+        return outcome.error;
+      }
+    }
+    return undefined;
+  }
+
   activeCount(): number {
     this.prune();
     let active = 0;

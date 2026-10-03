@@ -51,6 +51,22 @@ export function isAcceptedCompactionContinuation(
   return acceptedCheckpoint(parsed, identity)?.checkpoint.sourceHashes.has(sourceDigest(source)) === true;
 }
 
+/** A returned checkpoint does not revive a source explicitly interrupted afterward. */
+export function isCompactionContinuationInterrupted(parsed: CodexParsedRequest, identity: ChatGptTurnIdentity): boolean {
+  const accepted = acceptedCheckpoint(parsed, identity);
+  if (!accepted) return false;
+  const input = (parsed._rawBody as { input?: unknown[] } | undefined)?.input;
+  return (input || []).slice(accepted.summaryIndex + 1).some(value => {
+    const item = value as Record<string, unknown> | null;
+    if (!item || item.type !== "message" || item.role !== "user") return false;
+    const text = typeof item.content === "string" ? item.content : Array.isArray(item.content)
+      ? item.content.map(part => part?.text ?? "").join("\n") : "";
+    const owner = (item.internal_chat_message_metadata_passthrough as { turn_id?: unknown } | undefined)?.turn_id;
+    return /^<turn_aborted>[\s\S]*<\/turn_aborted>$/.test(text.trim())
+      && (owner === identity.turnId || owner === accepted.checkpoint.source.turnId);
+  });
+}
+
 /** Native compaction may retain only its summary; recover the task solely from our completed handoff. */
 export function recoverCompactionInstruction(
   parsed: CodexParsedRequest,

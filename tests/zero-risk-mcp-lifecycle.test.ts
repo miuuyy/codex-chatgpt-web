@@ -285,6 +285,7 @@ describe("Zero Risk public MCP ABI", () => {
       command: process.execPath,
       args: ["src/cli.ts", "mcp", "--contract", "safe", "--broker-socket", socketPath],
       cwd: process.cwd(),
+      env: { CODEX_CHATGPT_WEB_HOME: join(root, "mcp-contract-profile") },
       stderr: "pipe",
     });
     const client = new Client({ name: "codex-safe-contract-test", version: "1.0.0" });

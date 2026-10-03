@@ -1348,6 +1348,27 @@ test("crash-loop diagnostics include the last redacted child failure", () => {
   }
 });
 
+test("long-running consecutive recovery failures cannot escape the sliding restart window", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-consecutive-recovery-"));
+  const operations = [];
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "6.1.4", isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root, coreHome: root, browserDescriptorPath: path.join(root, "launcher.json"),
+    publishOperation: operation => operations.push(operation),
+  });
+  supervisor.restartHistory.tunnel = [Date.now() - 120_000];
+  supervisor.consecutiveRecoveryFailures.tunnel = MAX_RESTARTS_PER_WINDOW;
+  try {
+    supervisor.scheduleRecovery("tunnel");
+    assert.equal(supervisor.restartTimers.tunnel, null);
+    assert.equal(supervisor.recoveryDisabled.tunnel, true);
+    assert.match(operations.at(-1).message, /consecutive failures/);
+    supervisor.scheduleRecovery("tunnel");
+    assert.equal(operations.length, 1);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("launcher supervisor refuses shutdown while a Codex turn is active and compensates the drain", async () => {
   const actions = [];
   const supervisor = new RuntimeSupervisor({

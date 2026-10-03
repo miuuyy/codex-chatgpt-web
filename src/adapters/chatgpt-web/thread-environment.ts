@@ -21,6 +21,7 @@ import {
   type ChatGptTurnEnvironment,
 } from "./environment";
 import { resolveCurrentCodexRolloutEnvironment } from "./codex-rollout-environment";
+import { admittedNativeCompactionEnvironment } from "./native-compaction-admission";
 
 interface StoredThreadEnvironment {
   cwd: string;
@@ -159,6 +160,11 @@ export class ChatGptThreadEnvironmentStore {
 
   resolve(parsed: CodexParsedRequest): ChatGptTurnEnvironment {
     const identity = extractChatGptTurnIdentity(parsed);
+    const admitted = admittedNativeCompactionEnvironment(parsed);
+    if (admitted) {
+      if (identity.threadId) this.set(identity.threadId, admitted);
+      return admitted;
+    }
     try {
       const environment = extractChatGptTurnEnvironment(parsed);
       if (identity.threadId) this.set(identity.threadId, environment);

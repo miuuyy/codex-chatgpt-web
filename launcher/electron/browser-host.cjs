@@ -1459,9 +1459,14 @@ class BrowserHost {
         || !Number.isSafeInteger(progress.activeToolCalls) || progress.activeToolCalls < 0) {
         throw new Error("Browser turn progress is invalid");
       }
+      const changed = tab.turnProgress?.stage !== progress.stage
+        || tab.turnProgress?.activeToolCalls !== progress.activeToolCalls;
       tab.turnProgress = { stage: progress.stage, activeToolCalls: progress.activeToolCalls };
       recordTurnActivity(tab);
-      this.publishState?.(this.snapshot());
+      if (changed || Date.now() - (tab.lastProgressPublishedAt ?? 0) >= 5_000) {
+        tab.lastProgressPublishedAt = Date.now();
+        this.publishState?.(this.snapshot());
+      }
     }
     tab.lastHeartbeatAt = Date.now();
     if (refreshViewport) {

@@ -33,6 +33,10 @@ function runtimeInvocation({ app, sourceRoot, installedRuntimeRoot, args }) {
   const { runtimeRoot, executable, entrypoint } = runtimeBundlePaths(installedRuntimeRoot);
   if (!fs.existsSync(executable)) throw new Error(`Bundled Bun runtime is missing: ${executable}`);
   if (!fs.existsSync(entrypoint)) throw new Error(`Bundled runtime entrypoint is missing: ${entrypoint}`);
+  // Deferred require avoids the runtime-install -> runtime-command dependency cycle.
+  require("./runtime-install.cjs").validateRuntimeBundle(runtimeRoot, {
+    version: app.getVersion(), platform: process.platform, arch: process.arch,
+  });
   return {
     executable,
     args: [entrypoint, ...args],
@@ -46,6 +50,9 @@ function embeddedRuntimeInvocation({ app, sourceRoot, args }) {
   const { runtimeRoot, executable, entrypoint } = packagedRuntimePaths(process.resourcesPath);
   if (!fs.existsSync(executable)) throw new Error(`Embedded Bun runtime is missing: ${executable}`);
   if (!fs.existsSync(entrypoint)) throw new Error(`Embedded runtime entrypoint is missing: ${entrypoint}`);
+  require("./runtime-install.cjs").validateRuntimeBundle(runtimeRoot, {
+    version: app.getVersion(), platform: process.platform, arch: process.arch,
+  });
   return {
     executable,
     args: [entrypoint, ...args],
@@ -53,9 +60,24 @@ function embeddedRuntimeInvocation({ app, sourceRoot, args }) {
   };
 }
 
+function runtimeInvocationAsync({ app, sourceRoot, installedRuntimeRoot, args, embedded = false }) {
+  if (!Array.isArray(args)) throw new Error("Runtime arguments must be an array");
+  const commandArgs = [...args];
+  if (!app.isPackaged) return sourceRuntimeInvocation(sourceRoot, commandArgs);
+  const root = embedded ? packagedRuntimePaths(process.resourcesPath).runtimeRoot : installedRuntimeRoot;
+  if (!root || !path.isAbsolute(root)) throw new Error("Packaged launcher runtime has not been installed into durable local storage");
+  return require("./runtime-verification.cjs").verifyRuntimeInWorker("validate", {
+    root, identity: { version: app.getVersion(), platform: process.platform, arch: process.arch },
+  }).then(() => {
+    const { runtimeRoot, executable, entrypoint } = runtimeBundlePaths(root);
+    return { executable, args: [entrypoint, ...commandArgs], cwd: runtimeRoot };
+  });
+}
+
 module.exports = {
   embeddedRuntimeInvocation,
   packagedRuntimePaths,
   runtimeBundlePaths,
   runtimeInvocation,
+  runtimeInvocationAsync,
 };

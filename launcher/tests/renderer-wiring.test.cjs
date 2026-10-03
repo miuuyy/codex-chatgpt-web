@@ -224,23 +224,28 @@ test("startup failure stays visible on another launch and Retry exits the failed
   assert.deepEqual(sandbox.process.env, { CODEX_HOME: "original-codex-home" });
 });
 
-test("packaged runtime is verified before launcher browser surfaces can bind ports", () => {
+test("debugging switches precede async verification; runtime and CDP are verified before owned surfaces", () => {
   const start = electronMain.indexOf("async function start()");
   const runtimeValidation = electronMain.indexOf("installedRuntimeRoot = runtimeRootProvider();", start);
-  const cdpPortAllocation = electronMain.indexOf("cdpPort = await findFreePort();", start);
+  const cdpConfiguration = electronMain.indexOf("configureBrowserDebugging(app)", start);
+  const runtimeWorker = electronMain.indexOf("await verifyRuntimeInWorker", start);
+  const cdpReadiness = electronMain.indexOf("cdpPort = await waitForBrowserDebugging", start);
   const windowCreation = electronMain.indexOf("mainWindow = createWindow({", start);
   const controlServerStart = electronMain.indexOf("browserControl = await new BrowserControlServer({", start);
   const browserReady = electronMain.indexOf("await browserHost.ready();", start);
 
   assert.ok(runtimeValidation > start, "startup must eagerly verify the packaged runtime");
+  assert.ok(cdpConfiguration > start && cdpConfiguration < runtimeWorker, "Chromium switches must be set before startup can yield to Electron ready");
   for (const [surface, position] of [
-    ["CDP port allocation", cdpPortAllocation],
+    ["CDP readiness", cdpReadiness],
     ["launcher window", windowCreation],
     ["browser control server", controlServerStart],
     ["embedded browser", browserReady],
   ]) {
     assert.ok(position > runtimeValidation, `${surface} must start only after runtime verification`);
   }
+  assert.match(electronMain, /await smokeBrowserDebugging\(cdpPort, primaryTargetId\)/);
+  assert.match(electronMain, /browserCdpVerified: true/);
 });
 
 test("DEV launcher exposes its profile and supervises only its Full-mode MCP runtime", () => {

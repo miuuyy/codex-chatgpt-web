@@ -30,6 +30,9 @@ import {
   resolveDevProfilePaths,
 } from "./profile";
 import { DEV_CONFIG_PURPOSE, DEV_LAUNCHER_PROFILE } from "./constants";
+import { readCosConfig } from "../cos/config";
+import { evaluateConfiguredGoal, goalLoopController } from "../cos/goal-loop";
+import { recordCosEvent } from "../cos/dashboard";
 
 const DEV_HELP = `Codex Web GPT DEV chat
 
@@ -180,22 +183,35 @@ async function assertLauncherReady(config: ReturnType<typeof loadConfig>): Promi
   }
 }
 
-async function executeMessage(driver: DevChatDriver, state: DevChatState, message: string): Promise<void> {
+async function executeMessage(driver: DevChatDriver, state: DevChatState, message: string, signal?: AbortSignal): Promise<void> {
+  const goals = goalLoopController();
+  const enabled = readCosConfig().goalLoop;
+  if (enabled) goals.begin(state.threadId, message);
+  let next: string | undefined = message;
+  while (next && !signal?.aborted) {
   const renderer = new EventRenderer();
   try {
-    const result = await driver.send(state, message, event => renderer.write(event));
+    const result = await driver.send(state, next, event => renderer.write(event));
     renderer.finish();
     stdout.write(`${dim(`usage ${result.usage.inputTokens.toLocaleString("en-US")} input + ${result.usage.outputTokens.toLocaleString("en-US")} output · context ${statusLine(result.status)}`)}\n`);
+    recordCosEvent("turn_completed");
+    if (enabled) await goals.evaluate(state.threadId, result.text, (objective, answer) => evaluateConfiguredGoal(objective, answer, signal), signal);
+    next = enabled && !signal?.aborted ? goals.consume(state.threadId) : undefined;
+    if (next) recordCosEvent("goal_dispatched");
   } catch (error) {
     renderer.finish();
+    goals.cancel(state.threadId);
     throw error;
   }
+  }
+  if (signal?.aborted) goals.cancel(state.threadId);
 }
 
 async function interactive(driver: DevChatDriver, state: DevChatState): Promise<void> {
   stdout.write(`${dim("Type a message or /help. Ctrl-C or Ctrl-D exits.")}\n`);
   const reader = createInterface({ input: stdin, output: stdout });
-  reader.on("SIGINT", () => reader.close());
+  const cancellation = new AbortController();
+  reader.on("SIGINT", () => { cancellation.abort(); goalLoopController().cancel(state.threadId); reader.close(); });
   try {
     for (;;) {
       let line: string;
@@ -204,10 +220,11 @@ async function interactive(driver: DevChatDriver, state: DevChatState): Promise<
       const value = line.trim();
       if (!value) continue;
       try {
-        if (!value.startsWith("/")) {
-          await executeMessage(driver, state, value);
+        if (!value.startsWith("/") || value.startsWith("/goal ")) {
+          await executeMessage(driver, state, value, cancellation.signal);
           continue;
         }
+        goalLoopController().cancel(state.threadId);
         const [command, argument, ...rest] = value.slice(1).split(/\s+/);
         if (command === "exit" || command === "quit") break;
         if (command === "help") {
@@ -257,6 +274,8 @@ async function interactive(driver: DevChatDriver, state: DevChatState): Promise<
       }
     }
   } finally {
+    cancellation.abort();
+    goalLoopController().cancel(state.threadId);
     reader.close();
   }
 }

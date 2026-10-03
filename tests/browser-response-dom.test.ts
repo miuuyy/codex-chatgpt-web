@@ -2,10 +2,27 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { createContext, runInContext } from "node:vm";
 import type { Locator } from "playwright-core";
-import { ChatGptBrowserWorker, ChatGptCompletionTracker, ChatGptVisibleTraceTracker, CHATGPT_COMPLETION_SETTLE_MS } from "../src/adapters/chatgpt-web/browser-worker";
+import { ChatGptBrowserWorker, ChatGptCompletionTracker, ChatGptVisibleTraceTracker, chatGptTurnIsComplete, CHATGPT_COMPLETION_SETTLE_MS } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptMarkdownBuffer, type ChatGptMarkdownSegment } from "../src/adapters/chatgpt-web/markdown";
 
 const smokeHtml = readFileSync(new URL("./fixtures/chatgpt-dil-smoke.html", import.meta.url), "utf8");
+test("React evidence is confined to the current assistant message and cannot bypass DOM completion", () => {
+  const source = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
+  const block = source.split("// CHATGPT_BOUND_FIBER_BEGIN")[1]!.split("// CHATGPT_BOUND_FIBER_END")[0]!;
+  const script = new Bun.Transpiler({ loader: "ts" }).transformSync(block + "\nglobalThis.__boundFiberStatus = boundFiberStatus;");
+  const status = runInContext(script, createContext({ Set, Object })) as (root: unknown) => string | undefined;
+  const element = (id: string, message: unknown) => ({
+    getAttribute: () => id, querySelectorAll: () => [], parentElement: null,
+    contains: () => true, __reactFiber$fixture: { memoizedProps: { message } },
+  });
+  expect(status(element("current", { id: "other", author: { role: "assistant" }, status: "finished_successfully" }))).toBeUndefined();
+  expect(status(element("current", { id: "current", author: { role: "user" }, status: "finished_successfully" }))).toBeUndefined();
+  expect(status(element("current", { id: "current", author: { role: "assistant" }, status: "in_progress" }))).toBe("in_progress");
+  const complete = { responsePresent: true, running: false, currentText: "answer", completionActionVisible: true };
+  expect(chatGptTurnIsComplete({ ...complete, boundMessageStatus: "in_progress" })).toBe(false);
+  expect(chatGptTurnIsComplete({ ...complete, running: true, boundMessageStatus: "finished_successfully" })).toBe(false);
+  expect(chatGptTurnIsComplete({ ...complete, completionActionVisible: false, boundMessageStatus: "finished_successfully" })).toBe(false);
+});
 const powerCompleteHtml = readFileSync(new URL("./fixtures/chatgpt-power-complete.html", import.meta.url), "utf8");
 const powerStreamingHtml = readFileSync(new URL("./fixtures/chatgpt-power-streaming.html", import.meta.url), "utf8");
 // These captures are also edited as strings below. Windows checkouts use CRLF;

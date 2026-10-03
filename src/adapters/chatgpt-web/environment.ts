@@ -1,8 +1,9 @@
 import { homedir } from "node:os";
+import { isDeepStrictEqual } from "node:util";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isReadableCompactionSummaryText, OPAQUE_COMPACTION_NOTE } from "../../responses/compaction";
 import type { CodexContentPart, CodexParsedRequest, CodexTool } from "../../types";
-import { isAcceptedCompactionContinuation, recoverCompactionInstruction } from "./compaction-continuation";
+import { isAcceptedCompactionContinuation, isCompactionContinuationInterrupted, recoverCompactionInstruction } from "./compaction-continuation";
 
 export type ChatGptSandboxPolicy =
   | { type: "dangerFullAccess" }
@@ -48,6 +49,18 @@ export interface ChatGptTurnUserRevision {
 
 export const CHATGPT_TURN_REVISION_CONFLICT_MESSAGE =
   "ChatGPT web current user message conflicts with native Codex turn_id metadata";
+
+const verifiedRetries = new WeakMap<CodexParsedRequest, { identity: ChatGptTurnIdentity; source: ChatGptTurnUserRevision }>();
+
+/** Internal evidence from the local native rollout, never from a request-body flag. */
+export function rememberVerifiedNativeRetry(parsed: CodexParsedRequest, source: ChatGptTurnUserRevision): void {
+  verifiedRetries.set(parsed, { identity: extractChatGptTurnIdentity(parsed), source: structuredClone(source) });
+}
+
+function isVerifiedNativeRetry(parsed: CodexParsedRequest, identity: ChatGptTurnIdentity, source: ChatGptTurnUserRevision): boolean {
+  const proof = verifiedRetries.get(parsed);
+  return proof !== undefined && isDeepStrictEqual(proof.identity, identity) && isDeepStrictEqual(proof.source, source);
+}
 
 export class MissingTrustedCodexEnvironmentError extends Error {
   constructor(field: string) {
@@ -254,8 +267,12 @@ export function extractChatGptTurnUserRevision(parsed: CodexParsedRequest): unkn
   if (!revision) throw new Error("ChatGPT web requires a current-turn user message for browser-session replay");
   // A pre-turn compact may summarize an earlier user message before native Codex continues
   // under its new turn id without adding a new human message. Accept only our exact completed
-  // checkpoint; an arbitrary older prompt is still not a new instruction or a valid handoff.
-  if (revision.turnId !== undefined && revision.turnId !== turnId
+  // checkpoint or a legitimate retry/recovery of an aborted turn; an arbitrary foreign prompt
+  // is still not a new instruction or a valid handoff.
+  const isAbortedRetry = revision.turnId !== undefined && revision.turnId !== turnId
+    && (priorChatGptAbortedTurnIds(parsed).includes(revision.turnId) || isVerifiedNativeRetry(parsed, identity, revision))
+    && !isCompactionContinuationInterrupted(parsed, identity);
+  if (revision.turnId !== undefined && revision.turnId !== turnId && !isAbortedRetry
     && (priorChatGptAbortedTurnIds(parsed).includes(revision.turnId)
       || !isAcceptedCompactionContinuation(parsed, identity, revision))) {
     throw new Error(CHATGPT_TURN_REVISION_CONFLICT_MESSAGE);

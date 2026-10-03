@@ -1,6 +1,6 @@
 import { CHATGPT_WEB_PLATFORM_RESERVE_TOKENS, chatGptWebImageTokenReserve } from "../../chatgpt-web-models";
 import { skillFileTokens } from "./skill-attachments";
-import { estimateTokens } from "../../lib/token-estimate";
+import { estimateTokens, type TokenEstimator } from "../../lib/token-estimate";
 import {
   formatChatGptWebMultipartCommit,
   formatChatGptWebMultipartStage,
@@ -48,12 +48,13 @@ export function estimateCompiledChatGptWebMessageTokens(
 export function estimateCompiledChatGptWebInputTokens(
   compiled: CompiledChatGptWebPrompt,
   modelId: string,
+  estimate: TokenEstimator = estimateTokens,
 ): number {
   const imageTokens = estimateChatGptWebImageTokens(compiled);
   const messageTokens = compiledChatGptWebMessages(compiled)
-    .reduce((total, message) => total + estimateTokens(message, modelId), 0);
+    .reduce((total, message) => total + estimate(message, modelId), 0);
   const acknowledgementTokens = compiled.multipart
-    ? compiled.multipart.parts.slice(0, -1).reduce((total, payload, index) => total + estimateTokens(
+    ? compiled.multipart.parts.slice(0, -1).reduce((total, payload, index) => total + estimate(
       formatChatGptWebMultipartStage(
         payload,
         TOKEN_ESTIMATE_TRANSACTION,

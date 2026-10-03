@@ -87,7 +87,8 @@ test("reports a genuinely rejected edit as a failure", () => {
   expect(insertPlainTextIntoComposer(composer, "staged part")).toBeFalse();
 });
 
-test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("a selected connector never appends a new request to an old draft", async () => {
+for (const modern of [false, true]) for (const hasStaleDraft of [false, true])
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)(`a selected ${modern ? "modern" : "classic"} connector never appends to ${hasStaleDraft ? "an old" : "an empty"} draft`, async () => {
   const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
   try {
     const page = await browser.newPage();
@@ -95,29 +96,26 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("a selected connector never a
       config: { appName: "Codex Native2" },
     });
     const prompt = "Task context\n".repeat(5_000) + "\nrequest_id: current";
-    for (const modern of [false, true]) {
-      const pill = modern
-        ? '<span app-mention-path="app://fixture" app-mention-display-name="Codex Native2" contenteditable="false">Codex Native2</span>'
-        : '<span data-id="plugin:fixture" data-keyword="Codex Native2" contenteditable="false">Codex Native2</span>';
-      for (const staleDraft of ["", prompt.replace("current", "earlier")]) {
-        await page.setContent(`<form><div id="prompt-textarea" contenteditable="true" style="min-height:40px"></div></form>
-          <div id="mention-menu" hidden><div class="__menu-item" tabindex="0" data-highlighted><span>Codex Native2</span></div></div>`);
-        await page.locator("#prompt-textarea").evaluate((element, { pill, staleDraft }) => {
-          element.innerHTML = pill;
-          element.appendChild(document.createTextNode(staleDraft ? " " + staleDraft : ""));
-          const menu = document.getElementById("mention-menu")!;
-          element.addEventListener("input", () => { menu.hidden = element.textContent !== "@codex"; });
-          element.addEventListener("keydown", event => {
-            if ((event as KeyboardEvent).key !== "Enter" || menu.hidden) return;
-            event.preventDefault();
-            element.innerHTML = pill;
-            menu.hidden = true;
-          });
-        }, { pill, staleDraft });
-        await worker.attachPrompt(page, prompt, true);
-        expect(await worker.attachedPromptText(page)).toBe(prompt);
-        expect(await worker.connectorIsSelected(page.locator("#prompt-textarea"))).toBeTrue();
-      }
-    }
+    const pill = modern
+      ? '<span app-mention-path="app://fixture" app-mention-display-name="Codex Native2" contenteditable="false">Codex Native2</span>'
+      : '<span data-id="plugin:fixture" data-keyword="Codex Native2" contenteditable="false">Codex Native2</span>';
+    const staleDraft = hasStaleDraft ? prompt.replace("current", "earlier") : "";
+    await page.setContent(`<form><div id="prompt-textarea" contenteditable="true" style="min-height:40px"></div></form>
+      <div id="mention-menu" hidden><div class="__menu-item" tabindex="0" data-highlighted><span>Codex Native2</span></div></div>`);
+    await page.locator("#prompt-textarea").evaluate((element, { pill, staleDraft }) => {
+      element.innerHTML = pill;
+      element.appendChild(document.createTextNode(staleDraft ? " " + staleDraft : ""));
+      const menu = document.getElementById("mention-menu")!;
+      element.addEventListener("input", () => { menu.hidden = element.textContent !== "@codex"; });
+      element.addEventListener("keydown", event => {
+        if ((event as KeyboardEvent).key !== "Enter" || menu.hidden) return;
+        event.preventDefault();
+        element.innerHTML = pill;
+        menu.hidden = true;
+      });
+    }, { pill, staleDraft });
+    await worker.attachPrompt(page, prompt, true);
+    expect(await worker.attachedPromptText(page)).toBe(prompt);
+    expect(await worker.connectorIsSelected(page.locator("#prompt-textarea"))).toBeTrue();
   } finally { await browser.close(); }
 }, 45_000);

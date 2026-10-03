@@ -4,6 +4,7 @@ import { chromium } from "playwright-core";
 import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { readChatGptUsageModel } from "../src/adapters/chatgpt-web/limits";
+import { assertChatGptModelFamily } from "../src/adapters/chatgpt-web/model-selection";
 
 // Mirrors ChatGPT's power picker as captured live on 2026-09-29 (English, Pro account): the slider
 // announcement reads only "Pro, 5 of 5." and the model version appears in the "Select model"
@@ -141,4 +142,48 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("model evidence excludes inac
   } finally {
     await browser.close();
   }
+}, 60_000);
+
+// Live 2026-10-02: this 3-step account shows only Instant/Medium/High in its
+// header and announcement, with GPT-5.6 Sol checked in the collapsed family view.
+for (const [effort, index, label] of [["low", 0, "Instant"], ["medium", 1, "Medium"], ["high", 2, "High"]] as const)
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)(`explicit GPT-5.6 verifies an effort-only picker at ${effort}`, async () => {
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  try {
+    const page = await browser.newPage();
+    page.setDefaultTimeout(5000);
+    const fixture = FIXTURE
+      .replace('aria-checked="true" data-model-selected="true"', 'aria-checked="false"')
+      .replace('aria-checked="false" tabindex="-1"><div data-menu-row-content="true"><span>GPT-5.6 Sol', 'aria-checked="true" tabindex="-1"><div data-menu-row-content="true"><span>GPT-5.6 Sol')
+      .replace('id="header-effort"', 'id="header-effort" data-effort-only="true"')
+      .replace('const efforts = ["Instant", "Medium", "High", "Extra High", "Pro"];', 'const efforts = ["Instant", "Medium", "High"];')
+      .replace('aria-valuemax="4"', 'aria-valuemax="2"').replace('Math.min(4, value', 'Math.min(2, value')
+      .replace('id="picker" role="menu"', 'id="picker" role="menu" style="opacity:0"');
+    await page.setContent('<script>window.pickerHeader = () => ""; window.pickerStatus = (effort, value) => effort + ", " + (value + 1) + " of 3.";</script><div style="opacity:0">' + fixture + '</div>');
+    const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+    const mode = await worker.selectModelAndEffort(page, CHATGPT_WEB_MODEL_ID, effort, {
+      localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false,
+    }, undefined, true, "5.6");
+    expect(mode.selection.label).toBe(label);
+    expect(await page.locator('[role="slider"]').getAttribute("aria-valuenow")).toBe(String(index));
+    expect(await page.locator("#prompt-textarea").innerText()).toBe("Draft");
+  } finally { await browser.close(); }
+}, 60_000);
+
+for (const scenario of ["latest", "ambiguous", "unmarked", "conflicting", "hidden-picker"] as const)
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)(`effort-only model evidence fails closed when ${scenario}`, async () => {
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  try {
+    const page = await browser.newPage();
+    const selected = scenario === "latest" ? "Latest" : "GPT-5.6 Sol";
+    await page.setContent(`<div role="menu" id="owned" ${scenario === "hidden-picker" ? 'style="display:none"' : ""}>
+      <div data-model-picker-view-toggle="true"><span ${scenario === "unmarked" ? "" : 'data-effort-only="true"'}>Instant</span></div>
+      <div role="menuitem" aria-describedby="announcement"><span role="slider" aria-valuemin="0" aria-valuemax="2" aria-valuenow="0"></span></div>
+      <span id="announcement">${scenario === "conflicting" ? "6 Instant" : "Instant"}, 1 of 3.</span>
+      <div hidden><div role="menuitemradio" aria-checked="true">${selected}</div>${scenario === "ambiguous" ? '<div role="menuitemradio" aria-checked="true">GPT-5.5</div>' : ""}</div>
+    </div><div role="menu"><div role="menuitemradio" aria-checked="true">GPT-5.6 Sol</div></div>`);
+    const menu = { menu: page.locator("#owned"), slider: page.locator('#owned [role="slider"]') } as Parameters<typeof assertChatGptModelFamily>[0];
+    await expect(assertChatGptModelFamily(menu, "5.6", "low", 0)).rejects.toThrow();
+    await expect(assertChatGptModelFamily(menu, "6", "low", 0)).rejects.toThrow();
+  } finally { await browser.close(); }
 }, 60_000);

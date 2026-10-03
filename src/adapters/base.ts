@@ -8,6 +8,8 @@ export interface IncomingMeta {
 
 export interface ProviderAdapter {
   name: string;
+  /** Validate request-specific execution authority before an HTTP response stream is opened. */
+  prepareTurn?(parsed: CodexParsedRequest, incoming: IncomingMeta): Promise<void> | void;
   runTurn(
     parsed: CodexParsedRequest,
     incoming: IncomingMeta,
