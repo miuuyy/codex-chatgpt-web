@@ -627,11 +627,13 @@ export class TurnBroker implements TurnBrokerOwner {
     return this.waitForSafeState(safe.completionWaiters, signal, "Zero Risk turn completion wait aborted");
   }
 
-  revoke(token: string, reason = new Error("Codex turn binding was revoked"), failure?: BrokerRetirementFailure): void {
+  revoke(token: string, reason = new Error("Codex turn binding was revoked"), failure?: BrokerRetirementFailure,
+    origin: "owner" | "mcp_release" | "tool_timeout" | "expiry" | "shutdown" | "external_owner_shutdown" | "trace_cancel" = "owner"): void {
     const channel = this.channels.get(token);
     if (!channel) return;
     console.info(`[chatgpt-web] broker_retired ${JSON.stringify({
       traceId: channel.traceId,
+      origin,
       pendingTools: channel.invocations.size,
       queuedTools: channel.queuedCallIds.length,
       deliveredTools: channel.deliveredCallIds.size,
@@ -665,7 +667,7 @@ export class TurnBroker implements TurnBrokerOwner {
     const tokens = [...this.channels]
       .filter(([, channel]) => channel.externalOwner)
       .map(([token]) => token);
-    for (const token of tokens) this.revoke(token);
+    for (const token of tokens) this.revoke(token, undefined, undefined, "external_owner_shutdown");
     return tokens.length;
   }
 
@@ -673,7 +675,7 @@ export class TurnBroker implements TurnBrokerOwner {
     const tokens = [...this.channels]
       .filter(([, channel]) => channel.traceId === traceId)
       .map(([token]) => token);
-    for (const token of tokens) this.revoke(token, reason);
+    for (const token of tokens) this.revoke(token, reason, undefined, "trace_cancel");
     return tokens.length;
   }
 
@@ -754,7 +756,7 @@ export class TurnBroker implements TurnBrokerOwner {
 
   async close(): Promise<void> {
     this.compactionTransactions.close();
-    for (const token of [...this.channels.keys()]) this.revoke(token);
+    for (const token of [...this.channels.keys()]) this.revoke(token, undefined, undefined, "shutdown");
     const server = this.server;
     this.server = undefined;
     this.startPromise = undefined;
@@ -1144,9 +1146,9 @@ export class TurnBroker implements TurnBrokerOwner {
     if (request.method === "release") {
       if (request.failure !== undefined) {
         assertRetirementFailure(request.failure);
-        this.revoke(binding.token, chatGptToolTimeoutError(request.failure.tool, request.failure.timeoutMs), request.failure);
+        this.revoke(binding.token, chatGptToolTimeoutError(request.failure.tool, request.failure.timeoutMs), request.failure, "tool_timeout");
       } else {
-        this.revoke(binding.token);
+        this.revoke(binding.token, undefined, undefined, "mcp_release");
       }
       return { released: true };
     }
@@ -1241,7 +1243,7 @@ export class TurnBroker implements TurnBrokerOwner {
     const now = Date.now();
     for (const [token, channel] of this.channels) {
       if (channel.environment.expiresAt === undefined || channel.environment.expiresAt > now) continue;
-      this.revoke(token);
+      this.revoke(token, undefined, undefined, "expiry");
     }
   }
 }

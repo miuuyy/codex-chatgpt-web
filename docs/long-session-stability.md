@@ -19,6 +19,19 @@ event journal and queued tool batch, and physical retirement gates replacement w
 HTTP disconnect does not become user cancellation. A native stop or superseding instruction
 retires the capability. Browser submission and tool invocation are not recovery actions.
 
+A failed Responses stream write detaches only that observer, including ordinary
+`AbortError`, Node `ABORT_ERR`, and a closed stream that has not yet raised its close signal.
+Heartbeats cannot throw an uncaught stream exception into the daemon. Exact reconnection
+replays the journaled text and tool batch against the existing browser; it does not submit
+another ChatGPT message or deliver an already accepted tool result again. Execution and
+validation failures outside the stream callback retain their terminal behavior.
+
+`response_observer_detached` distinguishes transport loss from `response_round_failed`.
+The latter records the processing stage, submission phase, outstanding tool count and
+fixed error classifications. `broker_retired` identifies owner cancellation, MCP release,
+tool timeout, expiry or shutdown. Error messages, stacks, request bodies, capability tokens
+and arbitrary error names/codes are excluded from these diagnostic records.
+
 Browser response verification remains append-only. Cosmetic DOM wrappers, code toolbars,
 formula hydration and virtualized owned nodes are normalized. Delivered content, ordered
 source ranges and link destinations cannot be rewritten. React state is consulted only

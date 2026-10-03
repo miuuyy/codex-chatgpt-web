@@ -1077,18 +1077,26 @@ describe("ChatGPT outer-native harness v4", () => {
     }
   });
 
-  test("an observer failure in the middle of a drained text batch loses no reconnect data", async () => {
+  test.each([
+    { label: "DOM abort", abort: true, error: () => new DOMException("observer disconnected", "AbortError") },
+    { label: "ordinary AbortError", abort: true, error: () => Object.assign(new Error("observer disconnected"), { name: "AbortError" }) },
+    { label: "Node ABORT_ERR", abort: true, error: () => Object.assign(new Error("observer disconnected"), { code: "ABORT_ERR" }) },
+    { label: "closed stream without a signal", abort: false, error: () => new TypeError("response stream is closed") },
+  ])("a $label observer failure loses no reconnect data or accepted browser ownership", async failure => {
     const provider: CodexProviderConfig = {
       adapter: "chatgpt-web",
-      baseUrl: `browser://chatgpt-batched-reconnect-${Date.now()}`,
+      baseUrl: `browser://chatgpt-batched-reconnect-${failure.label}-${Date.now()}`,
       chatgptWeb: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
     };
     const worker = ChatGptBrowserWorker.forProvider(provider);
     const originalRun = worker.run.bind(worker);
     let browserStarts = 0;
+    let browserSignal: AbortSignal | undefined;
     let finishBrowser!: () => void;
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = turn => {
       browserStarts += 1;
+      browserSignal = turn.abortSignal;
+      turn.onSubmitted?.();
       turn.onTextDelta("batch-one ");
       turn.onTextDelta("batch-two ");
       return new Promise<string>(resolve => {
@@ -1109,12 +1117,13 @@ describe("ChatGPT outer-native harness v4", () => {
           if (event.type !== "text_delta" || event.phase !== "final_answer") return;
           textEvents += 1;
           if (textEvents === 1) {
-            disconnect.abort();
-            throw new DOMException("observer disconnected", "AbortError");
+            if (failure.abort) disconnect.abort();
+            throw failure.error();
           }
         },
       );
       await expect(first).rejects.toMatchObject({ name: "AbortError" });
+      expect(browserSignal?.aborted).toBeFalse();
 
       const replayed: AdapterEvent[] = [];
       const reconnect = createChatGptWebAdapter(provider).runTurn!(
@@ -1133,7 +1142,56 @@ describe("ChatGPT outer-native harness v4", () => {
         .map(event => event.text)
         .join(""))
         .toBe("batch-one batch-two batch-three");
+      expect(replayed.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
     } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    }
+  });
+
+  test("a heartbeat write failure detaches the observer without an uncaught timer error", async () => {
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web", baseUrl: `browser://heartbeat-disconnect-${Date.now()}`,
+      chatgptWeb: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    const interval = spyOn(globalThis, "setInterval");
+    let browserStarts = 0;
+    let browserSignal: AbortSignal | undefined;
+    let finish!: () => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>(resolve => { markStarted = resolve; });
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = turn => {
+      browserStarts += 1;
+      browserSignal = turn.abortSignal;
+      turn.onSubmitted?.();
+      markStarted();
+      return new Promise<string>(resolve => {
+        finish = () => { turn.onTextDelta("same browser completed"); resolve("same browser completed"); };
+      });
+    };
+    let heartbeats = 0;
+    try {
+      const adapter = createChatGptWebAdapter(provider);
+      const request = rawWireRequest(environmentXml);
+      const first = adapter.runTurn!(request, { headers: new Headers() }, event => {
+        if (event.type === "heartbeat" && ++heartbeats === 2) throw new TypeError("closed stream");
+      });
+      await started;
+      const tick = interval.mock.calls.find(([, delay]) => delay === CHATGPT_WEB_ADAPTER_HEARTBEAT_MS)?.[0];
+      if (typeof tick !== "function") throw new Error("missing Responses heartbeat callback");
+      expect(() => tick()).not.toThrow();
+      await expect(first).rejects.toMatchObject({ name: "AbortError" });
+      expect(browserSignal?.aborted).toBeFalse();
+      const events: AdapterEvent[] = [];
+      const reconnect = adapter.runTurn!(request, { headers: new Headers() }, event => events.push(event));
+      await Bun.sleep(0);
+      finish();
+      await reconnect;
+      expect(browserStarts).toBe(1);
+      expect(events.at(-1)).toMatchObject({ type: "done", endTurn: true });
+    } finally {
+      interval.mockRestore();
       (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
     }
   });
@@ -2280,9 +2338,14 @@ describe("ChatGPT outer-native harness v4", () => {
       freeform: false,
       arguments: { cmd: "sleep 30" },
     }, 10_000);
+    // Observe rejection before revocation and assert it after the socket callback settles.
+    // This keeps the rejection assertion outside Bun's Windows pipe close callback.
+    const outcome = invocation.then(() => undefined, error => error);
     await broker.nextToolBatch(token);
     broker.revoke(token);
-    await expect(invocation).rejects.toThrow("revoked");
+    const rejection = await outcome;
+    expect(rejection).toBeInstanceOf(Error);
+    expect(rejection.message).toContain("revoked");
     await expect(callTurnBroker(socketPath, { method: "resolve", bindingId: claimed.bindingId }))
       .rejects.toThrow("has already finished");
     await broker.close();
@@ -2585,7 +2648,12 @@ describe("ChatGPT outer-native harness v4", () => {
     }
   });
 
-  test.each([false, true])("Pro keeps one MCP tool loop and replays results with fresh mode=%s", async freshConversation => {
+  test.each([
+    { freshConversation: false, detachOnTool: false },
+    { freshConversation: true, detachOnTool: false },
+    { freshConversation: false, detachOnTool: true },
+    { freshConversation: true, detachOnTool: true },
+  ])("Pro keeps one MCP tool loop with fresh=$freshConversation and observer detach=$detachOnTool", async ({ freshConversation, detachOnTool }) => {
     const socketPath = brokerTestEndpoint(`cgw-h3-pro-${process.pid}-${Date.now()}`);
     const provider: CodexProviderConfig = {
       adapter: "chatgpt-web",
@@ -2597,6 +2665,7 @@ describe("ChatGPT outer-native harness v4", () => {
     const worker = ChatGptBrowserWorker.forProvider(provider);
     const originalRun = worker.run.bind(worker);
     let browserStarts = 0;
+    let resultsReceived = 0;
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
       browserStarts += 1;
       expect(turn.modelId).toBe(CHATGPT_WEB_MODEL_ID);
@@ -2608,6 +2677,7 @@ describe("ChatGPT outer-native harness v4", () => {
         expect(prepared.text).not.toContain("with no Codex Native bridge");
         const token = prepared.text.match(/"turn_token":"(turn_[A-Za-z0-9_-]+)"/)?.[1];
         if (!token) throw new Error("turn token missing from compiled Pro prompt");
+        turn.onSubmitted?.();
         const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
         turn.onReasoningSummary?.("Pro requested live workspace evidence");
         const nativeResult = await invokeAfterBrowserBoundary(turn, () => callTurnBroker<BrokerToolResult>(socketPath, {
@@ -2618,6 +2688,7 @@ describe("ChatGPT outer-native harness v4", () => {
           arguments: { cmd: "pwd", workdir: tempRoot },
         }, 30_000));
         const output = (nativeResult.structuredContent as { output: string }).output;
+        resultsReceived += 1;
         turn.onReasoningSummary?.("Pro received the native tool result");
         turn.onTextDelta("## Pro result");
         turn.onTextDelta(`\n\nWorkspace: ${output}`);
@@ -2631,6 +2702,12 @@ describe("ChatGPT outer-native harness v4", () => {
     const adapter = createChatGptWebAdapter(provider);
     const firstEvents: AdapterEvent[] = [];
     try {
+      if (detachOnTool) {
+        const detached = adapter.runTurn!(request, { headers: new Headers() }, event => {
+          if (event.type === "tool_call_start") throw new TypeError("stream closed while emitting the first tool");
+        });
+        await expect(detached).rejects.toMatchObject({ name: "AbortError" });
+      }
       await adapter.runTurn!(request, { headers: new Headers() }, event => firstEvents.push(event));
       expect(browserStarts).toBe(1);
       const call = firstEvents.find(
@@ -2691,6 +2768,7 @@ describe("ChatGPT outer-native harness v4", () => {
       await adapter.runTurn!(continuation, { headers: new Headers() }, event => replay.push(event));
       expect(browserStarts).toBe(1);
       expect(replay).toEqual(finalEvents);
+      expect(resultsReceived).toBe(1);
     } finally {
       (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
       await TurnBroker.forSocket(socketPath).close();

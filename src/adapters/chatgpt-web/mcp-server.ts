@@ -9,6 +9,7 @@ import { CODEX_COMPACTION_CONTROL_WIRE_NAME } from "./native-compaction-control"
 import { callTurnBroker, TurnBrokerTimeoutError, type BrokerToolResult } from "./turn-broker";
 import { observeMcpToolCalls } from "./mcp-observation";
 import { isChatGptTokenRejection } from "./prompt";
+import { chatGptRoundFailureEvidence } from "./round-observer";
 import { readCosConfig } from "../../cos/config";
 import { limitMcpTextContent } from "../../cos/output-limit";
 import { captureWindow } from "../../cos/window-capture";
@@ -586,6 +587,11 @@ export async function runChatGptMcpServer(options: {
       }, timeoutMs, signal);
       return asMcpResult(response);
     } catch (error) {
+      console.warn(`[chatgpt-web-mcp] mcp_invocation_failed ${JSON.stringify({
+        observerAborted: signal?.aborted === true,
+        ...chatGptRoundFailureEvidence(error),
+        ...(error instanceof TurnBrokerTimeoutError ? { errorCode: "codex_tool_timeout" } : {}),
+      })}`);
       // A cancelled/timed-out MCP request no longer has a consumer for the native result. Revoke
       // the whole turn capability so the broker drops the pending invocation and every later call
       // from that abandoned ChatGPT response fails explicitly against its retired binding.
