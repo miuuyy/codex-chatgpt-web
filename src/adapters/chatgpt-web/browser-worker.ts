@@ -1408,6 +1408,8 @@ export function chatGptSubmissionEvidence(state: {
   return undefined;
 }
 
+const CHATGPT_THINK_CLICK_SETTLE_MS = 1_500;
+
 export async function setChatGptThinkMode(
   composerForm: Locator,
   enabled: boolean,
@@ -1431,6 +1433,18 @@ export async function setChatGptThinkMode(
     throw new Error("ChatGPT Think control has no semantic pressed state");
   }
   const target = enabled ? "true" : "false";
+  if (count === 1 && pressed !== target) {
+    // Newer composers expose Think as a toggle button. Clicking it leaves the draft and the
+    // connector pill alone, unlike the /think command, which clears the whole composer.
+    await control.click(actionOptions);
+    const clickDeadline = Date.now() + CHATGPT_THINK_CLICK_SETTLE_MS;
+    while (Date.now() < clickDeadline) {
+      throwIfPromptAttachmentAborted(abortSignal);
+      pressed = await control.getAttribute("aria-pressed", actionOptions);
+      if (pressed === target) break;
+      await withBrowserTurnAbort(new Promise(resolveSleep => setTimeout(resolveSleep, 100)), abortSignal);
+    }
+  }
   if (pressed !== target) {
     const composer = composerForm.locator(CHATGPT_COMPOSER_SELECTOR).filter({ visible: true }).first();
     const composerState = () => composer.evaluate(element => {
@@ -3590,6 +3604,13 @@ export class ChatGptBrowserWorker {
       }
       // A retained tab preserves history, but ChatGPT can require the plugin on each new
       // message. Reuse an existing selected pill only when selectConnector verifies it here.
+      if (requireThink) {
+        // ChatGPT's /think command clears the whole composer, connector pill included. Turn Think on
+        // first; selectConnector then adds the pill and Think stays on.
+        composerMutationStarted = true;
+        const emptyComposer = await this.activeComposer(page, 30_000, abortSignal);
+        await setChatGptThinkMode(emptyComposer.locator("xpath=ancestor::form[1]"), true, captureDiagnostic, abortSignal);
+      }
       const selectedComposer = await this.selectConnector(
         page,
         captureDiagnostic,
@@ -3600,9 +3621,6 @@ export class ChatGptBrowserWorker {
       // selectConnector owns and rolls back every mutation until it returns. From this point the
       // attachment owns the selected pill and prompt text as one transaction.
       composerMutationStarted = true;
-      if (requireThink) {
-        await setChatGptThinkMode(selectedComposer.locator("xpath=ancestor::form[1]"), true, captureDiagnostic, abortSignal);
-      }
       await selectedComposer.focus({ signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
       await selectedComposer.press(CHATGPT_COMPOSER_DOCUMENT_END_KEY, {
         signal: abortSignal,
