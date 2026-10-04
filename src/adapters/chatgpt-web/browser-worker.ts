@@ -3632,12 +3632,26 @@ export class ChatGptBrowserWorker {
     initialToolBatchRevision = externalProgress?.snapshot().lastToolBatchRevision ?? 0,
     completionTracker?: ChatGptCompletionTracker,
     recoverObservation?: ChatGptObservationRecovery,
+    sendAcknowledgement?: Promise<void>,
   ): Promise<ChatGptSubmissionEvidence> {
+    // Enter has already been issued. Observe late rejection even if abortion wins before an
+    // await; after an observation cutoff only fresh semantic evidence can authorize acceptance.
+    void sendAcknowledgement?.catch(() => {});
+    let pendingAcknowledgement = sendAcknowledgement;
     let observationPage = page;
     let observationBaseline = baseline;
     let recoveryAttempts = 0;
     for (;;) {
       try {
+        if (abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
+        if (pendingAcknowledgement) {
+          const acknowledgement = pendingAcknowledgement;
+          pendingAcknowledgement = undefined;
+          const abortableAcknowledgement = withBrowserTurnAbort(acknowledgement, abortSignal);
+          await (recoverObservation
+            ? withChatGptBrowserObservationTimeout(abortableAcknowledgement)
+            : abortableAcknowledgement);
+        }
         const evidence = await this.waitForSubmissionAccepted(
           observationPage,
           observationBaseline,
@@ -3646,8 +3660,10 @@ export class ChatGptBrowserWorker {
           initialToolBatchRevision,
           completionTracker,
         );
+        if (abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
         return evidence;
       } catch (error) {
+        if (abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
         if (!(error instanceof ChatGptBrowserObservationTimeoutError) || !recoverObservation) throw error;
         recoveryAttempts += 1;
         if (recoveryAttempts > MAX_CHATGPT_BROWSER_PAGE_REBINDS) {
@@ -3662,6 +3678,7 @@ export class ChatGptBrowserWorker {
           observationBaseline,
           abortSignal,
         );
+        if (abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
         observationPage = recovered.page;
         observationBaseline = recovered.baseline;
       }
@@ -3700,7 +3717,8 @@ export class ChatGptBrowserWorker {
     await captureDiagnostic?.("send-ready");
     const initialToolBatchRevision = externalProgress?.snapshot().lastToolBatchRevision ?? 0;
     await submissionLifecycle?.onSendActivated?.();
-    await sendButton.press("Enter", {
+    if (abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
+    const sendAcknowledgement = sendButton.press("Enter", {
       noWaitAfter: true,
       signal: abortSignal,
       // runStage owns the operation budget. A second Locator timeout would silently collapse the
@@ -3716,7 +3734,9 @@ export class ChatGptBrowserWorker {
       initialToolBatchRevision,
       completionTracker,
       recoverObservation,
+      sendAcknowledgement,
     );
+    if (abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
     await submissionLifecycle?.onSubmitted?.();
     return evidence;
   }

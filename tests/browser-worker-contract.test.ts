@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createContext, runInContext } from "node:vm";
-import type { Page } from "playwright-core";
+import { chromium, type Page } from "playwright-core";
+import { LAUNCHER_BROWSER_HOST_KIND, LAUNCHER_BROWSER_IDLE_URL } from "../src/launcher-browser-host";
 import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
 import { ensureChatGptPersonalizedConnectorAccess, chatGptUnavailableProDetail } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
@@ -606,7 +607,9 @@ test("a stalled DOM observation fails within its probe budget", async () => {
 
 });
 
-test("an accepted Full-mode send survives one stalled DOM probe and a later MCP batch without resending", async () => {
+test.each(["DOM probe with MCP", "Send acknowledgement with DOM", "Send acknowledgement then DOM exhaustion"] as const)("submission handles %s with one Send and a shared recovery cap", async (stall) => {
+  const usesMcp = stall === "DOM probe with MCP";
+  const exhausts = stall === "Send acknowledgement then DOM exhaustion";
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: `browser://issue-285-${Date.now()}-${Math.random()}`,
@@ -670,10 +673,15 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
       : hiddenLocator,
   } as unknown as Page;
   let sendPresses = 0;
+  let rejectSend: (error: Error) => void = () => {};
   const sendButton = {
     waitFor: async () => {},
     isEnabled: async () => true,
-    press: async () => { sendPresses += 1; },
+    press: () => {
+      sendPresses += 1;
+      if (usesMcp) return Promise.resolve();
+      return new Promise<void>((_resolve, reject) => { rejectSend = reject; });
+    },
   };
   const composer = {
     locator: () => ({ locator: (selector: string) => { expect(selector).toBe(CHATGPT_SEND_BUTTON_SELECTOR); return sendButton; } }),
@@ -683,14 +691,14 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
   let domObservations = 0;
   worker.submissionDomState = async () => {
     domObservations += 1;
-    if (domObservations === 1) throw new ChatGptBrowserObservationTimeoutError(5_000);
+    if ((usesMcp && domObservations === 1) || exhausts) throw new ChatGptBrowserObservationTimeoutError(5_000);
     return {
       userTurnCount: 1,
-      assistantTurnCount: 1,
-      visibleStopButtonCount: 1,
-      turnIdentities: ["conversation-turn-user", "conversation-turn-assistant"],
+      assistantTurnCount: usesMcp ? 1 : 0,
+      visibleStopButtonCount: usesMcp ? 1 : 0,
+      turnIdentities: usesMcp ? ["conversation-turn-user", "conversation-turn-assistant"] : ["conversation-turn-user"],
       userIdentities: ["conversation-turn-user"],
-      responseIdentities: ["conversation-turn-assistant"],
+      responseIdentities: usesMcp ? ["conversation-turn-assistant"] : [],
     };
   };
   worker.responseDomSnapshot = async () => ({ visibleText: "tool preface" });
@@ -706,37 +714,40 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
   const lifecycle: string[] = [];
   let recoveries = 0;
   let toolBatchRevision = 0;
-  const evidence = await worker.runStage(
+  const submission = worker.runStage(
     "issue-285",
     "send",
-    1_000,
+    usesMcp ? 1_000 : 8_000,
     stageSignal => worker.sendAttachedPrompt(
       page,
       baseline,
       undefined,
       stageSignal,
-      progress,
+      usesMcp ? progress : undefined,
       {
         onSendActivated: async () => { lifecycle.push("activated"); },
         onSubmitted: () => { lifecycle.push("submitted"); },
       },
-      completionTracker,
+      usesMcp ? completionTracker : undefined,
       async (attempt, cause, observedBaseline) => {
         recoveries += 1;
-        expect(attempt).toBe(1);
+        expect(attempt).toBe(recoveries);
         expect(cause).toBeInstanceOf(ChatGptBrowserObservationTimeoutError);
-        expect(observedBaseline).toBe(baseline);
-        toolBatchRevision = progress.recordToolBatch(1);
+        expect(observedBaseline).toBe(attempt === 1 ? baseline : reboundBaseline);
+        rejectSend(new Error("old CDP connection closed during same-page rebind"));
+        if (usesMcp) toolBatchRevision = progress.recordToolBatch(1);
         return { page, baseline: reboundBaseline };
       },
     ),
   );
 
-  expect(evidence).toBe("mcp_tool_call");
+  if (exhausts) await expect(submission).rejects.toThrow("after 2 same-page rebinds");
+  else expect(await submission).toBe(usesMcp ? "mcp_tool_call" : "user_turn");
   expect(sendPresses).toBe(1);
-  expect(domObservations).toBe(2);
-  expect(recoveries).toBe(1);
-  expect(lifecycle).toEqual(["activated", "submitted"]);
+  expect(domObservations).toBe(usesMcp || exhausts ? 2 : 1);
+  expect(recoveries).toBe(exhausts ? 2 : 1);
+  expect(lifecycle).toEqual(exhausts ? ["activated"] : ["activated", "submitted"]);
+  if (!usesMcp) return;
   const acknowledgementDeadline = new AbortController();
   const timer = setTimeout(() => acknowledgementDeadline.abort(), 100);
   try {
@@ -747,7 +758,183 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
   } finally {
     clearTimeout(timer);
   }
+}, 12_000);
+
+test.each(["activation abort", "acknowledgement abort", "command error", "recovery error", "recovery abort", "evidence abort"] as const)("submission does not publish acceptance after %s", async (boundary) => {
+  const worker: any = ChatGptBrowserWorker.forProvider({
+    adapter: "chatgpt-web", baseUrl: `browser://send-interruption-${boundary}-${Math.random()}`,
+  });
+  const hidden: any = { filter() { return this; }, last() { return this; }, getByText() { return this; }, isVisible: async () => false };
+  const page = { isClosed: () => false, locator: () => hidden };
+  const baseline = { responseTurns: hidden, initialTurnIdentities: [], domCache: {} };
+  const controller = new AbortController();
+  const failure = new Error(`terminal ${boundary}`);
+  let presses = 0;
+  let observations = 0;
+  let recoveries = 0;
+  let accepted = 0;
+  let rejectAcknowledgement: ((error: Error) => void) | undefined;
+  const button = {
+    waitFor: async () => {}, isEnabled: async () => true,
+    press: () => {
+      presses += 1;
+      if (boundary === "command error") return Promise.reject(failure);
+      if (boundary === "acknowledgement abort") {
+        // Abort synchronously as the already-issued command becomes pending: its rejection
+        // still needs an observer even when the recovery owner exits at its first guard.
+        controller.abort();
+        return new Promise<void>((_resolve, reject) => { rejectAcknowledgement = reject; });
+      }
+      return Promise.resolve();
+    },
+  };
+  worker.activeComposer = async () => ({ locator: () => ({ locator: () => button }) });
+  worker.submissionDomState = async () => {
+    observations += 1;
+    if (boundary === "recovery error" || boundary === "recovery abort") throw new ChatGptBrowserObservationTimeoutError(5_000);
+    controller.abort();
+    return { userTurnCount: 1, assistantTurnCount: 0, visibleStopButtonCount: 0,
+      turnIdentities: ["new-user"], userIdentities: ["new-user"], responseIdentities: [] };
+  };
+  const recover = async () => {
+    recoveries += 1;
+    if (boundary === "recovery error") throw failure;
+    controller.abort();
+    return { page, baseline: { ...baseline, domCache: {} } };
+  };
+  try {
+    const submission = worker.runStage("send-interruption", "send", 1_000, () => worker.sendAttachedPrompt(
+      page, baseline, undefined, controller.signal, undefined,
+      { onSendActivated: async () => { if (boundary === "activation abort") controller.abort(); },
+        onSubmitted: () => { accepted += 1; } },
+      undefined, boundary === "acknowledgement abort" ? undefined : recover,
+    ));
+    if (boundary === "command error" || boundary === "recovery error") await expect(submission).rejects.toBe(failure);
+    else await expect(submission).rejects.toThrow("aborted");
+    expect(presses).toBe(boundary === "activation abort" ? 0 : 1);
+    expect(observations).toBe(["recovery error", "recovery abort", "evidence abort"].includes(boundary) ? 1 : 0);
+    expect(recoveries).toBe(boundary === "recovery error" || boundary === "recovery abort" ? 1 : 0);
+    expect(accepted).toBe(0);
+  } finally {
+    rejectAcknowledgement?.(new Error("late fixture command rejection"));
+    await Promise.resolve();
+  }
 });
+
+test.each(["connection acquisition", "page selection"] as const)("submission recovery disposes a CDP connection stalled in %s across the outer Send deadline", async (stall) => {
+  const root = mkdtempSync(join(tmpdir(), "send-late-connection-"));
+  const surface = "launcher_surface_id_0123456789AB";
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json({
+    ok: true, webSocketDebuggerUrl: "ws://127.0.0.1:1/fixture", cancelledByUser: false,
+  }) });
+  const descriptor = join(root, "launcher.json");
+  writeFileSync(descriptor, JSON.stringify({
+    version: 3, kind: LAUNCHER_BROWSER_HOST_KIND, profile: "production", pid: process.pid,
+    endpoint: `http://127.0.0.1:${server.port}`,
+    control: { endpoint: `http://127.0.0.1:${server.port}`, token: "fixture-control-token-0123456789abcdefghijklmnop" },
+    helper: { executable: process.execPath, script: import.meta.path },
+    partition: "persist:codex-web-gpt-chatgpt", idleUrl: LAUNCHER_BROWSER_IDLE_URL,
+    surfaceId: surface, surfaceTargets: { [surface]: "fixture-target" }, createdAt: new Date().toISOString(),
+  }));
+  const hidden: any = { filter() { return this; }, last() { return this; }, getByText() { return this; }, isVisible: async () => false };
+  const page: any = Object.assign(new EventEmitter(), {
+    url: () => "https://chatgpt.com/", isClosed: () => false, locator: () => hidden,
+    waitForFunction: async () => {}, evaluate: async () => { throw new Error("offline fixture has no renderer"); },
+  });
+  const context: any = { pages: () => [page], newCDPSession: async () => ({
+    send: async () => ({ targetInfo: { targetId: "fixture-target" } }), detach: async () => {},
+  }) };
+  let oldClosed = 0;
+  let lateClosed = 0;
+  let lateSelections = 0;
+  let connected = 0;
+  let resolveLate!: (browser: any) => void;
+  let resolveSelection!: (info: any) => void;
+  let selectionSettled = false;
+  const lateContext = { pages: () => [page], newCDPSession: async () => ({
+    send: async (method: string) => {
+      // Only target inspection is stalled; upstream's subsequent focus-emulation RPC stays live.
+      if (method !== "Target.getTargetInfo") return {};
+      if (stall === "connection acquisition") return { targetInfo: { targetId: "fixture-target" } };
+      return new Promise(resolve => { resolveSelection = resolve; });
+    },
+    detach: async () => { selectionSettled = true; },
+  }) };
+  let markLateClosed!: () => void;
+  const lateDisposal = new Promise<void>(resolve => { markLateClosed = resolve; });
+  const oldBrowser: any = { contexts: () => [context], close: async () => { oldClosed += 1; } };
+  const lateBrowser: any = { contexts: () => { lateSelections += 1; return [lateContext]; }, close: async () => {
+    lateClosed += 1; markLateClosed();
+  } };
+  const originalConnect = chromium.connectOverCDP;
+  chromium.connectOverCDP = (async () => {
+    if (++connected === 1) return oldBrowser;
+    if (stall === "page selection") return lateBrowser;
+    return new Promise<any>(resolve => { resolveLate = resolve; });
+  }) as typeof chromium.connectOverCDP;
+  const worker: any = ChatGptBrowserWorker.forProvider({
+    adapter: "chatgpt-web", baseUrl: `browser://${root}`,
+    chatgptWeb: { browserHost: "launcher", browserHostDescriptorPath: descriptor, browserDiagnosticsPath: join(root, "diagnostics") },
+  });
+  const capabilities = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false };
+  const prepared = compileChatGptWebPrompt({
+    modelId: CHATGPT_WEB_MODEL_ID, stream: true, options: { reasoning: "low" },
+    context: { systemPrompt: [], messages: [{ role: "user", content: "offline fixture", timestamp: 1 }] },
+  }, capabilities);
+  let released = false;
+  let sends = 0;
+  let accepted = 0;
+  let markRebindSettled!: () => void;
+  const rebindSettled = new Promise<void>(resolve => { markRebindSettled = resolve; });
+  const button = { waitFor: async () => {}, isEnabled: async () => true, press: async () => { sends += 1; } };
+  const control = { innerText: async () => "Instant", getAttribute: async () => "false" };
+  const controls: any = { filter: () => controls, count: async () => 1, first: () => control };
+  const composer: any = { isEditable: async () => true, locator: () => ({ locator: (selector: string) => selector === CHATGPT_SEND_BUTTON_SELECTOR ? button : controls }) };
+  const realRunStage = worker.runStage.bind(worker);
+  Object.assign(worker, {
+    runStage: (trace: string, stage: string, budget: number, action: any) => {
+      const result = realRunStage(trace, stage, stage === "send" ? 500 : budget, action);
+      return stage.startsWith("response_page_rebind_") ? result.finally(markRebindSettled) : result;
+    },
+    prepareChatSurface: async () => {}, activeComposer: async () => composer,
+    selectModelAndEffort: async () => ({ ...resolveChatGptWebMultipartStagingMode(CHATGPT_WEB_MODEL_ID, capabilities, 100, 100),
+      selection: { url: page.url(), label: "Instant" } }),
+    captureSubmissionBaseline: async () => ({ responseTurns: hidden, initialTurnIdentities: [], domCache: {} }),
+    attachPromptWithCompactionRetry: async () => {}, attachFiles: async () => {},
+    submissionDomState: async () => { throw new ChatGptBrowserObservationTimeoutError(5_000); },
+  });
+  try {
+    await expect(worker.runBrowserTurn({
+      traceId: "late_connection", modelId: CHATGPT_WEB_MODEL_ID, reasoning: "low", capabilities,
+      prepare: async () => ({ ...prepared, release() { released = true; } }),
+      onSubmitted() { accepted += 1; }, onTextDelta() {},
+    }, surface)).rejects.toThrow("stage timed out: send");
+    expect(connected).toBe(2);
+    expect(sends).toBe(1);
+    expect(accepted).toBe(0);
+    expect(released).toBeTrue();
+    expect(oldClosed).toBeGreaterThanOrEqual(1);
+    if (stall === "connection acquisition") resolveLate(lateBrowser);
+    else resolveSelection({ targetInfo: { targetId: "fixture-target" } });
+    let disposalTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([Promise.all([lateDisposal, rebindSettled]), new Promise((_, reject) => {
+        disposalTimer = setTimeout(() => reject(new Error("late connection leaked")), 500);
+      })]);
+    } finally { clearTimeout(disposalTimer); }
+    expect(lateClosed).toBe(1);
+    expect(lateSelections).toBe(stall === "connection acquisition" ? 0 : 1);
+    expect(selectionSettled).toBe(stall === "page selection");
+    expect(sends).toBe(1);
+    expect(accepted).toBe(0);
+  } finally {
+    resolveLate?.(lateBrowser);
+    resolveSelection?.({ targetInfo: { targetId: "fixture-target" } });
+    chromium.connectOverCDP = originalConnect;
+    await server.stop(true);
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 5_000);
 
 test("Bigger Context send activation keeps the outer stage budget instead of restoring a nested 20-second timeout", async () => {
   const provider: CodexProviderConfig = {
