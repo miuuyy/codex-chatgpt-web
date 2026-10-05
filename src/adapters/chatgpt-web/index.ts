@@ -47,6 +47,7 @@ import {
 } from "./compaction-handoff";
 import {
   chatGptConversationKey,
+  isRetainedConversationSupported,
   retainedConversationResumeRequest,
 } from "./conversation-key";
 
@@ -433,8 +434,7 @@ export function createChatGptWebAdapter(
       : { parsed, applied: false };
     const conversationKey = !parsed._compactionRequest
       && !freshConversationPerTurn
-      && parsed.modelId !== CHATGPT_WEB_LUNA_MODEL_ID
-      && mode.localTools
+      && isRetainedConversationSupported(parsed.modelId, mode.localTools)
       && retainedLauncherDescriptor
       ? chatGptConversationKey(checkpointInput.parsed, executionNamespace)
       : undefined;
@@ -692,21 +692,24 @@ export function createChatGptWebAdapter(
       };
     }
     if (!mode.localTools) {
+      const prepareBrowserOnlyWith = (input: CodexParsedRequest) => async () => ({
+        ...compileChatGptWebPrompt(
+          input,
+          turnCapabilities,
+          undefined,
+          compileOptionsFor(input),
+        ),
+        release: () => {},
+      });
       const browserTurn = cancellableBrowserTurn(finalizeCheckpoint(worker.run({
         traceId,
         modelId: parsed.modelId,
         reasoning: parsed.options.reasoning,
         ...(parsed._chatgptModelFamily ? { modelFamily: parsed._chatgptModelFamily } : {}),
         capabilities: turnCapabilities,
-        prepare: async () => ({
-          ...compileChatGptWebPrompt(
-            checkpointInput.parsed,
-            turnCapabilities,
-            undefined,
-            compileOptionsFor(checkpointInput.parsed),
-          ),
-          release: () => {},
-        }),
+        prepare: prepareBrowserOnlyWith(checkpointInput.parsed),
+        ...(resumeInput ? { prepareResume: prepareBrowserOnlyWith(resumeInput) } : {}),
+        ...(retainConversation ? { retainConversation: true, conversationKey } : {}),
         abortSignal: browserAbort.signal,
         ...(parsed._compactionRequest ? { compaction: true } : {}),
         ...submissionLifecycle,
