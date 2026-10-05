@@ -390,6 +390,7 @@ class BrowserHost {
     this.authView = null;
     this.authNavigationError = null;
     this.homeNavigationTimeout = null;
+    this.homeNavigationFailed = false;
     this.lastTurnSweepAt = Date.now();
     this.powerSaveBlockerId = null;
     this.turnLeaseSweep = setInterval(() => { void this.reapExpiredTurnTabs(); }, TURN_HEARTBEAT_SWEEP_MS);
@@ -1068,6 +1069,7 @@ class BrowserHost {
         this.setState({ url });
         return;
       }
+      this.homeNavigationFailed = false;
       this.primaryRendererReady = false;
       this.primaryDeviceEmulationDirty = true;
       this.armHomeNavigationTimeout(contents, url);
@@ -1137,6 +1139,10 @@ class BrowserHost {
     contents.on("did-fail-load", (_event, errorCode, errorDescription, url, mainFrame) => {
       if (!mainFrame || errorCode === -3) return;
       this.clearHomeNavigationTimeout();
+      this.homeNavigationFailed = true;
+      if (this.manualOperation === "ChatGPT login") {
+        this.authNavigationError = new Error(`ChatGPT sign-in page failed to load: ${errorDescription}`);
+      }
       this.logger.error(
         this.manualOperation === "ChatGPT login"
           ? "browser.auth_navigation_failed"
@@ -1152,6 +1158,10 @@ class BrowserHost {
     });
     contents.on("render-process-gone", (_event, details) => {
       this.clearHomeNavigationTimeout();
+      this.homeNavigationFailed = true;
+      if (this.manualOperation === "ChatGPT login") {
+        this.authNavigationError = new Error(`ChatGPT sign-in renderer stopped: ${details.reason}`);
+      }
       this.logger.error("browser.renderer_gone", { reason: details.reason, exitCode: details.exitCode });
       this.setState({ status: "error", message: `Browser renderer stopped: ${details.reason}`, loading: false });
     });
@@ -1164,6 +1174,8 @@ class BrowserHost {
       if (contents.isDestroyed() || !contents.isLoadingMainFrame()) return;
       contents.stop();
       const message = "ChatGPT did not finish loading within 60 seconds. Check your connection and retry.";
+      this.homeNavigationFailed = true;
+      if (this.manualOperation === "ChatGPT login") this.authNavigationError = new Error(message);
       this.logger.error("browser.navigation_timeout", { origin: navigationOriginForLog(url) });
       this.setState({ status: "error", message, url, loading: false });
     }, BROWSER_NAVIGATION_TIMEOUT_MS);
@@ -2630,7 +2642,7 @@ class BrowserHost {
         this.show();
         this.logger.info("browser.login_opened");
         const current = this.view.webContents.getURL();
-        if (this.reauthenticationRequired || !current.startsWith(CHATGPT_ORIGIN)) {
+        if (this.homeNavigationFailed || this.reauthenticationRequired || !current.startsWith(CHATGPT_ORIGIN)) {
           await this.view.webContents.loadURL(TEMPORARY_CHAT_URL);
         }
         await this.probeAuthentication();

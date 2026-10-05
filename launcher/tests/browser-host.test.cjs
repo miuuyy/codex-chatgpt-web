@@ -3700,3 +3700,42 @@ test("off-on-off fresh conversation changes retire completed history before it c
     assert.equal(fixture.turnTabs.get(manual.id), savedChats ? undefined : manual);
   }
 });
+
+
+test("failed primary login navigation is reported immediately and retried despite its retained URL", async () => {
+  const contents = Object.assign(new EventEmitter(), {
+    setWindowOpenHandler() {},
+    getURL: () => "https://chatgpt.com/?temporary-chat=true",
+    loadURL: async () => { loads++; },
+  });
+  let loads = 0;
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    state: { authenticated: false }, manualOperation: "ChatGPT login", turnTabs: new Map(),
+    view: { webContents: contents },
+    clearHomeNavigationTimeout() {}, armHomeNavigationTimeout() {},
+    setState(patch) { Object.assign(this.state, patch); },
+    logger: { info() {}, error() {} }, show() {},
+    withManualOperation: async (_name, action) => action(),
+    probeAuthentication: async () => ({ authenticated: true }),
+    runSessionInspection: async () => {},
+  });
+  fixture.bindWebContents();
+  contents.emit("did-fail-load", {}, -331, "ERR_NETWORK_IO_SUSPENDED", contents.getURL(), false);
+  assert.equal(fixture.homeNavigationFailed, undefined);
+  contents.emit("did-fail-load", {}, -3, "ERR_ABORTED", contents.getURL(), true);
+  assert.equal(fixture.homeNavigationFailed, undefined);
+  contents.emit("did-fail-load", {}, -331, "ERR_NETWORK_IO_SUSPENDED", contents.getURL(), true);
+  assert.equal(fixture.homeNavigationFailed, true);
+  await assert.rejects(fixture.waitForAuthenticated(), /ERR_NETWORK_IO_SUSPENDED/);
+  assert.equal(loads, 0);
+  await fixture.openLogin();
+  assert.equal(loads, 1);
+  contents.emit("did-start-navigation", {}, contents.getURL(), false, true);
+  assert.equal(fixture.homeNavigationFailed, false);
+  fixture.state.authenticated = false;
+  await fixture.openLogin();
+  assert.equal(loads, 1, "a valid current login document is preserved");
+  contents.emit("render-process-gone", {}, { reason: "crashed", exitCode: 1 });
+  assert.equal(fixture.homeNavigationFailed, true);
+  await assert.rejects(fixture.waitForAuthenticated(), /renderer stopped: crashed/);
+});
