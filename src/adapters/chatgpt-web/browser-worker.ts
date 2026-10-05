@@ -4402,6 +4402,7 @@ export class ChatGptBrowserWorker {
         key: segment.sourceStart !== undefined
           ? `${segment.sourceStart}:${segment.tag}`
           : `${index}:${segment.tag}`,
+        ...(segment.sourceStart === undefined ? { positionalKey: true as const } : {}),
         tag: segment.tag,
         html: segment.html,
         text: segment.text,

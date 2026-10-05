@@ -177,6 +177,27 @@ test("preserving plan markers does not rewrite mentions or literal code", () => 
 });
 
 
+test("positional tail relocation does not authorize real edits or ambiguous identities", () => {
+  const reference = {key: "0:p", positionalKey: true as const, tag: "p", text: "report.md", html: "<p>report.md</p>", streamable: true};
+  const tail = {key: "1:p", positionalKey: true as const, tag: "p", text: "Done.", html: "<p>Done.</p>", streamable: false};
+  const moved = {...tail, key: reference.key};
+  for (const scenario of [
+    { before: [reference, tail], after: [{...moved, text: "Changed.", html: "<p>Changed.</p>"}] },
+    { before: [{...reference, positionalKey: undefined}, tail], after: [moved] },
+    { before: [reference, {...tail, positionalKey: undefined}], after: [moved] },
+    { before: [reference, {...tail, linkTargets: ["https://example.com/old"]}], after: [{...moved, linkTargets: ["https://example.com/new"]}] },
+    { before: [{...reference, sourceStart: 0, sourceEnd: 9}, tail], after: [{...moved, sourceStart: 0, sourceEnd: 9}] },
+    { before: [reference, tail], after: [moved, {...tail, key: "2:p"}] },
+    { before: [reference, tail, {...tail, key: "2:p"}], after: [moved] },
+    { before: [{...reference, key: "earlier", text: "An earlier paragraph."}, reference, tail], after: [moved] },
+  ]) {
+    const buffer = new ChatGptMarkdownBuffer(undefined, 0);
+    buffer.observe(scenario.before, 0);
+    buffer.observe(scenario.after, 1);
+    expect(() => buffer.finish()).toThrow("changed a completed text block");
+  }
+});
+
 test("repeated report headings can first appear after an earlier copy was committed", () => {
   for (const { count, repeated, tag, text } of [
     { count: 93, repeated: [15, 20, 25, 29], tag: "p", text: "変更済み:" },

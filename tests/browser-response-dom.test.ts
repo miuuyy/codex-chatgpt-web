@@ -133,6 +133,37 @@ test("keeps an unfinished hyperlink buffered and detects changed destinations af
   expect(() => buffer.finish()).toThrow("completed text block");
 });
 
+test("a pending final paragraph survives a file reference leaving the Markdown root", async () => {
+  const page = (hydrated: boolean, finalText = "Validation completed.") => `<div id="turn">
+    <div data-content-search-unit-key="answer"><h4 data-conversation-role="assistant"></h4>
+    <div data-markdown-text-style="assistant-message">
+      <p>Report saved:</p>
+      ${hydrated ? "" : "<p>report.md</p>"}
+      <p>${finalText}</p>
+    </div>
+    ${hydrated ? '<div class="file-card">report.md</div>' : ""}
+    </div>
+    <button aria-label="Copy"></button>
+  </div>`;
+  const before = await snapshot(page(false));
+  const buffer = new ChatGptMarkdownBuffer(undefined, 0);
+  expect(buffer.observe(before.markdownSegments, 0)).toBe("Report saved:\n\nreport.md");
+  const after = await snapshot(page(true));
+  expect(buffer.observe(after.markdownSegments, 1)).toBe("");
+  expect(buffer.observe(after.markdownSegments, 2)).toBe("");
+  expect(buffer.finish()).toEqual({
+    markdown: "Report saved:\n\nreport.md\n\nValidation completed.",
+    delta: "\n\nValidation completed.",
+  });
+
+  // The repair may carry forward only the exact already-observed pending tail.
+  // An unseen replacement of a committed paragraph remains an error.
+  const changed = new ChatGptMarkdownBuffer(undefined, 0);
+  changed.observe(before.markdownSegments, 0);
+  changed.observe((await snapshot(page(true, "An unobserved replacement."))).markdownSegments, 1);
+  expect(() => changed.finish()).toThrow("changed a completed text block");
+});
+
 test("captured DIL smoke response reaches Markdown delivery and stable completion", async () => {
   // Also cover a changed CSS module hash and nested Markdown without duplicate delivery.
   for (const html of [

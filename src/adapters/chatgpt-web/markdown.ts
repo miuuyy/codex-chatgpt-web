@@ -186,6 +186,8 @@ export function chatGptHtmlToMarkdown(html: string): string {
 
 export interface ChatGptMarkdownSegment {
   key: string;
+  /** A source-less DOM ordinal, not a stable block identity. */
+  positionalKey?: true;
   tag?: string;
   html: string;
   text: string;
@@ -203,6 +205,7 @@ interface ChatGptMarkdownCandidate extends ChatGptMarkdownSegment {
 
 interface CommittedChatGptMarkdownSegment {
   key: string;
+  positionalKey?: true;
   tag?: string;
   text: string;
   linkTargets?: string[];
@@ -340,7 +343,9 @@ export class ChatGptMarkdownBuffer {
     let sawPending = false;
     let previousSourceStart: number | undefined;
 
-    for (const [observedIndex, segment] of segments.entries()) {
+    for (const [observedIndex, observed] of segments.entries()) {
+      const segment = this.relocatePendingTail(observed, highestCommittedIndex,
+        observedIndex === segments.length - 1);
       if (segment.sourceStart !== undefined) {
         if (previousSourceStart !== undefined && segment.sourceStart <= previousSourceStart) {
           return new ChatGptMarkdownConsistencyError(
@@ -449,6 +454,28 @@ export class ChatGptMarkdownBuffer {
     )).length === 1;
   }
 
+  private relocatePendingTail(
+    segment: ChatGptMarkdownSegment,
+    afterIndex: number,
+    isObservedTail: boolean,
+  ): ChatGptMarkdownSegment {
+    const committed = this.committed.at(-1);
+    const tail = this.latest.length === 1 ? this.latest[0] : undefined;
+    // A file reference can leave the Markdown root on final hydration. The one still-pending
+    // trailing paragraph then inherits its ordinal. Preserve its known key across subsequent
+    // observations, not just this frame. Stable keys/ranges and unseen replacements still fail.
+    if (isObservedTail && afterIndex === this.committed.length - 2
+      && segment.positionalKey && committed?.positionalKey && tail?.positionalKey
+      && segment.sourceStart === undefined && committed.sourceStart === undefined && tail.sourceStart === undefined
+      && committed.key === segment.key && committed.text !== segment.text && segment.text.trim()
+      && tail.key !== segment.key && tail.tag === segment.tag && tail.text === segment.text
+      && JSON.stringify(tail.linkTargets ?? []) === JSON.stringify(segment.linkTargets ?? [])
+      && !this.committed.some(block => block.tag === segment.tag && block.text === segment.text)) {
+      return { ...segment, key: tail.key };
+    }
+    return segment;
+  }
+
   private candidateId(segment: ChatGptMarkdownSegment): string {
     return segment.sourceStart !== undefined
       ? `source:${segment.sourceStart}:${segment.tag ?? ""}`
@@ -458,6 +485,7 @@ export class ChatGptMarkdownBuffer {
   private committedSegment(segment: ChatGptMarkdownSegment): CommittedChatGptMarkdownSegment {
     return {
       key: segment.key,
+      ...(segment.positionalKey ? { positionalKey: true as const } : {}),
       ...(segment.tag ? { tag: segment.tag } : {}),
       text: segment.text,
       ...(segment.linkTargets ? { linkTargets: [...segment.linkTargets] } : {}),
