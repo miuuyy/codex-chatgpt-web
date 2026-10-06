@@ -61,6 +61,7 @@ test("proxies official /models auth and query, then appends grouped and legacy W
   const body = await response.json() as {
     models: Array<{
       slug: string;
+      visibility?: string;
       context_window?: number;
       max_context_window?: number;
       effective_context_window_percent?: number;
@@ -86,6 +87,8 @@ test("proxies official /models auth and query, then appends grouped and legacy W
   expect(body.models[0]!.max_context_window).toBe(371_851);
   expect(body.models[0]!.auto_compact_token_limit).toBe(270_000);
   expect(body.models[0]!.multi_agent_version).toBe("v2");
+  expect(body.models.find(model => model.slug === "chatgpt-web/high")?.visibility).toBe("list");
+  expect(body.models.find(model => model.slug === "chatgpt-web/medium")?.visibility).toBe("hide");
   for (const [index, model] of body.models.slice(1).entries()) {
     const route = availableChatGptWebModelRoutes(config, true)[index]!;
     const limits = resolveChatGptWebContextLimits(route.backendModel, route.adapterEffort, config);

@@ -121,7 +121,7 @@ export function buildChatGptWebModel(
     display_name: route.displayName,
     description: route.description,
     input_modalities: route.interactionMode === "manual" ? ["text"] : ["text", "image"],
-    visibility: route.legacy ? "hide" : "list",
+    visibility: route.legacy && !route.showInPicker ? "hide" : "list",
     // These slugs are implemented by this local Responses-compatible bridge. Marking them false
     // makes Codex drop them from spawn_agent whenever openai_base_url points at the bridge.
     supported_in_api: true,

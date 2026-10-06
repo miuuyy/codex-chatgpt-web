@@ -60,7 +60,7 @@ try {
   };
   const web = catalog.models?.filter(model => model.slug?.startsWith("chatgpt-web/")) ?? [];
   const expected = availableChatGptWebModelRoutes(config, true).map(route => ({
-    slug: route.slug, visibility: route.legacy ? "hide" : "list", effort: chatGptWebRouteEfforts(route, config).join(","),
+    slug: route.slug, visibility: route.legacy && !route.showInPicker ? "hide" : "list", effort: chatGptWebRouteEfforts(route, config).join(","),
   }));
   const actual = web.map(model => ({
     slug: model.slug,
@@ -89,13 +89,18 @@ try {
     .toSorted((left, right) => (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER))
     .slice(0, 5)
     .map(model => model.slug);
+  const reasoningPriority = web.find(model => model.slug === "chatgpt-web/gpt-5.6-sol")?.priority ?? Number.MAX_SAFE_INTEGER;
   const expectedSpawnOverrides = [
-    (sourceCatalog.models as Array<{ slug: string; visibility: string; supported_in_api: boolean; priority?: number }>)
-      .filter(model => model.supported_in_api && model.visibility === "list")
-      .toSorted((left, right) => (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER))[0]?.slug,
+    // New native catalogs can expose several equally ranked models; keep all of them ahead of
+    // appended Web rows instead of assuming there is exactly one native override.
+    ...(sourceCatalog.models as Array<{ slug: string; visibility: string; supported_in_api: boolean; priority?: number }>)
+      .filter(model => model.supported_in_api && model.visibility === "list"
+        && (model.priority ?? Number.MAX_SAFE_INTEGER) <= reasoningPriority)
+      .toSorted((left, right) => (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER))
+      .map(model => model.slug),
     ...CHATGPT_WEB_MODEL_ROUTES.slice(1).map(route => route.slug),
-    "chatgpt-web/gpt-5.6-sol-instant",
-  ];
+    "chatgpt-web/high",
+  ].slice(0, 5);
   if (JSON.stringify(spawnOverrides) !== JSON.stringify(expectedSpawnOverrides)) {
     throw new Error(`Codex did not preserve the bounded V1 subagent roster: ${JSON.stringify(spawnOverrides)}`);
   }

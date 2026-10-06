@@ -30,8 +30,12 @@ launcher-owned codex-chatgpt-web daemon
 - Named Sol/Pro routes select the exact browser family and verify it again before every Send.
   Latest must identify version 6 for a GPT-6 Pro response. Its existing lower-effort multipart
   acknowledgements identify 5.6, then the final part returns to verified 6 Pro. No version fallback.
-- Pre-6.0 slugs remain hidden catalog entries with their original fixed bindings, including the
-  unpinned `chatgpt-web/pro`. They keep old tasks and cached selections working. The existing release
+- `ChatGPT Web — High` (`chatgpt-web/high`) is also selectable for new tasks on Sol-capable accounts.
+  It preserves its pre-6.0 fixed High binding without pinning a browser model family. The browser
+  must still select and verify High before sending; this is an explicit choice, not a fallback from
+  a named Sol/Pro route. It is unavailable on Luna-only accounts and in Zero Risk mode.
+- Other pre-6.0 slugs remain hidden catalog entries with their original fixed bindings, including
+  the unpinned `chatgpt-web/pro`. They keep old tasks and cached selections working. The existing release
   upgrade reruns integration setup and invalidates the model cache; Codex must restart for the new
   picker. Native models and existing context/compaction budgets are preserved.
 - Sends the complete Codex context and image attachments to a fresh ChatGPT conversation (Temporary Chat by default).

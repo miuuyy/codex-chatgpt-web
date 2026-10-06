@@ -56,9 +56,10 @@ describe("fixed ChatGPT Web model routes", () => {
     expect(availableChatGptWebModelRoutes(plus).map(route => route.slug)).toEqual([
       "chatgpt-web/gpt-5.6-sol-instant",
       "chatgpt-web/gpt-5.6-sol",
+      "chatgpt-web/high",
     ]);
     expect(availableChatGptWebModelRoutes({ solAvailable: true, extraHighAvailable: true, proAvailable: true }))
-      .toEqual(CHATGPT_WEB_MODEL_ROUTES);
+      .toEqual([...CHATGPT_WEB_MODEL_ROUTES, requireChatGptWebModelRoute("chatgpt-web/high", pro)]);
     expect(() => requireChatGptWebModelRoute("chatgpt-web/extra-high", plus))
       .toThrow("Extra High is not available for this account");
     expect(() => requireChatGptWebModelRoute("chatgpt-web/pro", plus))
@@ -68,7 +69,7 @@ describe("fixed ChatGPT Web model routes", () => {
   test("Extra High stays routable without granting Pro or Pro-sized context", () => {
     const config = { ...defaultConfig("full"), extraHighAvailable: true, proAvailable: false };
     expect(availableChatGptWebModelRoutes(config).map(route => route.slug))
-      .toEqual(["chatgpt-web/gpt-5.6-sol-instant", "chatgpt-web/gpt-5.6-sol"]);
+      .toEqual(["chatgpt-web/gpt-5.6-sol-instant", "chatgpt-web/gpt-5.6-sol", "chatgpt-web/high"]);
     const request = parsed("chatgpt-web/extra-high", "low");
     expect(routeChatGptWebRequest(request, config).adapterEffort).toBe("xhigh");
     expect(request.options.reasoning).toBe("xhigh");
@@ -241,9 +242,32 @@ describe("fixed ChatGPT Web model routes", () => {
     const route = routeChatGptWebRequest(request, defaultConfig("browser-only"));
 
     expect(route.slug).toBe("chatgpt-web/high");
+    expect(route).toMatchObject({ codexEffort: "high", adapterEffort: "high" });
+    expect(route).not.toHaveProperty("modelFamily");
+    expect(route).not.toHaveProperty("supportedCodexEfforts");
+    expect(request._chatgptModelFamily).toBeUndefined();
     expect(request.modelId).toBe(CHATGPT_WEB_BACKEND_MODEL);
     expect(request.options.reasoning).toBe("high");
     expect(request._rawBody).toEqual(rawSnapshot);
+  });
+
+  test("exposes only the supported High legacy binding and retains account and manual gating", () => {
+    for (const capabilities of [plus, pro]) {
+      const visible = availableChatGptWebModelRoutes(capabilities);
+      expect(visible.filter(route => route.legacy).map(route => route.slug)).toEqual(["chatgpt-web/high"]);
+      expect(visible.filter(route => route.slug === "chatgpt-web/high")).toHaveLength(1);
+      expect(availableChatGptWebModelRoutes(capabilities, true).filter(route => route.slug === "chatgpt-web/high"))
+        .toHaveLength(1);
+    }
+    const free = { solAvailable: false, proAvailable: false };
+    const manual = { ...pro, browserInteractionMode: "manual" as const };
+    for (const capabilities of [free, manual]) {
+      for (const includeLegacy of [false, true]) {
+        expect(availableChatGptWebModelRoutes(capabilities, includeLegacy).map(route => route.slug))
+          .not.toContain("chatgpt-web/high");
+      }
+      expect(() => requireChatGptWebModelRoute("chatgpt-web/high", capabilities)).toThrow("not available");
+    }
   });
 
   test("binds the Pro model to the browser Pro effort and fails closed for unknown routes", () => {

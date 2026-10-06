@@ -7,7 +7,6 @@ import {
   CHATGPT_WEB_ZERO_RISK_MODEL_ROUTE,
   CHATGPT_WEB_ZERO_RISK_PRO_MODEL_ROUTE,
   CHATGPT_WEB_MODEL_ROUTES,
-  CHATGPT_WEB_LEGACY_MODEL_ROUTES,
   availableChatGptWebModelRoutes,
   chatGptWebRouteEfforts,
   resolveChatGptWebContextLimits,
@@ -64,14 +63,17 @@ describe("native /models augmentation", () => {
     expect(models.slice(0, 3)).toEqual(originalModels);
     const web = models.slice(3).filter(model => model.visibility === "list");
     const legacy = models.slice(3).filter(model => model.visibility === "hide");
-    expect(legacy.map(model => model.slug)).toEqual(CHATGPT_WEB_LEGACY_MODEL_ROUTES.map(route => route.slug));
-    expect(legacy.map(model => [model.context_window, model.auto_compact_token_limit])).toEqual([
-      [111_193, 95_000], [111_193, 95_000], [111_193, 95_000], [111_193, 95_000], [112_193, 95_000],
+    expect(legacy.map(model => model.slug)).toEqual([
+      "chatgpt-web/light", "chatgpt-web/medium", "chatgpt-web/extra-high", "chatgpt-web/pro",
     ]);
-    expect(web.map(model => model.slug)).toEqual(CHATGPT_WEB_MODEL_ROUTES.map(route => route.slug));
-    expect(web.map(model => model.display_name)).toEqual(CHATGPT_WEB_MODEL_ROUTES.map(route => route.displayName));
+    expect(legacy.map(model => [model.context_window, model.auto_compact_token_limit])).toEqual([
+      [111_193, 95_000], [111_193, 95_000], [111_193, 95_000], [112_193, 95_000],
+    ]);
+    const visibleRoutes = availableChatGptWebModelRoutes(config);
+    expect(web.map(model => model.slug)).toEqual([...CHATGPT_WEB_MODEL_ROUTES.map(route => route.slug), "chatgpt-web/high"]);
+    expect(web.map(model => model.display_name)).toEqual(visibleRoutes.map(route => route.displayName));
     for (const [index, model] of web.entries()) {
-      const route = CHATGPT_WEB_MODEL_ROUTES[index]!;
+      const route = visibleRoutes[index]!;
       const limits = resolveChatGptWebContextLimits(route.backendModel, route.adapterEffort, config);
       expect(model).toMatchObject({
         slug: route.slug,
@@ -95,6 +97,12 @@ describe("native /models augmentation", () => {
     }
     expect((web[1]!.supported_reasoning_levels as Array<{ effort: string }>).map(level => level.effort))
       .toEqual(["medium", "high", "xhigh"]);
+    expect(web.find(model => model.slug === "chatgpt-web/high")).toMatchObject({
+      display_name: "ChatGPT Web — High",
+      visibility: "list",
+      default_reasoning_level: "high",
+      supported_reasoning_levels: [{ effort: "high", description: "ChatGPT Web — High" }],
+    });
     expect(() => buildChatGptWebModel(originalModels[1], {
       ...CHATGPT_WEB_MODEL_ROUTES[1]!, supportedCodexEfforts: ["low", "medium"],
     }, { ...config, proAvailable: false })).toThrow("Cannot group different context budgets");
@@ -133,7 +141,7 @@ describe("native /models augmentation", () => {
     expect(spawnOverrides).toEqual([
       "gpt-5.6-sol",
       ...CHATGPT_WEB_MODEL_ROUTES.slice(1).map(route => route.slug),
-      "chatgpt-web/gpt-5.6-sol-instant",
+      "chatgpt-web/high",
     ]);
     expect(models.find(model => model.slug === "chatgpt-web/light")?.priority).toBe(3);
   });

@@ -228,8 +228,10 @@ interface ChatGptWebModelRouteBase {
   codexEffort: ChatGptWebCodexEffort;
   requiresPro: boolean;
   requiresExtraHigh?: boolean;
-  /** Old task identities remain resolvable, but are omitted from the picker. */
+  /** Old task identities remain resolvable, but are hidden unless explicitly exposed. */
   legacy?: boolean;
+  /** Keep a supported legacy binding available for new tasks as well as saved tasks. */
+  showInPicker?: boolean;
   /** Omission denotes an immutable route, including all pre-6.0 task identities. */
   supportedCodexEfforts?: readonly ChatGptWebCodexEffort[];
 }
@@ -355,13 +357,14 @@ export const CHATGPT_WEB_LEGACY_MODEL_ROUTES: readonly ChatGptWebAutomaticModelR
   {
     slug: "chatgpt-web/high",
     displayName: "ChatGPT Web — High",
-    description: "ChatGPT Web High through the native Codex harness.",
+    description: "ChatGPT Web reasoning with fixed High effort, without pinning a model family.",
     interactionMode: "automatic",
     backendModel: CHATGPT_WEB_BACKEND_MODEL,
     codexEffort: "high",
     adapterEffort: "high",
     requiresPro: false,
     legacy: true,
+    showInPicker: true,
   },
   {
     slug: "chatgpt-web/extra-high",
@@ -474,7 +477,7 @@ export function availableChatGptWebModelRoutes(
     : CHATGPT_WEB_LUNA_MODEL_ROUTES;
   const candidates = includeLegacy
     ? [...CHATGPT_WEB_MODEL_ROUTES, ...CHATGPT_WEB_LEGACY_MODEL_ROUTES]
-    : CHATGPT_WEB_MODEL_ROUTES;
+    : [...CHATGPT_WEB_MODEL_ROUTES, ...CHATGPT_WEB_LEGACY_MODEL_ROUTES.filter(route => route.showInPicker)];
   return candidates.filter(route =>
     (!route.requiresPro || capabilities.proAvailable)
     && (!route.requiresExtraHigh || capabilities.extraHighAvailable));
