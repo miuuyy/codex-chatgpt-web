@@ -164,6 +164,49 @@ test("a pending final paragraph survives a file reference leaving the Markdown r
   expect(() => changed.finish()).toThrow("changed a completed text block");
 });
 
+test("resource-card hydration cannot replace already delivered prose", async () => {
+  // Sanitized structural fragment observed in the completed Activity answer. The
+  // resource row's screenshot title can hydrate into a filename plus file type.
+  const page = (label: string, type: string) => `<div id="turn">
+    <div data-content-search-unit-key="answer"><h4 data-conversation-role="assistant"></h4>
+      <div data-markdown-text-style="assistant-message">
+        <p>The layout was updated.</p>
+        <div class="contents" data-chatgpt-copy-reference="0" data-markdown-copy="contents">
+          <div><span><span class="group/resource-row relative">
+            <span><span title="${label}">${label}</span><span>${type}</span></span>
+          </span></span></div>
+        </div>
+        <p>Validation completed.</p>
+      </div>
+    </div><button aria-label="Copy"></button>
+  </div>`;
+  const before = await snapshot(page("Layout", ""));
+  const after = await snapshot(page("candidate-overview-390-100.png", "PNG"));
+  const buffer = new ChatGptMarkdownBuffer(undefined, 0);
+  buffer.observe(before.markdownSegments, 0);
+  buffer.observe(after.markdownSegments, 1);
+  buffer.observe(after.markdownSegments, 2);
+  expect(buffer.finish().markdown).toBe("The layout was updated.\n\nValidation completed.");
+  expect(before.markdownSegments.map(block => block.text)).toEqual(["The layout was updated.", "Validation completed."]);
+
+  const changed = new ChatGptMarkdownBuffer(undefined, 0);
+  changed.observe(before.markdownSegments, 0);
+  changed.observe((await snapshot(page("Layout", "").replace("The layout was updated.", "Different prose."))).markdownSegments, 1);
+  expect(() => changed.finish()).toThrow("changed a completed text block");
+});
+
+test("ordinary contents wrappers and file labels remain answer content", async () => {
+  const result = await snapshot(`<div id="turn"><div class="markdown">
+    <div data-markdown-copy="contents">Ordinary content.</div>
+    <div data-chatgpt-copy-reference="0" data-markdown-copy="contents">report.md</div>
+    <div><span class="group/resource-row">Quoted resource-row class.</span></div>
+    <p>Done.</p>
+  </div><button aria-label="Copy"></button></div>`);
+  const buffer = new ChatGptMarkdownBuffer(undefined, 0);
+  buffer.observe(result.markdownSegments, 0);
+  expect(buffer.finish().markdown).toBe("Ordinary content.\n\nreport.md\n\nQuoted resource-row class.\n\nDone.");
+});
+
 test("captured DIL smoke response reaches Markdown delivery and stable completion", async () => {
   // Also cover a changed CSS module hash and nested Markdown without duplicate delivery.
   for (const html of [

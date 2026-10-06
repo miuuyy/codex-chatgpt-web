@@ -4205,6 +4205,15 @@ export class ChatGptBrowserWorker {
           card.textContent = "";
           for (const child of children) card.appendChild(child);
         }
+        // Resource download cards can hydrate from a screenshot title to a filename/type row.
+        // Their UI is not answer prose (media itself is excluded below); project neither state
+        // into the append-only text ledger. Require both the owned reference wrapper and its
+        // observed resource row so ordinary contents/file-label blocks remain untouched.
+        for (const card of Array.from(content.querySelectorAll(
+          '[data-chatgpt-copy-reference][data-markdown-copy="contents"]',
+        ))) {
+          if (card.querySelector('[class~="group/resource-row"]')) card.remove();
+        }
         // These are embedded renderers, not Markdown answer text. Their loading labels, controls
         // and plot axes change independently of generation (including after a later paragraph).
         // Keep their UI out of both the emitted HTML and the text consistency fingerprint.
