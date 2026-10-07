@@ -2948,6 +2948,26 @@ export class ChatGptBrowserWorker {
   ): Promise<ChatGptSubmissionDomState> {
     throwIfPromptAttachmentAborted(signal);
     const observed = await withChatGptBrowserObservationTimeout(withBrowserTurnAbort(page.evaluate(options => {
+      // Keep history in the DOM, but let Chromium skip offscreen layout/paint.
+      // The latest user/assistant pair remains rendered for acceptance and tool ACK.
+      if (typeof CSS !== "undefined" && CSS.supports("content-visibility", "auto")) {
+        const attribute = "data-codex-history-render-budget";
+        if (!document.getElementById("codex-history-render-budget")) {
+          const style = document.createElement("style");
+          style.id = "codex-history-render-budget";
+          style.textContent = `[${attribute}="auto"]{content-visibility:auto;contain-intrinsic-size:auto 700px}`;
+          document.head.appendChild(style);
+        }
+        const roots = [...document.querySelectorAll("[data-turn-key], [data-turn-id-container]")]
+          .filter(element => !element.parentElement?.closest("[data-turn-key], [data-turn-id-container]"));
+        roots.forEach((element, index) => {
+          if (index < roots.length - 2) {
+            if (element.getAttribute(attribute) !== "auto") element.setAttribute(attribute, "auto");
+          } else if (element.hasAttribute(attribute)) {
+            element.removeAttribute(attribute);
+          }
+        });
+      }
       type ObserverState = { id: string; revision: number; observer: MutationObserver };
       const scope = globalThis as typeof globalThis & {
         __CODEX_WEB_GPT_TURN_OBSERVER__?: ObserverState;
@@ -3115,19 +3135,46 @@ export class ChatGptBrowserWorker {
       // not exist yet. Inspect the existing group; waiting for an assistant here turns
       // normal response startup into repeated DOM observation timeouts.
       const locator = page.locator(`[data-turn-key=${JSON.stringify(identity.slice("group:assistant:".length))}]`);
-      const text = await withChatGptBrowserObservationTimeout(withBrowserTurnAbort(locator.evaluate(group => {
+      const proof = await withChatGptBrowserObservationTimeout(withBrowserTurnAbort(locator.evaluate((group, completionActionSelector) => {
+        // Deferred history may have empty innerText. This proof can only rekey an
+        // already acknowledged stage with its exact input, plain ACK and completion.
+        // Live answers still use the rendered response projection and normal tool ACK.
+        const readable = (candidate: HTMLElement): boolean => {
+          for (let node: HTMLElement | null = candidate; node; node = node.parentElement) {
+            const style = getComputedStyle(node);
+            if (node.hidden || node.closest('[inert], [aria-hidden="true"]')
+              || style.display === "none" || style.visibility === "hidden" || style.opacity === "0"
+              || style.contentVisibility === "hidden") return false;
+          }
+          return candidate.isConnected;
+        };
         const bubbles = group.querySelectorAll<HTMLElement>("[data-user-message-bubble]");
         const contents = bubbles.length === 1
           ? bubbles[0]!.querySelectorAll<HTMLElement>("[data-search-result-target]") : [];
-        return contents.length === 1 ? contents[0]!.innerText.replace(/\r\n?/g, "\n") : undefined;
-      }), signal));
+        const input = contents.length === 1 && readable(contents[0]!) ? contents[0]! : undefined;
+        const deferred = group.matches('[data-codex-history-render-budget="auto"]');
+        const text = input ? (deferred ? input.textContent ?? "" : input.innerText).replace(/\r\n?/g, "\n") : undefined;
+        const answerSelector = '.markdown, [data-message-author-role="assistant"] .puik-root.not-markdown > [class*="_DilResponseRoot"], [data-markdown-text-style="assistant-message"]';
+        const answers = [...group.querySelectorAll<HTMLElement>(answerSelector)].filter(candidate => {
+          const unit = candidate.closest("[data-content-search-unit-key]");
+          return unit && [...unit.children].some(child => child.getAttribute("data-conversation-role") === "assistant")
+            && !candidate.parentElement?.closest(answerSelector) && readable(candidate);
+        });
+        const answer = answers.length === 1 ? answers[0] : undefined;
+        const acknowledgement = answer && !answer.querySelector("pre, code, blockquote")
+          && [...answer.querySelectorAll<HTMLElement>("*")].every(readable)
+          ? (answer.textContent ?? "").trim() : undefined;
+        const complete = answer !== undefined && [...group.querySelectorAll<HTMLElement>(completionActionSelector)]
+          .some(candidate => readable(candidate) && !answer.contains(candidate)
+            && Boolean(answer.compareDocumentPosition(candidate) & Node.DOCUMENT_POSITION_FOLLOWING));
+        return { text, acknowledgement, complete };
+      }, CHATGPT_COMPLETION_ACTION_SELECTOR), signal));
       // Only this transaction's already completed stages may acquire a new identity. A
       // matching acknowledgement alone cannot prove that the uploaded context survived.
-      const snapshot = await this.responseDomSnapshot(locator, {});
-      const stage = stages.find(candidate => candidate.text.replace(/\r\n?/g, "\n") === text);
-      const ackStage = stages.find(candidate => candidate.acknowledgement === snapshot.visibleText.trim());
+      const stage = stages.find(candidate => candidate.text.replace(/\r\n?/g, "\n") === proof.text);
+      const ackStage = stages.find(candidate => candidate.acknowledgement === proof.acknowledgement);
       if (!stage && !ackStage) continue;
-      if (!stage || stage !== ackStage || !snapshot.completionActionVisible) {
+      if (!stage || stage !== ackStage || !proof.complete) {
         throw new Error("ChatGPT changed an acknowledged Bigger Context exchange");
       }
       if (stage.identities.some(previous => state.turnIdentities.includes(previous))) {
