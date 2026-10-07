@@ -510,6 +510,8 @@ export function compileChatGptWebPrompt(
     : mode.localTools
     ? [
       "For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.",
+      "For Windows Computer Use, read the installed computer-use skill and discover node_repl with codex_tool_inventory(query=node_repl, include_schema=true). Its JavaScript session hosts the documented @oai/sky API; calls may be nested inside exec instead of standalone cua tools. Invoke only the returned wire and schema, then initialize the skill and select a returned target window.",
+      "If node_repl is missing, use the current registry's advertised deferred loader once if available, then inspect the fresh inventory. A visible skill is not proof of tool registration or a working Windows helper. Report the exact missing registration or connection error; do not replace the installed Computer Use runtime with PowerShell/Python mouse injection or another session's bindings.",
       "These tools are connected by the user to their Codex runtime; local actions execute on that runtime's device under its configured sandbox and approval rules. Assess each action by its actual effects and the user's authorization; an authenticated connection does not make every action low risk.",
       "Call a Codex Native tool only when the latest active request requires a local effect or fresh local evidence that is not already present in the supplied context; otherwise answer the request directly without a tool call.",
       "Use actual Codex Native results as evidence for local observations and effects.",
