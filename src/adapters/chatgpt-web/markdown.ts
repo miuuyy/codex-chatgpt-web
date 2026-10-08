@@ -194,6 +194,8 @@ export interface ChatGptMarkdownSegment {
   sourceStart?: number;
   sourceEnd?: number;
   streamable: boolean;
+  /** A reference preview may still replace its label, loading state or download link. */
+  deferUntilComplete?: boolean;
 }
 
 interface ChatGptMarkdownCandidate extends ChatGptMarkdownSegment {
@@ -246,6 +248,7 @@ export class ChatGptMarkdownBuffer {
   private markdown = "";
   private lastGroup: string | undefined;
   private consistencyError: ChatGptMarkdownConsistencyError | undefined;
+  private deferUntilComplete = false;
 
   constructor(
     private readonly transform: (markdown: string) => string = markdown => markdown,
@@ -258,6 +261,9 @@ export class ChatGptMarkdownBuffer {
   }
 
   observe(segments: ChatGptMarkdownSegment[], now = Date.now()): string {
+    // Keep this sticky across preview removal and response-root remounts. Already delivered
+    // text still goes through reconcile; only the remaining draft waits for finish().
+    this.deferUntilComplete ||= segments.some(segment => segment.deferUntilComplete === true);
     const reconciled = this.reconcile(segments);
     if (reconciled instanceof ChatGptMarkdownConsistencyError) {
       this.consistencyError = reconciled;
@@ -267,7 +273,10 @@ export class ChatGptMarkdownBuffer {
     this.latest = reconciled.map(segment => ({ ...segment }));
     // A compaction summary is delivered atomically. Until finish(), edits and reordering
     // revise an undelivered draft rather than contradicting text already sent to Codex.
-    if (this.delivery === "complete") return "";
+    if (this.delivery === "complete" || this.deferUntilComplete) {
+      this.candidates.clear();
+      return "";
+    }
 
     const visibleCandidates = new Set<string>();
     for (const segment of reconciled) {

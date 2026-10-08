@@ -156,7 +156,7 @@ test("observed resource preview hydration cannot rewrite delivered answer text",
     const before = await snapshot(page("Layout", ""));
     const after = await snapshot(page("candidate-overview.png", "PNG"));
     const buffer = new ChatGptMarkdownBuffer(undefined, 0);
-    expect(buffer.observe(before.markdownSegments, 0)).toBe("The layout was updated.");
+    expect(buffer.observe(before.markdownSegments, 0)).toBe("");
     expect(buffer.observe(after.markdownSegments, 1)).toBe("");
     expect(buffer.finish().markdown).toBe("The layout was updated.\n\nValidation completed.");
     // These snapshots use different documents; node identities must not be reused.

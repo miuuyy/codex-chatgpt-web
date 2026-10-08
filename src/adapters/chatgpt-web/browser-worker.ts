@@ -4348,6 +4348,14 @@ export class ChatGptBrowserWorker {
       );
       const commentaryRoots = classified.commentaryRoots;
       const renderedRoots = classified.answerRoots;
+      // References can render a plain title, then an empty spinner, then a download link.
+      // Observe ownership before preview filtering; preserve the final content instead of
+      // committing one transient state into an append-only stream.
+      const referencePreviewSelector = '[data-chatgpt-copy-reference][data-markdown-copy="contents"]';
+      const deferUntilComplete = renderedRoots.some(markdownRoot => (
+        [markdownRoot, ...markdownRoot.querySelectorAll<HTMLElement>(referencePreviewSelector)]
+          .some(candidate => candidate.matches(referencePreviewSelector) && !candidate.closest("pre, code"))
+      ));
       // CHATGPT_MARKDOWN_CONTENT_BEGIN
       const chatGptMarkdownContent = (
         markdownRoot: HTMLElement,
@@ -4618,6 +4626,7 @@ export class ChatGptBrowserWorker {
         ...(segment.sourceStart !== undefined ? { sourceStart: segment.sourceStart } : {}),
         ...(segment.sourceEnd !== undefined ? { sourceEnd: segment.sourceEnd } : {}),
         streamable: index < segments.length - 1 && !segment.pendingLinks,
+        ...(deferUntilComplete ? { deferUntilComplete: true as const } : {}),
         linkTargets: segment.linkTargets,
       }));
       const rendered = renderedRoots.at(-1);
