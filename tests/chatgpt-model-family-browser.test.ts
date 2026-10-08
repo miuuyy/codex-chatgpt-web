@@ -13,10 +13,12 @@ type Picker = {
   header: ((value: number) => string) | null;
   /** Slider announcement per effort label and slider value. */
   status: (effort: string, value: number) => string;
+  japanese?: boolean;
 };
 
 const PICKERS = {
   current: { header: (value: number) => value === 4 ? "6" : "5.6", status: (effort: string, value: number) => effort + ", " + (value + 1) + " of 5." },
+  japanese: { header: () => (window as any).selectedFamily === "5.6" ? "5.6 Sol" : "", status: (effort: string, value: number) => (window as any).selectedFamily + " " + effort + "、5 件中 " + (value + 1) + " 番目。", japanese: true },
   legacy: { header: null, status: (effort: string, value: number) => (value === 4 ? "6 " : "5.6 ") + effort + ", " + (value + 1) + " of 5." },
   future: { header: (value: number) => value === 4 ? "7" : "5.6", status: (effort: string, value: number) => effort + ", " + (value + 1) + " of 5." },
   versionless: { header: () => "", status: (effort: string, value: number) => effort + ", " + (value + 1) + " of 5." },
@@ -52,6 +54,24 @@ const FIXTURE = `<form><div id="prompt-textarea" contenteditable="true">Draft</d
     const efforts = ["Instant", "Medium", "High", "Extra High", "Pro"];
     const control = document.querySelector("button"), menu = document.querySelector("#picker");
     let value = 1;
+    window.selectedFamily = "6";
+    if (window.japanese) {
+      document.querySelector('[role="menuitemradio"]').querySelector("span").textContent = "6";
+      const toggle = document.querySelector('[data-model-picker-view-toggle]');
+      toggle.removeAttribute("aria-hidden");
+      toggle.onclick = () => {
+        document.querySelector('[data-model-picker-view]').setAttribute('data-model-picker-view', 'advanced');
+        const track = document.querySelector('[inert]'); track.removeAttribute('inert'); track.setAttribute('aria-hidden', 'false');
+        toggle.parentElement.parentElement.setAttribute('aria-hidden', 'true');
+      };
+      document.querySelectorAll('[role="menuitemradio"]').forEach((row, index) => row.onclick = () => {
+        window.selectedFamily = index === 0 ? "6" : "5.6";
+        document.querySelectorAll('[role="menuitemradio"]').forEach(other => other.setAttribute('aria-checked', String(other === row)));
+        row.parentElement.setAttribute('inert', ''); row.parentElement.setAttribute('aria-hidden', 'true');
+        toggle.parentElement.parentElement.setAttribute('aria-hidden', 'false');
+        document.querySelector('[data-model-picker-view]').setAttribute('data-model-picker-view', 'simple'); render();
+      });
+    }
     function render() {
       document.querySelector("[data-model-picker-power-slider]").innerHTML = '<span data-orientation="horizontal" aria-disabled="false">'
         + efforts.map((_, i) => '<span data-selected="' + (i <= value) + '"></span>').join("")
@@ -75,19 +95,19 @@ const FIXTURE = `<form><div id="prompt-textarea" contenteditable="true">Draft</d
     });
   </script>`;
 
-async function selectGpt6Pro(picker: Picker) {
+async function selectGpt6Pro(picker: Picker, family: "6" | "5.6" = "6", effort: "low" | "high" | "max" = family === "6" ? "max" : "high") {
   const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
   try {
     const page = await browser.newPage();
     page.setDefaultTimeout(5_000);
-    const config = "<script>window.pickerHeader = " + (picker.header ? picker.header.toString() : "null")
+    const config = "<script>window.japanese = " + !!picker.japanese + "; window.pickerHeader = " + (picker.header ? picker.header.toString() : "null")
       + "; window.pickerStatus = " + picker.status.toString() + ";</script>";
     await page.setContent(config + FIXTURE);
     const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
     try {
-      const mode = await worker.selectModelAndEffort(page, CHATGPT_WEB_MODEL_ID, "max", {
+      const mode = await worker.selectModelAndEffort(page, CHATGPT_WEB_MODEL_ID, effort, {
         localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true,
-      }, undefined, true, "6");
+      }, undefined, true, family);
       return { ok: true, label: mode.selection.label, usageModel: mode.usageModel, draft: await page.locator("#prompt-textarea").innerText() };
     } catch (error) {
       return { ok: false, message: error instanceof Error ? error.message : String(error), draft: await page.locator("#prompt-textarea").innerText() };
@@ -96,6 +116,15 @@ async function selectGpt6Pro(picker: Picker) {
     await browser.close();
   }
 }
+
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("Japanese bare 6 picker verifies Pro and switches to Sol without aria-hidden on its toggle", async () => {
+  expect(await selectGpt6Pro(PICKERS.japanese)).toEqual({ ok: true, label: "Pro", usageModel: "gpt-6-pro", draft: "Draft" });
+  expect(await selectGpt6Pro(PICKERS.japanese, "5.6")).toEqual({ ok: true, label: "High", usageModel: "other", draft: "Draft" });
+}, 60_000);
+
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("Japanese 6 picker keeps its family during lower-effort multipart staging", async () => {
+  expect(await selectGpt6Pro(PICKERS.japanese, "6", "low")).toEqual({ ok: true, label: "Instant", usageModel: "other", draft: "Draft" });
+}, 60_000);
 
 test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("GPT-6 Pro is verified from the current picker header when the slider announces only the effort", async () => {
   expect(await selectGpt6Pro(PICKERS.current)).toEqual({ ok: true, label: "Pro", usageModel: "gpt-6-pro", draft: "Draft" });

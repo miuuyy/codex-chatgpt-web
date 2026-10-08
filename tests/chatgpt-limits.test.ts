@@ -19,6 +19,8 @@ test("Limits reads exact personal account tiers without inspecting billing UI", 
 
 test("Limits identifies actual selected Pro family and keeps missing or conflicting evidence unknown", () => {
   expect(chatGptUsageModelFromAnnouncements(["6 Pro, 5 of 5.", "Use Left and Right arrow keys to adjust power."])).toBe("gpt-6-pro");
+  expect(chatGptUsageModelFromAnnouncements(["6 Pro、5 件中 5 番目。", "Pro"])).toBe("gpt-6-pro");
+  expect(chatGptUsageModelFromAnnouncements(["5.6 Pro、5 件中 5 番目。", "5.6 Sol Pro"])).toBe("gpt-5.6-pro");
   expect(chatGptUsageModelFromAnnouncements(["5.6 Pro, 5 of 5."])).toBe("gpt-5.6-pro");
   expect(chatGptUsageModelFromAnnouncements(["GPT-5.6 Sol Pro, 5 of 5."])).toBe("gpt-5.6-pro");
   for (const descriptions of [[], ["Latest"], ["Pro"], ["5.6 Extra High, 4 of 5."],

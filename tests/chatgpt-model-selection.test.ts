@@ -21,6 +21,12 @@ test("model selection recognizes Latest in the launcher languages without accept
 });
 
 test("family confirmation verifies the exact Sol or Pro version, including the old Latest picker", () => {
+  expect(chatGptModelFamilyMatches(["6 Pro、5 件中 5 番目。", "Pro"], "6", "max")).toBe(true);
+  expect(chatGptModelFamilyMatches(["5.6 高、5 件中 3 番目。", "5.6 Sol 高"], "5.6", "high")).toBe(true);
+  expect(chatGptModelFamilyMatches(["7 Pro、5 件中 5 番目。"], "6", "max")).toBe(false);
+  expect(chatGptModelFamilyMatches(["6 Pro、5 件中 5 番目。", "5.6 Pro、5 件中 5 番目。"], "6", "max")).toBe(false);
+  expect(chatGptModelFamilyMatches(["6 Medium、5 件中 2 番目。", "Medium"], "6", "low")).toBe(true);
+  expect(chatGptModelFamilyMatches(["6 High、5 件中 3 番目。", "5.6 High"], "6", "high")).toBe(false);
   expect(chatGptModelFamilyMatches(["5.6 High, 3 of 5."], "5.6", "high")).toBe(true);
   expect(chatGptModelFamilyMatches(["5.6 Extra High, 4 of 5."], "6", "xhigh")).toBe(false);
   expect(chatGptModelFamilyMatches(["6 Medium, 2 of 3.", "Medium"], "6", "medium")).toBe(true);

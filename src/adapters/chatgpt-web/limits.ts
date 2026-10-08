@@ -80,8 +80,8 @@ export async function readChatGptUsageModel(slider: Locator, isPro: boolean): Pr
 export function chatGptUsageModelFromAnnouncements(announcements: readonly string[]): ChatGptUsageModel {
   const families = new Set<ChatGptUsageModel>();
   for (const text of announcements) {
-    if (/^\s*(?:GPT[-\s])?6(?:\s+Astra)?\s+Pro(?:\s|[,.;]|$)/i.test(text)) families.add("gpt-6-pro");
-    if (/^\s*(?:GPT[-\s])?5\.6(?:\s+Sol)?\s+Pro(?:\s|[,.;]|$)/i.test(text)) families.add("gpt-5.6-pro");
+    if (/^\s*(?:GPT[-\s])?6(?:\s+Astra)?\s+Pro(?:\s|[,，、.;]|$)/i.test(text)) families.add("gpt-6-pro");
+    if (/^\s*(?:GPT[-\s])?5\.6(?:\s+Sol)?\s+Pro(?:\s|[,，、.;]|$)/i.test(text)) families.add("gpt-5.6-pro");
   }
   return families.size === 1 ? [...families][0]! : "pro-unknown";
 }
