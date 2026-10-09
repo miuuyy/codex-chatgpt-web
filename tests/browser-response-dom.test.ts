@@ -267,6 +267,48 @@ test("captured power UI excludes the user footer during streaming and completes 
   expect(userMarkdown.visibleText).toBe(complete.visibleText);
 });
 
+test("wrapped assistant role and ungrouped answer markdown still complete the turn", async () => {
+  // The ownership gate used to require data-conversation-role on a direct child of the
+  // search unit. A wrapped role, or answer markdown with no search unit, left visible
+  // text empty even though the assistant turn contained the answer and a rendered
+  // completion button. The health check then retired the turn as having no generation.
+  const nestedRole = `<section id="turn" data-turn-key="live">
+    <div data-user-message-bubble="true"><div class="markdown"><p>USER CONTENT</p></div></div>
+    <div data-content-search-unit-key="live:assistant">
+      <div><h4 data-conversation-role="assistant">ChatGPT said:</h4></div>
+      <div data-markdown-text-style="assistant-message"><p>Nested role answer.</p></div>
+    </div>
+    <div class="turn-action-controls"><button>Copy</button></div>
+  </section>`;
+  const nested = await snapshot(nestedRole);
+  expect(nested.visibleText).toBe("Nested role answer.");
+  expect(nested.visibleText).not.toContain("USER CONTENT");
+  expect(nested.completionActionVisible).toBeTrue();
+
+  const noUnit = `<section id="turn" data-turn-key="live">
+    <div data-conversation-role="assistant"></div>
+    <div data-user-message-bubble="true"><div class="markdown"><p>USER CONTENT</p></div></div>
+    <div class="markdown"><p>Ungrouped answer.</p></div>
+    <div class="turn-action-controls"><button>Copy</button></div>
+  </section>`;
+  const loose = await snapshot(noUnit);
+  expect(loose.visibleText).toBe("Ungrouped answer.");
+  expect(loose.completionActionVisible).toBeTrue();
+  const tracker = new ChatGptCompletionTracker();
+  const state = { ...loose, running: false, currentText: loose.visibleText, currentHtml: loose.fullHtml };
+  expect(tracker.update({ ...state, running: true }, 0)).toBeFalse();
+  expect(tracker.update(state, 1)).toBeFalse();
+  expect(tracker.update(state, 1 + CHATGPT_COMPLETION_SETTLE_MS)).toBeTrue();
+
+  const userOnly = `<section id="turn" data-turn-key="live">
+    <div data-user-message-bubble="true"><div class="markdown"><p>USER CONTENT</p></div></div>
+    <div class="turn-action-controls"><button>Copy</button></div>
+  </section>`;
+  const user = await snapshot(userOnly);
+  expect(user.visibleText).toBe("");
+  expect(user.completionActionVisible).toBeFalse();
+});
+
 test("captured power response keeps its Markdown ledger through final rendering", async () => {
   const streaming = await snapshot(powerStreamingHtml);
   const complete = await snapshot(powerCompleteHtml);

@@ -4288,13 +4288,33 @@ export class ChatGptBrowserWorker {
       // render a completed commentary Markdown root immediately before that live status container.
       // Final-answer Markdown follows the live status instead, so DOM order remains the semantic
       // boundary without relying on localized labels such as "Pro thinking".
+      const hasAttributeValue = (element: HTMLElement, name: string, value: string): boolean => {
+        if (element.getAttribute(name) === value) return true;
+        const found = element.querySelectorAll<HTMLElement>(`[${name}]`);
+        for (let index = 0; index < found.length; index += 1) {
+          if (found[index]!.getAttribute(name) === value) return true;
+        }
+        return false;
+      };
       const allMarkdownRoots = [...root.querySelectorAll<HTMLElement>(answerRootSelector)]
         .filter(candidate => {
+          // The user prompt shares this turn group. Its markdown is never the answer.
+          if (candidate.closest("[data-user-message-bubble]")) return false;
           if (!root.hasAttribute("data-turn-key") && !candidate.hasAttribute("data-markdown-text-style")) return true;
-          const unit = candidate.closest("[data-content-search-unit-key]");
-          return unit ? Array.from(unit.children)
-            .some(child => child.getAttribute("data-conversation-role") === "assistant")
-            : activityContainers.some(container => container.contains(candidate));
+          const unit = candidate.closest<HTMLElement>("[data-content-search-unit-key]");
+          if (unit) {
+            // The assistant role is not always a direct child of the search unit. Requiring
+            // that dropped every answer node: visible text stayed empty, so the rendered
+            // completion button after those nodes was ignored and the turn was retired.
+            return hasAttributeValue(unit, "data-conversation-role", "assistant");
+          }
+          if (activityContainers.some(container => container.contains(candidate))) return true;
+          // Current turns also render the answer directly in the assistant group, beside the
+          // completion control, with no search unit around it.
+          return root.getAttribute("data-turn") === "assistant"
+            || root.getAttribute("data-message-author-role") === "assistant"
+            || hasAttributeValue(root, "data-conversation-role", "assistant")
+            || hasAttributeValue(root, "data-message-author-role", "assistant");
         })
         .filter(candidate => !candidate.parentElement?.closest(answerRootSelector))
         .filter(renderedInDom);
