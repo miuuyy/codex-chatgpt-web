@@ -2372,6 +2372,21 @@ test("an abort while inserting a connector prompt clears the selected pill and p
   expect(connectorSelected).toBeFalse();
 });
 
+test("composer text excludes rendered URL icon styles while preserving URLs and literal SVG text", async () => {
+  const { createWindow } = require("@mixmark-io/domino");
+  const window = createWindow('<div id="composer"><p>链接 <a href="https://drive.google.com/file/d/example"><svg data-icon-p3="google-drive-color-logo-light-16"><style>@supports (color:color(display-p3 1 1 1)){}</style>   <path d="M0 0"/> </svg>https://drive.google.com/file/d/example</a></p><p>&lt;svg&gt;literal&lt;/svg&gt; &lt;style&gt;literal&lt;/style&gt;  两个空格</p></div>');
+  const element = window.document.getElementById("composer");
+  const attachedPromptText = (ChatGptBrowserWorker.prototype as unknown as {
+    attachedPromptText: (...args: unknown[]) => Promise<string>;
+  }).attachedPromptText;
+  const text = await attachedPromptText.call({
+    activeComposer: async () => ({ evaluate: async (callback: Function) => callback(element) }),
+  }, {});
+  expect(text).toBe("链接 https://drive.google.com/file/d/example\n<svg>literal</svg> <style>literal</style>  两个空格");
+  expect(element.querySelector("svg")).not.toBeNull();
+});
+
+
 test("each new tool prompt verifies its connector after the previous Send cleared the mention", async () => {
   const attachPrompt = (ChatGptBrowserWorker.prototype as unknown as {
     attachPrompt: (...args: unknown[]) => Promise<void>;
