@@ -1,12 +1,14 @@
 import { expect, test } from "bun:test";
-import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
+import { ChatGptBrowserWorker, ChatGptTurnDomHealthTracker } from "../src/adapters/chatgpt-web/browser-worker";
 import {
+  CHATGPT_STOP_BUTTON_SELECTOR,
   CHATGPT_COMPOSER_SELECTOR,
   CHATGPT_EFFORT_CONTROL_SELECTOR,
   CHATGPT_EFFORT_MENU_SELECTOR,
   CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
   activateChatGptEffortMenu,
   assertNewChatPage,
+  assertAuthenticatedChatGptPage,
   chatGptNewChatUrl,
   detectChatGptAccountCapabilities,
 } from "../src/chatgpt-session";
@@ -437,4 +439,42 @@ test("Pro selection verifies the persisted hidden slider through its visible own
     expect(fixture.keys).toEqual(["ArrowRight", "ArrowRight", "ArrowRight", "ArrowRight"]);
     expect(fixture.value()).toBe(loseSelectionOnClose ? 0 : 4);
   }
+});
+
+
+test("Japanese composer Stop keeps a long Pro turn alive without test ids", () => {
+  const { createDocument } = require("@mixmark-io/domino") as { createDocument(html: string): Document };
+  for (const label of ["Stop", "停止"]) {
+    const doc = createDocument(`<body><button type="button" aria-label="${label}" id="outside"></button>
+      <form data-chatgpt-composer><button type="button" aria-label="${label}" id="generating"></button>
+      <button type="submit" aria-label="${label}" id="submit"></button></form></body>`);
+    const controls = Array.from(doc.querySelectorAll(CHATGPT_STOP_BUTTON_SELECTOR));
+    expect(controls.map(node => node.id)).toEqual(["generating"]);
+    const health = new ChatGptTurnDomHealthTracker();
+    const state = { responsePresent: true, running: controls.length > 0, currentText: "", completionActionVisible: false };
+    expect(health.update(state, 0)).toBeUndefined();
+    expect(health.update(state, 180_000)).toBeUndefined();
+    const generating = doc.getElementById("generating")!;
+    generating.parentNode!.removeChild(generating);
+    expect(doc.querySelectorAll(CHATGPT_STOP_BUTTON_SELECTOR).length).toBe(0);
+  }
+});
+
+
+test("authentication waits for a composer replaced during hydration", async () => {
+  let reads = 0;
+  const composer: any = { count: async () => ++reads > 1 ? 1 : 0,
+    nth: () => composer, isVisible: async () => true };
+  await assertAuthenticatedChatGptPage({ locator: () => composer } as any);
+  expect(reads).toBe(2);
+});
+
+test("authentication still rejects an absent composer after the bounded wait", async () => {
+  const now = Date.now;
+  let elapsed = 0;
+  Date.now = () => elapsed += 5_001;
+  try {
+    await expect(assertAuthenticatedChatGptPage({ locator: () => ({ count: async () => 0 }) } as any))
+      .rejects.toThrow("no visible composer");
+  } finally { Date.now = now; }
 });

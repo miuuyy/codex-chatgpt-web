@@ -66,7 +66,7 @@ export async function readChatGptModelAnnouncements(slider: Locator): Promise<st
 }
 /** Resolve only inside the verified composer's form; multiple submitters are an error. */
 export const CHATGPT_SEND_BUTTON_SELECTOR = '[data-testid="send-button"], button[type="submit"]';
-export const CHATGPT_STOP_BUTTON_SELECTOR = '[data-testid="stop-button"], form[data-chatgpt-composer] button[type="button"][aria-label="Stop"]';
+export const CHATGPT_STOP_BUTTON_SELECTOR = '[data-testid="stop-button"], form[data-chatgpt-composer] button[type="button"][aria-label="Stop"], form[data-chatgpt-composer] button[type="button"][aria-label="停止"]';
 // The new footer is shared with user messages. Response extraction additionally requires
 // this control to FOLLOW the last assistant answer, excluding the user's earlier footer.
 export const CHATGPT_COMPLETION_ACTION_SELECTOR = 'button[data-testid="copy-turn-action-button"], [data-turn-key] .turn-action-controls button';
@@ -256,8 +256,12 @@ export async function assertAuthenticatedChatGptPage(page: Page): Promise<void> 
   const composer = page.locator(
     CHATGPT_COMPOSER_SELECTOR,
   );
-  if (!await anyVisible(composer)) {
-    throw new Error("ChatGPT authentication could not be verified: no visible composer is present");
+  const deadline = Date.now() + 5_000;
+  while (!await anyVisible(composer)) {
+    if (Date.now() >= deadline) {
+      throw new Error("ChatGPT authentication could not be verified: no visible composer is present");
+    }
+    await new Promise(resolve => setTimeout(resolve, 50));
   }
 }
 
