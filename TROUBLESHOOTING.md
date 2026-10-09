@@ -321,6 +321,46 @@ safe log. `native_compaction_upstream_failed` records the route, model, HTTP sta
 request identifiers without prompt contents or credentials. A separate Web context-length error
 still requires its own diagnosis; changing the native protocol does not increase Web input limits.
 
+## A task keeps compacting and makes no progress
+
+Symptoms: Codex repeatedly prints "Context compacted automatically", the task runs for many
+minutes with many tool calls, but no file changes. In an exported safe log the same pair of turns
+repeats: a work turn that ends as `aborted`, followed by a turn whose id ends in `_fresh` with no
+tool calls (the compaction), then a new work turn.
+
+Cause: the effective context window. Every compaction leaves a floor of roughly 25,000 tokens
+(instructions, tool contract and the summary), so only the rest of the window is available for
+work. Observed on a Plus account:
+
+| Model (Web), effort High | Window shown by Codex | Auto-compact limit |
+| --- | --- | --- |
+| GPT-6 Sol | about 80,100 | 80,000 |
+| GPT-5.6 Sol with Bigger Context | about 240,300 | 240,000 |
+
+Bigger Context does not apply to GPT-6 Sol on Plus (see Limits in the README: GPT-6 Sol Bigger Context is for Pro), even when its
+setting is enabled. With roughly 50,000 tokens of working room per cycle, a task whose first step
+is to read more than that, for example a repository whose agent instructions require reading
+several large documents, fills the window before doing any work, compacts, and then reads the same
+material again.
+
+To confirm:
+
+- In Codex, check `model_context_window` for the selected model, or the window shown next to the
+  model name.
+- In the safe log, count turns whose trace id ends in `_fresh` and the `broker_retired` lines with
+  `"completionCommitted":false` that precede them. Many of them within minutes indicate this loop.
+
+What to do:
+
+- Use a model with a larger window (GPT-5.6 Sol with Bigger Context on Plus) for tasks that start
+  with long reading.
+- Shorten the required startup reading, or tell the agent in the task that the checkpoint already
+  covers the startup reading and that it should not re-read those documents after a compaction.
+- Split the work into smaller tasks so each one starts from a short checkpoint.
+
+A ChatGPT safety refusal that appears at the end of such a loop does not by itself show that the
+compaction caused it; see **ChatGPT refuses a tool call or context compaction** above.
+
 ## ChatGPT says the account is temporarily limited
 
 The bridge permits at most five simultaneous browser tabs as an account-safety ceiling. Five is not
