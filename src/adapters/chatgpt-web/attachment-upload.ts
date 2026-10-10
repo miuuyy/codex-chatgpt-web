@@ -75,7 +75,10 @@ export async function observeChatGptAttachmentUploads(page: Page, names: string[
       for (const data of stream.buffered ?? []) consume(event.requestId, stream.decoder.write(Buffer.from(data, "base64")));
       stream.buffered = undefined;
     }).catch(() => {
-      if (!completed.has(stream.name)) fail("could not observe the upload processing stream");
+      // A short response may already be complete when streaming is enabled. A CDP
+      // observation failure is not an upload failure: loadingFinished must validate
+      // the complete body, or loadingFailed must report the transport failure.
+      // Keep ready pending until that authoritative terminal event is processed.
     });
   };
   const onData = (event: any) => {
