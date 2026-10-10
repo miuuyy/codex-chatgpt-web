@@ -2483,6 +2483,7 @@ test("image attachment readiness uses exact file tiles and not localized remove-
       return composerForm;
     },
   };
+  let uploadEvent: (event: { method: string; params: unknown }) => void = () => {};
   const input = {
     waitFor: async (state: { state: string; timeout: number }) => {
       expect(state).toEqual({ state: "attached", timeout: 20_000 });
@@ -2490,9 +2491,18 @@ test("image attachment readiness uses exact file tiles and not localized remove-
     },
     setInputFiles: async (files: Array<{ name: string }>) => {
       calls.push(["setFiles", files.map(file => file.name).join(",")]);
+      uploadEvent({ method: "Network.requestWillBeSent", params: { frameId: "owned", requestId: "upload", request: { method: "POST", url: "https://chatgpt.com/backend-api/files/process_upload_stream", postData: JSON.stringify({ file_name: files[0]!.name }) } } });
+      uploadEvent({ method: "Network.responseReceived", params: { requestId: "upload", response: { status: 200 } } });
     },
   };
   const page = {
+    url: () => "https://chatgpt.com/",
+    context: () => ({ newCDPSession: async () => ({
+      on: (_name: string, listener: typeof uploadEvent) => { uploadEvent = listener; },
+      off: () => {}, detach: async () => {},
+      send: async (method: string) => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "owned" } } }
+        : method === "Network.streamResourceContent" ? { bufferedData: Buffer.from(JSON.stringify({ event: "file.processing.completed" }) + "\n").toString("base64") } : {},
+    }) }),
     locator: (selector: string) => {
       if (selector === 'input[data-testid="upload-photos-input"], form[data-chatgpt-composer] input[type="file"][multiple]:not([accept])') return input;
       if (selector === '[role="alert"]') {
