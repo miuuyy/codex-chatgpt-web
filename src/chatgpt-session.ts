@@ -76,7 +76,16 @@ export async function readChatGptModelAnnouncements(slider: Locator): Promise<st
 }
 /** Resolve only inside the verified composer's form; multiple submitters are an error. */
 export const CHATGPT_SEND_BUTTON_SELECTOR = '[data-testid="send-button"], button[type="submit"]';
-export const CHATGPT_STOP_BUTTON_SELECTOR = '[data-testid="stop-button"], form[data-chatgpt-composer] button[type="button"][aria-label="Stop"]';
+// Captured in the launcher's current composer on 2026-10-09. The primary action's
+// square glyph identifies Stop without its translated label. Button type/class alone
+// also match voice controls; keep the observed icon and composer ownership together.
+const CHATGPT_STOP_ICON_PATH = "M4.5 5.75C4.5 5.05964 5.05964 4.5 5.75 4.5H14.25C14.9404 4.5 15.5 5.05964 15.5 5.75V14.25C15.5 14.9404 14.9404 15.5 14.25 15.5H5.75C5.05964 15.5 4.5 14.9404 4.5 14.25V5.75Z";
+export const CHATGPT_STOP_BUTTON_SELECTOR = '[data-testid="stop-button"], '
+  + `form[data-chatgpt-composer] button[type="button"].size-token-button-composer:has(svg.icon-primary-action > path[d="${CHATGPT_STOP_ICON_PATH}"])`;
+// Captured Luna Think control (2026-09-08). The brain glyph's opening contour,
+// composer pill and pressed state identify this action independently of its label.
+// Other composer pills (search, tools, attachments) must not be treated as Think.
+export const CHATGPT_THINK_BUTTON_SELECTOR = 'button[type="button"].__composer-pill[aria-pressed]:has(> .__composer-pill-icon > svg[viewBox="0 0 24 24"] > path[d^="M14.8974 2.29998C15.8303 2.29013 16.802 2.58194 17.5566 3.22577"])';
 // The new footer is shared with user messages. Response extraction additionally requires
 // this control to FOLLOW the last assistant answer, excluding the user's earlier footer.
 export const CHATGPT_COMPLETION_ACTION_SELECTOR = 'button[data-testid="copy-turn-action-button"], [data-turn-key] .turn-action-controls button';
@@ -182,7 +191,9 @@ export async function activateChatGptEffortMenu(
 
   const settleMs = options.settleMs ?? 3_000;
   await clearGhostEffortState(page, control);
-  await control.click({ force: true, timeout: Math.max(1, settleMs) });
+  // Let Playwright wait for stable layout and hit testing after navigation.
+  // A forced click can be delivered before the new renderer's viewport is usable.
+  await control.click({ timeout: Math.max(1, settleMs) });
   const clickedSurface = await waitForEffortSurface(page, control, settleMs);
   if (clickedSurface) return { method: "click", ...clickedSurface };
 

@@ -186,7 +186,7 @@ export async function settleActiveCompactionSource(
     let token: string | undefined;
     try {
       token = await source.runtime.token;
-      broker.requestCompaction(token, interruptedByActiveCompaction());
+      broker.requestCompaction(token, interruptedByActiveCompaction(), () => source.runtime.trace.recordProgress());
       for (const request of outstanding) {
         const result = results.get(request.callId)!;
         await broker.completeTool(
@@ -195,6 +195,7 @@ export async function settleActiveCompactionSource(
           toolResult(result),
         );
         source.runtime.externalProgress.recordToolResult();
+        source.runtime.trace.recordProgress();
         source.markResultDelivered(request.callId);
       }
       const browserOutcome = await withCompactionAbort(source.browserOutcome, signal);

@@ -29,6 +29,32 @@ function request(reasoning: "low" | "medium" | "high" | "xhigh" | "max"): CodexP
   };
 }
 
+test("inline and staged history escape Markdown delimiters without changing decoded code", () => {
+  const parsed = request("high");
+  const code = '```ts\nconst value = "`key`";\n``` '.repeat(20) + '\\u0060 \\` [text](https://example.com) 中文';
+  parsed.context.systemPrompt = [code];
+  parsed.context.messages[1]!.content = code;
+  const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true };
+  const inline = compileChatGptWebPrompt(parsed, capabilities, "turn_12345678901234567890123456789012");
+  const encoded = inline.text.match(/<codex_context_json>\n(.+)\n<\/codex_context_json>/s)![1]!;
+  expect(encoded).not.toContain("`");
+  const decoded = JSON.parse(encoded);
+  expect(decoded.system).toEqual([code]);
+  expect(decoded.messages[1].content).toBe(code);
+  const staged = compileChatGptWebPrompt(parsed, capabilities, "turn_12345678901234567890123456789012", {
+    experimentalMultipartParts: CHATGPT_BIGGER_CONTEXT_PARTS,
+  });
+  const records = staged.multipart!.parts.flatMap(part => {
+    expect(part).not.toContain("`");
+    return JSON.parse(part).records;
+  });
+  expect(records.find(record => record.kind === "system").content).toBe(code);
+  expect(records.find(record => record.kind === "message" && record.message_index === 1).message.content)
+    .toEqual(decoded.messages[1].content);
+  // A literal escape in source code stays literal; it is not decoded into a backtick twice.
+  expect(decoded.messages[1].content).toContain("\\u0060");
+});
+
 test("history handle cleanup works on decoded text and preserves native call identities", () => {
   const call = `call_${"A".repeat(32)}`;
   const context = {

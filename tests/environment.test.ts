@@ -1053,6 +1053,37 @@ describe("trusted Codex task environment continuity", () => {
     expect(new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request).cwd).toBe(root);
   });
 
+  for (const afterAssistant of [false, true]) for (const repeatRoots of [false, true]) {
+    test(`calendar update ${afterAssistant ? "after a tool" : "immediately after the instruction"} with ${repeatRoots ? "repeated" : "omitted"} roots uses the current native environment (#812)`, () => {
+      const { codexHome, request, body, delta } = midnightRolloutFixture();
+      if (!afterAssistant) body.input.splice(1, body.input.length - 2);
+      if (repeatRoots) delta.content[0]!.text = delta.content[0]!.text.replace("<filesystem>",
+        `<filesystem><workspace_roots><root>${root}</root></workspace_roots>`);
+      expect(new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request).cwd).toBe(root);
+    });
+  }
+
+  test("calendar updates cannot introduce roots or malformed permission fields", () => {
+    const { codexHome, request, body, delta, rolloutPath } = midnightRolloutFixture();
+    body.input.splice(1, body.input.length - 2);
+    const original = delta.content[0]!.text;
+    const store = new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome);
+    for (const roots of [
+      `<workspace_roots><root>${resolve(root, "other")}</root></workspace_roots>`,
+      `<workspace_roots><root>${root}</root><root>${resolve(root, "other")}</root></workspace_roots>`,
+      "<workspace_roots><root>relative</root></workspace_roots>",
+      "<workspace_roots/>", "<cwd/>", "<workspace_roots><root/></workspace_roots>",
+    ]) {
+      delta.content[0]!.text = original.replace("<filesystem>", `<filesystem>${roots}`);
+      expect(() => store.resolve(request)).toThrow();
+    }
+    delta.content[0]!.text = original.replace("<filesystem>",
+      `<filesystem><workspace_roots><root>${root}</root></workspace_roots>`);
+    expect(store.resolve(request).cwd).toBe(root);
+    rmSync(rolloutPath);
+    expect(() => store.resolve(request)).toThrow("missing cwd");
+  });
+
   test("midnight recovery never borrows cached authority without exact current rollout proof", () => {
     const { codexHome, request, rolloutPath, delta } = midnightRolloutFixture();
     const store = new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome);
@@ -1457,7 +1488,7 @@ describe("trusted Codex task environment continuity", () => {
   });
 
   test("a malformed current update is not replaced by a valid older transcript envelope", () => {
-    const { codexHome, request } = resumedRootFixture();
+    const { codexHome, request, rolloutPath } = resumedRootFixture();
     const body = request._rawBody as { input: Array<Record<string, unknown>> };
     const oldTurnId = "01a06c66-0000-75c6-a0df-318f890ef6de";
     body.input.unshift(
@@ -1469,7 +1500,18 @@ describe("trusted Codex task environment continuity", () => {
       { type: "message", role: "user", id: "invalid_current_context",
         content: [{ type: "input_text", text: "<environment_context><cwd/></environment_context>" }] },
     );
-    expect(() => new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request)).toThrow("missing cwd");
+    const store = new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome);
+    expect(() => store.resolve(request)).toThrow("no current task boundary for environment history");
+    // Even recording this malformed envelope does not make it historical when it
+    // belongs to the current task. The valid older envelope cannot replace it.
+    writeFileSync(rolloutPath, [
+      { type: "session_meta", payload: { id: rolloutThreadId, source: "vscode" } },
+      { type: "response_item", payload: body.input[0] },
+      { type: "event_msg", payload: { type: "task_started", turn_id: rolloutTurnId } },
+      { type: "response_item", payload: body.input[3] },
+      childTurnContext(),
+    ].map(record => JSON.stringify(record)).join("\n") + "\n");
+    expect(() => store.resolve(request)).toThrow("does not authenticate the historical environment messages");
   });
 
   test("root rollout lookup authenticates the indexed owner and current sandbox", () => {
@@ -1536,7 +1578,7 @@ describe("trusted Codex task environment continuity", () => {
       .toThrow("session metadata");
   });
 
-  test("a child's untagged environment must match native history before its current task boundary", () => {
+  for (const child of [true, false]) test(`a ${child ? "child" : "root"} thread's untagged environment must match native history before its current task boundary`, () => {
     const codexHome = mkdtempSync(join(tmpdir(), "codex-child-history-"));
     temporaryRoots.push(codexHome);
     const rolloutPath = join(codexHome, "sessions", "2026", "09", "06",
@@ -1550,17 +1592,23 @@ describe("trusted Codex task environment continuity", () => {
     const history = { type: "response_item", payload: inherited };
     const writeRollout = (records: unknown[]) => writeFileSync(rolloutPath,
       records.map(record => JSON.stringify(record)).join("\n") + "\n");
-    writeRollout([childSessionMeta(), history, boundary, childTurnContext()]);
-    createRolloutState(join(codexHome, "state_5.sqlite"), rolloutPath);
+    const session = child ? childSessionMeta()
+      : { type: "session_meta", payload: { id: rolloutThreadId, source: "vscode" } };
+    writeRollout([session, history, boundary, childTurnContext()]);
+    if (child) createRolloutState(join(codexHome, "state_5.sqlite"), rolloutPath);
     const request = environmentlessChild(rolloutTurnId, "danger-full-access", []);
-    const body = request._rawBody as { input: Array<Record<string, unknown>> };
+    const body = request._rawBody as { input: Array<Record<string, unknown>>; client_metadata: Record<string, string> };
+    if (!child) body.client_metadata["x-codex-turn-metadata"] = JSON.stringify({
+      request_kind: "turn", thread_id: rolloutThreadId, turn_id: rolloutTurnId,
+      agent_name: "/root", sandbox_mode: "danger-full-access", workspaces: {},
+    });
     body.input.unshift(structuredClone(inherited), {
       type: "message", role: "user", id: "msg_parent_prompt",
       content: [{ type: "input_text", text: "Original parent instruction" }],
     });
     const store = new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome);
-    // Git enrichment is absent on the first real child request; historical XML never supplies
-    // the authority. Use the child's current native cwd even when the inherited cwd differs.
+    // Historical XML never supplies authority. Both root and child threads must use
+    // their current native cwd even when a retained historical envelope differs (#812).
     expect(store.resolve(request).cwd).toBe(root);
     body.input[0] = { ...inherited, content: [{ type: "input_text", text: "<environment_context>changed</environment_context>" }] };
     expect(() => store.resolve(request)).toThrow("differs from its native Codex record");
@@ -1569,9 +1617,9 @@ describe("trusted Codex task environment continuity", () => {
     body.input[0] = { ...inherited, internal_chat_message_metadata_passthrough: { turn_id: rolloutTurnId } };
     expect(() => store.resolve(request)).toThrow("missing cwd");
     body.input[0] = structuredClone(inherited);
-    writeRollout([childSessionMeta(), boundary, history, childTurnContext()]);
+    writeRollout([session, boundary, history, childTurnContext()]);
     expect(() => store.resolve(request)).toThrow("does not authenticate");
-    writeRollout([childSessionMeta(), history, childTurnContext()]);
+    writeRollout([session, history, childTurnContext()]);
     expect(() => store.resolve(request)).toThrow("no current task boundary");
   });
 

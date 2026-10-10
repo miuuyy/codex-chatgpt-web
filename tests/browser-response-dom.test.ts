@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { createContext, runInContext } from "node:vm";
 import type { Locator } from "playwright-core";
 import { ChatGptBrowserWorker, ChatGptCompletionTracker, ChatGptVisibleTraceTracker, CHATGPT_COMPLETION_SETTLE_MS } from "../src/adapters/chatgpt-web/browser-worker";
-import { ChatGptMarkdownBuffer, ChatGptMarkdownConsistencyError, type ChatGptMarkdownSegment } from "../src/adapters/chatgpt-web/markdown";
+import { chatGptHtmlToMarkdown, ChatGptMarkdownBuffer, ChatGptMarkdownConsistencyError, type ChatGptMarkdownSegment } from "../src/adapters/chatgpt-web/markdown";
 
 const smokeHtml = readFileSync(new URL("./fixtures/chatgpt-dil-smoke.html", import.meta.url), "utf8");
 const powerCompleteHtml = readFileSync(new URL("./fixtures/chatgpt-power-complete.html", import.meta.url), "utf8");
@@ -513,6 +513,43 @@ test("unmatched final blocks report structural evidence without exposing answer 
     expect(diagnostic).toMatchObject({ reason: "unanchored_block", observedTag: "div", committedTag: "p", observedKeyMode: "dom-node", committedKeyMode: "dom-node", observedIndex: 0, committedIndex: 0 });
     expect(JSON.stringify(diagnostic)).not.toContain("Private");
   }
+});
+
+test("recreated horizontal rules preserve their Markdown and position among delivered paragraphs", async () => {
+  const html = `<section id="turn"><div class="markdown"><p>First.</p><hr><p>Middle.</p><hr><p>Last.</p><p>Pending.</p></div></section>`;
+  const frames = await snapshots(html, [doc => {
+    for (const hr of Array.from(doc.querySelectorAll("hr"))) hr.replaceWith(doc.createElement("hr"));
+  }, doc => {
+    doc.querySelector(".markdown")!.firstElementChild!.remove();
+    doc.querySelector("p")!.textContent = "Changed delivered text.";
+  }]);
+  const buffer = new ChatGptMarkdownBuffer(undefined, 0);
+  const streamed = buffer.observe(frames[0]!.markdownSegments, 0);
+  expect(streamed).toContain("First.");
+  expect(streamed.match(/\* \* \*/g)).toHaveLength(2);
+  expect(buffer.observe(frames[1]!.markdownSegments, 1)).toBe("");
+  expect(buffer.finish().markdown).toBe(chatGptHtmlToMarkdown(html));
+  buffer.observe(frames[2]!.markdownSegments, 2);
+  expect(() => buffer.finish()).toThrow(ChatGptMarkdownConsistencyError);
+});
+
+test("repeated rules need ordered anchors and an inserted rule cannot masquerade as delivered content", () => {
+  const p = (key: string, text: string): ChatGptMarkdownSegment => ({ key, tag: "p", html: `<p>${text}</p>`, text, streamable: true });
+  const hr = (key: string): ChatGptMarkdownSegment => ({ key, tag: "hr", html: "<hr>", text: "", streamable: true });
+  const original = [p("a", "First"), hr("r1"), p("b", "Middle"), hr("r2"), p("c", "Last")];
+  for (const observed of [
+    [hr("new"), p("c", "Last")], // Either rule could be the remounted one.
+    [p("b", "Middle"), hr("new"), p("a", "First")], // Real reordering stays invalid.
+  ]) {
+    const buffer = new ChatGptMarkdownBuffer(undefined, 0);
+    buffer.observe(original, 0);
+    buffer.observe(observed, 1);
+    expect(() => buffer.finish()).toThrow(ChatGptMarkdownConsistencyError);
+  }
+  const buffer = new ChatGptMarkdownBuffer(undefined, 0);
+  buffer.observe([p("a", "First"), p("c", "Last")], 0);
+  buffer.observe([p("a", "First"), hr("inserted"), p("c", "Last")], 1);
+  expect(() => buffer.finish()).toThrow(ChatGptMarkdownConsistencyError);
 });
 
 test("late source ranges preserve the same answer blocks across subsequent remounts", async () => {

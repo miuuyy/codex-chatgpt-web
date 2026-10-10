@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { chromium } from "playwright-core";
 import { ChatGptBrowserWorker, setChatGptThinkMode } from "../src/adapters/chatgpt-web/browser-worker";
 import { CHATGPT_COMPOSER_SELECTOR, detectChatGptAccountCapabilities } from "../src/chatgpt-session";
@@ -11,7 +12,7 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("Think uses the active editor
       await page.setContent(`<div contenteditable="true" data-composer-markdown role="textbox">Unrelated editor</div>
         <form data-chatgpt-composer>
           <div ${modern ? 'data-composer-markdown role="textbox"' : 'id="prompt-textarea"'} contenteditable="true"><span data-id="plugin:fixture" data-keyword="Codex Native2" contenteditable="false">Codex Native2</span></div>
-          <button type="button" aria-pressed="false">Think</button>
+          ${readFileSync(new URL("./fixtures/chatgpt-composer-think.html", import.meta.url), "utf8")}
         </form><script>(()=>{
           const button=document.querySelector('button');
           button.onclick=()=>{
@@ -164,7 +165,11 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)(`real slider ${scenario} keep
         localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true,
       });
       if (scenario === "shrink") expect((await result).selection.label).toBe("Extra High");
-      else await expect(result).rejects.toMatchObject({ retryable: false });
+      else {
+        // Await Playwright before asserting: Bun's async rejection matcher can stall its I/O.
+        const failure = await result.then(() => undefined, (error: unknown) => error);
+        expect(failure).toMatchObject({ retryable: false });
+      }
     }
     expect(await page.locator('#prompt-textarea').innerText()).toBe("Draft");
     await page.close();

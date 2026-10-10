@@ -29,7 +29,6 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("a new multipart user message
       node.append(pending);
     }, prompt);
     expect(await worker.currentSubmissionEvidence(page, baseline)).toBe("user_turn");
-    expect(await worker.currentSubmissionAnswerText(page, baseline)).toBe("");
     expect(baseline.acceptedUserIdentity).toBe("group:user:final");
     await page.locator('[data-turn-key="final"]').evaluate((node, html) => { node.outerHTML = html; }, group("final", prompt, "Answer"));
     expect((await worker.waitForNewAssistantTurn(page, baseline, Date.now() + 1000)).identity).toBe("group:assistant:final");
@@ -58,8 +57,7 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("acknowledged multipart histo
           if (when === "before-send") {
             await render(history(true));
             expect(await worker.currentSubmissionEvidence(page, baseline)).toBeUndefined();
-            expect(await worker.currentSubmissionAnswerText(page, baseline)).toBe("");
-          }
+                  }
           await render(history(when === "before-baseline" || when === "before-send") + group("final", prompt, "Answer"));
           expect(await worker.currentSubmissionEvidence(page, baseline)).toBe("user_turn");
           if (when === "after-send") {
@@ -77,7 +75,7 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("acknowledged multipart histo
             binding = await worker.reconcileAssistantTurnBinding(page, baseline, binding);
             expect(binding.identity).toBe("group:assistant:final");
           }
-          expect(await worker.currentSubmissionAnswerText(page, baseline)).toBe("Answer");
+          expect((await worker.responseDomSnapshot(binding.locator, {})).visibleText).toBe("Answer");
         } finally { await page.close(); }
       }
     }

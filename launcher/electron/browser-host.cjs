@@ -848,6 +848,13 @@ class BrowserHost {
       tab.url = contents.getURL();
       this.publishState?.(this.snapshot());
     });
+    contents.on("dom-ready", () => {
+      // Automation starts at DOMContentLoaded. A pending image can delay did-finish-load
+      // while this new document already exposes controls in a collapsed offscreen viewport.
+      // Restore only rendering here; load completion still owns bootstrap and surface marking.
+      tab.rendererReady = true;
+      this.syncViewVisibility();
+    });
     contents.on("did-finish-load", () => {
       tab.url = contents.getURL();
       tab.loading = false;

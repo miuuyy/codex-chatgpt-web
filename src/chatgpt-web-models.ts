@@ -3,8 +3,8 @@ export const CHATGPT_WEB_MODEL_PREFIX = "chatgpt-web/";
 export const CHATGPT_WEB_BACKEND_MODEL = "gpt-5.6-sol";
 /** Internal Luna transport identity; the Free UI does not expose a selectable model version. */
 export const CHATGPT_WEB_LUNA_BACKEND_MODEL = "gpt-5.6-luna";
-export const CHATGPT_WEB_GPT6_SOL_BIGGER_CONTEXT_ERROR =
-  "GPT-6 Sol uses standard context for this account and effort. Bigger Context supports Medium, High and Extra High on Pro accounts.";
+export const CHATGPT_WEB_GPT6_INSTANT_BIGGER_CONTEXT_ERROR =
+  "GPT-6 Instant uses standard context. Select Medium, High or an available Extra High or Pro mode to use Bigger Context.";
 /** Internal adapter identity for a turn whose ChatGPT model is selected by the user in the launcher. */
 export const CHATGPT_WEB_ZERO_RISK_BACKEND_MODEL = "chatgpt-web-zero-risk";
 /** Internal adapter identity for the explicitly enabled, Pro-sized Zero Risk context profile. */
@@ -100,6 +100,11 @@ export const CHATGPT_WEB_LUNA_BIGGER_AUTO_COMPACT_TOKEN_LIMIT =
 // below the passing boundary and compact before reaching this context ceiling.
 export const CHATGPT_WEB_GPT6_SOL_BIGGER_CONTEXT_WINDOW = 240_000;
 export const CHATGPT_WEB_GPT6_SOL_BIGGER_AUTO_COMPACT_TOKEN_LIMIT = 220_000;
+// Rechecked 2026-10-10 on Plus: Medium and High recovered all 12 distributed
+// codes at 127k estimated input tokens. At 144k both lost the entire first part.
+// Keep headroom below the passing result, with compaction before the ceiling.
+export const CHATGPT_WEB_GPT6_PLUS_BIGGER_CONTEXT_WINDOW = 120_000;
+export const CHATGPT_WEB_GPT6_PLUS_BIGGER_AUTO_COMPACT_TOKEN_LIMIT = 110_000;
 
 export interface ChatGptWebContextLimits {
   contextWindow: number;
@@ -112,16 +117,15 @@ export interface ChatGptWebTransportLimits {
   browserComposerCharLimit?: number;
 }
 
-/** GPT-6 staged context is supported only by the account and efforts checked live. */
+/** Account capabilities gate model availability, not access to staged context. */
 export function supportsChatGptWebBiggerContext(
   backendModel: string,
   effort: ChatGptWebAdapterEffort,
-  capabilities: Pick<ChatGptWebAccountCapabilities, "proAvailable">,
   modelFamily?: ChatGptWebModelFamily,
 ): boolean {
   if (backendModel === CHATGPT_WEB_LUNA_BACKEND_MODEL) return effort === "low" || effort === "medium";
   return backendModel === CHATGPT_WEB_BACKEND_MODEL && (
-    modelFamily !== "6" || effort === "max" || (capabilities.proAvailable && effort !== "low")
+    modelFamily !== "6" || effort !== "low"
   );
 }
 
@@ -199,11 +203,11 @@ export function resolveChatGptWebContextLimits(
     throw new Error(`ChatGPT Plus context limit is not defined for unavailable effort: ${effort}`);
   }
   if (!capabilities.experimentalBiggerContext
-    || !supportsChatGptWebBiggerContext(backendModel, effort, capabilities, modelFamily)) return limits;
+    || !supportsChatGptWebBiggerContext(backendModel, effort, modelFamily)) return limits;
   if (modelFamily === "6" && effort !== "max") {
     return contextLimits(
-      CHATGPT_WEB_GPT6_SOL_BIGGER_CONTEXT_WINDOW,
-      CHATGPT_WEB_GPT6_SOL_BIGGER_AUTO_COMPACT_TOKEN_LIMIT,
+      capabilities.proAvailable ? CHATGPT_WEB_GPT6_SOL_BIGGER_CONTEXT_WINDOW : CHATGPT_WEB_GPT6_PLUS_BIGGER_CONTEXT_WINDOW,
+      capabilities.proAvailable ? CHATGPT_WEB_GPT6_SOL_BIGGER_AUTO_COMPACT_TOKEN_LIMIT : CHATGPT_WEB_GPT6_PLUS_BIGGER_AUTO_COMPACT_TOKEN_LIMIT,
     );
   }
   return contextLimits(
@@ -474,7 +478,7 @@ export const CHATGPT_WEB_MODEL_ROUTES: readonly ChatGptWebAutomaticModelRoute[] 
   {
     slug: "chatgpt-web/gpt-6-sol",
     displayName: "GPT-6 Sol (Web)",
-    description: "GPT-6 Sol with Medium, High, or account-supported Extra High. Bigger Context supports up to 240,000 tokens on Pro; other accounts use standard context.",
+    description: "GPT-6 Sol with Medium, High, or account-supported Extra High. Experimental Bigger Context is available on Plus and Pro, with a context window sized for the account.",
     interactionMode: "automatic",
     backendModel: CHATGPT_WEB_BACKEND_MODEL,
     modelFamily: "6",

@@ -12,7 +12,7 @@ import {
   extractChatGptThreadSpawnLineage,
   extractChatGptRootThreadMetadata,
   hasCurrentChatGptEnvironmentContext,
-  hasChatGptCalendarEnvironmentDelta,
+  extractChatGptCalendarEnvironmentDelta,
   hasRawChatGptEnvironmentContext,
   unattributedChatGptEnvironmentMessages,
   isChatGptCompactionContinuation,
@@ -181,11 +181,15 @@ export class ChatGptThreadEnvironmentStore {
       const hasCurrentContext = hasCurrentChatGptEnvironmentContext(parsed);
       const lineage = extractChatGptThreadSpawnLineage(parsed);
       const currentCompaction = hasCurrentContext && isChatGptCompactionContinuation(parsed);
-      const historicalMessages = hasCurrentContext && !currentCompaction && lineage
+      // Root tasks also retain unattributed environment fragments after compaction.
+      // They are historical only when the exact native record predates this task;
+      // neither the fragment nor the cache supplies the current authority.
+      const historicalMessages = hasCurrentContext && !currentCompaction
         ? unattributedChatGptEnvironmentMessages(parsed) : undefined;
       const steeringClaim = hasCurrentContext && !currentCompaction
         ? extractChatGptSteeringEnvironmentClaim(parsed) : undefined;
-      const calendarDelta = hasCurrentContext && !currentCompaction && hasChatGptCalendarEnvironmentDelta(parsed);
+      const calendarDelta = hasCurrentContext && !currentCompaction
+        ? extractChatGptCalendarEnvironmentDelta(parsed) : undefined;
       if (hasCurrentContext && !currentCompaction && !initialClaim && !historicalMessages && !steeringClaim && !calendarDelta) throw error;
       const currentClaim = initialClaim ?? (currentCompaction ? extractChatGptContinuationEnvironmentClaim(parsed) : steeringClaim);
       const rolloutIdentity = lineage ?? extractChatGptRootThreadMetadata(parsed);
@@ -204,8 +208,13 @@ export class ChatGptThreadEnvironmentStore {
           tools: parsed.context.tools,
         });
         if (rolloutEnvironment) {
-          if (calendarDelta && rolloutEnvironment.sandboxPolicy.type !== "dangerFullAccess") {
-            throw new Error("Calendar environment delta conflicts with its current Codex rollout");
+          if (calendarDelta) {
+            const nativeRoots = new Set(rolloutEnvironment.roots.map(pathIdentity));
+            if (rolloutEnvironment.sandboxPolicy.type !== "dangerFullAccess"
+              || calendarDelta.workspaceRoots.some(roots => roots.length !== nativeRoots.size
+                || roots.some(root => !nativeRoots.has(root)))) {
+              throw new Error("Calendar environment delta conflicts with its current Codex rollout");
+            }
           }
           if (currentClaim && !sameAuthority(currentClaim, rolloutEnvironment, initialClaim !== undefined || steeringClaim !== undefined)) {
             const source = currentCompaction ? "Compaction continuation" : initialClaim ? "Current" : "Steering";

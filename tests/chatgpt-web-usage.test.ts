@@ -67,31 +67,24 @@ test("Bigger Context compaction selects six parts before the legacy inline byte 
     .toEqual([parsed.context.messages[0]!.content]);
 });
 
-test("GPT-6 Sol on Plus keeps standard context while Pro can stage the same complete input", () => {
-  const plus = { ...capabilities, proAvailable: false };
+test("GPT-6 Sol stages complete Plus and Pro history with consistent usage accounting", () => {
   const parsed = request("");
   parsed._chatgptModelFamily = "6";
   parsed.context.messages = Array.from({ length: 4 }, (_, index) => ({
     role: "user", content: `record-${index}: ${"word ".repeat(24_000)}`, timestamp: index + 1,
   }));
   const original = structuredClone(parsed);
-  expect(resolveBiggerContextMultipartParts(parsed, plus)).toBeUndefined();
-  const compiled = compileChatGptWebPrompt(parsed, plus);
-  expect(compiled.multipart).toBeUndefined();
-  for (const message of parsed.context.messages) expect(compiled.text).toContain(message.content as string);
-  expect(estimateChatGptWebUsage(parsed, { answer: "done" }, plus, true))
-    .toEqual(estimateChatGptWebUsage(parsed, { answer: "done" }, plus, false));
-  expect(() => compileChatGptWebPrompt(parsed, plus, undefined, { experimentalMultipartParts: 2 }))
-    .toThrow("GPT-6 Sol uses standard context");
-  expect(parsed).toEqual(original);
-  expect(resolveBiggerContextMultipartParts({ ...parsed, _chatgptModelFamily: "5.6" }, capabilities)).toBe(2);
-  const parts = resolveBiggerContextMultipartParts(parsed, capabilities);
-  expect(parts).toBe(2);
-  const staged = compileChatGptWebPrompt(parsed, capabilities, undefined, { experimentalMultipartParts: parts });
-  expect(staged.multipart!.parts.flatMap(part => JSON.parse(part).records).map(record => record.message.content))
-    .toEqual(parsed.context.messages.map(message => message.content));
-  expect(estimateChatGptWebUsage(parsed, { answer: "done" }, capabilities, true).inputTokens)
-    .toBe(estimateCompiledChatGptWebInputTokens(staged, parsed.modelId));
+  for (const proAvailable of [false, true]) {
+    const caps = { ...capabilities, proAvailable };
+    const parts = resolveBiggerContextMultipartParts(parsed, caps);
+    expect(parts).toBe(2);
+    const staged = compileChatGptWebPrompt(parsed, caps, undefined, { experimentalMultipartParts: parts });
+    expect(staged.multipart!.parts.flatMap(part => JSON.parse(part).records).map(record => record.message.content))
+      .toEqual(parsed.context.messages.map(message => message.content));
+    expect(estimateChatGptWebUsage(parsed, { answer: "done" }, caps, true).inputTokens)
+      .toBe(estimateCompiledChatGptWebInputTokens(staged, parsed.modelId));
+    expect(parsed).toEqual(original);
+  }
 }, 30_000);
 
 test("GPT-6 compaction respects the selected account and effort", () => {
@@ -100,7 +93,7 @@ test("GPT-6 compaction respects the selected account and effort", () => {
     const caps = { ...capabilities, proAvailable };
     for (const effort of ["low", "medium", "high", "xhigh"] as const) {
       parsed.options.reasoning = effort;
-      const supported = proAvailable && effort !== "low";
+      const supported = effort !== "low";
       const parts = resolveBiggerContextMultipartParts(parsed, caps);
       if (supported) {
         expect(parts).toBe(6);
@@ -110,7 +103,7 @@ test("GPT-6 compaction respects the selected account and effort", () => {
         expect(estimateChatGptWebUsage(parsed, { answer: "summary" }, caps, true))
           .toEqual(estimateChatGptWebUsage(parsed, { answer: "summary" }, caps, false));
         expect(() => compileChatGptWebPrompt(parsed, caps, undefined, { experimentalMultipartParts: 6 }))
-          .toThrow("GPT-6 Sol uses standard context");
+          .toThrow("GPT-6 Instant uses standard context");
       }
     }
   }

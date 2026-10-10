@@ -769,7 +769,7 @@ test("turn tabs use the hidden viewport when the launcher window is hidden", () 
   assert.deepEqual(tab.deviceEmulationViewport, { width: 840, height: 656 });
 });
 
-test("new turn tabs defer device emulation until their renderer finishes loading", () => {
+test("new turn tabs defer device emulation until their document is ready", () => {
   const events = [];
   const tab = {
     id: "tab-loading-viewport",
@@ -781,8 +781,8 @@ test("new turn tabs defer device emulation until their renderer finishes loading
       setBounds: bounds => events.push(["bounds", bounds]),
       setVisible: visible => events.push(["visible", visible]),
       webContents: {
-        enableDeviceEmulation: () => assert.fail("emulation started before did-finish-load"),
-        disableDeviceEmulation: () => assert.fail("emulation cleared before did-finish-load"),
+        enableDeviceEmulation: () => assert.fail("emulation started before dom-ready"),
+        disableDeviceEmulation: () => assert.fail("emulation cleared before dom-ready"),
       },
     },
   };
@@ -802,6 +802,51 @@ test("new turn tabs defer device emulation until their renderer finishes loading
   ]);
   assert.equal(tab.deviceEmulationViewport, null);
   assert.equal(tab.deviceEmulationDirty, true);
+});
+
+test("navigation restores the task viewport at DOM readiness without completing bootstrap early", async () => {
+  const emulations = [];
+  let ownershipMarks = 0;
+  const contents = Object.assign(new EventEmitter(), {
+    setWindowOpenHandler() {}, getURL: () => "https://chatgpt.com/?temporary-chat=true",
+    enableDeviceEmulation: options => emulations.push(options.viewSize),
+  });
+  const tab = {
+    id: "navigating", status: "running", rendererReady: false,
+    bootstrapReady: false, deviceEmulationDirty: true,
+    view: { webContents: contents, setBounds() {}, setVisible() {} },
+  };
+  const host = Object.assign(Object.create(BrowserHost.prototype), {
+    turnTabs: new Map([[tab.id, tab]]), selectedTabId: "home",
+    boundsReady: true, bounds: { x: 280, y: 64, width: 840, height: 656 },
+    window: { getContentSize: () => [1120, 760], isVisible: () => false, isMinimized: () => false },
+    view: { setBounds() {}, setVisible() {} },
+    snapshot() { return {}; }, markTurnTabSurface: async () => { ownershipMarks++; },
+  });
+  host.bindTurnContents(tab);
+  contents.emit("did-start-navigation", {}, contents.getURL(), false, true);
+  host.syncViewVisibility();
+  assert.equal(emulations.length, 0);
+  contents.emit("dom-ready");
+  assert.deepEqual(emulations, [{ width: 840, height: 656 }]);
+  assert.equal(tab.loading, true);
+  assert.equal(tab.bootstrapReady, false);
+  assert.equal(ownershipMarks, 0);
+  contents.emit("did-start-navigation", {}, contents.getURL(), true, true);
+  contents.emit("did-start-navigation", {}, "https://example.com/iframe", false, false);
+  assert.equal(tab.rendererReady, true, "hash and iframe navigation must not invalidate the viewport");
+  contents.emit("did-finish-load");
+  await Promise.resolve();
+  assert.equal(tab.loading, false);
+  assert.equal(tab.bootstrapReady, true);
+  assert.equal(ownershipMarks, 1);
+  assert.equal(emulations.length, 1, "finishing resource loads must not resize the document again");
+  contents.emit("did-start-navigation", {}, contents.getURL(), false, true);
+  host.syncViewVisibility();
+  assert.equal(tab.rendererReady, false);
+  assert.equal(emulations.length, 1);
+  contents.emit("dom-ready");
+  assert.equal(emulations.length, 2, "each new document needs its viewport restored");
 });
 
 test("visible turn tabs keep the explicit viewport across background transitions", () => {
