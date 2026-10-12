@@ -12,6 +12,7 @@ const englishReadme = read("README.md");
 const chineseReadme = read("README.zh-CN.md");
 const japaneseReadme = read("README.ja.md");
 const koreanReadme = read("README.ko.md");
+const portugueseReadme = read("README.pt-BR.md");
 const languages = require("../electron/languages.json");
 const appSource = read("launcher", "src", "App.tsx");
 
@@ -69,9 +70,19 @@ function linkTargets(source) {
 }
 
 test("localized READMEs preserve every command block and link target from English", () => {
-  for (const source of [chineseReadme, japaneseReadme, koreanReadme]) {
+  for (const source of [chineseReadme, japaneseReadme, koreanReadme, portugueseReadme]) {
     assert.deepEqual(commandFences(source), commandFences(englishReadme));
     assert.deepEqual(linkTargets(source), linkTargets(englishReadme));
+  }
+});
+
+test("every README language bar links to the same five destinations in order", () => {
+  for (const source of [englishReadme, chineseReadme, japaneseReadme, koreanReadme, portugueseReadme]) {
+    const navigation = source.match(/<p align="center">\s*<a href="README\.md">[\s\S]*?<\/p>/);
+    assert.ok(navigation, "README language bar is present");
+    assert.deepEqual([...navigation[0].matchAll(/href="([^"]+)"/g)].map(match => match[1]), [
+      "README.md", "README.zh-CN.md", "README.ja.md", "README.ko.md", "README.pt-BR.md",
+    ]);
   }
 });
 
