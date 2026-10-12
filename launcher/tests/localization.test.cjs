@@ -46,6 +46,19 @@ test("localized READMEs preserve every command block and link target from Englis
   }
 });
 
+test("Brazilian Portuguese is a complete, selectable launcher and limits locale", () => {
+  assert.deepEqual(languages["pt-BR"], { label: "Português (Brasil)", marker: "PT", locale: "pt-BR" });
+  const { copyFor } = loadI18nModule();
+  const portuguese = copyFor("pt-BR");
+  assert.equal(portuguese.chooseLanguage, "Escolha seu idioma");
+  assert.equal(portuguese.install, "Instalar modelos");
+  assert.equal(portuguese.doctorProxyHealthy, "Proxy de Responses funcionando em {endpoint}");
+  assert.deepEqual(Object.keys(portuguese).sort(), Object.keys(copyFor("en")).sort());
+  const limitsSource = read("launcher", "src", "limits-copy.ts");
+  assert.match(limitsSource, /"pt-BR": ptBR/);
+  assert.match(limitsSource, /title: "Limites"/);
+});
+
 
 for (const language of Object.keys(languages).filter(language => language !== "en")) test(`${language} runtime localization preserves literal connector names and endpoints`, () => {
   const { copyFor, localizeRuntimeMessage } = loadI18nModule();
