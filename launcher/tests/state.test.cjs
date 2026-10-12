@@ -120,6 +120,23 @@ test("every supported launcher language survives a state update and reload", () 
   }
 });
 
+test("pt-BR survives reopening and an invalid persisted language resets without clearing onboarding", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-pt-br-state-"));
+  const file = path.join(root, "state.json");
+  try {
+    createStateStore(file).update({ language: "pt-BR", onboardingComplete: true });
+    assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).language, "pt-BR");
+    assert.equal(createStateStore(file).read().language, "pt-BR");
+    assert.equal(createStateStore(file).read().onboardingComplete, true);
+    fs.writeFileSync(file, JSON.stringify({ version: 1, language: "pt_BR", onboardingComplete: true }));
+    const recovered = createStateStore(file).read();
+    assert.equal(recovered.language, null);
+    assert.equal(recovered.onboardingComplete, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("persisted sidebar corruption is repaired without changing the rest of launcher state", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-sidebar-state-"));
   const file = path.join(root, "state.json");

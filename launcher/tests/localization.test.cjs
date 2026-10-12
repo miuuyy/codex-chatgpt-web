@@ -152,7 +152,7 @@ test("native dialogs and IPC accept exactly the renderer's supported languages",
     assert.ok(Object.values(copy).every(value => typeof value === "string" && value.trim()));
     if (language !== "en") for (const key of ["quit", "remove", "retry", "startupTitle"]) assert.notEqual(copy[key], english[key]);
   }
-  for (const language of ["__proto__", "constructor", "unknown", null, [], {}]) assert.throws(() => validateLanguage(language), /Language must/);
+  for (const language of ["pt_BR", "__proto__", "constructor", "unknown", null, [], {}]) assert.throws(() => validateLanguage(language), /Language must/);
 });
 
 test("all locales translate known doctor success checks without changing literal diagnostic data", () => {
