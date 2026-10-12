@@ -28,6 +28,35 @@ function loadI18nModule() {
   return loaded.exports;
 }
 
+function loadLimitsModule() {
+  const source = read("launcher", "src", "limits-copy.ts");
+  const output = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2023 },
+  }).outputText;
+  const loaded = { exports: {} };
+  Function("module", "exports", "require", output)(loaded, loaded.exports, require);
+  return loaded.exports;
+}
+
+test("pt-BR limits copy matches English keys and interpolation placeholders", () => {
+  const { limitsCopyFor } = loadLimitsModule();
+  const english = limitsCopyFor("en");
+  const portuguese = limitsCopyFor("pt-BR");
+  assert.deepEqual(Object.keys(portuguese).sort(), Object.keys(english).sort());
+  for (const key of Object.keys(english)) {
+    assert.ok(typeof portuguese[key] === "string" && portuguese[key].trim(), key);
+    const placeholders = (value) => [...value.matchAll(/\{[a-z]+\}/g)].map(match => match[0]).sort();
+    assert.deepEqual(placeholders(portuguese[key]), placeholders(english[key]), key);
+  }
+});
+
+test("IPC-unavailable fatal screen uses localized catalog copy", () => {
+  const { copyFor } = loadI18nModule();
+  assert.equal(copyFor("pt-BR").ipcUnavailable, "A comunicação com o inicializador está indisponível.");
+  assert.match(appSource, /<FatalMessage message=\{copyFor\(documentLanguage\)\.ipcUnavailable\} \/>/);
+  assert.doesNotMatch(appSource, /<FatalMessage message="Launcher IPC is unavailable\." \/>/);
+});
+
 function commandFences(source) {
   return [...source.matchAll(/```(bash|powershell)\r?\n([\s\S]*?)```/g)]
     .map((match) => `${match[1]}\n${match[2].replace(/\r\n/g, "\n").trim()}`);

@@ -117,7 +117,7 @@ export function App() {
       : current);
   }, []);
 
-  if (!api) return <FatalMessage message="Launcher IPC is unavailable." />;
+  if (!api) return <FatalMessage message={copyFor(documentLanguage).ipcUnavailable} />;
   if (!snapshot) return <LaunchLoading />;
 
   const language = snapshot.state.language ?? "en";

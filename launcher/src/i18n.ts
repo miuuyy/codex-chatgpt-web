@@ -1,6 +1,7 @@
 import type { Language } from "./types";
 
 const en = {
+  ipcUnavailable: "Launcher IPC is unavailable.",
   pluginName: "Plugin name",
   pluginNameBody: "Codex stays fixed. Edit the rest of the name.",
   pluginNameChange: "Change name",
@@ -237,6 +238,7 @@ const en = {
 } as const;
 
 const ptBR: Record<keyof typeof en, string> = {
+  ipcUnavailable: "A comunicação com o inicializador está indisponível.",
   pluginName: "Nome do plugin",
   pluginNameBody: "O prefixo Codex permanece fixo. Edite o restante do nome.",
   pluginNameChange: "Alterar nome",
@@ -473,6 +475,7 @@ const ptBR: Record<keyof typeof en, string> = {
 };
 
 const zh: Record<keyof typeof en, string> = {
+  ipcUnavailable: "启动器 IPC 不可用。",
   pluginName: "插件名称",
   pluginNameBody: "Codex 保持不变，可以修改其后的名称。",
   pluginNameChange: "更改名称",
@@ -709,6 +712,7 @@ const zh: Record<keyof typeof en, string> = {
 };
 
 const ja: Record<keyof typeof en, string> = {
+  ipcUnavailable: "ランチャーの IPC を利用できません。",
   pluginName: "プラグイン名",
   pluginNameBody: "Codex は固定です。それ以降の名前を編集できます。",
   pluginNameChange: "名前を変更",
@@ -945,6 +949,7 @@ const ja: Record<keyof typeof en, string> = {
 };
 
 const ko: Record<keyof typeof en, string> = {
+  ipcUnavailable: "런처 IPC를 사용할 수 없습니다.",
   pluginName: "플러그인 이름",
   pluginNameBody: "Codex는 고정입니다. 뒤에 오는 이름을 변경하세요.",
   pluginNameChange: "이름 변경",
@@ -1181,6 +1186,7 @@ const ko: Record<keyof typeof en, string> = {
 };
 
 const zhTW: Record<keyof typeof en, string> = {
+  ipcUnavailable: "啟動器 IPC 無法使用。",
   pluginName: "外掛程式名稱",
   pluginNameBody: "Codex 保持不變，可以修改後面的名稱。",
   pluginNameChange: "變更名稱",
