@@ -259,7 +259,7 @@ const NATIVE_COPY = Object.freeze({
     retry: "Tentar novamente",
     startupTitle: "Não foi possível iniciar o Codex Web GPT",
     startupDetail: "Uma nova tentativa reinicia o inicializador sem alterar suas configurações salvas nem o perfil do ChatGPT.",
-    startupCleanupFailed: "Falha na limpeza após a inicialização",
+    startupCleanupFailed: "Falha na limpeza na inicialização",
     catalogFailure: "O Codex se conectou ao inicializador, mas não conseguiu carregar o catálogo de modelos (HTTP {status}; {reason}). Consulte Atividade para mais detalhes e exporte um log protegido caso o problema continue.",
     catalogReady: "Catálogo de modelos do Codex carregado.",
   }),

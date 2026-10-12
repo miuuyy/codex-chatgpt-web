@@ -16,6 +16,8 @@ const portugueseReadme = read("README.pt-BR.md");
 const languages = require("../electron/languages.json");
 const appSource = read("launcher", "src", "App.tsx");
 
+const placeholders = (value) => [...value.matchAll(/\{[^{}]+\}/g)].map(match => match[0]).sort();
+
 function loadI18nModule() {
   const source = read("launcher", "src", "i18n.ts");
   const output = ts.transpileModule(source, {
@@ -46,7 +48,6 @@ test("pt-BR limits copy matches English keys and interpolation placeholders", ()
   assert.deepEqual(Object.keys(portuguese).sort(), Object.keys(english).sort());
   for (const key of Object.keys(english)) {
     assert.ok(typeof portuguese[key] === "string" && portuguese[key].trim(), key);
-    const placeholders = (value) => [...value.matchAll(/\{[a-z]+\}/g)].map(match => match[0]).sort();
     assert.deepEqual(placeholders(portuguese[key]), placeholders(english[key]), key);
   }
 });
@@ -94,6 +95,10 @@ test("Brazilian Portuguese is a complete, selectable launcher and limits locale"
   assert.equal(portuguese.install, "Instalar modelos");
   assert.equal(portuguese.doctorProxyHealthy, "Proxy de Responses funcionando em {endpoint}");
   assert.deepEqual(Object.keys(portuguese).sort(), Object.keys(copyFor("en")).sort());
+  for (const [key, value] of Object.entries(copyFor("en"))) {
+    assert.ok(typeof portuguese[key] === "string" && portuguese[key].trim(), key);
+    assert.deepEqual(placeholders(portuguese[key]), placeholders(value), key);
+  }
   const limitsSource = read("launcher", "src", "limits-copy.ts");
   assert.match(limitsSource, /"pt-BR": ptBR/);
   assert.match(limitsSource, /title: "Limites"/);
@@ -108,9 +113,11 @@ for (const language of Object.keys(languages).filter(language => language !== "e
     "Native $&",
     "Native $'",
     "Native $`",
+    "Native $\\x60",
     "Native $1",
     'Native "quoted"',
     "Native \\path",
+    "Native /path",
     "Native \u2028X",
     "Native \u2029X",
   ];
@@ -143,30 +150,32 @@ test("runtime message localization preserves other languages and unknown backend
       "Checking ChatGPT connector",
     );
   }
-  assert.equal(
-    localizeRuntimeMessage(copyFor("ja"), "Tunnel runtime is not ready", "tunnel-runtime", "ja"),
-    "Tunnel runtime is not ready",
-  );
-  assert.equal(
-    localizeRuntimeMessage(copyFor("ja"), "Unexpected connector diagnostic", "connector", "ja"),
-    "Unexpected connector diagnostic",
-  );
-  assert.equal(
-    localizeRuntimeMessage(copyFor("ja"), 'ChatGPT connector "unterminated is available', "connector", "ja"),
-    'ChatGPT connector "unterminated is available',
-  );
-  assert.equal(
-    localizeRuntimeMessage(copyFor("ja"), 'ChatGPT connector "Codex Native2" is available', "wrong-id", "ja"),
-    'ChatGPT connector "Codex Native2" is available',
-  );
-  assert.equal(
-    localizeRuntimeMessage(copyFor("ja"), "Checking ChatGPT connector", "unknown-check", "ja"),
-    "Checking ChatGPT connector",
-  );
-  assert.equal(
-    localizeRuntimeMessage(copyFor("ja"), 'ChatGPT connector "Codex Native2" is available (warning)', "connector", "ja"),
-    'ChatGPT connector "Codex Native2" is available (warning)',
-  );
+  for (const language of ["ja", "pt-BR"]) {
+    assert.equal(
+      localizeRuntimeMessage(copyFor(language), "Tunnel runtime is not ready", "tunnel-runtime", language),
+      "Tunnel runtime is not ready",
+    );
+    assert.equal(
+      localizeRuntimeMessage(copyFor(language), "Unexpected connector diagnostic", "connector", language),
+      "Unexpected connector diagnostic",
+    );
+    assert.equal(
+      localizeRuntimeMessage(copyFor(language), 'ChatGPT connector "unterminated is available', "connector", language),
+      'ChatGPT connector "unterminated is available',
+    );
+    assert.equal(
+      localizeRuntimeMessage(copyFor(language), 'ChatGPT connector "Codex Native2" is available', "wrong-id", language),
+      'ChatGPT connector "Codex Native2" is available',
+    );
+    assert.equal(
+      localizeRuntimeMessage(copyFor(language), "Checking ChatGPT connector", "unknown-check", language),
+      "Checking ChatGPT connector",
+    );
+    assert.equal(
+      localizeRuntimeMessage(copyFor(language), 'ChatGPT connector "Codex Native2" is available (warning)', "connector", language),
+      'ChatGPT connector "Codex Native2" is available (warning)',
+    );
+  }
 });
 
 test("launcher UI localizes MCP verification progress and doctor check messages", () => {
@@ -190,6 +199,9 @@ test("native dialogs and IPC accept exactly the renderer's supported languages",
     const copy = nativeCopyFor(language);
     assert.deepEqual(Object.keys(copy).sort(), Object.keys(english).sort());
     assert.ok(Object.values(copy).every(value => typeof value === "string" && value.trim()));
+    if (language === "pt-BR") for (const key of Object.keys(english)) {
+      assert.deepEqual(placeholders(copy[key]), placeholders(english[key]), key);
+    }
     if (language !== "en") for (const key of ["quit", "remove", "retry", "startupTitle"]) assert.notEqual(copy[key], english[key]);
   }
   for (const language of ["pt_BR", "__proto__", "constructor", "unknown", null, [], {}]) assert.throws(() => validateLanguage(language), /Language must/);
@@ -240,14 +252,17 @@ test("all locales translate known doctor success checks without changing literal
 
 test("plugin setup and Zero Risk instructions show configured names in every language", () => {
   const { copyFor } = loadI18nModule();
-  const names = { automatic: "Codex Work", manual: "Codex Manual" };
   for (const language of Object.keys(languages)) {
-    const copy = copyFor(language, names);
-    for (const key of ["manualMcpStepThreeBody", "manualConnectorNotice", "manualPromptInstruction", "manualPromptWaiting"]) {
-      assert.ok(copy[key].includes(names.manual), `${language}: ${key}`);
+    for (const name of ["Codex Work", "Native $&", "Native $'", "Native $`", "Native $\\x60", 'Native "quoted"', "Native \\path", "Native /path"]) {
+      const names = { automatic: name, manual: name === "Codex Work" ? "Codex Manual" : name };
+      const copy = copyFor(language, names);
+      const original = copyFor(language);
+      for (const key of ["manualMcpStepThreeBody", "manualConnectorNotice", "manualPromptInstruction", "manualPromptWaiting"]) {
+        assert.equal(copy[key], original[key].replaceAll("Codex Zero Risk", () => names.manual), `${language}: ${key}`);
+      }
+      assert.equal(copy.connectorMigrationNotice, original.connectorMigrationNotice.replaceAll("Codex Native2", () => names.automatic));
+      assert.ok(copy.pluginNameWarning.length > 0);
+      assert.equal(copyFor(language).manualPromptInstruction.includes("Codex Manual"), false);
     }
-    assert.ok(copy.connectorMigrationNotice.includes(names.automatic));
-    assert.ok(copy.pluginNameWarning.length > 0);
-    assert.equal(copyFor(language).manualPromptInstruction.includes("Codex Manual"), false);
   }
 });

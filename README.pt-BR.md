@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/readme/hero.svg" width="960" alt="Switch to web models. Stay in Codex. Your ChatGPT plan. Your workflow. Maximum capabilities.">
+  <img src="assets/readme/hero.svg" width="960" alt="Use modelos Web. Continue no Codex. Seu plano do ChatGPT. Seu fluxo de trabalho. Máxima capacidade.">
 </p>
 
 <p align="center">
@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/demo.gif" width="960" alt="A live ChatGPT Web turn using the native Codex harness">
+  <img src="assets/demo.gif" width="960" alt="Um turno ao vivo do ChatGPT Web usando o ambiente nativo do Codex">
 </p>
 
 <p align="center">
@@ -35,7 +35,7 @@ O modo Full harness conecta o ChatGPT aos arquivos, terminal, ferramentas e apro
 **Modelos disponíveis:** Free/Go → **Luna / Think**. Contas pagas → **GPT-6 Sol** e **GPT-5.6 Sol**, com **Instant–High**, além de **Extra High** e **Pro** quando disponíveis. Cada versão tem sua própria entrada; conversas existentes com GPT-5.6 continuam usando GPT-5.6. A disponibilidade depende da sua conta e do espaço de trabalho.
 
 1. **Instale o inicializador** usando o download para seu sistema acima.
-2. **Entre no ChatGPT** no navegador integrado e execute o teste básico do navegador.
+2. **Entre no ChatGPT** no navegador integrado e execute o teste rápido do navegador.
 3. **Instale os modelos** e reinicie o Codex uma vez. No modo automático, escolha um modelo cujo nome termine em **(Web)**. As versões Pro têm entradas separadas; o raciocínio Sol é selecionado em Effort. Zero Risk mantém sua entrada dedicada.
 4. **Para programar com ferramentas**, abra **MCP** no inicializador e conclua a configuração de Full harness abaixo.
 
@@ -91,7 +91,7 @@ A página **MCP** do inicializador orienta toda a configuração. Para ver os cl
 > Consulte [Limites](https://github.com/miuuyy/codex-chatgpt-web/discussions/309) para saber os limites atuais
 > de mensagens do ChatGPT para **GPT-5.6 Sol Pro** e **GPT-6 Astra**. Os limites de contexto dependem do
 > tipo de conta e do esforço selecionado. Plus Medium/High usa uma janela medida de 90.000 tokens.
-> GPT-5.6 oferece até 270.000 tokens com o **contexto 3×** experimental ativado, com suporte à
+> GPT-5.6 oferece até 270.000 tokens com o **Bigger Context (3×)** experimental ativado, com suporte à
 > compactação nativa do Codex em todos os casos.
 >
 > GPT-6 Sol oferece Bigger Context em Medium, High e Extra High quando disponível: **120.000 tokens
@@ -109,7 +109,7 @@ As ações de escrita/modificação também exigem que o espaço de trabalho do 
 as permitam. Consulte
 [modo de desenvolvedor e aplicativos MCP](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt).
 Solicitações de aprovação inesperadas bloqueiam a operação, a menos que `--auto-approve-tool-calls` seja ativado explicitamente;
-essa opção clica em **Permitir uma vez**, nunca concede uma autorização permanente.
+essa opção clica em **Allow once**, nunca concede uma autorização permanente.
 
 </details>
 
