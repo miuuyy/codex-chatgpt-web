@@ -77,6 +77,19 @@ test("localized READMEs preserve every command block and link target from Englis
   }
 });
 
+test("English and pt-BR READMEs preserve stable anchors and resolve internal links", () => {
+  const stableAnchors = ["get-started", "quick-start", "modes", "full-harness", "operations", "limitations-and-security", "development"];
+  const englishInternalLinks = linkTargets(englishReadme).filter(target => target.startsWith("#"));
+  assert.ok(englishInternalLinks.includes("#get-started"));
+  for (const [filename, source] of [["README.md", englishReadme], ["README.pt-BR.md", portugueseReadme]]) {
+    const anchors = new Set([...source.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]));
+    for (const anchor of stableAnchors) assert.ok(anchors.has(anchor), `${filename}: missing anchor ${anchor}`);
+    const internalLinks = linkTargets(source).filter(target => target.startsWith("#"));
+    assert.deepEqual(internalLinks, englishInternalLinks, `${filename}: internal links match English`);
+    for (const target of internalLinks) assert.ok(anchors.has(target.slice(1)), `${filename}: unresolved link ${target}`);
+  }
+});
+
 test("every README language bar links to the same five destinations in order", () => {
   for (const source of [englishReadme, chineseReadme, japaneseReadme, koreanReadme, portugueseReadme]) {
     const navigation = source.match(/<p align="center">\s*<a href="README\.md">[\s\S]*?<\/p>/);
