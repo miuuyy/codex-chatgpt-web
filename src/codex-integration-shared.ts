@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { AppConfig, SubagentProtocol } from "./config";
 import { atomicWriteFile, expandUserPath, getConfigDir } from "./config";
 
@@ -251,6 +251,37 @@ export interface CodexModelContextOverride {
 export function getCodexHome(): string {
   const configured = process.env.CODEX_HOME?.trim();
   return resolve(expandUserPath(configured || join(homedir(), ".codex")));
+}
+
+/** Extra, operator-authorized local Codex state roots. Never derive these from a request. */
+export function getAdditionalTrustedCodexHomes(): string[] {
+  const raw = process.env.CODEX_CHATGPT_WEB_TRUSTED_CODEX_HOMES?.trim();
+  if (!raw) return [];
+  if (raw.length > 4096) throw new Error("Trusted Codex homes configuration is too large");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("CODEX_CHATGPT_WEB_TRUSTED_CODEX_HOMES must be a JSON array of absolute paths");
+  }
+  if (!Array.isArray(parsed) || parsed.length > 7
+    || parsed.some(path => typeof path !== "string" || !isAbsolute(path) || !path.trim() || /^(?:\\\\|\/\/)/.test(path))) {
+    throw new Error("CODEX_CHATGPT_WEB_TRUSTED_CODEX_HOMES must contain at most seven absolute paths");
+  }
+  const primary = getCodexHome();
+  const seen = new Set([process.platform === "win32" ? primary.toLowerCase() : primary]);
+  const additional: string[] = [];
+  for (const configured of parsed as string[]) {
+    const path = resolve(configured);
+    const identity = process.platform === "win32" ? path.toLowerCase() : path;
+    if (seen.has(identity)) continue;
+    if (!existsSync(path) || !lstatSync(path).isDirectory()) {
+      throw new Error("Configured trusted Codex home is not a local directory");
+    }
+    seen.add(identity);
+    additional.push(path);
+  }
+  return additional;
 }
 
 export function getCodexConfigPath(): string {

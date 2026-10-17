@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, renameSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { atomicWriteFile } from "../../config";
-import { getCodexHome } from "../../codex-integration-shared";
+import { getAdditionalTrustedCodexHomes, getCodexHome } from "../../codex-integration-shared";
 import type { CodexParsedRequest } from "../../types";
 import {
   extractChatGptTurnEnvironmentClaim,
@@ -21,7 +21,7 @@ import {
   type ChatGptSandboxPolicy,
   type ChatGptTurnEnvironment,
 } from "./environment";
-import { resolveCurrentCodexRolloutEnvironment } from "./codex-rollout-environment";
+import { resolveCurrentCodexRolloutEnvironmentAcrossHomes } from "./codex-rollout-environment";
 import { ChatGptWebAdapterError } from "./adapter-error";
 
 interface StoredThreadEnvironment {
@@ -166,6 +166,7 @@ export class ChatGptThreadEnvironmentStore {
     private readonly now: () => number = Date.now,
     private readonly codexHome: string = getCodexHome(),
     private readonly sqliteHome?: string,
+    private readonly additionalCodexHomes: readonly string[] = getAdditionalTrustedCodexHomes(),
   ) {}
 
   resolve(parsed: CodexParsedRequest): ChatGptTurnEnvironment {
@@ -174,7 +175,8 @@ export class ChatGptThreadEnvironmentStore {
     try {
       const claim = extractChatGptTurnEnvironmentClaim(parsed);
       const environment = claim.environment;
-      if (environment.sandboxPolicy.type !== "dangerFullAccess" && !claim.statesNetworkAccess) {
+      if (this.additionalCodexHomes.length > 0 || (environment.sandboxPolicy.type !== "dangerFullAccess" && !claim.statesNetworkAccess)) {
+        // Opt-in multi-account mode always requires current native proof, including complete envelopes.
         // Modern envelopes state filesystem access only. Resolve the current native policy on
         // the first round too: absence of a network statement is not a disabled-network grant.
         initialClaim = claim;
@@ -204,8 +206,8 @@ export class ChatGptThreadEnvironmentStore {
       const compactionSourceTurnId = parsed._compactionRequest
         ? extractChatGptCompactionSourceRevision(parsed).turnId : undefined;
       if (rolloutIdentity && identity.turnId) {
-        const rolloutEnvironment = resolveCurrentCodexRolloutEnvironment({
-          codexHome: this.codexHome,
+        const rolloutEnvironment = resolveCurrentCodexRolloutEnvironmentAcrossHomes({
+          codexHomes: [this.codexHome, ...this.additionalCodexHomes],
           ...(this.sqliteHome ? { sqliteHome: this.sqliteHome } : {}),
           lineage: rolloutIdentity,
           turnId: identity.turnId,
@@ -230,9 +232,13 @@ export class ChatGptThreadEnvironmentStore {
             console.warn(`[chatgpt-web] trusted environment conflict (source=${source}, fields=${conflicts.join(",")})`);
             throw new Error(`${source} environment conflicts with its current Codex rollout (fields: ${conflicts.join(", ")})`);
           }
-          this.set(rolloutIdentity.threadId, rolloutEnvironment);
+          // Multi-account recovery never reads or merges the legacy shared environment cache.
+          if (this.additionalCodexHomes.length === 0) this.set(rolloutIdentity.threadId, rolloutEnvironment);
           return rolloutEnvironment;
         }
+      }
+      if (this.additionalCodexHomes.length > 0) {
+        throw new Error("No current native Codex task proof in the authorized account homes", { cause: error });
       }
       // Only a current native rollout can supersede an unrecognized historical envelope. Without
       // that proof, do not turn arbitrary history or an invalid update into cached authority.

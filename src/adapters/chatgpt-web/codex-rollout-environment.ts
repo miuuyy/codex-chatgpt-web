@@ -64,7 +64,7 @@ function canonicalRolloutName(name: string, threadId: string): boolean {
   ).test(name);
 }
 
-function configuredSqliteHome(codexHome: string, explicit?: string): string {
+function configuredSqliteHome(codexHome: string, explicit?: string, inheritEnvironment = true): string {
   if (explicit) return resolve(explicit);
 
   const configPath = join(codexHome, "config.toml");
@@ -80,7 +80,8 @@ function configuredSqliteHome(codexHome: string, explicit?: string): string {
     }
   }
 
-  const environmentValue = process.env.CODEX_SQLITE_HOME?.trim();
+  // A second Codex account must not inherit the bridge owner's SQLite override.
+  const environmentValue = inheritEnvironment ? process.env.CODEX_SQLITE_HOME?.trim() : undefined;
   return resolve(environmentValue ? expandUserPath(environmentValue) : codexHome);
 }
 
@@ -507,7 +508,9 @@ function environmentFromTurnContext(
     throw new Error("Codex rollout cwd is invalid");
   }
   const cwd = resolve(payload.cwd);
-  const declaredRoots = payload.workspace_roots === undefined
+  // Codex CLI 0.163 serializes absent workspace roots as JSON null in real exec rollouts.
+  // The absolute cwd remains mandatory; other malformed root values still fail closed.
+  const declaredRoots = payload.workspace_roots == null
     ? []
     : absolutePaths(payload.workspace_roots, "workspace_roots");
   const roots = declaredRoots.length > 0 ? declaredRoots : [cwd];
@@ -610,6 +613,7 @@ export function resolveCurrentCodexRolloutEnvironment(options: {
   compactionSourceTurnId?: string;
   tools?: readonly CodexTool[];
   historicalEnvironmentMessages?: ChatGptUnattributedEnvironmentMessage[];
+  missingThreadIsAbsent?: boolean;
 }): ChatGptTurnEnvironment | undefined {
   const { codexHome, lineage, turnId, tools, compactionSourceTurnId } = options;
   const nativeThreadId = CODEX_ID.test(lineage.threadId);
@@ -625,7 +629,7 @@ export function resolveCurrentCodexRolloutEnvironment(options: {
     ? [indexed.path]
     : scanCanonicalRollouts(codexHome, lineage.threadId);
   if (candidates.length === 0) {
-    if (!("parentThreadId" in lineage)) return undefined;
+    if (!("parentThreadId" in lineage) || options.missingThreadIsAbsent) return undefined;
     throw new Error("Codex has no canonical rollout for the requested subagent thread");
   }
 
@@ -662,4 +666,44 @@ export function resolveCurrentCodexRolloutEnvironment(options: {
     throw new Error("Codex has multiple canonical rollouts for the requested current turn");
   }
   return matching[0]!;
+}
+
+/** Every authorized account is checked: duplicate or contradictory native proof fails closed. */
+export function resolveCurrentCodexRolloutEnvironmentAcrossHomes(options: {
+  codexHomes: readonly string[];
+  sqliteHome?: string;
+  lineage: RolloutIdentity;
+  turnId: string;
+  compactionSourceTurnId?: string;
+  tools?: readonly CodexTool[];
+  historicalEnvironmentMessages?: ChatGptUnattributedEnvironmentMessage[];
+  missingThreadIsAbsent?: boolean;
+}): ChatGptTurnEnvironment | undefined {
+  if (options.codexHomes.length === 0) throw new Error("No trusted Codex homes configured");
+  let matched: ChatGptTurnEnvironment | undefined;
+  const visited = new Set<string>();
+  for (const [index, codexHome] of options.codexHomes.entries()) {
+    if (!isAbsolute(codexHome)) throw new Error("Trusted Codex home must be an absolute path");
+    const resolved = resolve(codexHome);
+    const identity = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+    if (visited.has(identity)) continue;
+    visited.add(identity);
+    const environment = resolveCurrentCodexRolloutEnvironment({
+      codexHome: resolved,
+      missingThreadIsAbsent: options.codexHomes.length > 1,
+      ...(index === 0
+        ? (options.sqliteHome ? { sqliteHome: options.sqliteHome } : {})
+        : { sqliteHome: configuredSqliteHome(resolved, undefined, false) }),
+      lineage: options.lineage,
+      turnId: options.turnId,
+      ...(options.compactionSourceTurnId ? { compactionSourceTurnId: options.compactionSourceTurnId } : {}),
+      ...(options.historicalEnvironmentMessages ? { historicalEnvironmentMessages: options.historicalEnvironmentMessages } : {}),
+      tools: options.tools,
+    });
+    if (environment) {
+      if (matched) throw new Error("Conflicting Codex rollouts found across authorized account homes");
+      matched = environment;
+    }
+  }
+  return matched;
 }
