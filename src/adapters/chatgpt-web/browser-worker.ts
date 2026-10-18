@@ -71,6 +71,7 @@ import {
   readChatGptEffortSnapshot,
 } from "../../chatgpt-session";
 import { loginVerificationMarkerPath } from "../../browser-login";
+import { DEFAULT_STALL_TIMEOUT_SEC } from "../../stall-timeout";
 import {
   connectLauncherBrowserHost,
   LauncherBrowserTurnCancelledError,
@@ -140,6 +141,17 @@ export const CHATGPT_RESPONSE_DOM_GRACE_MS = 60_000;
 export const CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS = 180_000;
 export const CHATGPT_EMPTY_RESPONSE_GRACE_MS = 10_000;
 export const CHATGPT_COMPLETION_ACTION_GRACE_MS = 60_000;
+/**
+ * A completed Codex tool call can be followed by asynchronous native activity that does not
+ * immediately produce another browser-visible tool request. Native subagents are the important
+ * case: a timed-out wait releases the MCP channel, then the eventual completion notification may
+ * arrive more than a minute later. Keep that recently proven tool activity authoritative long
+ * enough that the DOM-health verdict cannot undercut the bridge's own upstream-silence budget.
+ */
+export const CHATGPT_EXTERNAL_PROGRESS_RECENT_GRACE_MS = Math.max(
+  CHATGPT_RESPONSE_DOM_GRACE_MS,
+  DEFAULT_STALL_TIMEOUT_SEC * 1_000 - CHATGPT_COMPLETION_ACTION_GRACE_MS,
+);
 export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
 export const CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS = 60_000;
 export const MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS = 3;
@@ -1770,7 +1782,7 @@ export function chatGptExternalProgressSuppressesDomHealth(
   snapshot: ChatGptExternalTurnProgressSnapshot | undefined,
   now: number,
 ): boolean {
-  if (!chatGptExternalProgressIsLive(snapshot, now, CHATGPT_RESPONSE_DOM_GRACE_MS)) return false;
+  if (!chatGptExternalProgressIsLive(snapshot, now, CHATGPT_EXTERNAL_PROGRESS_RECENT_GRACE_MS)) return false;
   const lastProgressAt = snapshot?.lastProgressAt;
   if (lastProgressAt === undefined) return false;
   const age = now - lastProgressAt;
@@ -2861,7 +2873,6 @@ export class ChatGptBrowserWorker {
     }
     const composer = await this.activeComposer(page);
     await throwIfChatGptSessionFailureAlert(page);
-    await assertAuthenticatedChatGptPage(page);
     if (chatGptSavedConversationUrl(page.url()) !== canonical) {
       throw new Error("ChatGPT redirected away from the original saved conversation");
     }
@@ -2870,6 +2881,47 @@ export class ChatGptBrowserWorker {
       .waitFor({ state: "attached", timeout: 15_000 });
     await captureDiagnostic?.("saved-conversation-verified");
     return composer;
+  }
+
+  private async waitForRecoveredConversationIdle(
+    page: Page,
+    turn: Pick<BrowserTurn, "abortSignal" | "onHeartbeat" | "onGenerationProgress">,
+    captureDiagnostic?: (checkpoint: string) => Promise<void>,
+  ): Promise<void> {
+    let observedRunning = false;
+    let lastProgressAt = 0;
+    for (;;) {
+      throwIfPromptAttachmentAborted(turn.abortSignal);
+      await throwIfChatGptSessionFailureAlert(page);
+      const running = await chatGptStopButton(page).isVisible().catch(() => false);
+      if (!running) {
+        if (!observedRunning) return;
+        // The primary action can briefly remount while a saved conversation hydrates. Require one
+        // settled observation before allowing a new message into the recovered conversation.
+        await withBrowserTurnAbort(
+          new Promise(resolveSleep => setTimeout(resolveSleep, CHATGPT_UI_SETTLE_MS)),
+          turn.abortSignal,
+        );
+        if (!await chatGptStopButton(page).isVisible().catch(() => false)) {
+          await captureDiagnostic?.("saved-conversation-active-turn-settled");
+          return;
+        }
+      } else if (!observedRunning) {
+        observedRunning = true;
+        await captureDiagnostic?.("saved-conversation-active-turn-detected");
+      }
+
+      const now = Date.now();
+      if (lastProgressAt === 0 || now - lastProgressAt >= 10_000) {
+        lastProgressAt = now;
+        // This is positive browser evidence that the conversation recovered by this Codex session
+        // is still generating its previous accepted turn. Keep the current response alive while it
+        // waits; sending now would either duplicate work or hit ChatGPT's disabled Send control.
+        turn.onHeartbeat?.();
+        turn.onGenerationProgress?.();
+      }
+      await withBrowserTurnAbort(new Promise(resolveSleep => setTimeout(resolveSleep, 250)), turn.abortSignal);
+    }
   }
 
   private async waitForTurnDomMutation(page: Page, timeoutMs = 50): Promise<void> {
@@ -5398,6 +5450,11 @@ export class ChatGptBrowserWorker {
             retained.recoveredUrl!,
             checkpoint => diagnostics.capture(page, checkpoint),
           ),
+        );
+        await this.waitForRecoveredConversationIdle(
+          page,
+          turn,
+          checkpoint => diagnostics.capture(page, checkpoint),
         );
       } else if (!reuseConversation) {
         await this.runStage(
