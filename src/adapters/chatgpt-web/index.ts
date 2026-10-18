@@ -1159,6 +1159,17 @@ export function createChatGptWebAdapter(
                     const retainedKey = source?.conversationKey();
                     if (!retainedKey) throw error;
                     let handoffError = error instanceof Error ? error : new Error(String(error));
+                    // A retained checkpoint can settle as an ordinary assistant response when
+                    // ChatGPT declines or misses the one-shot control call. That failure is
+                    // retryable by the operator against the same saved conversation: releasing
+                    // the retained source here destroys the only exact transcript a retry can
+                    // safely use and turns the next attempt into retained_conversation_unavailable.
+                    // Keep both the logical source and its retained browser binding until a later
+                    // checkpoint succeeds (or an explicit cancellation/source failure retires it).
+                    if (handoffError instanceof ChatGptWebAdapterError
+                      && handoffError.code === "compaction_handoff_missing") {
+                      throw handoffError;
+                    }
                     try {
                       // Operator cancellation ends the logical compaction, but cancel-all must not
                       // acknowledge until the retained browser/helper owner has physically retired.

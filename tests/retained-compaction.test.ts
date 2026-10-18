@@ -1229,6 +1229,97 @@ test("adapter compact returns one same-agent handoff and preserves a pre-existin
   }
 });
 
+test("a missing retained checkpoint keeps the exact conversation available for an explicit retry", async () => {
+  const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-retained-compact-retry-"));
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://retained-compact-retry-${Date.now()}`,
+    chatgptWeb: {
+      browserHost: "launcher",
+      browserHostDescriptorPath: join(root, "launcher.json"),
+      brokerSocketPath: defaultBrokerEndpoint(root),
+      appName: "Codex Native DEV",
+      localToolsEnabled: true,
+      useSavedChats: true,
+      solAvailable: true,
+      extraHighAvailable: true, proAvailable: true,
+    },
+  };
+  const broker = TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!);
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  const sourceRequest = request(false);
+  const namespace = chatGptWebExecutionNamespace(provider);
+  const sourceKey = `${namespace}:${chatGptTurnExecutionKey(sourceRequest)}`;
+  const conversationKey = chatGptConversationKey(sourceRequest, namespace)!;
+  let releases = 0;
+  const source = chatGptTurnSessions.getOrCreate(sourceKey, () => ({
+    mode: "read-only",
+    browser: Promise.resolve("source complete"),
+    physicalSettlement: Promise.resolve(),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    usageInput: sourceRequest,
+    conversationKey,
+    releaseRetainedConversation: async () => { releases += 1; },
+    cancel() {},
+  }));
+  await source.browserOutcome;
+
+  const compact = request(true);
+
+  let attempts = 0;
+  const browserTraceIds: string[] = [];
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    attempts += 1;
+    browserTraceIds.push(turn.traceId);
+    if (attempts === 1) return "I could not submit the checkpoint.";
+    const prepared = await turn.prepareResume!();
+    const binding = controlBinding(prepared.text);
+    prepared.release();
+    await callTurnBroker(provider.chatgptWeb!.brokerSocketPath!, {
+      method: "submit_compaction_handoff",
+      token: binding.token,
+      handoffId: binding.handoffId,
+      summary: "Recovered retained checkpoint",
+    });
+    return "Checkpoint submitted through MCP";
+  };
+
+  try {
+    const firstEvents: AdapterEvent[] = [];
+    await createChatGptWebAdapter(provider).runTurn!(
+      compact, { headers: new Headers() }, event => firstEvents.push(event),
+    );
+    expect(firstEvents.at(-1)).toMatchObject({
+      type: "error", code: "compaction_handoff_missing", retryable: false,
+    });
+    expect(releases).toBe(0);
+    expect(chatGptTurnSessions.find(sourceKey)).toBe(source);
+    expect(chatGptTurnSessions.findConversationHead(conversationKey)).toBe(source);
+
+    // Failed exact compactions are evicted from the shared-run cache, so the explicit retry can
+    // start a new handoff while retaining the exact ChatGPT transcript that produced the source.
+    await Bun.sleep(0);
+    const retryEvents: AdapterEvent[] = [];
+    await createChatGptWebAdapter(provider).runTurn!(
+      compact, { headers: new Headers() }, event => retryEvents.push(event),
+    );
+    expect(attempts).toBe(2);
+    expect(browserTraceIds).toHaveLength(2);
+    expect(browserTraceIds[0]).not.toBe(browserTraceIds[1]);
+    expect(retryEvents.some(event => event.type === "text_delta"
+      && event.text.includes("Recovered retained checkpoint"))).toBeTrue();
+    expect(retryEvents.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+    expect(releases).toBe(0);
+  } finally {
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    chatGptTurnSessions.clear();
+    await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a compact HTTP observer can reconnect without sending a second retained-chat message", async () => {
   const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-compact-reconnect-"));
   const provider: CodexProviderConfig = {

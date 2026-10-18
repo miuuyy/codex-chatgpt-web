@@ -2920,6 +2920,53 @@ test("a later provider round reuses only its exact connector-bound conversation"
   assert.deepEqual(events, ["visible", "published", "descriptor", "browser.tab_reused"]);
 });
 
+test("a retained ready tab cannot be reused while another trace is writing the same conversation", async () => {
+  const conversationKey = "9".repeat(64);
+  const retained = {
+    id: "retained-ready",
+    surfaceId: "surface-retained",
+    traceId: "trace_previous",
+    conversationKey,
+    connectorIdentity: "Codex Native2",
+    connectorBound: true,
+    interactionMode: "automatic",
+    helperPid: 111,
+    status: "ready",
+    view: { webContents: { isDestroyed: () => false, setBackgroundThrottling() {} } },
+  };
+  const running = {
+    id: "active-writer",
+    traceId: "trace_active",
+    conversationKey,
+    connectorIdentity: "Codex Native2",
+    connectorBound: true,
+    interactionMode: "automatic",
+    helperPid: 222,
+    status: "running",
+  };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    manualOperation: null,
+    turnTabs: new Map([[retained.id, retained], [running.id, running]]),
+    userCancelledTurnOwners: new Map(),
+  });
+
+  await assert.rejects(
+    BrowserHost.prototype.beginTurn.call(
+      fixture,
+      "trace_next",
+      false,
+      333,
+      conversationKey,
+      "Codex Native2",
+    ),
+    error => error?.code === "retained_conversation_unavailable"
+      && /still writing to this ChatGPT conversation/.test(error.message),
+  );
+  assert.equal(retained.traceId, "trace_previous");
+  assert.equal(retained.status, "ready");
+  assert.equal(running.status, "running");
+});
+
 test("a retained conversation is not reused for a different connector identity", async () => {
   const conversationKey = "b".repeat(64);
   const retained = {

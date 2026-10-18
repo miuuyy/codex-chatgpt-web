@@ -316,8 +316,13 @@ export async function requestRetainedCompactionHandoff(
     transaction = await withCompactionAbort(transactionPromise, operationSignal);
     const instruction = structuredCompactionHandoffInstruction(transaction);
     const prepare = async () => ({ text: instruction, images: [], release: () => {} });
+    // Reconnecting observers share the stable logical compaction trace, but each failed completed
+    // checkpoint was already submitted to the saved ChatGPT conversation. Give every one-shot
+    // handoff attempt its own physical browser trace so an explicit retry does not trip the
+    // Launcher's duplicate-send protection for the previous, already-settled checkpoint message.
+    const browserTraceId = `${traceId}_${transaction.handoffId.slice("handoff_".length, "handoff_".length + 12)}`;
     browser = worker.run({
-      traceId,
+      traceId: browserTraceId,
       modelId: parsed.modelId,
       reasoning: parsed.options.reasoning,
       ...(parsed._chatgptModelFamily ? { modelFamily: parsed._chatgptModelFamily } : {}),

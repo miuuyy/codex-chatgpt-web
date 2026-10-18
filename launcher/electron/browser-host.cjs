@@ -2530,6 +2530,16 @@ class BrowserHost {
       || sameTrace.connectorIdentity !== connectorIdentity)) {
       throw new Error(`ChatGPT browser turn ${traceId} conversation metadata does not match its owned tab`);
     }
+    // A retained ready tab and a newer running tab can briefly coexist while ownership is moving
+    // between helpers. Never let a third trace grab the ready surface during that window: two
+    // writers in one ChatGPT conversation can detach the assistant response owned by the first
+    // trace and surface as a stream disconnect. This guard must run before retained-tab reuse.
+    const activeConversationOwner = conversationKey ? [...this.turnTabs.values()].find((tab) => (
+      tab.interactionMode === "automatic"
+      && tab.status === "running"
+      && tab.conversationKey === conversationKey
+      && tab.traceId !== traceId
+    )) : undefined;
     const retainedMatches = conversationKey && sameTrace?.failedAt === undefined ? [...this.turnTabs.values()].filter((tab) => (
       tab.interactionMode === "automatic"
       && tab.status === "ready"
@@ -2545,6 +2555,11 @@ class BrowserHost {
     // their task history silently written into normal ChatGPT saved history.
     const registryEnabled = Boolean(conversationKey && this.getUseSavedChats?.() === true);
     const mapping = registryEnabled ? this.conversationRegistry?.get(conversationKey) : null;
+    if (activeConversationOwner && (exactRetained || (registryEnabled && this.conversationRegistry))) {
+      const error = new Error("Another Codex turn is still writing to this ChatGPT conversation");
+      error.code = "retained_conversation_unavailable";
+      throw error;
+    }
     if (mapping?.status === "pending") {
       const error = new Error("The previous ChatGPT send may have created a conversation before its URL was saved. Recover the original chat before retrying; another chat will not be created.");
       error.code = "retained_conversation_unavailable";
@@ -2620,16 +2635,6 @@ class BrowserHost {
     }
     // A retry may reuse the trace, but never the failed document or its incremental history.
     if (sameTrace?.failedAt !== undefined) this.removeTurnTab(sameTrace, false);
-    // A new native turn cannot share a running browser owner, even while that owner has
-    // not yet received its first saved conversation URL.
-    if (registryEnabled && this.conversationRegistry && conversationKey && [...this.turnTabs.values()].some(tab => (
-      tab.interactionMode === "automatic" && tab.status === "running"
-      && tab.conversationKey === conversationKey && tab.traceId !== traceId
-    ))) {
-      const error = new Error("Another Codex turn is still writing to this ChatGPT conversation");
-      error.code = "retained_conversation_unavailable";
-      throw error;
-    }
     const tab = await this.createTurnTab(traceId, helperPid, conversationKey, connectorIdentity, signal);
     this.selectedTabId = tab.id;
     if (reveal) this.show();
