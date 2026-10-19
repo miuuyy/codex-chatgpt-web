@@ -1061,6 +1061,29 @@ export function createChatGptWebAdapter(
                       && source?.settledOutcome()?.type === "final";
                     const retainedKey = source?.conversationKey();
                     if (!source || !retainedKey) {
+                      // The in-memory session and Launcher tab share the same bounded TTL, but a
+                      // saved-chat mapping intentionally outlives both. A late native compaction
+                      // must therefore reopen the exact persisted ChatGPT conversation rather
+                      // than treating cache expiry as loss of the source transcript. The Launcher
+                      // remains fail-closed here: `requireRetainedConversation` only leases a new
+                      // tab when this conversationKey still has a verified bound mapping, and it
+                      // rejects missing/pending/ambiguous mappings without creating another chat.
+                      if (provider.chatgptWeb?.useSavedChats === true
+                        && !freshConversationPerTurn && !manualRequest && sourceConversationKey) {
+                        handoffPhase = "recovered_saved_checkpoint";
+                        armHandoffDeadline();
+                        const rawSummary = await requestRetainedCompactionHandoff(
+                          worker,
+                          parsed,
+                          sourceConversationKey,
+                          structuredBroker!,
+                          configuredCapabilities,
+                          handoffTraceId,
+                          operationSignal,
+                          handoffTimeoutMs,
+                        );
+                        return canonicalizeCompactionHandoff(parsed, rawSummary);
+                      }
                       // An old Launcher tab can outlive an in-memory source after a daemon
                       // restart. A fresh checkpoint must not leave that tab masquerading as
                       // the exact transcript that produced the new compacted context.

@@ -1774,7 +1774,7 @@ test.each([false, true])("structured compact rebuild after retained browser loss
   }
 });
 
-test("saved retained compaction fails without creating a replacement chat when its source was lost", async () => {
+test("saved retained compaction reopens the exact persisted conversation after its in-memory source expires", async () => {
   const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-saved-compaction-owner-lost-"));
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
@@ -1791,19 +1791,76 @@ test("saved retained compaction fails without creating a replacement chat when i
   };
   const worker = ChatGptBrowserWorker.forProvider(provider);
   const originalRun = worker.run.bind(worker);
+  const broker = TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!);
+  const compact = request(true);
+  const namespace = chatGptWebExecutionNamespace(provider);
+  const conversationKey = chatGptConversationKey(compact, namespace)!;
   let browserStarts = 0;
-  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async () => {
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
     browserStarts++;
-    throw new Error("A lost saved source must not create another ChatGPT conversation");
+    expect(turn.requireRetainedConversation).toBeTrue();
+    expect(turn.conversationKey).toBe(conversationKey);
+    expect(turn.compaction).toBeTrue();
+    const prepared = await turn.prepareResume!();
+    const binding = controlBinding(prepared.text);
+    prepared.release();
+    await callTurnBroker(provider.chatgptWeb!.brokerSocketPath!, {
+      method: "submit_compaction_handoff",
+      token: binding.token,
+      handoffId: binding.handoffId,
+      summary: "Recovered persisted checkpoint",
+    });
+    return "Checkpoint submitted through MCP";
+  };
+  const events: AdapterEvent[] = [];
+  try {
+    await createChatGptWebAdapter(provider).runTurn!(
+      compact, { headers: new Headers() }, event => events.push(event),
+    );
+    expect(browserStarts).toBe(1);
+    expect(events.some(event => event.type === "text_delta"
+      && event.text.includes("Recovered persisted checkpoint"))).toBeTrue();
+    expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+  } finally {
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    chatGptTurnSessions.clear();
+    await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("saved retained compaction still fails closed when the persisted conversation is unavailable", async () => {
+  const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-saved-compaction-mapping-lost-"));
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://saved-compaction-mapping-lost-${Date.now()}`,
+    chatgptWeb: {
+      browserHost: "launcher",
+      browserHostDescriptorPath: join(root, "launcher.json"),
+      brokerSocketPath: defaultBrokerEndpoint(root),
+      localToolsEnabled: true,
+      useSavedChats: true,
+      solAvailable: true,
+      extraHighAvailable: true, proAvailable: true,
+    },
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  let browserStarts = 0;
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    browserStarts++;
+    expect(turn.requireRetainedConversation).toBeTrue();
+    expect(turn.conversationKey).toBe(chatGptConversationKey(request(true), chatGptWebExecutionNamespace(provider))!);
+    throw chatGptRetainedConversationUnavailableError();
   };
   const events: AdapterEvent[] = [];
   try {
     await createChatGptWebAdapter(provider).runTurn!(
       request(true), { headers: new Headers() }, event => events.push(event),
     );
-    expect(browserStarts).toBe(0);
+    expect(browserStarts).toBe(1);
     expect(events.at(-1)).toMatchObject({
-      type: "error", code: "retained_conversation_unavailable", retryable: false,
+      type: "error", code: "compaction_source_unavailable", retryable: false,
     });
   } finally {
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;

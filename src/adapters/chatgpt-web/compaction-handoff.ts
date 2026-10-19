@@ -281,14 +281,14 @@ export async function settleActiveZeroRiskCompactionSource(
 export async function requestRetainedCompactionHandoff(
   worker: ChatGptBrowserWorker,
   parsed: CodexParsedRequest,
-  source: ChatGptTurnSession,
+  source: ChatGptTurnSession | string,
   broker: TurnBroker,
   capabilities: ChatGptWebCapabilities,
   traceId: string,
   signal?: AbortSignal,
   timeoutMs = MAX_COMPACTION_HANDOFF_TIMEOUT_MS,
 ): Promise<string> {
-  const conversationKey = source.conversationKey();
+  const conversationKey = typeof source === "string" ? source : source.conversationKey();
   if (!conversationKey) throw new Error("The completed ChatGPT source has no retained conversation identity");
   const operationTimeoutMs = boundedCompactionTimeout(timeoutMs);
   const deadline = new AbortController();

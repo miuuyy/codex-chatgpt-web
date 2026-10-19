@@ -63,7 +63,7 @@ test("pending sends block replay after a restart without a verified URL", async 
   await assert.rejects(() => fixture.beginTurn("turn_next", false, 123, first, "Codex Native2"), /Recover the original chat/);
 }));
 
-test("a restored turn leases the exact saved URL and isolates concurrent writers", async () => withRegistry(async file => {
+test("a required retained turn can reopen the exact saved URL and isolates concurrent writers", async () => withRegistry(async file => {
   const registry = new ConversationRegistry(file);
   registry.arm(first, "initial_turn");
   registry.bind(first, savedUrl, account, "initial_turn");
@@ -77,7 +77,7 @@ test("a restored turn leases the exact saved URL and isolates concurrent writers
     syncViewVisibility() {}, writeDescriptor() {},
     createTurnTab: async () => { fixture.turnTabs.set(tab.id, tab); return tab; },
   });
-  const lease = await fixture.beginTurn("turn_next", false, 123, first, "Codex Native2");
+  const lease = await fixture.beginTurn("turn_next", false, 123, first, "Codex Native2", true);
   assert.equal(lease.reused, true);
   assert.equal(lease.recoveredUrl, savedUrl);
   assert.equal(lease.accountKey, account);
