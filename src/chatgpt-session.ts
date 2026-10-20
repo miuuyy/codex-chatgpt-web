@@ -309,7 +309,11 @@ export async function assertNewChatPage(page: Page, useSavedChats = false): Prom
 
 export async function detectChatGptAccountCapabilities(
   page: Page,
-  options: { selectorTimeoutMs?: number; stableAbsenceMs?: number } = {},
+  options: {
+    selectorTimeoutMs?: number;
+    stableAbsenceMs?: number;
+    prepareEffortControl?: (control: Locator) => Promise<void>;
+  } = {},
 ): Promise<ChatGptWebAccountCapabilities & { extraHighAvailable: boolean }> {
   const composers = page.locator(CHATGPT_COMPOSER_SELECTOR).filter({ visible: true });
   const composer = composers;
@@ -347,11 +351,12 @@ export async function detectChatGptAccountCapabilities(
     }
     await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
   }
-  const menu = page.locator(CHATGPT_EFFORT_MENU_SELECTOR).last();
-  const menuVisible = await menu.isVisible().catch(() => false);
-  const menuExpanded = await effortButton.getAttribute("aria-expanded").catch(() => null);
-  if (!menuVisible && menuExpanded !== "true") await effortButton.press("Enter");
   try {
+    await options.prepareEffortControl?.(effortButton);
+    const menu = page.locator(CHATGPT_EFFORT_MENU_SELECTOR).last();
+    const menuVisible = await menu.isVisible().catch(() => false);
+    const menuExpanded = await effortButton.getAttribute("aria-expanded").catch(() => null);
+    if (!menuVisible && menuExpanded !== "true") await effortButton.press("Enter");
     const { sliderContainer, slider } = chatGptEffortSlider(page);
     const timeout = options.selectorTimeoutMs ?? 70_000;
     // Model radio rows can hydrate before the effort control. They carry no evidence
