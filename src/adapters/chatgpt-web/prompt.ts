@@ -172,6 +172,16 @@ export function withoutRetiredTurnHandles(contextJson: string): string {
     : value)).replaceAll("`", "\\u0060");
 }
 
+/** Keep staged data out of the user renderer's directive and mention parsers. */
+export function inertMultipartContextJson(contextJson: string): string {
+  // A stock 6.1.12 user bubble replaced literal ::directives with internal
+  // placeholders and @scope/path with file chips, including inside a JSON fence.
+  // Escape only string contents; structural colons and decoded data stay intact.
+  return withoutRetiredTurnHandles(contextJson)
+    .replace(/"(?:[^"\\]|\\.)*"/g, token => token.replace(/[:@]/g,
+      character => character === ":" ? "\\u003a" : "\\u0040"));
+}
+
 /** ChatGPT accepts at most this many attachments on one message. */
 export const CHATGPT_MAX_INPUT_IMAGES = 10;
 
@@ -337,7 +347,7 @@ interface MultipartRecordWeight {
 }
 
 function multipartRecordWeight(record: MultipartContextRecord): MultipartRecordWeight {
-  const text = withoutRetiredTurnHandles(JSON.stringify(record));
+  const text = inertMultipartContextJson(JSON.stringify(record));
   return { tokens: estimateTokens(text) + 1, chars: text.length + 1 };
 }
 
@@ -406,7 +416,7 @@ function partitionMultipartContext(
     return group;
   });
   if (offset !== records.length) throw new Error("ChatGPT multipart context partition lost records");
-  const payloads = groups.map((group, index) => withoutRetiredTurnHandles(JSON.stringify({
+  const payloads = groups.map((group, index) => inertMultipartContextJson(JSON.stringify({
     version: 1,
     part_index: index + 1,
     total_parts: totalParts,
