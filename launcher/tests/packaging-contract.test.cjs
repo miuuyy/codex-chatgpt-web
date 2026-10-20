@@ -105,6 +105,48 @@ test("release installers resolve checksummed native launcher assets", () => {
   assert.match(packageSmoke, /reg\.exe[\s\S]*InstallLocation/);
 });
 
+test("only certificate-free macOS packaging enables ad hoc signing on pull requests", () => {
+  const source = fs.readFileSync(path.join(launcherRoot, "scripts", "package.cjs"), "utf8");
+  for (const [platform, signingEnv, adHoc] of [
+    ["darwin", {}, true],
+    ["darwin", { CSC_FOR_PULL_REQUEST: "false" }, true],
+    ["darwin", { CSC_LINK: "certificate.p12" }, false],
+    ["darwin", { CSC_NAME: "Developer ID Application" }, false],
+    ["win32", {}, false],
+    ["linux", {}, false],
+  ]) {
+    const env = { GITHUB_BASE_REF: "main", GITHUB_EVENT_NAME: "pull_request", ...signingEnv };
+    const stop = new Error("builder invocation captured");
+    let invocation;
+    const mockRequire = name => {
+      if (name === "node:child_process") return { spawnSync: (command, args, options) => {
+        invocation = { command, args, options };
+        throw stop;
+      } };
+      if (name === "node:fs") return {
+        readFileSync: fs.readFileSync,
+        mkdtempSync: () => "/mock-package-staging",
+        rmSync: () => {},
+      };
+      if (name === "../electron/runtime-install.cjs") return { validateRuntimeBundle: () => {} };
+      if (name === "./prepare-linux-appimage-tools.cjs") return {};
+      if (name === "node:os") return os;
+      if (name === "node:path") return path;
+      throw new Error(`Unexpected package dependency: ${name}`);
+    };
+    mockRequire.resolve = () => "/mock-electron-builder-cli.js";
+    assert.throws(() => vm.runInNewContext(source, {
+      require: mockRequire, __dirname: path.join(launcherRoot, "scripts"),
+      process: { platform, arch: "x64", argv: ["node", "package.cjs"], env },
+    }), error => error === stop);
+    assert.equal(invocation.command, "node");
+    assert.equal(invocation.args.includes("--config.mac.identity=-"), adHoc);
+    assert.equal(invocation.options.env.CSC_FOR_PULL_REQUEST, adHoc ? "true" : env.CSC_FOR_PULL_REQUEST);
+    if (adHoc) assert.equal(invocation.options.env.CSC_IDENTITY_AUTO_DISCOVERY, "false");
+    assert.equal(env.CSC_FOR_PULL_REQUEST, signingEnv.CSC_FOR_PULL_REQUEST);
+  }
+});
+
 test("packaged launcher owns a detached checksummed updater for every release platform", () => {
   const updater = fs.readFileSync(path.join(launcherRoot, "electron", "update.cjs"), "utf8");
   const worker = fs.readFileSync(path.join(launcherRoot, "electron", "update-worker.cjs"), "utf8");

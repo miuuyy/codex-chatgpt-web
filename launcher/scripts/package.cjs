@@ -38,6 +38,8 @@ const builderArgs = [
 ];
 if (target === "--mac" && !env.CSC_LINK && !env.CSC_NAME) {
   builderArgs.push("--config.mac.identity=-");
+  // The builder's PR guard also skips ad hoc signing, which uses no certificate.
+  env.CSC_FOR_PULL_REQUEST = "true";
 }
 if (target === "--linux") {
   if (!["x64", "arm64"].includes(process.arch)) {
