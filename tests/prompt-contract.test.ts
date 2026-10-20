@@ -703,56 +703,36 @@ test("inline and multipart transports preserve code while escaping its Markdown 
   expect(JSON.stringify(multipart.multipart!.parts.map(part => JSON.parse(part)))).toContain("```python");
 });
 
-test("multipart compaction fits encoded transaction while preserving checkpoint and recent evidence", async () => {
-  const { estimateCompiledChatGptWebInputTokens } = await import("../src/adapters/chatgpt-web/input-tokens");
+test("multipart compaction preserves every new fact after a cumulative checkpoint and fails size preflight", async () => {
+  const { estimateCompiledChatGptWebInputTokens, estimateCompiledChatGptWebMessageTokens,
+    compiledChatGptWebMaxMessageChars } = await import("../src/adapters/chatgpt-web/input-tokens");
+  const { assertChatGptWebMultipartInputWithinLimits } = await import("../src/adapters/chatgpt-web/browser-worker");
   const capabilities = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: false };
   const compact = request("high");
   compact._chatgptModelFamily = "6";
   compact._compactionRequest = true;
   compact.context.systemPrompt = ["durable original constraints"];
-  const checkpoint = `${SUMMARY_PREFIX}\nVerified earlier result with exact evidence paths and unsolved obligations`;
+  const checkpoint = `${SUMMARY_PREFIX}\nCompleted earlier work; no knowledge of later facts`;
+  const facts = Array.from({ length: 7 }, (_, i) => `new-fact-${i}: ${"<_*".repeat(5000)}`);
+  const final = "summarize all seven later facts and their pending obligations";
   compact.context.messages = [
     { role: "user", content: checkpoint, timestamp: 1 },
-    ...Array.from({ length: 7 }, (_, i) => ({ role: "user" as const,
-      content: `old-output-${i}: ${"<_*".repeat(5000)}`, timestamp: i + 2 })),
-    { role: "assistant", content: [{ type: "text", text: "recent checked evidence" }], timestamp: 9 },
-    { role: "user", content: "summarize the latest actual state", timestamp: 10 },
+    ...facts.map((content, i) => ({ role: "user" as const, content, timestamp: i + 2 })),
+    { role: "user", content: final, timestamp: 9 },
   ];
   const original = structuredClone(compact);
-  const options = { experimentalMultipartParts: CHATGPT_BIGGER_CONTEXT_PARTS };
-  const normal = structuredClone(compact);
-  delete normal._compactionRequest;
-  const untrimmed = compileChatGptWebPrompt(normal, capabilities, undefined, options);
-  expect(estimateCompiledChatGptWebInputTokens(untrimmed, normal.modelId)).toBeGreaterThanOrEqual(120000);
-  expect(untrimmed.trimmedCompactionMessages).toBeUndefined();
-  const compiled = compileChatGptWebPrompt(compact, capabilities, undefined, options);
-  expect(estimateCompiledChatGptWebInputTokens(compiled, compact.modelId)).toBeLessThan(120000);
-  expect(compiled.trimmedCompactionMessages).toBeGreaterThan(0);
-  const records = compiled.multipart!.parts.flatMap(p => JSON.parse(p).records);
-  const text = JSON.stringify(records);
-  expect(text).toContain(checkpoint.replaceAll("\n", "\\n"));
-  expect(text).toContain("recent checked evidence");
-  expect(text).toContain("summarize the latest actual state");
-  expect(text).toContain("durable original constraints");
-  expect(compiled.multipart!.commit).toContain("history is incomplete");
-  expect(compiled.multipart!.commit).not.toContain("The task context is complete.");
+  const compiled = compileChatGptWebPrompt(compact, capabilities, undefined,
+    { experimentalMultipartParts: CHATGPT_BIGGER_CONTEXT_PARTS });
+  const records = compiled.multipart!.parts.flatMap(part => JSON.parse(part).records);
+  const messages = records.filter(record => record.kind === "message").map(record => record.message.content);
+  expect(messages).toEqual([checkpoint, ...facts, final]);
+  expect(compiled.trimmedCompactionMessages).toBeUndefined();
   expect(compact).toEqual(original);
-}, 30000);
-
-test("multipart compaction never discards its only checkpoint or final instruction to claim a fit", () => {
-  const compact = request("high");
-  compact._chatgptModelFamily = "6";
-  compact._compactionRequest = true;
-  compact.context.systemPrompt = [];
-  compact.context.messages = [
-    { role: "user", content: `${SUMMARY_PREFIX}\n${"<_*".repeat(8000)}`, timestamp: 1 },
-    { role: "assistant", content: [{ type: "text", text: "discardable older output" }], timestamp: 2 },
-    { role: "user", content: `final-compaction-instruction ${"<_*".repeat(8000)}`, timestamp: 3 },
-  ];
-  const original = structuredClone(compact);
-  expect(() => compileChatGptWebPrompt(compact,
-    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: false },
-    undefined, { experimentalMultipartParts: CHATGPT_BIGGER_CONTEXT_PARTS },
-  )).toThrow("cannot retain the cumulative checkpoint and final compaction instruction");
-  expect(compact).toEqual(original);
+  expect(estimateCompiledChatGptWebInputTokens(compiled, compact.modelId)).toBeGreaterThanOrEqual(120000);
+  expect(() => assertChatGptWebMultipartInputWithinLimits(
+    estimateCompiledChatGptWebInputTokens(compiled, compact.modelId),
+    estimateCompiledChatGptWebMessageTokens(compiled, compact.modelId),
+    compact.modelId, "high", capabilities, compiledChatGptWebMaxMessageChars(compiled),
+    CHATGPT_BIGGER_CONTEXT_PARTS,
+  )).toThrow(/Bigger Context (stage|transaction)/);
 }, 30000);

@@ -1681,21 +1681,6 @@ export class ChatGptCompletionTracker {
   }
 }
 
-/** Dismiss only the optional response-comparison survey in the bound turn.
- * This does not select/rate an answer or prove completion; callers reobserve all
- * ordinary ownership, generation, terminal-error and exact-ACK checks afterward.
- */
-export async function skipBoundChatGptComparison(turn: Locator): Promise<boolean> {
-  if (await turn.count() !== 1) return false;
-  const first = turn.getByRole("button", { name: "Option 1", exact: true });
-  const second = turn.getByRole("button", { name: "Option 2", exact: true });
-  const skip = turn.getByRole("button", { name: "Skip", exact: true });
-  if (await first.count() !== 1 || await second.count() !== 1 || await skip.count() !== 1) return false;
-  if (!await first.isVisible() || !await second.isVisible() || !await skip.isVisible()) return false;
-  await skip.click({ timeout: 2000 });
-  return true;
-}
-
 export class ChatGptTurnDomHealthTracker {
   private sawResponse = false;
   private missingResponseSince?: number;
@@ -4118,14 +4103,6 @@ export class ChatGptBrowserWorker {
         continue;
       }
       const running = await chatGptStopButton(page).isVisible().catch(() => false);
-      if (!running && !snapshot.completionActionVisible && await skipBoundChatGptComparison(
-        page.locator(chatGptTurnContainerSelector(responseTurn.identity)),
-      )) {
-        responseDomCache.key = undefined;
-        responseDomCache.snapshot = undefined;
-        domHealthTracker.suspendForProgress();
-        continue;
-      }
       const responseStreamActive = generation?.active() ?? false;
       if (running || responseStreamActive) generation?.progress();
       const domError = domHealthTracker.update({
@@ -5933,14 +5910,6 @@ export class ChatGptBrowserWorker {
         }
         const stop = chatGptStopButton(page);
         const running = await stop.isVisible().catch(() => false);
-        if (!running && !snapshot.completionActionVisible && await skipBoundChatGptComparison(
-          page.locator(chatGptTurnContainerSelector(responseTurn.identity)),
-        )) {
-          responseDomCache.key = undefined;
-          responseDomCache.snapshot = undefined;
-          domHealthTracker.suspendForProgress();
-          continue;
-        }
         const responseStreamActive = generation.active();
         if (running || responseStreamActive) generation.progress();
         if (running) sawRunning = true;

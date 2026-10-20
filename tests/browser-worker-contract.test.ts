@@ -4254,9 +4254,7 @@ test("both response loops check explicit Stopped thinking before acknowledging f
     expect(failure).toBeGreaterThan(0);
     expect(acknowledgement).toBeGreaterThan(failure);
   }
-  // Both loops suspend health deadlines for actual MCP activity. Optional
-  // comparison-survey dismissal may also reset a deadline before reobservation.
-  expect((worker.match(/if \(!snapshot\.responsePresent && externalProgressLive\) \{[\s\S]*?domHealthTracker\.suspendForProgress\(\)/g) ?? []).length).toBe(2);
+  expect((worker.match(/domHealthTracker\.suspendForProgress\(\)/g) ?? []).length).toBe(2);
 });
 
 test("proven MCP progress vetoes every terminal DOM conclusion, not just a missing response", () => {
