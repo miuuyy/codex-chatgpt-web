@@ -702,3 +702,39 @@ test("inline and multipart transports preserve code while escaping its Markdown 
   }
   expect(JSON.stringify(multipart.multipart!.parts.map(part => JSON.parse(part)))).toContain("```python");
 });
+
+test("multipart compaction fits encoded transaction while preserving checkpoint and recent evidence", async () => {
+  const { estimateCompiledChatGptWebInputTokens } = await import("../src/adapters/chatgpt-web/input-tokens");
+  const capabilities = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: false };
+  const compact = request("high");
+  compact._chatgptModelFamily = "6";
+  compact._compactionRequest = true;
+  compact.context.systemPrompt = ["durable original constraints"];
+  const checkpoint = `${SUMMARY_PREFIX}\nVerified earlier result with exact evidence paths and unsolved obligations`;
+  compact.context.messages = [
+    { role: "user", content: checkpoint, timestamp: 1 },
+    ...Array.from({ length: 7 }, (_, i) => ({ role: "user" as const,
+      content: `old-output-${i}: ${"<_*".repeat(5000)}`, timestamp: i + 2 })),
+    { role: "assistant", content: [{ type: "text", text: "recent checked evidence" }], timestamp: 9 },
+    { role: "user", content: "summarize the latest actual state", timestamp: 10 },
+  ];
+  const original = structuredClone(compact);
+  const options = { experimentalMultipartParts: CHATGPT_BIGGER_CONTEXT_PARTS };
+  const normal = structuredClone(compact);
+  delete normal._compactionRequest;
+  const untrimmed = compileChatGptWebPrompt(normal, capabilities, undefined, options);
+  expect(estimateCompiledChatGptWebInputTokens(untrimmed, normal.modelId)).toBeGreaterThanOrEqual(120000);
+  expect(untrimmed.trimmedCompactionMessages).toBeUndefined();
+  const compiled = compileChatGptWebPrompt(compact, capabilities, undefined, options);
+  expect(estimateCompiledChatGptWebInputTokens(compiled, compact.modelId)).toBeLessThan(120000);
+  expect(compiled.trimmedCompactionMessages).toBeGreaterThan(0);
+  const records = compiled.multipart!.parts.flatMap(p => JSON.parse(p).records);
+  const text = JSON.stringify(records);
+  expect(text).toContain(checkpoint.replaceAll("\n", "\\n"));
+  expect(text).toContain("recent checked evidence");
+  expect(text).toContain("summarize the latest actual state");
+  expect(text).toContain("durable original constraints");
+  expect(compiled.multipart!.commit).toContain("history is incomplete");
+  expect(compiled.multipart!.commit).not.toContain("The task context is complete.");
+  expect(compact).toEqual(original);
+}, 30000);

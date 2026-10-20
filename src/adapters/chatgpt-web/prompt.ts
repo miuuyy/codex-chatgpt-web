@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { selectedSkillFile, skillFileTokens, type ChatGptSkillFile } from "./skill-attachments";
 import {
   CHATGPT_WEB_GPT6_INSTANT_BIGGER_CONTEXT_ERROR,
+  CHATGPT_WEB_PLATFORM_RESERVE_TOKENS,
+  resolveChatGptWebContextLimits,
   chatGptWebImageTokenReserve,
   isChatGptWebZeroRiskBackendModel,
   resolveChatGptWebMessageTokenBudget,
@@ -11,6 +13,7 @@ import {
 } from "../../chatgpt-web-models";
 import { ChatGptWebAdapterError } from "./adapter-error";
 import { estimateTokens } from "../../lib/token-estimate";
+import { estimateCompiledChatGptWebInputTokens } from "./input-tokens";
 import type { CodexAssistantContentPart, CodexContentPart, CodexMessage, CodexParsedRequest } from "../../types";
 import { isOnePixelPngDataUrl, isReadableCompactionSummaryText } from "../../responses/compaction";
 import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
@@ -667,7 +670,13 @@ export function compileChatGptWebPrompt(
           ...manualControlContract,
           ...checkpointContract,
           answerContract,
-          ...transportResume,
+          ...(omittedMessages > 0 ? [
+            "<codex_transport_resume>",
+            `${omittedMessages} earlier history items were omitted to fit this compaction request; the supplied history is incomplete.`,
+            "Preserve still-relevant progress, constraints and pending work from any supplied cumulative checkpoint and the remaining evidence. Do not infer that omitted work was never done or invent missing details.",
+            "Produce the requested checkpoint summary now without calling tools.",
+            "</codex_transport_resume>",
+          ] : transportResume),
         ].join("\n"),
       };
       const imageTokens = images.reduce((sum, image) => sum + chatGptWebImageTokenReserve(image.detail), 0);
@@ -748,16 +757,19 @@ export function compileChatGptWebPrompt(
   let compiled = build(sourceMessages);
   if (!parsed._compactionRequest) return compiled;
 
-  // The 110k edge budget was measured for the old single-message compaction envelope. Bigger
-  // Context stages are governed by the same model-specific per-message token and composer limits
-  // as ordinary multipart turns in browser-worker. Applying the legacy byte cap here silently
-  // discarded context that the staged transport can carry; preserve it and let browser preflight
-  // fail explicitly if any atomic record is genuinely too large for one stage.
-  if (compiled.multipart) return compiled;
-
-  const exceedsCompactionBudget = (): boolean => (
-    chatGptPromptJsonBytes(compiled.text) > CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET
+  // Compaction must fit the same serialized transaction ceiling as normal turns.
+  // Keep all history that fits, rather than applying the retired inline byte cap.
+  // Otherwise use native-style oldest-first trimming and retain the latest checkpoint.
+  const multipartBackend = parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID ? CHATGPT_WEB_LUNA_MODEL_ID : CHATGPT_WEB_MODEL_ID;
+  const multipartTokenBudget = multipartParts === undefined ? undefined : Math.min(
+    resolveChatGptWebContextLimits(multipartBackend, mode.effort,
+      { ...capabilities, experimentalBiggerContext: true }, parsed._chatgptModelFamily).contextWindow,
+    (resolveChatGptWebMessageTokenBudget(multipartBackend, mode.effort, capabilities)
+      + CHATGPT_WEB_PLATFORM_RESERVE_TOKENS + 1) * multipartParts,
   );
+  const exceedsCompactionBudget = (): boolean => compiled.multipart
+    ? estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId) >= multipartTokenBudget!
+    : chatGptPromptJsonBytes(compiled.text) > CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET;
 
   // A cumulative checkpoint may be the only remaining account of earlier work. Preserve the
   // newest one and the final compaction instruction; trim other history in its original order.
@@ -774,6 +786,12 @@ export function compileChatGptWebPrompt(
   }
   const encodedBytes = chatGptPromptJsonBytes(compiled.text);
   if (exceedsCompactionBudget()) {
+    if (compiled.multipart) {
+      throw new ChatGptWebAdapterError(
+        "ChatGPT Web compaction cannot retain the cumulative checkpoint and final compaction instruction within the multipart transaction budget; preserved history was not replaced",
+        { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
+      );
+    }
     throw new Error(
       `ChatGPT Web compaction prompt still requires ${encodedBytes.toLocaleString("en-US")} JSON bytes after other history was trimmed; ${checkpointIndex >= 0 ? "the cumulative checkpoint and final compaction instruction exceed" : "the final compaction instruction alone exceeds"} the browser compaction budget`,
     );
