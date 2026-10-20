@@ -1376,6 +1376,9 @@ class RuntimeHost {
       "--acknowledge-unofficial",
       "--restart-service",
     ];
+    if (interactionMode === "automatic" && existing.config?.autoApproveToolCalls === true) {
+      args.push("--auto-approve-tool-calls");
+    }
     args.push("--preserve-disconnected-route");
     const result = await this.runSetup("runtime-upgrade", args, {
       message: tunnelProfileMigrationRequired

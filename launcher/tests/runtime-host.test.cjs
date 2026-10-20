@@ -423,6 +423,25 @@ test("launcher update transaction upgrades its owned full runtime with saved con
   });
 });
 
+test("managed upgrades preserve automatic tool approval opt-in without enabling it by default", async () => {
+  for (const mode of ["full", "browser-only"]) {
+    for (const autoApproveToolCalls of [true, false, undefined]) {
+      const fixture = hostFor({ mode, browserHost: "launcher", appName: "Codex Native2",
+        releaseVersion: "1.1.1", autoApproveToolCalls });
+      assert.equal((await fixture.host.upgradeManagedRuntime()).updated, true);
+      const { args } = fixture.invocation();
+      assert.equal(args.includes("--auto-approve-tool-calls"), autoApproveToolCalls === true);
+      assert.equal(args.includes("--refresh-account-capabilities"), false);
+      assert.equal(args.includes("--preserve-disconnected-route"), true);
+    }
+  }
+  const manual = hostFor({ mode: "full", browserHost: "launcher", appName: "Codex Zero Risk",
+    browserInteractionMode: "manual", releaseVersion: "1.1.1", autoApproveToolCalls: true });
+  assert.equal((await manual.host.upgradeManagedRuntime()).updated, true);
+  assert.equal(manual.invocation().args.includes("--auto-approve-tool-calls"), false);
+  assert.equal(manual.invocation().args.includes("--zero-risk-browser-interaction"), true);
+});
+
 test("a failed version upgrade preserves setup inputs without starting an incompatible old runtime", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-upgrade-failure-"));
   const configPath = path.join(root, "config.json");
