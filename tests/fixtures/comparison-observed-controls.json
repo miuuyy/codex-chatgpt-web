@@ -1,0 +1,23 @@
+{
+  "captureDate": "2026-10-20",
+  "provenance": "Reduced observed DOM control attributes from a retained failed-stage inspection; private response content and conversation identifiers removed.",
+  "limitation": "Original ancestor DOM and event behavior were not retained; test wrappers and handlers are explicitly synthetic, not a captured DOM snapshot.",
+  "buttons": [
+    {
+      "name": null,
+      "text": "Option 1"
+    },
+    {
+      "name": null,
+      "text": "Option 2"
+    },
+    {
+      "name": null,
+      "text": "I prefer this option"
+    },
+    {
+      "name": null,
+      "text": "Skip"
+    }
+  ]
+}

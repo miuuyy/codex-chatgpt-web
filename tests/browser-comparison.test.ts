@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { chromium } from "playwright-core";
 import { skipBoundChatGptComparison } from "../src/adapters/chatgpt-web/browser-worker";
 
@@ -6,6 +7,11 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("comparison skip is scoped, d
   const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
   try {
     const page = await browser.newPage();
+    const observed = JSON.parse(readFileSync(new URL("./fixtures/comparison-observed-controls.json", import.meta.url), "utf8"));
+    expect(observed.buttons.map((button: { text: string }) => button.text)).toEqual([
+      "Option 1", "Option 2", "I prefer this option", "Skip",
+    ]);
+    // Controls are observed; wrappers and event handlers below are synthetic scope tests.
     await page.setContent(`<div id="other"><button>Option 1</button><button>Option 2</button><button>Skip</button></div>
       <div id="bound"><div data-markdown-text-style="assistant-message">EXACT_ACK</div>
         <button>Option 1</button><button>Option 2</button><button id="rate">I prefer this option</button>
