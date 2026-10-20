@@ -176,10 +176,13 @@ export function withoutRetiredTurnHandles(contextJson: string): string {
 export function inertMultipartContextJson(contextJson: string): string {
   // A stock 6.1.12 user bubble replaced literal ::directives with internal
   // placeholders and @scope/path with file chips, including inside a JSON fence.
-  // Escape only string contents; structural colons and decoded data stay intact.
+  // The same renderer also adds Markdown escapes before literal quotes, angle
+  // brackets, asterisks and underscores. Encode those delimiters rather than
+  // relaxing the exact submitted-text comparison. Structural JSON stays intact.
   return withoutRetiredTurnHandles(contextJson)
-    .replace(/"(?:[^"\\]|\\.)*"/g, token => token.replace(/[:@]/g,
-      character => character === ":" ? "\\u003a" : "\\u0040"));
+    .replace(/"(?:[^"\\]|\\.)*"/g, token => token.replace(/\\(["\\])|[:@<*>_]/g,
+      (character, escaped: string | undefined) =>
+        `\\u${(escaped ?? character).charCodeAt(0).toString(16).padStart(4, "0")}`));
 }
 
 /** ChatGPT accepts at most this many attachments on one message. */

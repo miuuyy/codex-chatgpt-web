@@ -24,12 +24,17 @@ test("serialized history does not invoke directive or file-mention rendering", (
 test("encoding transport syntax preserves escaped quotes, backslashes and keys", () => {
   const original = {
     "colon:key": ["::code-comment{body=\"quoted\\\\value\"}", "a@b", "\\u0040", "\\u003a"],
-    nested: { text: "real\nnewline\tand unicode λ", truth: true, nil: null },
+    nested: { text: "real\nnewline\tand unicode λ <field> *_literal_*", truth: true, nil: null },
   };
   const encoded = inertMultipartContextJson(JSON.stringify(original));
   expect(JSON.parse(encoded)).toEqual(original);
   expect(encoded).toContain("\\u003a\\u003acode-comment");
   expect(encoded).toContain("a\\u0040b");
+  expect(encoded).not.toContain('\\"');
+  expect(encoded).toContain("\\u0022");
+  expect(encoded).toContain("\\u005c");
+  expect(encoded).not.toContain("<field>");
+  expect(encoded).not.toContain("*_literal_*");
 });
 
 test("actual multipart partitioning emits the encoded representation without losing records", () => {
