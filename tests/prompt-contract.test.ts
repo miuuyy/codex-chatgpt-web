@@ -738,3 +738,21 @@ test("multipart compaction fits encoded transaction while preserving checkpoint 
   expect(compiled.multipart!.commit).not.toContain("The task context is complete.");
   expect(compact).toEqual(original);
 }, 30000);
+
+test("multipart compaction never discards its only checkpoint or final instruction to claim a fit", () => {
+  const compact = request("high");
+  compact._chatgptModelFamily = "6";
+  compact._compactionRequest = true;
+  compact.context.systemPrompt = [];
+  compact.context.messages = [
+    { role: "user", content: `${SUMMARY_PREFIX}\n${"<_*".repeat(8000)}`, timestamp: 1 },
+    { role: "assistant", content: [{ type: "text", text: "discardable older output" }], timestamp: 2 },
+    { role: "user", content: `final-compaction-instruction ${"<_*".repeat(8000)}`, timestamp: 3 },
+  ];
+  const original = structuredClone(compact);
+  expect(() => compileChatGptWebPrompt(compact,
+    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: false },
+    undefined, { experimentalMultipartParts: CHATGPT_BIGGER_CONTEXT_PARTS },
+  )).toThrow("cannot retain the cumulative checkpoint and final compaction instruction");
+  expect(compact).toEqual(original);
+}, 30000);
