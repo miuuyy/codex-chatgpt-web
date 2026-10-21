@@ -1684,16 +1684,29 @@ export class ChatGptCompletionTracker {
 /** Dismiss only the optional response-comparison survey in the bound turn.
  * This does not select/rate an answer or prove completion; callers reobserve all
  * ordinary ownership, generation, terminal-error and exact-ACK checks afterward.
+ * Keep attempt state for the owned turn, including DOM/page rebinding. A click
+ * alone is not progress, and a no-op must not repeatedly renew health deadlines.
  */
-export async function skipBoundChatGptComparison(turn: Locator): Promise<boolean> {
+export async function skipBoundChatGptComparison(
+  turn: Locator,
+  attempt: { attempted: boolean },
+): Promise<boolean> {
+  if (attempt.attempted) return false;
   if (await turn.count() !== 1) return false;
   const first = turn.getByRole("button", { name: "Option 1", exact: true });
   const second = turn.getByRole("button", { name: "Option 2", exact: true });
   const skip = turn.getByRole("button", { name: "Skip", exact: true });
   if (await first.count() !== 1 || await second.count() !== 1 || await skip.count() !== 1) return false;
   if (!await first.isVisible() || !await second.isVisible() || !await skip.isVisible()) return false;
+  if (attempt.attempted) return false;
+  attempt.attempted = true;
   await skip.click({ timeout: 2000 });
-  return true;
+  try {
+    await Promise.all([first, second, skip].map(control => control.waitFor({ state: "hidden", timeout: 2000 })));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export class ChatGptTurnDomHealthTracker {
@@ -4064,6 +4077,7 @@ export class ChatGptBrowserWorker {
       CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS,
     );
     const responseDomCache: ChatGptResponseDomCache = {};
+    const comparisonDismissal = { attempted: false };
     let responseTurn = initialResponseTurn;
     for (;;) {
       if (page.isClosed()) throw chatGptBrowserTabClosedError();
@@ -4120,6 +4134,7 @@ export class ChatGptBrowserWorker {
       const running = await chatGptStopButton(page).isVisible().catch(() => false);
       if (!running && !snapshot.completionActionVisible && await skipBoundChatGptComparison(
         page.locator(chatGptTurnContainerSelector(responseTurn.identity)),
+        comparisonDismissal,
       )) {
         responseDomCache.key = undefined;
         responseDomCache.snapshot = undefined;
@@ -5808,6 +5823,7 @@ export class ChatGptBrowserWorker {
       };
       const domHealthTracker = new ChatGptTurnDomHealthTracker();
       const responseDomCache: ChatGptResponseDomCache = {};
+      const comparisonDismissal = { attempted: false };
       let consecutiveObservationRebinds = 0;
       let internalObservationFaults = 0;
       let observedThisIteration = false;
@@ -5935,6 +5951,7 @@ export class ChatGptBrowserWorker {
         const running = await stop.isVisible().catch(() => false);
         if (!running && !snapshot.completionActionVisible && await skipBoundChatGptComparison(
           page.locator(chatGptTurnContainerSelector(responseTurn.identity)),
+          comparisonDismissal,
         )) {
           responseDomCache.key = undefined;
           responseDomCache.snapshot = undefined;
