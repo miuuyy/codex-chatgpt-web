@@ -1,4 +1,4 @@
-const fs = require("node:fs");
+const { readJsonFile } = require("./json-file.cjs");
 const { writePrivateFileAtomic } = require("./atomic-file.cjs");
 
 const DEFAULT_WINDOW_STATE = Object.freeze({
@@ -67,7 +67,7 @@ function normalizeWindowState(value, displays = []) {
 
 function readWindowState(filePath, displays = []) {
   try {
-    return normalizeWindowState(JSON.parse(fs.readFileSync(filePath, "utf8")), displays);
+    return normalizeWindowState(readJsonFile(filePath), displays);
   } catch {
     return normalizeWindowState(null, displays);
   }

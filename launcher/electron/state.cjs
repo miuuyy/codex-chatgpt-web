@@ -1,5 +1,5 @@
 const languages = require("./languages.json");
-const fs = require("node:fs");
+const { readJsonFile } = require("./json-file.cjs");
 const { writePrivateFileAtomic } = require("./atomic-file.cjs");
 const SIDEBAR_MIN_WIDTH = 240;
 const SIDEBAR_MAX_WIDTH = 420;
@@ -37,7 +37,7 @@ function nextSessionRefreshReminderAt(now = Date.now()) {
 
 function readState(filePath) {
   try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    const parsed = readJsonFile(filePath);
     if (!parsed || parsed.version !== 1) return { ...DEFAULT_STATE };
     const state = { ...DEFAULT_STATE, ...parsed };
     delete state.bridgeEnabled;
