@@ -388,7 +388,7 @@ for (const format of ["v1", "v2"] as const) test(`${format} native continuation 
   expect(starts).toBe(2);
 });
 
-for (const format of ["v1", "v2"] as const) test(`${format} goal compaction authorizes the human instruction past a standalone AGENTS preamble`, async () => {
+for (const format of ["v1", "v2"] as const) test(`${format} goal compaction preserves the current goal past a standalone AGENTS preamble`, async () => {
   const config = defaultConfig("full");
   const metadata = { thread_id: `thread_goal_compaction_${format}`, turn_id: "turn_goal_continuation" };
   const source = { type: "message", role: "user", id: "msg_human",
@@ -420,7 +420,7 @@ for (const format of ["v1", "v2"] as const) test(`${format} goal compaction auth
   const response = await responseRequest(new Request("http://127.0.0.1/v1/responses", {
     method: "POST", body: JSON.stringify({ ...original, input: installed }),
   }), config, () => ({ name: "native-goal-continuation", async runTurn(parsed, _incoming, emit) {
-    expect(extractChatGptTurnUserRevision(parsed)).toEqual(source.content);
+    expect(extractChatGptTurnUserRevision(parsed)).toEqual(goal.content);
     emit({ type: "text_delta", text: "Goal continued" });
     emit({ type: "done", stopReason: "stop", endTurn: true });
   } }));

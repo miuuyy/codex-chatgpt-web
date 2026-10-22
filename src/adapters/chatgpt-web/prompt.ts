@@ -11,6 +11,8 @@ import {
   supportsChatGptWebBiggerContext,
 } from "../../chatgpt-web-models";
 import { ChatGptWebAdapterError } from "./adapter-error";
+import { restoreCompactionTaskMessages } from "./compaction-continuation";
+import { chatGptTurnUserRevisionHistory, extractChatGptTurnIdentity } from "./environment";
 import { estimateTokens } from "../../lib/token-estimate";
 import type { CodexAssistantContentPart, CodexContentPart, CodexMessage, CodexParsedRequest } from "../../types";
 import { isOnePixelPngDataUrl, isReadableCompactionSummaryText } from "../../responses/compaction";
@@ -739,7 +741,9 @@ export function compileChatGptWebPrompt(
     return { text, images, ...attachments };
   };
 
-  let sourceMessages = withoutSupersededModelSwitchContracts(parsed.context.messages);
+  let sourceMessages = withoutSupersededModelSwitchContracts(restoreCompactionTaskMessages(
+    parsed, extractChatGptTurnIdentity(parsed), chatGptTurnUserRevisionHistory(parsed),
+  ));
   const initialMessageCount = sourceMessages.length;
   let compiled = build(sourceMessages);
   if (!parsed._compactionRequest) return compiled;
