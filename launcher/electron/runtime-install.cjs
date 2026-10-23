@@ -1,4 +1,5 @@
 const { createHash } = require("node:crypto");
+const childProcess = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const { renameAtomicFile } = require("./atomic-file.cjs");
@@ -7,6 +8,7 @@ const { runtimeBundlePaths } = require("./runtime-command.cjs");
 const DEFAULT_SOURCE_WAIT_TIMEOUT_MS = 30_000;
 const DEFAULT_SOURCE_WAIT_INTERVAL_MS = 50;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+class RuntimeSourceVerifierError extends Error {}
 
 function comparePaths(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
@@ -118,7 +120,7 @@ function runtimeFilePaths(runtimeRoot) {
   return paths.sort(comparePaths);
 }
 
-function validateRuntimeFile(runtimeRoot, canonicalRoot, file) {
+function runtimeFileToValidate(runtimeRoot, canonicalRoot, file) {
   const absolutePath = path.join(runtimeRoot, ...file.path.split("/"));
   let metadata;
   try {
@@ -136,13 +138,17 @@ function validateRuntimeFile(runtimeRoot, canonicalRoot, file) {
   if (metadata.size !== file.size) {
     throw new Error(`Runtime bundle file size mismatch: ${absolutePath}`);
   }
-  const sha256 = createHash("sha256").update(fs.readFileSync(absolutePath)).digest("hex");
+  return absolutePath;
+}
+
+function validateRuntimeChecksum(content, file, absolutePath) {
+  const sha256 = createHash("sha256").update(content).digest("hex");
   if (sha256 !== file.sha256) {
     throw new Error(`Runtime bundle file checksum mismatch: ${absolutePath}`);
   }
 }
 
-function inspectRuntimeBundle(runtimeRoot, identity) {
+function inspectRuntimeLayout(runtimeRoot, identity) {
   const manifest = readRuntimeManifest(runtimeRoot, identity);
   const expectedPaths = manifest.files.map(file => file.path);
   const expectedSet = new Set(expectedPaths);
@@ -172,11 +178,53 @@ function inspectRuntimeBundle(runtimeRoot, identity) {
   }
 
   const canonicalRoot = fs.realpathSync(runtimeRoot);
-  for (const file of manifest.files) validateRuntimeFile(runtimeRoot, canonicalRoot, file);
   if (identity.platform !== "win32" && (fs.statSync(paths.executable).mode & 0o111) === 0) {
     throw new Error(`Bundled Bun runtime is not executable: ${paths.executable}`);
   }
-  return { manifest, runtimeRoot: paths.runtimeRoot };
+  return { manifest, runtimeRoot: paths.runtimeRoot, canonicalRoot };
+}
+
+function inspectRuntimeBundle(runtimeRoot, identity) {
+  const bundle = inspectRuntimeLayout(runtimeRoot, identity);
+  for (const file of bundle.manifest.files) {
+    const absolutePath = runtimeFileToValidate(runtimeRoot, bundle.canonicalRoot, file);
+    validateRuntimeChecksum(fs.readFileSync(absolutePath), file, absolutePath);
+  }
+  return bundle;
+}
+
+function inspectRuntimeSource(runtimeRoot, identity, deadline) {
+  const bundle = inspectRuntimeLayout(runtimeRoot, identity);
+  const files = bundle.manifest.files.map(file => ({
+    ...file, absolutePath: runtimeFileToValidate(runtimeRoot, bundle.canonicalRoot, file),
+  }));
+  // Keep Electron ready behind verification while an owned Node child overlaps cold file reads.
+  const result = childProcess.spawnSync(process.execPath, ["-e", `
+    const fs = require("node:fs");
+    const { createHash } = require("node:crypto");
+    ${validateRuntimeChecksum.toString()}
+    (async () => {
+      const files = JSON.parse(fs.readFileSync(0, "utf8")).values();
+      const results = await Promise.allSettled(Array.from({ length: 8 }, async () => {
+        for (const file of files) {
+          const content = await fs.promises.readFile(file.absolutePath);
+          validateRuntimeChecksum(content, file, file.absolutePath);
+        }
+      }));
+      const failed = results.find(result => result.status === "rejected");
+      if (failed) { process.stderr.write(failed.reason.message); process.exitCode = 2; }
+      else process.stdout.write("RUNTIME_SOURCE_VERIFIED");
+    })().catch(error => { process.stderr.write(error.message); process.exitCode = 1; });
+  `], {
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", UV_THREADPOOL_SIZE: "8" },
+    input: JSON.stringify(files), encoding: "utf8", windowsHide: true,
+    timeout: Math.max(1, deadline - Date.now()), maxBuffer: 64 * 1024,
+  });
+  if (result.error) throw new RuntimeSourceVerifierError(result.error.message, { cause: result.error });
+  if (result.status === 2) throw new Error(String(result.stderr || "Runtime source is not ready").slice(0, 4096));
+  if (result.status !== 0) throw new RuntimeSourceVerifierError(String(result.stderr || "Runtime source verification failed").slice(0, 4096));
+  if (result.stdout !== "RUNTIME_SOURCE_VERIFIED") throw new RuntimeSourceVerifierError("Runtime source verification did not confirm success");
+  return bundle.runtimeRoot;
 }
 
 function validateRuntimeBundle(runtimeRoot, identity) {
@@ -203,8 +251,12 @@ async function waitForPackagedRuntimeSource({
   let lastError;
   for (;;) {
     try {
-      return validateRuntimeBundle(source, identity);
+      return inspectRuntimeSource(source, identity, deadline);
     } catch (error) {
+      if (error instanceof RuntimeSourceVerifierError) {
+        if (lastError) throw new RuntimeSourceVerifierError(`${lastError.message}; ${error.message}`, { cause: error });
+        throw error;
+      }
       lastError = error;
     }
     const remaining = deadline - Date.now();

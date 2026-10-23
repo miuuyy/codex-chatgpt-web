@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createHash } = require("node:crypto");
+const childProcess = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -259,6 +260,107 @@ test("packaged runtime source wait fails closed when materialization exceeds its
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+for (const corrupt of [false, true]) {
+  test(`source checksums use bounded child I/O and settle all reads (corrupt=${corrupt})`, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-source-io-"));
+    const resourcesPath = runtimeFixture(root);
+    const source = path.join(resourcesPath, "runtime");
+    for (let index = 0; index < 16; index++) fs.writeFileSync(path.join(source, `extra-${index}`), "data");
+    writeRuntimeManifest(source);
+    if (corrupt) fs.writeFileSync(path.join(source, "app", "cli.js"), "bad");
+    const audit = path.join(root, "reads.json");
+    const originalSpawn = childProcess.spawnSync;
+    const originalRead = fs.readFileSync;
+    let launches = 0;
+    childProcess.spawnSync = (executable, args, options) => {
+      launches++;
+      assert.equal(executable, process.execPath);
+      assert.equal(options.env.ELECTRON_RUN_AS_NODE, "1");
+      assert.equal(options.env.UV_THREADPOOL_SIZE, "8");
+      assert(options.timeout > 0 && options.timeout <= 2000);
+      const instrumentation = `
+        const io = require("node:fs"), read = io.promises.readFile;
+        let active = 0, maximum = 0, settled = 0;
+        io.promises.readFile = async (...args) => {
+          active++; maximum = Math.max(maximum, active);
+          try { await new Promise(resolve => setTimeout(resolve, 5)); return await read(...args); }
+          finally { active--; settled++; }
+        };
+        process.on("exit", () => io.writeFileSync(${JSON.stringify(audit)}, JSON.stringify({active, maximum, settled})));
+      `;
+      return originalSpawn(executable, [args[0], instrumentation + args[1]], options);
+    };
+    fs.readFileSync = (file, ...args) => {
+      if (typeof file === "string" && file.startsWith(source + path.sep) && file !== path.join(source, "manifest.json")) {
+        throw new Error("Source payload reads must not block the Electron parent individually");
+      }
+      return originalRead(file, ...args);
+    };
+    try {
+      const waiting = waitForPackagedRuntimeSource({
+        app: { isPackaged: true, getVersion: () => "0.2.0" }, resourcesPath,
+        timeoutMs: 2000, intervalMs: 10,
+      });
+      if (corrupt) await assert.rejects(waiting, /checksum mismatch/);
+      else assert.equal(await waiting, source);
+      const reads = JSON.parse(originalRead(audit, "utf8"));
+      assert.equal(reads.active, 0);
+      assert.equal(reads.maximum, 8);
+      if (!corrupt) {
+        assert.equal(launches, 1);
+        assert.equal(reads.settled, JSON.parse(originalRead(path.join(source, "manifest.json"), "utf8")).files.length);
+      }
+    } finally {
+      childProcess.spawnSync = originalSpawn;
+      fs.readFileSync = originalRead;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const failure of ["timeout", "exit", "confirmation"]) {
+  test(`source verifier fails closed without retrying a fatal ${failure}`, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-source-fatal-"));
+    const resourcesPath = runtimeFixture(root);
+    const originalSpawn = childProcess.spawnSync;
+    let launches = 0;
+    childProcess.spawnSync = (executable, args, options) => {
+      launches++;
+      if (failure === "timeout") {
+        const result = originalSpawn(executable, ["-e", "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10000)"], options);
+        assert.equal(result.error?.code, "ETIMEDOUT");
+        assert.throws(() => process.kill(result.pid, 0), /ESRCH/);
+        return result;
+      }
+      return { status: failure === "exit" ? 1 : 0, stderr: "", stdout: "" };
+    };
+    try {
+      await assert.rejects(waitForPackagedRuntimeSource({
+        app: { isPackaged: true, getVersion: () => "0.2.0" }, resourcesPath, timeoutMs: 100,
+      }), failure === "timeout" ? /ETIMEDOUT/ : failure === "exit" ? /verification failed/ : /did not confirm success/);
+      assert.equal(launches, 1);
+    } finally {
+      childProcess.spawnSync = originalSpawn;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("source verification rejects a symlink that escapes its bundle", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-source-link-"));
+  const resourcesPath = runtimeFixture(root);
+  const entrypoint = path.join(resourcesPath, "runtime", "app", "cli.js");
+  try {
+    const outside = path.join(root, "outside.js");
+    fs.writeFileSync(outside, "cli");
+    fs.unlinkSync(entrypoint);
+    fs.symlinkSync(outside, entrypoint);
+    await assert.rejects(waitForPackagedRuntimeSource({
+      app: { isPackaged: true, getVersion: () => "0.2.0" }, resourcesPath, timeoutMs: 20, intervalMs: 5,
+    }), /symlink escapes/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test("packaged runtime transactionally repairs an incomplete installed bundle", () => {
