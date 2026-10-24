@@ -9,11 +9,30 @@ const html=`<form><div id="prompt-textarea" contenteditable="true">original mess
 <script>window.sends=0;document.querySelector('input').onchange=()=>{const card=document.createElement('div');card.role='group';card.setAttribute('aria-label','codex-input-image-1.png');card.textContent='photo';document.querySelector('form').append(card);window.job=fetch('/backend-api/files/process_upload_stream',{method:'POST',body:JSON.stringify({file_name:'codex-input-image-1.png',file_id:'owned-file'})}).then(r=>r.text()).catch(()=>{});};</script>`;
 
 async function fixture(run:(browser:Browser,base:string)=>Promise<void>,handler:(request:Request)=>Response|Promise<Response>,document=html){
- const server=Bun.serve({hostname:'127.0.0.1',port:0,fetch:r=>new URL(r.url).pathname==='/'?new Response(document,{headers:{'content-type':'text/html'}}):new URL(r.url).pathname==='/favicon.ico'?new Response(''):handler(r)});
+ const server=Bun.serve({hostname:'127.0.0.1',port:0,fetch:r=>new URL(r.url).pathname==='/'?new Response(document,{headers:{'content-type':'text/html; charset=utf-8'}}):new URL(r.url).pathname==='/favicon.ico'?new Response(''):handler(r)});
  const browser=await chromium.launch({executablePath:executable,headless:true});
  try{await run(browser,`http://127.0.0.1:${server.port}`);}finally{await browser.close();server.stop(true);}
 }
 const prompt={text:'original message',images:[{ref:'codex-input-image-1',imageUrl:'data:image/png;base64,'+Buffer.from('test').toString('base64')}]};
+
+for (const [notice, delayed] of [
+ ['Достигнут лимит прикрепления файлов. Попробуйте снова 24 окт., 16:04', false],
+ ["You've reached your file upload limit. Try again at 16:04.", true],
+] as const) test.skipIf(!executable)(`a ${delayed?'new':'pre-existing'} visible upload-limit status fails promptly without a network request`,async()=>{
+ let requests=0;
+ const document=html.replace(/<script>[\s\S]*<\/script>/,`<script>window.sends=0;document.querySelector('input').onchange=()=>{${delayed?`setTimeout(()=>{const notice=document.createElement('aside');notice.role='status';notice.textContent=${JSON.stringify(notice)};document.body.append(notice);},100);`:''}};</script>`)
+  +(delayed?'':`<aside role="status">${notice}</aside>`);
+ await fixture(async(browser,base)=>{
+  const page=await browser.newPage();await page.goto(base);
+  const worker=Object.create(ChatGptBrowserWorker.prototype) as any;
+  const error=await worker.attachFiles(page,prompt,AbortSignal.timeout(2000)).then(()=>undefined,(e:unknown)=>e);
+  expect(error).toBeInstanceOf(ChatGptWebAdapterError);
+  expect(error).toMatchObject({code:'upload_quota_exceeded',status:429,retryable:false});
+  expect(error.message).toContain(notice);
+  expect(requests).toBe(0);expect(await page.evaluate(()=> (window as any).sends)).toBe(0);
+  expect(await page.locator('#prompt-textarea').textContent()).toBe('original message');
+ },()=>{requests++;return new Response('{}');},document);
+},10000);
 
 test.skipIf(!executable)('saved-chat uploads use the active composer while the hidden home composer remains mounted',async()=>{
  let uploads=0;
@@ -23,6 +42,8 @@ test.skipIf(!executable)('saved-chat uploads use the active composer while the h
    const hidden=document.createElement('form');hidden.hidden=true;hidden.dataset.chatgptComposer='';hidden.dataset.composerPlacement='home';
    hidden.innerHTML='<div contenteditable="true" id="prompt-textarea">hidden draft</div><input data-testid="upload-photos-input" type="file" multiple>';
    document.body.append(hidden);
+   const notice=document.createElement('aside');notice.role='status';notice.hidden=true;
+   notice.textContent='File upload limit reached';document.body.append(notice);
   });
   const worker=Object.create(ChatGptBrowserWorker.prototype) as any;
   await worker.attachFiles(page,prompt,AbortSignal.timeout(3000));

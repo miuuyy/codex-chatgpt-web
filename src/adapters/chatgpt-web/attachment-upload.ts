@@ -19,6 +19,7 @@ export async function observeChatGptAttachmentUploads(page: Page, names: string[
   let resolve!: () => void;
   let reject!: (error: Error) => void;
   const ready = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+  let uiWatch: Promise<void> | undefined;
   // Uploads can fail before the caller finishes waiting for the attachment cards.
   void ready.catch(() => {});
   const fail = (message: string, status = 502) => {
@@ -26,7 +27,7 @@ export async function observeChatGptAttachmentUploads(page: Page, names: string[
     const limited = status === 429;
     failure = new ChatGptWebAdapterError(
       limited
-        ? "ChatGPT has reached its file-upload limit. Wait until the limit shown in ChatGPT clears before retrying. The original prompt and attachments were preserved."
+        ? `ChatGPT has reached its file-upload limit: ${message}. Wait until the limit shown in ChatGPT clears before retrying. The original prompt and attachments were preserved.`
         : `ChatGPT attachment upload failed before the prompt was sent: ${message}. The original prompt and attachments were preserved.`,
       { status, errorType: limited ? "rate_limit_error" : "server_error",
         code: limited ? "upload_quota_exceeded" : "chatgpt_attachment_upload_failed", retryable: false },
@@ -130,9 +131,25 @@ export async function observeChatGptAttachmentUploads(page: Page, names: string[
   const dispose = async () => {
     disposed = true;
     session.off("event", onEvent);
+    await uiWatch;
     await session.detach().catch(() => {});
   };
-  try { await session.send("Network.enable"); } catch (error) { await dispose(); throw error; }
+  const checkUploadLimit = async () => {
+    // ChatGPT can reject attachments locally before emitting any /files request.
+    const notices = await page.locator('[role="alert"]:visible, [role="status"]:visible').allInnerTexts().catch(() => []);
+    const limit = notices.find(text => /(?:file[- ]?upload|attachment) limit|лимит (?:прикрепления|загрузки) файлов/i.test(text));
+    if (limit) fail(limit.replace(/\s+/g, " ").trim(), 429);
+  };
+  try {
+    await session.send("Network.enable");
+    await checkUploadLimit();
+  } catch (error) { await dispose(); throw error; }
+  uiWatch = (async () => {
+    while (!disposed && !failure && completed.size < expected.size) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      if (!disposed) await checkUploadLimit();
+    }
+  })();
   return {
     throwIfFailed: () => { if (failure) throw failure; },
     wait: (signal?: AbortSignal) => new Promise<void>((yes, no) => {

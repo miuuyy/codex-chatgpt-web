@@ -2504,7 +2504,7 @@ test("image attachment readiness uses exact file tiles and not localized remove-
         : method === "Network.streamResourceContent" ? { bufferedData: Buffer.from(JSON.stringify({ event: "file.processing.completed" }) + "\n").toString("base64") } : {},
     }) }),
     locator: (selector: string) => {
-      if (selector === '[role="alert"]') {
+      if (selector === '[role="alert"]' || selector === '[role="alert"]:visible, [role="status"]:visible') {
         return { allInnerTexts: async () => [] };
       }
       return { last: () => composer };

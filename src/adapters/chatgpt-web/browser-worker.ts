@@ -4406,6 +4406,7 @@ export class ChatGptBrowserWorker {
     await input.waitFor({ state: "attached", timeout: 20_000 });
     const uploads = await observeChatGptAttachmentUploads(page, files.map(file => file.name));
     try {
+      uploads.throwIfFailed();
       await withBrowserTurnAbort(input.setInputFiles(files), abortSignal);
       try {
         await withBrowserTurnAbort(Promise.all([uploads.wait(abortSignal), ...files.map(file => (
