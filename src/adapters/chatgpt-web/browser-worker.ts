@@ -3046,7 +3046,23 @@ export class ChatGptBrowserWorker {
         // Activity can replace its temporary group while still generating; requiring
         // a completed answer here mistakes that same unfinished turn for a foreign one.
       }
-      if (!matches) throw new Error("ChatGPT opened another user turn while the bound assistant response was detached");
+      if (!matches) {
+        // Booleans and counts distinguish renderer rekeys from actual ownership
+        // conflicts without recording message text, IDs, or capability tokens.
+        console.warn("[chatgpt-web] response_binding_rejected " + JSON.stringify({
+          newUsers: newUsers.length,
+          replacementCandidate: Boolean(replacement),
+          acceptedUserKnown: Boolean(baseline.acceptedUserIdentity),
+          acceptedUserMatches: baseline.acceptedUserIdentity === user,
+          boundGroup: binding.identity.startsWith("group:assistant:"),
+          boundStillMounted: state.turnIdentities.includes(binding.identity),
+          newAssistantKnown: Boolean(identity),
+          unrelatedTurns: state.turnIdentities.filter(turn => !acceptedTurns.has(turn) && turn !== user && turn !== identity).length,
+          brokerProofAvailable: Boolean(baseline.turnToken),
+          compactionProofAvailable: Boolean(baseline.compactionSubmissionId),
+        }));
+        throw new Error("ChatGPT opened another user turn while the bound assistant response was detached");
+      }
       // Expanding a truncated bubble can yield to another DOM update. Keep the
       // no-competing-turn check valid after that action, not just before it.
       const current = await this.submissionDomState(page, baseline.domCache, signal);
