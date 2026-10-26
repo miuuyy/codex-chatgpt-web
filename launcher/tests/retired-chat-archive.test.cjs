@@ -98,6 +98,10 @@ test("archive UI uses only the owned header and verifies persistence after reloa
         const stopControl = document.createElement("button");
         stopControl.dataset.testid = "stop-button"; stopControl.textContent = "Stop";
         document.querySelector("main").append(stopControl);
+        setTimeout(() => {
+          const user = document.createElement("article"); user.dataset.messageAuthorRole = "user";
+          user.textContent = "existing saved user turn"; document.querySelector("main").append(user);
+        }, 80);
         setTimeout(() => stopControl.remove(), 150);
         setTimeout(() => {
           const header = document.createElement("header");
@@ -125,6 +129,7 @@ test("archive UI uses only the owned header and verifies persistence after reloa
           + ")(" + JSON.stringify({ archived, persist }) + ");</script>" });
       });
       await page.goto(URL);
+      await page.waitForSelector('[data-message-author-role="user"]');
       await page.evaluate(() => { globalThis.__CODEX_WEB_GPT_SURFACE_ID__ = "surface"; });
       const contents = Object.assign(new EventEmitter(), { isDestroyed: () => false, isCrashed: () => false,
         getURL: () => reportedUrl || page.url(), executeJavaScript: async script => {

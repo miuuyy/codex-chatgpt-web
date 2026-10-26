@@ -54,7 +54,7 @@ async function archiveChatUi({ url, surfaceId, verifyOnly, settleTimeoutMs = 300
   if (!trigger) throw new Error("archive_controls_unavailable");
   const quiet = await waitFor(() => {
     if (!ownsDocument()) throw new Error("archive_document_changed_while_settling");
-    if (document.querySelectorAll('[data-message-author-role="user"]').length !== userCount) throw new Error("archive_user_turn_changed");
+    if (!verifyOnly && document.querySelectorAll('[data-message-author-role="user"]').length !== userCount) throw new Error("archive_user_turn_changed");
     return ![...document.querySelectorAll(stopSelector)].some(visible);
   }, settleTimeoutMs);
   if (!quiet) return { status: "skipped", code: "archive_generation_active" };
@@ -68,7 +68,7 @@ async function archiveChatUi({ url, surfaceId, verifyOnly, settleTimeoutMs = 300
   if (choice.textContent.trim() === "Unarchive") return { status: "archived" };
   if (verifyOnly) throw new Error("archive_not_persisted");
   if ([...document.querySelectorAll(stopSelector)].some(visible)) return { status: "skipped", code: "archive_generation_active" };
-  if (document.querySelectorAll('[data-message-author-role="user"]').length !== userCount) throw new Error("archive_user_turn_changed");
+  if (!verifyOnly && document.querySelectorAll('[data-message-author-role="user"]').length !== userCount) throw new Error("archive_user_turn_changed");
   // This is the only mutation. Never choose Delete or a sidebar conversation.
   choice.click();
   // The observed interface returns to Home after the mutation is acknowledged.
