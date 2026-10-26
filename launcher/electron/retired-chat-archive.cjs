@@ -13,7 +13,7 @@ function savedChatUrl(value) {
 async function archiveChatUi({ url, surfaceId, verifyOnly }) {
   const ownsDocument = () => location.origin + location.pathname.replace(/\/$/, "") === url
     && globalThis.__CODEX_WEB_GPT_SURFACE_ID__ === surfaceId;
-  if (!ownsDocument()) throw new Error("archive_document_changed");
+  if (!ownsDocument()) throw new Error("archive_document_changed_before_header");
   const visible = node => node.getClientRects().length > 0
     && getComputedStyle(node).visibility !== "hidden"
     && !node.disabled && node.getAttribute("aria-disabled") !== "true";
@@ -42,13 +42,15 @@ async function archiveChatUi({ url, surfaceId, verifyOnly }) {
   };
   // Full navigation can complete before ChatGPT hydrates its conversation header.
   const trigger = await waitFor(() => single([...document.querySelectorAll('main [data-testid="app-shell-header-context-menu-surface"] button[aria-label="Chat actions"]')].filter(visible)), 2000);
-  if (!ownsDocument() || !trigger) throw new Error("archive_controls_unavailable");
+  if (!ownsDocument()) throw new Error("archive_document_changed_after_header");
+  if (!trigger) throw new Error("archive_controls_unavailable");
   const readChoice = () => single([...document.querySelectorAll('[role="menuitem"]')]
     .filter(visible).filter(node => ["Archive", "Unarchive"].includes(node.textContent.trim())));
   trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
   let choice = await waitFor(readChoice, 150);
   if (!choice) { trigger.click(); choice = await waitFor(readChoice, 2000); }
-  if (!ownsDocument() || !choice) throw new Error("archive_controls_unavailable");
+  if (!ownsDocument()) throw new Error("archive_document_changed_after_menu");
+  if (!choice) throw new Error("archive_controls_unavailable");
   if (choice.textContent.trim() === "Unarchive") return { status: "archived" };
   if (verifyOnly) throw new Error("archive_not_persisted");
   // This is the only mutation. Never choose Delete or a sidebar conversation.
@@ -103,9 +105,14 @@ async function archiveDocument(tab) {
   check();
   // Navigation replaces the document marker. The view remains privately owned
   // by this cleanup job and cannot be acquired by a helper or selected in the UI.
-  await runBrowserPageScript(contents, "Object.defineProperty(globalThis,'__CODEX_WEB_GPT_SURFACE_ID__',{value:"
-    + JSON.stringify(tab.surfaceId) + ",configurable:true})", 1000);
-  const verified = await runBrowserPageScript(contents, script(true), 5000);
+  // Keep ownership establishment and verification in one renderer operation.
+  // A late navigation between separate IPC calls can otherwise discard the
+  // marker after it was installed, falsely reporting a successful archive as a failure.
+  const verified = await runBrowserPageScript(contents, "(() => {"
+    + "if(location.origin+location.pathname.replace(/\\/$/,'')!==" + JSON.stringify(url)
+    + ")throw new Error('archive_document_changed_before_verification');"
+    + "Object.defineProperty(globalThis,'__CODEX_WEB_GPT_SURFACE_ID__',{value:"
+    + JSON.stringify(tab.surfaceId) + ",configurable:true});return " + script(true) + ";})()", 5000);
   if (verified?.status !== "archived") throw new Error("archive_not_verified");
 }
 

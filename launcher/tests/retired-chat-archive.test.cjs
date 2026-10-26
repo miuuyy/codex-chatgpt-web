@@ -82,9 +82,9 @@ test("archive UI uses only the owned header and verifies persistence after reloa
   const { chromium } = require("playwright-core");
   const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
   try {
-    for (const persist of [true, false]) {
+    for (const [persist, replaceVerificationDocument] of [[true, false], [false, false], [true, true]]) {
       const page = await browser.newPage();
-      let loads = 0;
+      let loads = 0, replaceAfterNextCheck = false;
       await page.route("https://chatgpt.com/**", async route => {
         const archived = (route.request().headers().cookie || "").includes("fixtureArchived=yes");
         await route.fulfill({ contentType: "text/html", body: '<main></main><script>setTimeout(()=>{document.querySelector("main").innerHTML='
@@ -96,8 +96,14 @@ test("archive UI uses only the owned header and verifies persistence after reloa
       await page.goto(URL);
       await page.evaluate(() => { globalThis.__CODEX_WEB_GPT_SURFACE_ID__ = "surface"; });
       const contents = Object.assign(new EventEmitter(), { isDestroyed: () => false, isCrashed: () => false,
-        getURL: () => page.url(), executeJavaScript: script => page.evaluate(script),
-        loadURL: async url => { loads++; assert.equal(url, URL); await page.goto(url); } });
+        getURL: () => page.url(), executeJavaScript: async script => {
+          const result = await page.evaluate(script);
+          // A late navigation can replace the document between two IPC checks.
+          // Ownership establishment and the persisted-state check must be one operation.
+          if (replaceAfterNextCheck) { replaceAfterNextCheck = false; await page.reload(); }
+          return result;
+        },
+        loadURL: async url => { loads++; assert.equal(url, URL); await page.goto(url); replaceAfterNextCheck = replaceVerificationDocument; } });
       const item = tab({ view: { webContents: contents } });
       if (persist) await archiveDocument(item);
       else await assert.rejects(archiveDocument(item), /archive_not_persisted/);
