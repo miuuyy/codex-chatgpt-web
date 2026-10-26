@@ -30,6 +30,38 @@ function scriptEvents() {
   return { on: events.on.bind(events), off: events.off.bind(events), isCrashed: () => false };
 }
 
+test("completed retained chats archive only after explicit retirement; active owners survive", async () => {
+  const { RetiredChatArchiver } = require("../electron/retired-chat-archive.cjs");
+  const { releaseRetainedConversation } = require("../electron/retained-turn-release.cjs");
+  const url = "https://chatgpt.com/c/11111111-2222-3333-4444-555555555555";
+  const archived = [];
+  function contents(value) {
+    let closed = false;
+    return { isDestroyed: () => closed, getURL: () => value, close: () => { closed = true; }, setBackgroundThrottling() {} };
+  }
+  const completed = { id: "finished", traceId: "trace123", helperPid: 101, status: "running", interactionMode: "automatic",
+    conversationKey: "a".repeat(64), surfaceId: "surface", view: { webContents: contents(url) } };
+  const active = { id: "active", traceId: "trace456", helperPid: 102, status: "running", interactionMode: "automatic",
+    view: { webContents: contents(url.replace("11111111", "99999999")) } };
+  const host = Object.assign(Object.create(BrowserHost.prototype), {
+    turnTabs: new Map([[completed.id, completed], [active.id, active]]), userCancelledTurnOwners: new Map(),
+    selectedTabId: "home", logger: { info() {}, warn() {} }, syncPowerSaveBlocker() {}, syncViewVisibility() {},
+    snapshot: () => ({}), publishState() {}, writeDescriptor() {}, window: { contentView: { removeChildView() {} } },
+  });
+  host.retiredChatArchiver = new RetiredChatArchiver({ enabled: () => true, conflicts: () => false,
+    logger: host.logger, archive: async item => archived.push(item.id) });
+  await host.endTurn(completed.traceId, completed.helperPid, "completed", false, undefined, true, true, url);
+  assert.equal(host.turnTabs.has(completed.id), true);
+  assert.deepEqual(archived, [], "a final answer alone must not archive reusable history");
+  assert.equal(releaseRetainedConversation(host, completed.conversationKey), 1);
+  assert.equal(host.turnTabs.has(completed.id), false);
+  assert.equal(host.turnTabs.has(active.id), true);
+  await host.retiredChatArchiver.tail;
+  assert.deepEqual(archived, [completed.id]);
+  assert.equal(completed.view.webContents.isDestroyed(), true);
+  assert.equal(active.view.webContents.isDestroyed(), false);
+});
+
 function primaryLoginFixture() {
   let loads = 0;
   let probes = 0;

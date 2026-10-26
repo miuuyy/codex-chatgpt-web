@@ -1014,6 +1014,8 @@ export interface BrowserTurn {
   capabilities: ChatGptWebCapabilities;
   prepare: () => Promise<CompiledChatGptWebPrompt & { release: () => void }>;
   prepareResume?: () => Promise<CompiledChatGptWebPrompt & { release: () => void }>;
+  /** Exact saved conversation observed after binding this submitted response. */
+  onConversationBound?: (url: string) => void;
   /** Select the Codex Native connector without advertising the ordinary turn tool environment. */
   nativeConnector?: boolean;
   retainConversation?: boolean;
@@ -4673,6 +4675,7 @@ export class ChatGptBrowserWorker {
     const reused = lease.reused === true;
     let terminal: "completed" | "failed" | "aborted" = "completed";
     let terminalMessage: string | undefined;
+    let conversationUrl: string | undefined;
     let originalError: unknown;
     let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
     let heartbeatInFlight = false;
@@ -4716,6 +4719,15 @@ export class ChatGptBrowserWorker {
       sendHeartbeat();
       return await this.runBrowserTurn({
         ...turn,
+        onConversationBound: url => {
+          try {
+            const saved = new URL(url);
+            if (saved.origin === 'https://chatgpt.com' && /^\/c\/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\/?$/i.test(saved.pathname)) {
+              conversationUrl = saved.origin + saved.pathname.replace(/\/$/, '');
+            }
+          } catch {}
+          turn.onConversationBound?.(url);
+        },
         onSendActivated: async () => {
           activityStage = "sending";
           sendHeartbeat();
@@ -4746,6 +4758,7 @@ export class ChatGptBrowserWorker {
           traceId: turn.traceId,
           helperPid: process.pid,
           status: terminal,
+          ...(terminal === "completed" && conversationUrl ? { conversationUrl } : {}),
           ...(terminalMessage ? { message: terminalMessage } : {}),
           ...(terminal === "completed" && turn.retainConversation ? { retain: true } : {}),
           ...(terminal === "completed" && (turn.nativeConnector || turn.capabilities.localToolsEnabled)
@@ -5367,6 +5380,7 @@ export class ChatGptBrowserWorker {
           : undefined,
         generation,
       );
+      turn.onConversationBound?.(page.url());
       await diagnostics.capture(page, "send-accepted");
 
       let lastHeartbeat = 0;

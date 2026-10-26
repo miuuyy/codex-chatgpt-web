@@ -3,7 +3,7 @@ function releaseRetainedConversation(host, conversationKey) {
     tab.status === "ready" && tab.conversationKey === conversationKey
   ));
   for (const tab of retained) {
-    host.removeTurnTab(tab, false);
+    host.removeTurnTab(tab, false, true);
     host.logger.info("browser.tab_released", {
       tabId: tab.id,
       traceId: tab.traceId,

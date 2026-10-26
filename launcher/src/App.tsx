@@ -1901,6 +1901,15 @@ function SettingsSurface({
               .catch((cause) => setError(messageOf(cause)))}
           />
         </SettingRow>
+        <SettingRow body={copy.archiveRetiredChatsBody} label={copy.archiveRetiredChats}>
+          <Switch
+            checked={snapshot.state.archiveRetiredChats}
+            disabled={snapshot.state.browserInteractionMode === "manual"}
+            onChange={(checked) => void api!.setPreference("archiveRetiredChats", checked)
+              .then(updateState)
+              .catch((cause) => setError(messageOf(cause)))}
+          />
+        </SettingRow>
         <SettingRow body={copy.showDuringTurnsBody} label={copy.showDuringTurns}>
           <Switch
             checked={snapshot.state.showBrowserDuringTurns}

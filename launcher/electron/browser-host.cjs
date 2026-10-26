@@ -13,6 +13,7 @@ const { validatePasskeyLoginState } = require("./passkey-login-state.cjs");
 const { configureChatGptAnnouncementDismissal } = require("./browser-announcements.cjs");
 const { readChatGptAuthSession } = require("./chatgpt-auth-session.cjs");
 const { runBrowserPageScript } = require("./browser-page-script.cjs");
+const { savedChatUrl, RetiredChatArchiver } = require("./retired-chat-archive.cjs");
 const {
   refreshTurnLeasesAfterSuspension,
   shouldBlockSleepForTurns,
@@ -331,6 +332,7 @@ class BrowserHost {
     showWindow = () => {},
     clipboardApi = clipboard,
     getBrowserInteractionMode = () => "automatic",
+    getArchiveRetiredChats = () => false,
   }) {
     if (typeof getConnectorName !== "function") {
       throw new Error("Browser host connector-name resolver is unavailable");
@@ -366,6 +368,14 @@ class BrowserHost {
     this.visible = false;
     this.surfaceActive = true;
     this.turnTabs = new Map();
+    this.retiredChatArchiver = new RetiredChatArchiver({
+      enabled: () => !this.destroyed && browserInteractionModeFor(this) === "automatic" && getArchiveRetiredChats() === true,
+      conflicts: url => [...this.turnTabs.values()].some(tab => {
+        const contents = tab.view?.webContents;
+        return contents && !contents.isDestroyed() && savedChatUrl(contents.getURL()) === url;
+      }),
+      logger,
+    });
     this.closedTurnOwners = new Map();
     this.userCancelledTurnOwners = new Map();
     this.manualTerminalSignals = new Map();
@@ -762,7 +772,7 @@ class BrowserHost {
       .filter(tab => tab.status === "ready")
       .sort((left, right) => (left.lastHeartbeatAt ?? 0) - (right.lastHeartbeatAt ?? 0))[0];
     if (!retained) return false;
-    this.removeTurnTab(retained, false);
+    this.removeTurnTab(retained, false, true);
     return true;
   }
 
@@ -834,6 +844,7 @@ class BrowserHost {
     contents.on("will-redirect", blockAuthenticationNavigation);
     contents.on("did-start-navigation", (_event, url, inPlace, mainFrame) => {
       if (!mainFrame) return;
+      if (tab.archiveConversationUrl && savedChatUrl(url) !== tab.archiveConversationUrl) tab.archiveOwnershipLost = true;
       tab.url = url;
       tab.loading = true;
       if (!inPlace) {
@@ -888,7 +899,10 @@ class BrowserHost {
       this.publishState?.(this.snapshot());
     });
     contents.on("did-navigate-in-page", (_event, url, mainFrame) => {
-      if (mainFrame) tab.url = url;
+      if (mainFrame) {
+        if (tab.archiveConversationUrl && savedChatUrl(url) !== tab.archiveConversationUrl) tab.archiveOwnershipLost = true;
+        tab.url = url;
+      }
       this.publishState?.(this.snapshot());
     });
     contents.on("did-fail-load", (_event, errorCode, errorDescription, url, mainFrame) => {
@@ -1628,7 +1642,7 @@ class BrowserHost {
       if (tab.status === "ready") {
         if (now - (tab.lastHeartbeatAt ?? 0) < RETAINED_TURN_TAB_TTL_MS) continue;
         this.logger.info("browser.retained_tab_expired", { tabId: tab.id, traceId: tab.traceId });
-        this.removeTurnTab(tab, false);
+        this.removeTurnTab(tab, false, true);
         continue;
       }
       if (tab.status !== "running") continue;
@@ -1812,7 +1826,7 @@ class BrowserHost {
     return this.snapshot();
   }
 
-  removeTurnTab(tab, abortRunning) {
+  removeTurnTab(tab, abortRunning, archiveCompleted = false) {
     if (this.turnTabs.get(tab.id) !== tab) return;
     this.turnTabs.delete(tab.id);
     if (tab.interactionMode === "manual") {
@@ -1835,7 +1849,10 @@ class BrowserHost {
     }
     try { this.window.contentView.removeChildView(tab.view); } catch {}
     const contents = tab.view.webContents;
-    if (contents && !contents.isDestroyed()) contents.close();
+    let archiving = false;
+    try { archiving = archiveCompleted && this.retiredChatArchiver?.retire(tab); }
+    catch { this.logger.warn("browser.retired_chat_archive_failed", { code: "archive_ui_unavailable" }); }
+    if (contents && !contents.isDestroyed() && !archiving) contents.close();
     if (this.selectedTabId === tab.id) {
       this.selectedTabId = [...this.turnTabs.keys()].at(-1) || "home";
       const homeContents = this.view?.webContents;
@@ -2623,6 +2640,7 @@ class BrowserHost {
     message,
     retain = false,
     connectorBound = false,
+    conversationUrl,
   ) {
     const tab = [...this.turnTabs.values()].find((candidate) => candidate.traceId === traceId);
     if (!tab) {
@@ -2643,6 +2661,13 @@ class BrowserHost {
     if (tab.failedAt !== undefined) {
       if (status !== "failed") throw new Error(`Browser turn ${traceId} already failed`);
       return { cancelledByUser };
+    }
+    const ownedUrl = savedChatUrl(conversationUrl);
+    if (status === "completed" && ownedUrl && tab.interactionMode === "automatic") {
+      const contents = tab.view.webContents;
+      if (!contents || contents.isDestroyed() || savedChatUrl(contents.getURL()) !== ownedUrl
+        || (tab.archiveConversationUrl && tab.archiveConversationUrl !== ownedUrl)) tab.archiveOwnershipLost = true;
+      else tab.archiveConversationUrl = ownedUrl;
     }
     const authenticationRequired = tab.authenticationRequired === true;
     if (authenticationRequired && status === "completed") status = "failed";
@@ -2683,7 +2708,7 @@ class BrowserHost {
     }
     // A browser tab represents an active Codex turn, not durable task history. The result already
     // lives in Codex, so release the terminal browser document without touching concurrent turns.
-    this.removeTurnTab(tab, false);
+    this.removeTurnTab(tab, false, status === "completed");
     if (hideAfterTurn && !this.activeTraceId) this.hide();
     this.logger.info("browser.tab_released", { tabId: tab.id, traceId, status: tab.status });
     return { cancelledByUser, ...(authenticationRequired ? { authenticationRequired: true } : {}) };
@@ -3278,6 +3303,7 @@ class BrowserHost {
 
   destroy() {
     this.destroyed = true;
+    this.retiredChatArchiver?.destroy();
     if (this.authenticationCookieListener) {
       this.view.webContents.session.cookies.off("changed", this.authenticationCookieListener);
     }

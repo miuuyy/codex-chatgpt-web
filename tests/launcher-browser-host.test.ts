@@ -28,7 +28,7 @@ import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker
 const roots: string[] = [];
 
 test("launcher activity follows actual send callbacks and current-turn tool counts", async () => {
-  const messages: Array<{ phase: string; progress?: { stage: string; activeToolCalls: number } }> = [];
+  const messages: Array<{ phase: string; conversationUrl?: string; progress?: { stage: string; activeToolCalls: number } }> = [];
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
     const message = await request.json() as typeof messages[number];
     messages.push(message);
@@ -47,13 +47,14 @@ test("launcher activity follows actual send callbacks and current-turn tool coun
   try {
     const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
       config: { browserHost: "launcher", browserHostDescriptorPath: descriptorFile(`http://127.0.0.1:${server.port}`) },
-      runBrowserTurn: async (turn: { onSendActivated(): Promise<void>; onSubmitted(): Promise<void> }) => {
+      runBrowserTurn: async (turn: { onSendActivated(): Promise<void>; onSubmitted(): Promise<void>; onConversationBound(url: string): void }) => {
         await waitForStage("preparing");
         await turn.onSendActivated();
         await waitForStage("sending");
         activeToolCalls = 2;
         await turn.onSubmitted();
         await waitForStage("chatgpt");
+        turn.onConversationBound("https://chatgpt.com/c/11111111-2222-3333-4444-555555555555?source=discarded#tail");
         return "done";
       },
     });
@@ -67,6 +68,7 @@ test("launcher activity follows actual send callbacks and current-turn tool coun
       { stage: "chatgpt", activeToolCalls: 2 },
     ]);
     expect(messages.at(-1)?.phase).toBe("end");
+    expect(messages.at(-1)?.conversationUrl).toBe("https://chatgpt.com/c/11111111-2222-3333-4444-555555555555");
     expect([activated, submitted]).toEqual([1, 1]);
   } finally { server.stop(true); }
 });

@@ -414,6 +414,7 @@ export type LauncherTurnActivity =
       message?: string;
       retain?: boolean;
       connectorBound?: boolean;
+      conversationUrl?: string;
     };
 
 // Startup must outlast the launcher's ten-second idle bootstrap. This is not a model-turn budget.

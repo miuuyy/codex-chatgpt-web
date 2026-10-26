@@ -16,6 +16,9 @@ test("prediction setting starts on and remains off after reopening the state sto
   try {
     const store = createStateStore(file);
     assert.equal(store.read().composerPredictionsEnabled, true);
+    assert.equal(store.read().archiveRetiredChats, false);
+    store.update({ archiveRetiredChats: true });
+    assert.equal(createStateStore(file).read().archiveRetiredChats, true);
     store.update({ composerPredictionsEnabled: false });
     assert.equal(createStateStore(file).read().composerPredictionsEnabled, false);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
@@ -52,6 +55,7 @@ test("launcher state persists onboarding, language, and autostart atomically", (
       autoStart: true,
       keepRunningOnClose: true,
       showBrowserDuringTurns: true,
+      archiveRetiredChats: false,
       autoApproveToolCalls: false,
       browserInteractionMode: "automatic",
       experimentalBiggerContext: false,
@@ -82,6 +86,7 @@ test("launcher state persists onboarding, language, and autostart atomically", (
       autoStart: true,
       keepRunningOnClose: false,
       showBrowserDuringTurns: true,
+      archiveRetiredChats: false,
       autoApproveToolCalls: false,
       browserInteractionMode: "automatic",
       experimentalBiggerContext: false,
@@ -163,6 +168,7 @@ test("persisted sidebar corruption is repaired without changing the rest of laun
       autoStart: true,
       keepRunningOnClose: true,
       showBrowserDuringTurns: true,
+      archiveRetiredChats: false,
       autoApproveToolCalls: false,
       browserInteractionMode: "automatic",
       experimentalBiggerContext: false,
