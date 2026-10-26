@@ -1,8 +1,64 @@
 import { expect, test } from "bun:test";
 import { chromium, type Locator, type Page } from "playwright-core";
-import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
+import { ChatGptBrowserWorker, withChatGptCompactionSubmissionIdentity } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptHtmlToMarkdown, ChatGptMarkdownBuffer } from "../src/adapters/chatgpt-web/markdown";
 import { readFileSync } from "node:fs";
+
+test("only isolated compaction receives a fresh non-capability submission identity", () => {
+  const release = () => {};
+  const input = { text: 'Summarize task context.', images: [], release };
+  const first = withChatGptCompactionSubmissionIdentity(input, true);
+  const second = withChatGptCompactionSubmissionIdentity(input, true);
+  expect(first.identity).toMatch(/^compact_[a-f0-9]{32}$/);
+  expect(second.identity).not.toBe(first.identity);
+  expect(first.prompt.text).toContain(first.identity!);
+  expect(first.prompt.release).toBe(release);
+  expect(input.text).toBe('Summarize task context.');
+  expect(withChatGptCompactionSubmissionIdentity(input, false).prompt).toBe(input);
+  const capable = { ...input, turnToken: 'turn_0123456789abcdef0123456789abcdef' };
+  expect(withChatGptCompactionSubmissionIdentity(capable, true)).toEqual({ prompt: capable });
+  const multipart = { ...input, multipart: { parts: ['one', 'two'], commit: 'commit' } };
+  expect(withChatGptCompactionSubmissionIdentity(multipart, true)).toEqual({ prompt: multipart });
+});
+
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("read-only compaction rebinds rewritten JSON using its exact prepared marker", async () => {
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  try {
+    const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+    const prepared = withChatGptCompactionSubmissionIdentity({ text: 'Summarize the JSON at https://example.com/task.', images: [] }, true);
+    const page = await browser.newPage();
+    await page.setContent('<main></main>');
+    const baseline = await worker.captureSubmissionBaseline(page, prepared.prompt.text, [], undefined, prepared.identity);
+    // Send was acknowledged by generation before the user group mounted.
+    await page.locator('main').evaluate(node => { node.innerHTML = '<div data-turn-key="optimistic"><span hidden data-chatgpt-agent-turn-start></span></div>'; });
+    const binding = await worker.waitForNewAssistantTurn(page, baseline, Date.now() + 2000);
+    await page.locator('main').evaluate(node => {
+      node.innerHTML = '<div data-turn-key="persisted"><div data-user-message-bubble><div data-search-result-target>'
+        + '<a href="https://example.com/task" data-search-result-target>task</a></div>'
+        + '<button type="button" aria-expanded="false" data-thread-find-skip="true" data-markdown-copy="exclude">Show more</button></div>'
+        + '<div data-conversation-role="assistant"></div><div data-markdown-text-style="assistant-message">Checkpoint.</div></div>';
+    });
+    await page.locator('button').evaluate((button, identity) => {
+      button.addEventListener('click', () => {
+        const open = button.getAttribute('aria-expanded') !== 'true';
+        button.setAttribute('aria-expanded', String(open));
+        if (open) button.parentElement!.querySelector('[data-search-result-target]')!.textContent = 'Rewritten task JSON ' + identity;
+      });
+    }, prepared.identity);
+    expect((await worker.reconcileAssistantTurnBinding(page, baseline, binding)).identity).toBe('group:assistant:persisted');
+    // Reuse the real reader without expansion for the negative identity cases.
+    // Existing rebind tests cover competing groups, changed user IDs and old groups.
+    await page.locator('button').evaluate(button => button.remove());
+    const group = page.locator('[data-turn-key="persisted"]');
+    for (const identity of [prepared.identity, 'compact_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '', prepared.identity + ' ' + prepared.identity, prepared.identity + 'extra']) {
+      await page.locator('[data-search-result-target]').evaluate((node, identity) => { node.textContent = 'Rewritten JSON ' + identity; }, identity);
+      expect(await worker.userMessageMatchesSubmission(group, prepared.prompt.text, undefined, undefined, prepared.identity)).toBe(identity === prepared.identity);
+    }
+    expect(await worker.userMessageMatchesSubmission(group, prepared.prompt.text)).toBeFalse();
+    await expect(worker.captureSubmissionBaseline(page, 'No prepared marker', [], undefined, prepared.identity)).rejects.toThrow('compaction identity');
+    await page.close();
+  } finally { await browser.close(); }
+}, 20_000);
 
 test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("CodeMirror language invalidates the response cache and incomplete code is not delivered", async () => {
   const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });

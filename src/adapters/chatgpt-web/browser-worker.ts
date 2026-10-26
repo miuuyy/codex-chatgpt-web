@@ -1063,8 +1063,23 @@ interface ChatGptSubmissionBaseline {
   domCache: ChatGptSubmissionDomCache;
   submittedText?: string;
   turnToken?: string;
+  compactionSubmissionId?: string;
   acceptedUserIdentity?: string;
   acknowledgedStages?: readonly ChatGptAcknowledgedMultipartStage[];
+}
+
+/** A correlation marker, never an MCP capability. Only isolated read-only compaction uses it. */
+export function withChatGptCompactionSubmissionIdentity<T extends CompiledChatGptWebPrompt>(
+  prompt: T,
+  isolatedCompaction: boolean,
+): { prompt: T; identity?: string } {
+  if (!isolatedCompaction || prompt.turnToken || prompt.multipart) return { prompt };
+  const identity = 'compact_' + randomUUID().replaceAll('-', '');
+  return {
+    identity,
+    prompt: { ...prompt, text: prompt.text + '\n\nTransport submission identity: ' + identity
+      + '\nThis is transport correlation metadata. Omit it from the checkpoint.' },
+  };
 }
 
 interface ChatGptSubmissionObservationRecovery {
@@ -2830,9 +2845,15 @@ export class ChatGptBrowserWorker {
     submittedText?: string,
     acknowledgedStages: readonly ChatGptAcknowledgedMultipartStage[] = [],
     turnToken?: string,
+    compactionSubmissionId?: string,
   ): Promise<ChatGptSubmissionBaseline> {
     if (turnToken !== undefined && (!/^turn_[A-Za-z0-9_-]{32}$/.test(turnToken) || !submittedText?.includes(turnToken))) {
       throw new Error("ChatGPT submission identity does not match its prepared prompt");
+    }
+    if (compactionSubmissionId !== undefined
+      && (!/^compact_[a-f0-9]{32}$/.test(compactionSubmissionId)
+        || turnToken !== undefined || !submittedText?.includes(compactionSubmissionId))) {
+      throw new Error("ChatGPT compaction identity does not match its prepared prompt");
     }
     const userTurns = page.locator(CHATGPT_USER_TURN_SELECTOR);
     const responseTurns = page.locator(CHATGPT_ASSISTANT_TURN_SELECTOR);
@@ -2845,6 +2866,7 @@ export class ChatGptBrowserWorker {
       domCache,
       submittedText,
       turnToken,
+      compactionSubmissionId,
       acknowledgedStages: [...acknowledgedStages],
     };
     // A stage can persist under its new key before the next baseline is captured.
@@ -3017,7 +3039,9 @@ export class ChatGptBrowserWorker {
         const locator = page.locator(chatGptAssistantTurnSelector(identity!));
         matches = baseline.acceptedUserIdentity
           ? user === baseline.acceptedUserIdentity
-          : Boolean(baseline.submittedText) && await this.userMessageMatchesSubmission(locator, baseline.submittedText!, signal, baseline.turnToken);
+          : Boolean(baseline.submittedText) && await this.userMessageMatchesSubmission(
+            locator, baseline.submittedText!, signal, baseline.turnToken, baseline.compactionSubmissionId,
+          );
         // The accepted user identity, broker token or exact text establishes ownership.
         // Activity can replace its temporary group while still generating; requiring
         // a completed answer here mistakes that same unfinished turn for a foreign one.
@@ -3101,8 +3125,21 @@ export class ChatGptBrowserWorker {
     }
   }
 
-  private async userMessageMatchesSubmission(group: Locator, submitted: string, signal?: AbortSignal, turnToken?: string): Promise<boolean> {
+  private async userMessageMatchesSubmission(group: Locator, submitted: string, signal?: AbortSignal, turnToken?: string, compactionSubmissionId?: string): Promise<boolean> {
     return (await this.withExpandedUserMessage(group, async content => {
+      if (compactionSubmissionId !== undefined) {
+        // Read-only compaction has no broker token. Its large JSON context can be
+        // rewritten by the rich-text renderer just like a tool-capable prompt.
+        // The composer still passes exact validation before Send. Require this
+        // prepared submission's unique marker, while the caller independently
+        // rejects competing groups, surviving old groups, and changed user IDs.
+        if (turnToken !== undefined || !/^compact_[a-f0-9]{32}$/.test(compactionSubmissionId)
+          || !submitted.includes(compactionSubmissionId)) return false;
+        return withChatGptBrowserObservationTimeout(withBrowserTurnAbort(content.evaluate((element, expected) => {
+          const identities = (element.textContent ?? '').match(/(?<![A-Za-z0-9_-])compact_[a-f0-9]{32}(?![A-Za-z0-9_-])/g) ?? [];
+          return identities.length === 1 && identities[0] === expected;
+        }, compactionSubmissionId), signal));
+      }
       if (turnToken !== undefined) {
         // The composer was already checked byte-for-byte before Send. ChatGPT's
         // rich-text renderer can rewrite JSON/link labels afterwards, so use the
@@ -4795,7 +4832,9 @@ export class ChatGptBrowserWorker {
     const requestedMode = resolveChatGptWebModelMode(turn.modelId, turn.reasoning, browserCapabilities);
     const prepare = reuseConversation ? turn.prepareResume : turn.prepare;
     if (!prepare) throw new Error("The retained ChatGPT conversation has no continuation prompt");
-    const prepared = await prepare();
+    const { prompt: prepared, identity: compactionSubmissionId } = withChatGptCompactionSubmissionIdentity(
+      await prepare(), turn.compaction === true && turn.nativeConnector !== true,
+    );
     const diagnostics = new ChatGptBrowserDiagnostics(
       turn.traceId,
       this.config.browserDiagnosticsPath ?? join(getConfigDir(), "diagnostics", "browser-turns"),
@@ -5244,7 +5283,7 @@ export class ChatGptBrowserWorker {
         finalPrompt = multipartFinalPrompt;
       }
 
-      let submissionBaseline = await this.captureSubmissionBaseline(page, finalPrompt, acknowledgedStages, prepared.turnToken);
+      let submissionBaseline = await this.captureSubmissionBaseline(page, finalPrompt, acknowledgedStages, prepared.turnToken, compactionSubmissionId);
       let catalogRefreshAvailable = mode.localTools && !reuseConversation && !prepared.multipart;
       const connectorAttemptBudget: ChatGptConnectorAttemptBudget = { triggerAttempts: 0 };
       for (;;) {
@@ -5298,7 +5337,7 @@ export class ChatGptBrowserWorker {
                 trackUsage,
                 turn.modelFamily,
               );
-              submissionBaseline = await this.captureSubmissionBaseline(page, finalPrompt, [], prepared.turnToken);
+              submissionBaseline = await this.captureSubmissionBaseline(page, finalPrompt, [], prepared.turnToken, compactionSubmissionId);
             },
           );
           await diagnostics.capture(page, "connector-catalog-refreshed");
