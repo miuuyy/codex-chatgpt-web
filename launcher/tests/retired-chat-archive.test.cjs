@@ -64,6 +64,15 @@ test("cleanup failure only suppresses future retirement attempts; it starts no r
   assert.equal(JSON.stringify(events).includes("private account data"), false);
 });
 
+test("a still-generating retired page skips without cooling down later retirements", async () => {
+  const { archiver, events } = fixture({ archive: async () => ({ status: "skipped", code: "archive_generation_active" }) });
+  const item = tab(); assert.equal(archiver.retire(item), true); await archiver.tail;
+  assert.equal(item.view.webContents.isDestroyed(), true);
+  assert.equal(archiver.cooldownUntil, 0);
+  assert.equal(events[0].event, "browser.retired_chat_archive_skipped");
+  assert.equal(archiver.retire(tab({ id: "next" })), true); await archiver.tail;
+});
+
 test("at most two retired documents survive and shutdown cancels queued cleanup", async () => {
   let finish;
   const { archiver, calls } = fixture({ archive: async item => { calls.push(item.id); await new Promise(resolve => { finish = resolve; }); } });
@@ -82,28 +91,51 @@ test("archive UI uses only the owned header and verifies persistence after reloa
   const { chromium } = require("playwright-core");
   const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
   try {
-    for (const [persist, replaceVerificationDocument] of [[true, false], [false, false], [true, true]]) {
+    for (const [persist, replaceVerificationDocument, lateNavigation] of [[true, false, false], [false, false, false], [true, true, false], [true, false, true]]) {
       const page = await browser.newPage();
-      let loads = 0, replaceAfterNextCheck = false;
+      let loads = 0, replaceAfterNextCheck = false, reportedUrl;
+      function renderFixture({ archived, persist }) {
+        const stopControl = document.createElement("button");
+        stopControl.dataset.testid = "stop-button"; stopControl.textContent = "Stop";
+        document.querySelector("main").append(stopControl);
+        setTimeout(() => stopControl.remove(), 150);
+        setTimeout(() => {
+          const header = document.createElement("header");
+          header.dataset.testid = "app-shell-header-context-menu-surface";
+          const trigger = document.createElement("button");
+          trigger.setAttribute("aria-label", "Chat actions"); trigger.textContent = "Actions";
+          trigger.addEventListener("keydown", event => {
+            if (event.key !== "Enter") return;
+            const menu = document.createElement("div"); menu.role = "menu";
+            const choice = document.createElement("button"); choice.role = "menuitem";
+            choice.textContent = archived ? "Unarchive" : "Archive";
+            choice.onclick = () => {
+              if (document.querySelector('[data-testid="stop-button"]')) throw Error("generation active");
+              if (persist) document.cookie = "fixtureArchived=yes;path=/";
+              history.pushState(null, "", "/"); menu.remove();
+            };
+            menu.append(choice); document.body.append(menu);
+          });
+          header.append(trigger); document.querySelector("main").append(header);
+        }, 30);
+      }
       await page.route("https://chatgpt.com/**", async route => {
         const archived = (route.request().headers().cookie || "").includes("fixtureArchived=yes");
-        await route.fulfill({ contentType: "text/html", body: '<main></main><script>setTimeout(()=>{document.querySelector("main").innerHTML='
-          + JSON.stringify('<header data-testid="app-shell-header-context-menu-surface"><button aria-label="Chat actions">Actions</button></header>') + ';'
-          + 'document.querySelector("button").addEventListener("keydown",e=>{if(e.key!=="Enter")return;const m=document.createElement("div");m.role="menu";const a=document.createElement("button");a.role="menuitem";a.textContent='
-          + JSON.stringify(archived ? "Unarchive" : "Archive") + ';a.onclick=()=>{' + (persist ? 'document.cookie="fixtureArchived=yes;path=/";' : '')
-          + 'history.pushState(null,"","/");m.remove()};m.append(a);document.body.append(m)});},30);</script>' });
+        await route.fulfill({ contentType: "text/html", body: "<main></main><script>(" + renderFixture.toString()
+          + ")(" + JSON.stringify({ archived, persist }) + ");</script>" });
       });
       await page.goto(URL);
       await page.evaluate(() => { globalThis.__CODEX_WEB_GPT_SURFACE_ID__ = "surface"; });
       const contents = Object.assign(new EventEmitter(), { isDestroyed: () => false, isCrashed: () => false,
-        getURL: () => page.url(), executeJavaScript: async script => {
+        getURL: () => reportedUrl || page.url(), executeJavaScript: async script => {
           const result = await page.evaluate(script);
           // A late navigation can replace the document between two IPC checks.
           // Ownership establishment and the persisted-state check must be one operation.
           if (replaceAfterNextCheck) { replaceAfterNextCheck = false; await page.reload(); }
           return result;
         },
-        loadURL: async url => { loads++; assert.equal(url, URL); await page.goto(url); replaceAfterNextCheck = replaceVerificationDocument; } });
+        loadURL: async url => { loads++; assert.equal(url, URL); await page.goto(url); replaceAfterNextCheck = replaceVerificationDocument;
+          if (lateNavigation) { reportedUrl = "https://chatgpt.com/"; setTimeout(() => { reportedUrl = page.url(); contents.emit("did-stop-loading"); }, 20); } } });
       const item = tab({ view: { webContents: contents } });
       if (persist) await archiveDocument(item);
       else await assert.rejects(archiveDocument(item), /archive_not_persisted/);
@@ -111,6 +143,10 @@ test("archive UI uses only the owned header and verifies persistence after reloa
       // A foreign surface is rejected before any menu action.
       await page.evaluate(() => { Object.defineProperty(globalThis, "__CODEX_WEB_GPT_SURFACE_ID__", { value: "foreign", configurable: true }); });
       await assert.rejects(page.evaluate(archiveChatUi, { url: URL, surfaceId: "surface" }), /archive_document_changed/);
+      await page.goto(URL);
+      await page.evaluate(() => { globalThis.__CODEX_WEB_GPT_SURFACE_ID__ = "surface"; });
+      assert.deepEqual(await page.evaluate(archiveChatUi, { url: URL, surfaceId: "surface", settleTimeoutMs: 5 }),
+        { status: "skipped", code: "archive_generation_active" });
       await page.close();
     }
   } finally { await browser.close(); }

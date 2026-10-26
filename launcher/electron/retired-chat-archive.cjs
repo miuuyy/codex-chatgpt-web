@@ -10,7 +10,7 @@ function savedChatUrl(value) {
 }
 
 // Runs only in an exact, retired launcher document. No account API or history scan.
-async function archiveChatUi({ url, surfaceId, verifyOnly }) {
+async function archiveChatUi({ url, surfaceId, verifyOnly, settleTimeoutMs = 30000 }) {
   const ownsDocument = () => location.origin + location.pathname.replace(/\/$/, "") === url
     && globalThis.__CODEX_WEB_GPT_SURFACE_ID__ === surfaceId;
   if (!ownsDocument()) throw new Error("archive_document_changed_before_header");
@@ -36,6 +36,14 @@ async function archiveChatUi({ url, surfaceId, verifyOnly }) {
     observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true });
     timer = setTimeout(() => finish(null, null), timeout);
   });
+  // Native handoff acceptance is durable before ChatGPT necessarily finishes
+  // rendering the old response. Never operate its menu while generation is active.
+  // Match the composer's observed Stop glyph as in src/chatgpt-session.ts;
+  // some ChatGPT layouts omit the stop-button test ID.
+  const stopGlyph = "M4.5 5.75C4.5 5.05964 5.05964 4.5 5.75 4.5H14.25C14.9404 4.5 15.5 5.05964 15.5 5.75V14.25C15.5 14.9404 14.9404 15.5 14.25 15.5H5.75C5.05964 15.5 4.5 14.9404 4.5 14.25V5.75Z";
+  const stopSelector = '[data-testid="stop-button"], button[aria-label="Stop streaming"], button[aria-label="Stop generating"], '
+    + 'form[data-chatgpt-composer] button[type="button"].size-token-button-composer:has(svg.icon-primary-action > path[d="' + stopGlyph + '"])';
+  const userCount = document.querySelectorAll('[data-message-author-role="user"]').length;
   const single = nodes => {
     if (nodes.length > 1) throw new Error("archive_controls_ambiguous");
     return nodes[0];
@@ -44,6 +52,12 @@ async function archiveChatUi({ url, surfaceId, verifyOnly }) {
   const trigger = await waitFor(() => single([...document.querySelectorAll('main [data-testid="app-shell-header-context-menu-surface"] button[aria-label="Chat actions"]')].filter(visible)), 2000);
   if (!ownsDocument()) throw new Error("archive_document_changed_after_header");
   if (!trigger) throw new Error("archive_controls_unavailable");
+  const quiet = await waitFor(() => {
+    if (!ownsDocument()) throw new Error("archive_document_changed_while_settling");
+    if (document.querySelectorAll('[data-message-author-role="user"]').length !== userCount) throw new Error("archive_user_turn_changed");
+    return ![...document.querySelectorAll(stopSelector)].some(visible);
+  }, settleTimeoutMs);
+  if (!quiet) return { status: "skipped", code: "archive_generation_active" };
   const readChoice = () => single([...document.querySelectorAll('[role="menuitem"]')]
     .filter(visible).filter(node => ["Archive", "Unarchive"].includes(node.textContent.trim())));
   trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
@@ -53,6 +67,8 @@ async function archiveChatUi({ url, surfaceId, verifyOnly }) {
   if (!choice) throw new Error("archive_controls_unavailable");
   if (choice.textContent.trim() === "Unarchive") return { status: "archived" };
   if (verifyOnly) throw new Error("archive_not_persisted");
+  if ([...document.querySelectorAll(stopSelector)].some(visible)) return { status: "skipped", code: "archive_generation_active" };
+  if (document.querySelectorAll('[data-message-author-role="user"]').length !== userCount) throw new Error("archive_user_turn_changed");
   // This is the only mutation. Never choose Delete or a sidebar conversation.
   choice.click();
   // The observed interface returns to Home after the mutation is acknowledged.
@@ -80,29 +96,44 @@ async function archiveChatUi({ url, surfaceId, verifyOnly }) {
 async function archiveDocument(tab) {
   const contents = tab.view.webContents;
   const url = tab.archiveConversationUrl;
-  const check = () => {
-    if (!contents || contents.isDestroyed() || savedChatUrl(contents.getURL()) !== url) throw new Error("archive_document_changed");
+  const locationKind = () => {
+    try {
+      const current = new URL(contents.getURL());
+      if (current.origin !== "https://chatgpt.com") return "foreign";
+      if (current.pathname === "/") return "home";
+      if (current.pathname.startsWith("/c/local-chatgpt")) return "local";
+      return savedChatUrl(current.href) ? "saved" : "other";
+    } catch { return "unavailable"; }
   };
-  check();
+  const check = phase => {
+    if (!contents || contents.isDestroyed() || savedChatUrl(contents.getURL()) !== url) throw new Error("archive_location_" + locationKind() + "_" + phase);
+  };
+  check("before_action");
   const script = verifyOnly => "(" + archiveChatUi.toString() + ")(" + JSON.stringify({ url, surfaceId: tab.surfaceId, verifyOnly }) + ")";
-  const first = await runBrowserPageScript(contents, script(false), 8000);
-  if (first?.status === "archived") return;
+  const first = await runBrowserPageScript(contents, script(false), 35000);
+  if (first?.status === "archived" || first?.status === "skipped") return first;
   // Reopen the exact saved URL to verify server-persisted Unarchive state. An
   // optimistic menu update or disappearing sidebar row alone is not success.
   await new Promise((resolve, reject) => {
-    let settled = false;
+    let settled = false, loadSettled = false;
     const done = error => {
       if (settled) return;
       settled = true; clearTimeout(timer);
       contents.off("destroyed", gone);
+      for (const name of ["did-navigate", "did-navigate-in-page", "did-stop-loading"]) contents.off(name, ready);
       if (error) reject(error); else resolve();
     };
     const gone = () => done(new Error("archive_browser_closed"));
-    const timer = setTimeout(() => done(new Error("archive_verification_timeout")), 5000);
+    const ready = () => {
+      if (loadSettled && savedChatUrl(contents.getURL()) === url
+        && (typeof contents.isLoadingMainFrame !== "function" || !contents.isLoadingMainFrame())) done();
+    };
+    const timer = setTimeout(() => done(new Error("archive_location_" + locationKind() + "_after_reopen")), 5000);
     contents.once("destroyed", gone);
-    Promise.resolve(contents.loadURL(url)).then(() => done(), done);
+    for (const name of ["did-navigate", "did-navigate-in-page", "did-stop-loading"]) contents.on(name, ready);
+    Promise.resolve().then(() => contents.loadURL(url)).then(() => { loadSettled = true; ready(); }, done);
   });
-  check();
+  check("after_reopen");
   // Navigation replaces the document marker. The view remains privately owned
   // by this cleanup job and cannot be acquired by a helper or selected in the UI.
   // Keep ownership establishment and verification in one renderer operation.
@@ -144,7 +175,11 @@ class RetiredChatArchiver {
     this.tail = this.tail.catch(() => {}).then(async () => {
       try {
         if (this.destroyed || !this.enabled() || this.conflicts(url) || this.now() < this.cooldownUntil) return;
-        await this.archive(tab);
+        const result = await this.archive(tab);
+        if (result?.status === "skipped") {
+          this.logger.info("browser.retired_chat_archive_skipped", { tabId: tab.id, traceId: tab.traceId, code: result.code });
+          return;
+        }
         this.logger.info("browser.retired_chat_archived", { tabId: tab.id, traceId: tab.traceId });
       } catch (error) {
         // This timestamp is checked only by future retirement events. No retry

@@ -132,7 +132,9 @@ the background and verifies the saved state. It preserves active and retained co
 failed pages, manual Zero Risk chats, and unrelated history. Cleanup is event-driven: it does
 not schedule Codex runs or send model messages. It is best effort; unavailable controls or
 account errors are logged in Activity and suppress further cleanup for five minutes, without
-blocking research or starting a retry timer. At most two cleanup documents remain open.
+blocking research or starting a retry timer. A native context handoff can finish before the old
+ChatGPT response stops generating; cleanup waits up to 30 seconds, then skips that document
+without cancelling it or imposing an account cooldown. At most two cleanup documents remain open.
 Set `CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1` only when every browser checkpoint needs a screenshot.
 
 New installs use **Compatibility V1** for cross-backend subagents. **Native** preserves Codex's own
