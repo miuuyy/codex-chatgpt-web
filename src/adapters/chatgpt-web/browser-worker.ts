@@ -3153,7 +3153,9 @@ export class ChatGptBrowserWorker {
           || !submitted.includes(compactionSubmissionId)) return false;
         return withChatGptBrowserObservationTimeout(withBrowserTurnAbort(content.evaluate((element, expected) => {
           const identities = (element.textContent ?? '').match(/(?<![A-Za-z0-9_-])compact_[a-f0-9]{32}(?![A-Za-z0-9_-])/g) ?? [];
-          return identities.length === 1 && identities[0] === expected;
+          // A prior checkpoint may quote an older correlation marker. Only this
+          // prepared submission's exact marker must occur once.
+          return identities.filter(identity => identity === expected).length === 1;
         }, compactionSubmissionId), signal));
       }
       if (turnToken !== undefined) {

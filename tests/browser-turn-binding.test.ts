@@ -50,9 +50,10 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("read-only compaction rebinds
     // Existing rebind tests cover competing groups, changed user IDs and old groups.
     await page.locator('button').evaluate(button => button.remove());
     const group = page.locator('[data-turn-key="persisted"]');
-    for (const identity of [prepared.identity, 'compact_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '', prepared.identity + ' ' + prepared.identity, prepared.identity + 'extra']) {
+    const historical = 'compact_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ' + prepared.identity;
+    for (const identity of [prepared.identity, historical, 'compact_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '', prepared.identity + ' ' + prepared.identity, prepared.identity + 'extra']) {
       await page.locator('[data-search-result-target]').evaluate((node, identity) => { node.textContent = 'Rewritten JSON ' + identity; }, identity);
-      expect(await worker.userMessageMatchesSubmission(group, prepared.prompt.text, undefined, undefined, prepared.identity)).toBe(identity === prepared.identity);
+      expect(await worker.userMessageMatchesSubmission(group, prepared.prompt.text, undefined, undefined, prepared.identity)).toBe(identity === prepared.identity || identity === historical);
     }
     expect(await worker.userMessageMatchesSubmission(group, prepared.prompt.text)).toBeFalse();
     await expect(worker.captureSubmissionBaseline(page, 'No prepared marker', [], undefined, prepared.identity)).rejects.toThrow('compaction identity');
