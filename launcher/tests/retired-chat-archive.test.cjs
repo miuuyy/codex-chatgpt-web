@@ -87,10 +87,11 @@ test("archive UI uses only the owned header and verifies persistence after reloa
       let loads = 0;
       await page.route("https://chatgpt.com/**", async route => {
         const archived = (route.request().headers().cookie || "").includes("fixtureArchived=yes");
-        await route.fulfill({ contentType: "text/html", body: '<main><header data-testid="app-shell-header-context-menu-surface"><button aria-label="Chat actions">Actions</button></header></main><script>'
+        await route.fulfill({ contentType: "text/html", body: '<main></main><script>setTimeout(()=>{document.querySelector("main").innerHTML='
+          + JSON.stringify('<header data-testid="app-shell-header-context-menu-surface"><button aria-label="Chat actions">Actions</button></header>') + ';'
           + 'document.querySelector("button").addEventListener("keydown",e=>{if(e.key!=="Enter")return;const m=document.createElement("div");m.role="menu";const a=document.createElement("button");a.role="menuitem";a.textContent='
           + JSON.stringify(archived ? "Unarchive" : "Archive") + ';a.onclick=()=>{' + (persist ? 'document.cookie="fixtureArchived=yes;path=/";' : '')
-          + 'history.pushState(null,"","/");m.remove()};m.append(a);document.body.append(m)});</script>' });
+          + 'history.pushState(null,"","/");m.remove()};m.append(a);document.body.append(m)});},30);</script>' });
       });
       await page.goto(URL);
       await page.evaluate(() => { globalThis.__CODEX_WEB_GPT_SURFACE_ID__ = "surface"; });

@@ -15,28 +15,39 @@ async function archiveChatUi({ url, surfaceId, verifyOnly }) {
     && globalThis.__CODEX_WEB_GPT_SURFACE_ID__ === surfaceId;
   if (!ownsDocument()) throw new Error("archive_document_changed");
   const visible = node => node.getClientRects().length > 0
-    && getComputedStyle(node).visibility !== "hidden";
+    && getComputedStyle(node).visibility !== "hidden"
+    && !node.disabled && node.getAttribute("aria-disabled") !== "true";
   if ([...document.querySelectorAll('[role="menu"]')].some(visible)) throw new Error("archive_menu_already_open");
-  const triggers = [...document.querySelectorAll('main [data-testid="app-shell-header-context-menu-surface"] button[aria-label="Chat actions"]')].filter(visible);
-  if (triggers.length !== 1) throw new Error("archive_controls_unavailable");
-  const choices = () => [...document.querySelectorAll('[role="menuitem"]')]
-    .filter(visible).filter(node => ["Archive", "Unarchive"].includes(node.textContent.trim()));
-  const waitForChoice = timeout => new Promise(resolve => {
+  const waitFor = (readValue, timeout) => new Promise((resolve, reject) => {
+    let observer, timer;
+    const finish = (error, value) => {
+      observer?.disconnect(); clearTimeout(timer);
+      if (error) reject(error); else resolve(value);
+    };
     const read = () => {
-      const found = choices();
-      if (found.length === 1) { finish(found[0]); return true; }
+      try {
+        const found = readValue();
+        if (found) { finish(null, found); return true; }
+      } catch (error) { finish(error); return true; }
       return false;
     };
-    let observer, timer;
-    const finish = value => { observer?.disconnect(); clearTimeout(timer); resolve(value); };
     if (read()) return;
     observer = new MutationObserver(read);
     observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true });
-    timer = setTimeout(() => finish(null), timeout);
+    timer = setTimeout(() => finish(null, null), timeout);
   });
-  triggers[0].dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
-  let choice = await waitForChoice(150);
-  if (!choice) { triggers[0].click(); choice = await waitForChoice(2000); }
+  const single = nodes => {
+    if (nodes.length > 1) throw new Error("archive_controls_ambiguous");
+    return nodes[0];
+  };
+  // Full navigation can complete before ChatGPT hydrates its conversation header.
+  const trigger = await waitFor(() => single([...document.querySelectorAll('main [data-testid="app-shell-header-context-menu-surface"] button[aria-label="Chat actions"]')].filter(visible)), 2000);
+  if (!ownsDocument() || !trigger) throw new Error("archive_controls_unavailable");
+  const readChoice = () => single([...document.querySelectorAll('[role="menuitem"]')]
+    .filter(visible).filter(node => ["Archive", "Unarchive"].includes(node.textContent.trim())));
+  trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
+  let choice = await waitFor(readChoice, 150);
+  if (!choice) { trigger.click(); choice = await waitFor(readChoice, 2000); }
   if (!ownsDocument() || !choice) throw new Error("archive_controls_unavailable");
   if (choice.textContent.trim() === "Unarchive") return { status: "archived" };
   if (verifyOnly) throw new Error("archive_not_persisted");
@@ -72,7 +83,7 @@ async function archiveDocument(tab) {
   };
   check();
   const script = verifyOnly => "(" + archiveChatUi.toString() + ")(" + JSON.stringify({ url, surfaceId: tab.surfaceId, verifyOnly }) + ")";
-  const first = await runBrowserPageScript(contents, script(false), 6000);
+  const first = await runBrowserPageScript(contents, script(false), 8000);
   if (first?.status === "archived") return;
   // Reopen the exact saved URL to verify server-persisted Unarchive state. An
   // optimistic menu update or disappearing sidebar row alone is not success.
@@ -94,7 +105,7 @@ async function archiveDocument(tab) {
   // by this cleanup job and cannot be acquired by a helper or selected in the UI.
   await runBrowserPageScript(contents, "Object.defineProperty(globalThis,'__CODEX_WEB_GPT_SURFACE_ID__',{value:"
     + JSON.stringify(tab.surfaceId) + ",configurable:true})", 1000);
-  const verified = await runBrowserPageScript(contents, script(true), 3000);
+  const verified = await runBrowserPageScript(contents, script(true), 5000);
   if (verified?.status !== "archived") throw new Error("archive_not_verified");
 }
 
