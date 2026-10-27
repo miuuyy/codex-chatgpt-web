@@ -9,6 +9,72 @@ function savedChatUrl(value) {
   } catch { return null; }
 }
 
+// Observe only the request produced by the normal Archive menu. Do not issue an
+// account request, replace fetch, inspect headers, or guess an API endpoint.
+// The archive payload's is_archived flag is also used by the installed ChatGPT
+// client. Page navigation and sidebar removal happen optimistically before ACK.
+async function observeArchiveAcknowledgement(contents, url) {
+  const client = contents.debugger;
+  if (!client || client.isAttached()) throw new Error("archive_observer_unavailable");
+  const conversationId = new URL(url).pathname.split("/").at(-1);
+  const requests = new Map();
+  const listeners = new Set();
+  let attached = false;
+  const changed = () => { for (const notify of listeners) notify(); };
+  const detached = () => { attached = false; changed(); };
+  const message = (_event, method, params) => {
+    if (!params || typeof params !== "object") return;
+    if (method === "Network.requestWillBeSent") {
+      try {
+        const request = params.request, target = new URL(request.url);
+        if (target.origin !== "https://chatgpt.com" || !["PATCH", "POST", "PUT"].includes(request.method)
+          || !target.pathname.split("/").some(part => decodeURIComponent(part) === conversationId)) return;
+        const body = JSON.parse(request.postData || "null");
+        if (!body || body.is_archived !== true || !Number.isFinite(params.wallTime)) return;
+        if (requests.size >= 16) requests.delete(requests.keys().next().value);
+        requests.set(params.requestId, { at: params.wallTime * 1000, status: null, finished: false, failed: false });
+      } catch {}
+    } else {
+      const record = requests.get(params.requestId);
+      if (!record) return;
+      if (method === "Network.responseReceived" && Number.isFinite(params.response?.status)) record.status = params.response.status;
+      if (method === "Network.loadingFinished") record.finished = true;
+      if (method === "Network.loadingFailed") record.failed = true;
+    }
+    changed();
+  };
+  const close = () => {
+    client.off("message", message); client.off("detach", detached);
+    try { if (attached && client.isAttached()) client.detach(); } catch {}
+    attached = false;
+  };
+  try {
+    client.attach("1.3"); attached = true;
+    client.on("message", message); client.on("detach", detached);
+    await client.sendCommand("Network.enable");
+  } catch { close(); throw new Error("archive_observer_unavailable"); }
+  return { close, wait: (actionAt, timeoutMs = 10000) => new Promise((resolve, reject) => {
+    let timer;
+    const finish = error => {
+      clearTimeout(timer); listeners.delete(read);
+      if (error) reject(error); else resolve();
+    };
+    const read = () => {
+      if (!attached) { finish(new Error("archive_observer_lost")); return true; }
+      const matching = [...requests.values()].filter(record => record.at >= actionAt);
+      if (matching.some(record => record.finished && record.status >= 200 && record.status < 300)) { finish(); return true; }
+      if (matching.some(record => record.failed || (record.status !== null && (record.status < 200 || record.status >= 300)))) {
+        finish(new Error("archive_request_rejected")); return true;
+      }
+      return false;
+    };
+    if (!Number.isFinite(actionAt)) { finish(new Error("archive_acknowledgement_missing")); return; }
+    if (read()) return;
+    listeners.add(read);
+    timer = setTimeout(() => finish(new Error("archive_acknowledgement_timeout")), timeoutMs);
+  }) };
+}
+
 // Runs only in an exact, retired launcher document. No account API or history scan.
 async function archiveChatUi({ url, surfaceId, verifyOnly, settleTimeoutMs = 30000 }) {
   const ownsDocument = () => location.origin + location.pathname.replace(/\/$/, "") === url
@@ -70,27 +136,9 @@ async function archiveChatUi({ url, surfaceId, verifyOnly, settleTimeoutMs = 300
   if ([...document.querySelectorAll(stopSelector)].some(visible)) return { status: "skipped", code: "archive_generation_active" };
   if (!verifyOnly && document.querySelectorAll('[data-message-author-role="user"]').length !== userCount) throw new Error("archive_user_turn_changed");
   // This is the only mutation. Never choose Delete or a sidebar conversation.
+  const actionAt = Date.now();
   choice.click();
-  // The observed interface returns to Home after the mutation is acknowledged.
-  // Navigating immediately could abort the archive request before it is saved.
-  await new Promise((resolve, reject) => {
-    let observer, timer;
-    const finish = error => {
-      observer?.disconnect(); clearTimeout(timer);
-      if (error) reject(error); else resolve();
-    };
-    const read = () => {
-      if (location.origin === "https://chatgpt.com" && location.pathname === "/") { finish(); return true; }
-      return false;
-    };
-    if (read()) return;
-    observer = new MutationObserver(read);
-    observer.observe(document.documentElement, { subtree: true, childList: true });
-    timer = setTimeout(() => {
-      if (!read()) finish(new Error("archive_acknowledgement_timeout"));
-    }, 3000);
-  });
-  return { status: "submitted" };
+  return { status: "submitted", actionAt };
 }
 
 async function archiveDocument(tab) {
@@ -110,8 +158,15 @@ async function archiveDocument(tab) {
   };
   check("before_action");
   const script = verifyOnly => "(" + archiveChatUi.toString() + ")(" + JSON.stringify({ url, surfaceId: tab.surfaceId, verifyOnly }) + ")";
-  const first = await runBrowserPageScript(contents, script(false), 35000);
-  if (first?.status === "archived" || first?.status === "skipped") return first;
+  const acknowledgement = await observeArchiveAcknowledgement(contents, url);
+  let first;
+  try {
+    first = await runBrowserPageScript(contents, script(false), 35000);
+    if (first?.status === "archived" || first?.status === "skipped") return first;
+    // Home is an optimistic transition. Reloading before this matching mutation
+    // finishes can abort the UI's request and discard an otherwise valid archive.
+    await acknowledgement.wait(first?.actionAt);
+  } finally { acknowledgement.close(); }
   // Reopen the exact saved URL to verify server-persisted Unarchive state. An
   // optimistic menu update or disappearing sidebar row alone is not success.
   await new Promise((resolve, reject) => {
@@ -205,4 +260,4 @@ class RetiredChatArchiver {
   }
 }
 
-module.exports = { savedChatUrl, archiveChatUi, archiveDocument, RetiredChatArchiver };
+module.exports = { savedChatUrl, archiveChatUi, archiveDocument, observeArchiveAcknowledgement, RetiredChatArchiver };

@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
-const { savedChatUrl, archiveChatUi, archiveDocument, RetiredChatArchiver } = require("../electron/retired-chat-archive.cjs");
+const { savedChatUrl, archiveChatUi, archiveDocument, observeArchiveAcknowledgement, RetiredChatArchiver } = require("../electron/retired-chat-archive.cjs");
 const URL = "https://chatgpt.com/c/11111111-2222-3333-4444-555555555555";
 
 function tab(overrides = {}) {
@@ -22,6 +22,51 @@ test("archive targets are canonical exact ChatGPT saved URLs", () => {
   assert.equal(savedChatUrl(URL + "/?x=1#tail"), URL);
   for (const value of [undefined, "https://chatgpt.com/", URL.replace("chatgpt.com", "example.com"),
     URL.replace("https://", "https://user@"), URL.replace("/c/", "/g/"), URL + "/other"]) assert.equal(savedChatUrl(value), null);
+});
+
+test("archive ACK observes only this UI mutation and never detaches another debugger", async () => {
+  function protocol(busy = false) {
+    let active = busy;
+    const client = Object.assign(new EventEmitter(), { isAttached: () => active,
+      attach() { active = true; }, async sendCommand(method) { assert.equal(method, "Network.enable"); },
+      detach() { client.detachCount++; active = false; }, externalAttach() { active = true; },
+      detachCount: 0 });
+    const send = (method, params) => client.emit("message", {}, method, params);
+    const request = (id, at, changes = {}) => send("Network.requestWillBeSent", {
+      requestId: id, wallTime: at / 1000,
+      request: { method: "PATCH", url: URL.replace("/c/", "/fixture/"), postData: JSON.stringify({ is_archived: true }), ...changes },
+    });
+    return { client, send, request };
+  }
+  const busy = protocol(true);
+  await assert.rejects(observeArchiveAcknowledgement({ debugger: busy.client }, URL), /archive_observer_unavailable/);
+  assert.equal(busy.client.detachCount, 0);
+  const p = protocol(), actionAt = Date.now();
+  const observation = await observeArchiveAcknowledgement({ debugger: p.client }, URL);
+  let resolved = false;
+  const acknowledged = observation.wait(actionAt, 500).then(() => { resolved = true; });
+  for (const [id, at, change] of [
+    ["old", actionAt - 100, {}], ["foreign", actionAt + 1, { url: URL.replace("chatgpt.com", "example.com") }],
+    ["wrong", actionAt + 1, { url: URL.replace("11111111", "99999999") }],
+    ["read", actionAt + 1, { method: "GET" }], ["unarchive", actionAt + 1, { postData: '{"is_archived":false}' }],
+  ]) {
+    p.request(id, at, change); p.send("Network.responseReceived", { requestId: id, response: { status: 200 } });
+    p.send("Network.loadingFinished", { requestId: id });
+  }
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(resolved, false);
+  p.request("actual", actionAt + 1); p.send("Network.responseReceived", { requestId: "actual", response: { status: 200 } });
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(resolved, false, "headers alone are not committed response completion");
+  p.send("Network.loadingFinished", { requestId: "actual" }); await acknowledged;
+  observation.close(); assert.equal(p.client.detachCount, 1);
+  const rejected = protocol(), rejectedObservation = await observeArchiveAcknowledgement({ debugger: rejected.client }, URL);
+  const failure = rejectedObservation.wait(actionAt, 500);
+  rejected.request("bad", actionAt + 1); rejected.send("Network.responseReceived", { requestId: "bad", response: { status: 500 } });
+  await assert.rejects(failure, /archive_request_rejected/); rejectedObservation.close();
+  const lost = protocol(), lostObservation = await observeArchiveAcknowledgement({ debugger: lost.client }, URL);
+  const lostWait = lostObservation.wait(actionAt, 500);
+  lost.send("irrelevant", {}); lost.client.emit("detach");
+  await assert.rejects(lostWait, /archive_observer_lost/);
+  lost.client.externalAttach(); lostObservation.close(); assert.equal(lost.client.detachCount, 0);
 });
 
 test("retirement schedules bounded cleanup without waiting for it or invoking a model", async () => {
@@ -115,7 +160,11 @@ test("archive UI uses only the owned header and verifies persistence after reloa
             choice.textContent = archived ? "Unarchive" : "Archive";
             choice.onclick = () => {
               if (document.querySelector('[data-testid="stop-button"]')) throw Error("generation active");
-              if (persist) document.cookie = "fixtureArchived=yes;path=/";
+              void fetch("/fixture/11111111-2222-3333-4444-555555555555", {
+                method: "PATCH", headers: { "content-type": "application/json" },
+                body: JSON.stringify({ is_archived: true }),
+              }).catch(() => {});
+              // The UI removes the conversation before the request is committed.
               history.pushState(null, "", "/"); menu.remove();
             };
             menu.append(choice); document.body.append(menu);
@@ -124,6 +173,11 @@ test("archive UI uses only the owned header and verifies persistence after reloa
         }, 30);
       }
       await page.route("https://chatgpt.com/**", async route => {
+        if (new globalThis.URL(route.request().url()).pathname.startsWith("/fixture/")) {
+          await new Promise(resolve => setTimeout(resolve, 60));
+          await route.fulfill({ status: 200, body: "ok", headers: persist ? { "set-cookie": "fixtureArchived=yes;path=/" } : {} }).catch(() => {});
+          return;
+        }
         const archived = (route.request().headers().cookie || "").includes("fixtureArchived=yes");
         await route.fulfill({ contentType: "text/html", body: "<main></main><script>(" + renderFixture.toString()
           + ")(" + JSON.stringify({ archived, persist }) + ");</script>" });
@@ -141,6 +195,17 @@ test("archive UI uses only the owned header and verifies persistence after reloa
         },
         loadURL: async url => { loads++; assert.equal(url, URL); await page.goto(url); replaceAfterNextCheck = replaceVerificationDocument;
           if (lateNavigation) { reportedUrl = "https://chatgpt.com/"; setTimeout(() => { reportedUrl = page.url(); contents.emit("did-stop-loading"); }, 20); } } });
+      const protocol = await page.context().newCDPSession(page);
+      let debugging = false;
+      contents.debugger = Object.assign(new EventEmitter(), {
+        isAttached: () => debugging,
+        attach() { if (debugging) throw Error("already attached"); debugging = true; },
+        sendCommand: (method, params) => protocol.send(method, params),
+        detach() { debugging = false; void protocol.detach().catch(() => {}); },
+      });
+      for (const method of ["Network.requestWillBeSent", "Network.responseReceived", "Network.loadingFinished", "Network.loadingFailed"]) {
+        protocol.on(method, params => contents.debugger.emit("message", {}, method, params));
+      }
       const item = tab({ view: { webContents: contents } });
       if (persist) await archiveDocument(item);
       else await assert.rejects(archiveDocument(item), /archive_not_persisted/);

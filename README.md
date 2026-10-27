@@ -128,13 +128,14 @@ custom instructions may apply. **New browser chat for each turn** separately con
 reuse. The retired saved-chat preference is discarded when loading an older configuration.
 **Archive replaced browser chats** is a separate, opt-in launcher setting. When a completed,
 launcher-owned conversation is released, the launcher uses ChatGPT's English archive menu in
-the background and verifies the saved state. It preserves active and retained conversations,
+the background, observes the exact UI-generated archive request finishing successfully, and
+verifies the saved state. Page navigation alone is optimistic and is not an acknowledgement. It preserves active and retained conversations,
 failed pages, manual Zero Risk chats, and unrelated history. Cleanup is event-driven: it does
 not schedule Codex runs or send model messages. It is best effort; unavailable controls or
 account errors are logged in Activity and suppress further cleanup for five minutes, without
 blocking research or starting a retry timer. A native context handoff can finish before the old
 ChatGPT response stops generating; cleanup waits up to 30 seconds, then skips that document
-without cancelling it or imposing an account cooldown. At most two cleanup documents remain open.
+without pressing Stop or imposing an account cooldown. At most two cleanup documents remain open.
 Set `CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1` only when every browser checkpoint needs a screenshot.
 
 New installs use **Compatibility V1** for cross-backend subagents. **Native** preserves Codex's own
