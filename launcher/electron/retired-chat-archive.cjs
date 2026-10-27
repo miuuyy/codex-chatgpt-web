@@ -117,7 +117,10 @@ async function archiveChatUi({ url, surfaceId, verifyOnly, settleTimeoutMs = 300
   // Full navigation can complete before ChatGPT hydrates its conversation header.
   const trigger = await waitFor(() => single([...document.querySelectorAll('main [data-testid="app-shell-header-context-menu-surface"] button[aria-label="Chat actions"]')].filter(visible)), verifyOnly ? 10000 : 2000);
   if (!ownsDocument()) throw new Error("archive_document_changed_after_header");
-  if (!trigger) throw new Error(verifyOnly ? "archive_verification_header_unavailable" : "archive_header_unavailable");
+  if (!trigger) {
+    if (verifyOnly) return { status: "acknowledged_unverified", code: "archive_verification_header_unavailable" };
+    throw new Error("archive_header_unavailable");
+  }
   const quiet = await waitFor(() => {
     if (!ownsDocument()) throw new Error("archive_document_changed_while_settling");
     if (!verifyOnly && document.querySelectorAll('[data-message-author-role="user"]').length !== userCount) throw new Error("archive_user_turn_changed");
@@ -130,7 +133,10 @@ async function archiveChatUi({ url, surfaceId, verifyOnly, settleTimeoutMs = 300
   let choice = await waitFor(readChoice, 150);
   if (!choice) { trigger.click(); choice = await waitFor(readChoice, 2000); }
   if (!ownsDocument()) throw new Error("archive_document_changed_after_menu");
-  if (!choice) throw new Error(verifyOnly ? "archive_verification_menu_unavailable" : "archive_menu_unavailable");
+  if (!choice) {
+    if (verifyOnly) return { status: "acknowledged_unverified", code: "archive_verification_menu_unavailable" };
+    throw new Error("archive_menu_unavailable");
+  }
   if (choice.textContent.trim() === "Unarchive") return { status: "archived" };
   if (verifyOnly) {
     // The header/menu can render with default archive metadata before the
@@ -140,7 +146,7 @@ async function archiveChatUi({ url, surfaceId, verifyOnly, settleTimeoutMs = 300
       if (!ownsDocument()) throw new Error("archive_document_changed_while_verifying");
       return readChoice()?.textContent.trim() === "Unarchive";
     }, 10000);
-    if (!persisted) throw new Error("archive_not_persisted");
+    if (!persisted) return { status: "acknowledged_unverified", code: "archive_not_persisted" };
     return { status: "archived" };
   }
   if ([...document.querySelectorAll(stopSelector)].some(visible)) return { status: "skipped", code: "archive_generation_active" };
@@ -225,6 +231,10 @@ async function archiveDocument(tab, { createVerificationWindow = createArchiveVe
       + ")throw new Error('archive_document_changed_before_verification');"
       + "Object.defineProperty(globalThis,'__CODEX_WEB_GPT_SURFACE_ID__',{value:"
       + JSON.stringify(tab.surfaceId) + ",configurable:true});return " + script(true) + ";})()", 25000);
+    // The exact UI mutation already completed successfully. A cold readback
+    // cannot establish persistence, but it is not a rejected archive request.
+    // Keep that uncertainty explicit without suppressing unrelated retirements.
+    if (verified?.status === "acknowledged_unverified") return verified;
     if (verified?.status !== "archived") throw new Error("archive_not_verified");
   } finally {
     contents.off("destroyed", cancelVerification);
@@ -263,6 +273,10 @@ class RetiredChatArchiver {
         const result = await this.archive(tab);
         if (result?.status === "skipped") {
           this.logger.info("browser.retired_chat_archive_skipped", { tabId: tab.id, traceId: tab.traceId, code: result.code });
+          return;
+        }
+        if (result?.status === "acknowledged_unverified") {
+          this.logger.warn("browser.retired_chat_archive_unverified", { tabId: tab.id, traceId: tab.traceId, code: result.code });
           return;
         }
         this.logger.info("browser.retired_chat_archived", { tabId: tab.id, traceId: tab.traceId });

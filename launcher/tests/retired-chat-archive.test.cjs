@@ -132,6 +132,21 @@ test("at most two retired documents survive and shutdown cancels queued cleanup"
   assert.equal(second.view.webContents.isDestroyed(), true);
 });
 
+test("acknowledged but unverified archival stays explicit without suppressing the next retirement", async () => {
+  const { archiver, events, calls } = fixture({ archive: async item => {
+    calls.push(item.id);
+    return { status: "acknowledged_unverified", code: "archive_not_persisted" };
+  } });
+  const first = tab();
+  assert.equal(archiver.retire(first), true); await archiver.tail;
+  assert.equal(first.view.webContents.isDestroyed(), true);
+  assert.equal(archiver.cooldownUntil, 0);
+  assert.equal(events[0].event, "browser.retired_chat_archive_unverified");
+  assert.equal(events.some(event => event.event === "browser.retired_chat_archived"), false);
+  assert.equal(archiver.retire(tab({ id: "next" })), true); await archiver.tail;
+  assert.deepEqual(calls, ["owned", "next"]);
+});
+
 test("archive UI uses only the owned header and verifies persistence after reloading the exact chat", { skip: !process.env.CHATGPT_DOM_TEST_BROWSER }, async () => {
   const { chromium } = require("playwright-core");
   const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
@@ -219,7 +234,9 @@ test("archive UI uses only the owned header and verifies persistence after reloa
       const item = tab({ view: { webContents: contents } });
       const verificationOptions = { createVerificationWindow: () => ({ webContents: contents, destroy() {} }) };
       if (persist) await archiveDocument(item, verificationOptions);
-      else await assert.rejects(archiveDocument(item, verificationOptions), /archive_not_persisted/);
+      else assert.deepEqual(await archiveDocument(item, verificationOptions), {
+        status: "acknowledged_unverified", code: "archive_not_persisted",
+      });
       assert.equal(loads, 1);
       // A foreign surface is rejected before any menu action.
       await page.evaluate(() => { Object.defineProperty(globalThis, "__CODEX_WEB_GPT_SURFACE_ID__", { value: "foreign", configurable: true }); });
