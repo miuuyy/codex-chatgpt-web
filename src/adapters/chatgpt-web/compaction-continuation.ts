@@ -38,6 +38,39 @@ function matchesRevision(item: Record<string, unknown>, source: ChatGptTurnUserR
       item.type === "function_call_output" ? item.output : item.content]) === sourceDigest(source);
 }
 
+function nativeGoalItem(item: Record<string, unknown> | undefined): boolean {
+  const metadata = item?.internal_chat_message_metadata_passthrough as {
+    turn_id?: unknown; content_item_kinds?: unknown;
+  } | undefined;
+  return item?.type === "message" && item.role === "user"
+    && typeof item.id === "string" && !!item.id
+    && typeof metadata?.turn_id === "string" && !!metadata.turn_id.trim()
+    && Array.isArray(metadata.content_item_kinds) && metadata.content_item_kinds.length === 1
+    && metadata.content_item_kinds[0] === "goal.internal_context";
+}
+
+/** Identify the current producer-authenticated task without promoting quoted instructions. */
+export function currentNativeTask(
+  parsed: CodexParsedRequest,
+  identity: ChatGptTurnIdentity,
+  revisions: readonly ChatGptTurnUserRevision[],
+): { kind: "goal" | "delegation"; message: CodexMessage } | undefined {
+  const revision = revisions.at(-1);
+  if (!identity.turnId || !revision || (revision.turnId !== identity.turnId
+    && !isAcceptedCompactionContinuation(parsed, identity, revision))) return undefined;
+  const input = (parsed._rawBody as { input?: Array<Record<string, unknown>> } | undefined)?.input;
+  const item = input?.find(item => item && matchesRevision(item, revision));
+  if (item) {
+    const kind = nativeGoalItem(item) ? "goal" : readNativeThreadDelegation(item) ? "delegation" : undefined;
+    if (!kind) return undefined;
+    const message = parseRequest({ model: parsed.modelId, input: [item] }).context.messages[0];
+    return message ? { kind, message } : undefined;
+  }
+  const checkpoint = acceptedCheckpoint(parsed, identity)?.checkpoint;
+  if (!checkpoint?.taskMessage || sourceDigest(revision) !== sourceDigest(checkpoint.source)) return undefined;
+  return { kind: checkpoint.taskMessage.role === "user" ? "goal" : "delegation", message: checkpoint.taskMessage };
+}
+
 export function rememberCompactionContinuation(
   parsed: CodexParsedRequest,
   identity: ChatGptTurnIdentity,
@@ -51,14 +84,7 @@ export function rememberCompactionContinuation(
   const prior = acceptedCheckpoint(parsed, identity);
   const priorCheckpoint = prior?.checkpoint;
   const sourceItem = Array.isArray(input) ? input.find(item => item && matchesRevision(item, sources[0]!)) : undefined;
-  const metadata = sourceItem?.internal_chat_message_metadata_passthrough as {
-    turn_id?: unknown; content_item_kinds?: unknown;
-  } | undefined;
-  const nativeGoal = sourceItem?.type === "message" && sourceItem.role === "user"
-    && typeof sourceItem.id === "string" && !!sourceItem.id
-    && typeof metadata?.turn_id === "string" && !!metadata.turn_id.trim()
-    && Array.isArray(metadata.content_item_kinds) && metadata.content_item_kinds.length === 1
-    && metadata.content_item_kinds[0] === "goal.internal_context";
+  const nativeGoal = nativeGoalItem(sourceItem);
   // Preserve only a producer-identified task already accepted as this checkpoint's source.
   // Quoted goal/delegation text and ordinary tool outputs do not qualify.
   const taskMessage = sourceItem && (nativeGoal || readNativeThreadDelegation(sourceItem))

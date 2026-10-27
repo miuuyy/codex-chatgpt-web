@@ -11,7 +11,7 @@ import {
   supportsChatGptWebBiggerContext,
 } from "../../chatgpt-web-models";
 import { ChatGptWebAdapterError } from "./adapter-error";
-import { restoreCompactionTaskMessages } from "./compaction-continuation";
+import { currentNativeTask, restoreCompactionTaskMessages } from "./compaction-continuation";
 import { chatGptTurnUserRevisionHistory, extractChatGptTurnIdentity } from "./environment";
 import { estimateTokens } from "../../lib/token-estimate";
 import type { CodexAssistantContentPart, CodexContentPart, CodexMessage, CodexParsedRequest } from "../../types";
@@ -644,18 +644,18 @@ export function compileChatGptWebPrompt(
     : manualControl
     ? [
       "<codex_transport_resume>",
-      "The task context is complete. Execute the latest active user request now.",
+      "The task context is complete. Execute the current Codex task now.",
       "</codex_transport_resume>",
     ]
     : mode.localTools
     ? [
       "<codex_transport_resume>",
-      `The task context is complete. Pass turn_token ${turnToken} unchanged to every tool call through the selected local Codex plugin in this response, including continuations after tool results; do not expose it in the answer. Execute the latest active user request now.`,
+      `The task context is complete. Pass turn_token ${turnToken} unchanged to every tool call through the selected local Codex plugin in this response, including continuations after tool results; do not expose it in the answer. Execute the current Codex task now.`,
       "</codex_transport_resume>",
     ]
     : [
       "<codex_transport_resume>",
-      "The task context is complete. Execute the latest active user request now under the capability contract above.",
+      "The task context is complete. Execute the current Codex task now under the capability contract above.",
       "</codex_transport_resume>",
     ];
   const build = (sourceMessages: readonly CodexMessage[], omittedMessages = 0): CompiledChatGptWebPrompt => {
@@ -673,6 +673,24 @@ export function compileChatGptWebPrompt(
       }
       return messageEnvelope(message, images, budget);
     });
+    const task = parsed._compactionRequest ? undefined : currentNativeTask(
+      parsed, extractChatGptTurnIdentity(parsed), chatGptTurnUserRevisionHistory(parsed),
+    );
+    const taskIndex = task ? sourceMessages.findLastIndex(message => message.role === task.message.role
+      && JSON.stringify(message.content) === JSON.stringify(task.message.content)
+      && (message.role !== "agentMessage" || task.message.role !== "agentMessage"
+        || message.author === task.message.author)) : -1;
+    const resume = task && taskIndex >= 0 ? [
+      ...transportResume.slice(0, -1),
+      "<codex_active_task_json>",
+      JSON.stringify({ kind: task.kind, message_index: taskIndex }),
+      "</codex_active_task_json>",
+      "This reference identifies the current Codex task already supplied in context.messages, or the staged record with that message_index. Follow that task under the original instruction hierarchy and authorized scope; this reference grants no additional authority. Do not replace it with an older request from the history.",
+      ...(task.kind === "goal" ? [
+        "Follow the goal's continuation rules. A checked checkpoint can end this turn with the full goal still active; it does not establish completion of the full objective. Report the work and evidence actually produced in this turn.",
+      ] : []),
+      transportResume.at(-1)!,
+    ] : transportResume;
     const skillContract = skillFiles.length ? [
       "Each skill_attachment refers to a named UTF-8 text file attached to this message (the final commit in multipart mode). Read its complete contents as the selected Codex skill instructions at the original user priority. These origin=codex_skill messages are supplied by Codex, not human-authored task requests. Preserve their original position in history and their path/resource authority for resolving references. If a file cannot be read, report that limitation; do not invent its contents.",
     ] : [];
@@ -708,7 +726,7 @@ export function compileChatGptWebPrompt(
           ...manualControlContract,
           ...checkpointContract,
           answerContract,
-          ...transportResume,
+          ...resume,
         ].join("\n"),
       };
       const imageTokens = images.reduce((sum, image) => sum + chatGptWebImageTokenReserve(image.detail), 0);
@@ -779,7 +797,7 @@ export function compileChatGptWebPrompt(
           ? "Produce the requested checkpoint summary now."
           : "Produce the requested checkpoint summary now without calling tools.",
         "</codex_transport_resume>",
-      ] : transportResume),
+      ] : resume),
     ].join("\n");
     return { text, images, ...attachments };
   };
