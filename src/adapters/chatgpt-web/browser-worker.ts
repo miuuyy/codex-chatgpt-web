@@ -8,7 +8,7 @@ import { BrowserDiagnosticHistory } from "./browser-diagnostic-history";
 import { readChatGptUserMessage } from "./browser-user-message";
 import { skillFileTokens, validateSkillFiles } from "./skill-attachments";
 import { detectChatGptLimitsPlan, readChatGptUsageAccount, readChatGptUsageModel, supportsChatGptUsageTracking, type ChatGptUsageModel } from "./limits";
-import { chromium, type Browser, type BrowserContext, type JSHandle, type Locator, type Page, type Request, type Response } from "playwright-core";
+import { chromium, errors as playwrightErrors, type Browser, type BrowserContext, type JSHandle, type Locator, type Page, type Request, type Response } from "playwright-core";
 import {
   atomicWriteFile,
   CHATGPT_CONNECTOR_NAME,
@@ -935,6 +935,8 @@ export class ChatGptBrowserObservationTimeoutError extends Error {
     this.name = "ChatGptBrowserObservationTimeoutError";
   }
 }
+
+class ChatGptUserMessageUnavailableError extends Error {}
 
 export async function withChatGptBrowserObservationTimeout<T>(
   operation: Promise<T>,
@@ -3096,9 +3098,11 @@ export class ChatGptBrowserWorker {
     // Captured on 2026-10-15: long messages are truncated in the DOM, not just
     // clipped by CSS. Expand the message using its semantic control in any locale.
     const expand = bubble.locator('button[type="button"][aria-expanded][data-thread-find-skip="true"][data-markdown-copy="exclude"]');
-    const count = await expand.count();
-    if (count > 1) return undefined;
-    if (count !== 1 || await expand.getAttribute("aria-expanded") !== "false") return read(content);
+    const states = await withChatGptBrowserObservationTimeout(withBrowserTurnAbort(
+      expand.evaluateAll(nodes => nodes.map(node => node.getAttribute("aria-expanded"))), signal,
+    ));
+    if (states.length > 1) return undefined;
+    if (states.length !== 1 || states[0] !== "false") return read(content);
     // Expanding a large historical message can move the viewport far enough to
     // unmount the active answer. Read it temporarily, then restore the same view.
     const view = await group.evaluateHandle(element => {
@@ -3121,8 +3125,11 @@ export class ChatGptBrowserWorker {
     } finally {
       // Cleanup owns a separate bounded window even when the read was cancelled.
       try {
-        if (await expand.count() !== 1) throw new Error("ChatGPT removed the message expansion control during verification");
-        if (await expand.getAttribute("aria-expanded") === "true") {
+        const states = await withChatGptBrowserObservationTimeout(
+          expand.evaluateAll(nodes => nodes.map(node => node.getAttribute("aria-expanded"))),
+        );
+        if (states.length !== 1) throw new ChatGptUserMessageUnavailableError("ChatGPT removed the message expansion control during verification");
+        if (states[0] === "true") {
           await expand.evaluate(node => (node as HTMLElement).focus({ preventScroll: true }));
           await expand.press("Enter", { timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
           await expand.locator('xpath=self::*[@aria-expanded="false"]').waitFor({
@@ -4062,6 +4069,7 @@ export class ChatGptBrowserWorker {
     baseline: ChatGptSubmissionBaseline,
     binding: ChatGptAssistantTurnBinding,
     signal?: AbortSignal,
+    traceId?: string,
   ): Promise<string | undefined> {
     // Send can be acknowledged before the SPA installs its saved URL. Pin only while the
     // exact accepted exchange is still observable, never infer ownership from an empty page.
@@ -4089,8 +4097,21 @@ export class ChatGptBrowserWorker {
         || verifiedResponses.length !== 1 || verifiedResponses[0] !== binding.identity) return undefined;
       return await this.currentSavedConversationUrl(page, signal) === url ? url : undefined;
     } catch (error) {
+      // Pinning a future read-only recovery URL is optional. A transiently unavailable
+      // user bubble establishes no ownership, but must not abort the live model turn.
+      // Cancellation, refusals and unexpected implementation faults still propagate.
+      signal?.throwIfAborted();
       if (error instanceof ChatGptBrowserObservationTimeoutError
-        || error instanceof Error && /Execution context was destroyed|Cannot find context with specified id/.test(error.message)) return undefined;
+        || error instanceof ChatGptUserMessageUnavailableError
+        || error instanceof playwrightErrors.TimeoutError
+        || error instanceof Error && /Execution context was destroyed|Cannot find context with specified id/.test(error.message)) {
+        if (traceId) console.info("[chatgpt-web] response_conversation_pin_deferred " + JSON.stringify({
+          traceId, reason: error instanceof ChatGptUserMessageUnavailableError ? "user_message_unavailable"
+            : error instanceof ChatGptBrowserObservationTimeoutError || error instanceof playwrightErrors.TimeoutError
+              ? "observation_timeout" : "navigation_changed",
+        }));
+        return undefined;
+      }
       throw error;
     }
   }
@@ -5519,7 +5540,7 @@ export class ChatGptBrowserWorker {
         generation,
       );
       let acceptedConversationUrl = await this.acceptedResponseConversationUrl(
-        page, submissionBaseline, responseTurn, turn.abortSignal,
+        page, submissionBaseline, responseTurn, turn.abortSignal, turn.traceId,
       );
       await diagnostics.capture(page, "send-accepted");
 
@@ -5691,7 +5712,7 @@ export class ChatGptBrowserWorker {
           const currentConversation = this.savedConversationUrl(page.url());
           if (!acceptedConversationUrl || currentConversation && currentConversation !== acceptedConversationUrl) {
             const verified = await this.acceptedResponseConversationUrl(
-              page, submissionBaseline, responseTurn, turn.abortSignal,
+              page, submissionBaseline, responseTurn, turn.abortSignal, turn.traceId,
             );
             if (verified) {
               console.info("[chatgpt-web] response_conversation_bound " + JSON.stringify({

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chromium, type Locator, type Page } from "playwright-core";
+import { chromium, errors as playwrightErrors, type Locator, type Page } from "playwright-core";
 import { ChatGptBrowserWorker, withChatGptCompactionSubmissionIdentity } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptHtmlToMarkdown, ChatGptMarkdownBuffer } from "../src/adapters/chatgpt-web/markdown";
 import { readFileSync } from "node:fs";
@@ -110,7 +110,7 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("saved-route proof survives m
     const url = "https://chatgpt.com/c/00000000-0000-4000-8000-000000000001";
     const submitted = "Current task\n".repeat(1000) + "EXACT_END";
     await page.route(url, route => route.fulfill({ contentType: "text/html", body: "<main></main>" }));
-    for (const scenario of ["same", "rebind", "foreign-text", "competing-user"] as const) {
+    for (const scenario of ["same", "rebind", "foreign-text", "competing-user", "activity-unmount", "cancelled-unmount"] as const) {
       await page.goto(url);
       const baseline = await worker.captureSubmissionBaseline(page, submitted, []);
       await page.locator("main").evaluate(node => { node.innerHTML = '<div data-turn-key="accepted"><div data-user-message-bubble>'
@@ -135,12 +135,66 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("saved-route proof survives m
         await page.locator('[data-turn-key="accepted"]').evaluate(node => node.setAttribute("data-turn-key", "persisted"));
         binding = await worker.reconcileAssistantTurnBinding(page, baseline, binding);
       }
+      if (scenario.endsWith("unmount")) {
+        const original = worker.withExpandedUserMessage;
+        const controller = new AbortController();
+        let restoredMarkup = "";
+        let mutationReached = false;
+        // Fault injection at the observed read/cleanup boundary: Activity replaces the
+        // user bubble after its text was read, while the accepted assistant remains live.
+        worker.withExpandedUserMessage = (group: Locator, read: (content: Locator) => Promise<unknown>, signal?: AbortSignal) =>
+          original.call(worker, group, async (content: Locator) => {
+            const value = await read(content);
+            await page.locator('[data-turn-key]').evaluate(node => {
+              if (!node.querySelector('[data-conversation-role="assistant"]')) node.insertAdjacentHTML("beforeend", '<div data-conversation-role="assistant"></div>');
+            });
+            restoredMarkup = await page.locator("main").innerHTML();
+            await page.locator('[data-user-message-bubble]').evaluate(node => node.remove());
+            mutationReached = true;
+            if (scenario === "cancelled-unmount") controller.abort();
+            return value;
+          }, signal);
+        try {
+          let outcome: { value?: string; error?: Error } = {};
+          for (let attempt = 0; attempt < 2 && !mutationReached; attempt++) {
+            outcome = await worker.acceptedResponseConversationUrl(page, baseline, binding, controller.signal)
+              .then((value: string | undefined) => ({ value }), (error: Error) => ({ error }));
+            if (outcome.error) break;
+          }
+          expect(mutationReached).toBe(true);
+          if (scenario === "cancelled-unmount") expect(outcome.error?.message).toMatch(/aborted/i);
+          else expect(outcome).toEqual({ value: undefined });
+          expect(await page.locator("button").count()).toBe(0);
+          expect(await binding.locator.count()).toBe(1);
+        } finally { worker.withExpandedUserMessage = original; }
+        await page.locator("main").evaluate((node, markup) => { node.innerHTML = markup; }, restoredMarkup);
+        // A skipped optional probe establishes no ownership. A later complete observation
+        // still needs and can obtain the exact current submitted-message proof.
+        expect(await worker.acceptedResponseConversationUrl(page, baseline, binding)).toBe(url);
+        continue;
+      }
       expect(await worker.acceptedResponseConversationUrl(page, baseline, binding)).toBe(scenario === "same" || scenario === "rebind" ? url : undefined);
       expect(await page.locator("button").getAttribute("aria-expanded")).toBe("false");
       expect(await binding.locator.count()).toBe(1);
     }
   } finally { await browser.close(); }
-}, 10_000);
+}, 20_000);
+
+test("optional saved-route proof preserves cancellation and unexpected faults", async () => {
+  const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+  const timeout = new playwrightErrors.TimeoutError("Temporary widget timeout");
+  worker.currentSavedConversationUrl = async () => { throw timeout; };
+  expect(await worker.acceptedResponseConversationUrl({}, {}, {})).toBeUndefined();
+  const unexpected = new Error("Unexpected verifier defect");
+  unexpected.name = "TimeoutError";
+  worker.currentSavedConversationUrl = async () => { throw unexpected; };
+  await expect(worker.acceptedResponseConversationUrl({}, {}, {})).rejects.toBe(unexpected);
+  const controller = new AbortController();
+  const aborted = new DOMException("Caller cancelled the turn", "AbortError");
+  controller.abort(aborted);
+  worker.currentSavedConversationUrl = async () => { throw timeout; };
+  await expect(worker.acceptedResponseConversationUrl({}, {}, {}, controller.signal)).rejects.toBe(aborted);
+});
 
 test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("read-only compaction rebinds rewritten JSON using its exact prepared marker", async () => {
   const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
