@@ -966,6 +966,13 @@ export function buildResponseJSON(
   };
 
   for (const e of events) {
+    // Match streaming compaction: reasoning/activity is not replacement history.
+    // Extra batch items also prevent the server from recording this accepted
+    // checkpoint, dropping its native goal/delegation on the next request.
+    if (options?.compaction) {
+      if (e.type === "text_delta") { compactionText += e.text; continue; }
+      if (e.type !== "done" && e.type !== "incomplete" && e.type !== "error") continue;
+    }
     switch (e.type) {
       case "assistant_boundary":
         flushText();

@@ -30,6 +30,11 @@ for (const format of ["v1", "v2"] as const) {
           client_metadata: { "x-codex-turn-metadata": JSON.stringify(metadata) } };
         const config = defaultConfig("full");
         const compactFactory = () => ({ name: "task-context-compactor", async runTurn(_p: any, _i: any, emit: any) {
+          // Real browser compaction emits activity before its final checkpoint.
+          // v1 is batch-only; extra reasoning output must not make its accepted
+          // checkpoint ineligible for current-task restoration.
+          emit({ type: "thinking_delta", thinking: "Preparing the checkpoint" });
+          emit({ type: "reasoning_raw_delta", text: "checkpoint activity" });
           emit({ type: "text_delta", text: "The earlier status check is complete. Continue implementation.", phase: "final_answer" });
           emit({ type: "done", stopReason: "stop", endTurn: true });
         } });
