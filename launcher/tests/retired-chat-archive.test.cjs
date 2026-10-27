@@ -195,6 +195,7 @@ test("archive UI uses only the owned header and verifies persistence after reloa
       await page.waitForSelector('[data-message-author-role="user"]');
       await page.evaluate(() => { globalThis.__CODEX_WEB_GPT_SURFACE_ID__ = "surface"; });
       const contents = Object.assign(new EventEmitter(), { isDestroyed: () => false, isCrashed: () => false,
+        setBackgroundThrottling: allowed => assert.equal(allowed, false),
         getURL: () => reportedUrl || page.url(), executeJavaScript: async script => {
           const result = await page.evaluate(script);
           // A late navigation can replace the document between two IPC checks.
@@ -216,8 +217,9 @@ test("archive UI uses only the owned header and verifies persistence after reloa
         protocol.on(method, params => contents.debugger.emit("message", {}, method, params));
       }
       const item = tab({ view: { webContents: contents } });
-      if (persist) await archiveDocument(item);
-      else await assert.rejects(archiveDocument(item), /archive_not_persisted/);
+      const verificationOptions = { createVerificationWindow: () => ({ webContents: contents, destroy() {} }) };
+      if (persist) await archiveDocument(item, verificationOptions);
+      else await assert.rejects(archiveDocument(item, verificationOptions), /archive_not_persisted/);
       assert.equal(loads, 1);
       // A foreign surface is rejected before any menu action.
       await page.evaluate(() => { Object.defineProperty(globalThis, "__CODEX_WEB_GPT_SURFACE_ID__", { value: "foreign", configurable: true }); });
@@ -229,4 +231,20 @@ test("archive UI uses only the owned header and verifies persistence after reloa
       await page.close();
     }
   } finally { await browser.close(); }
+});
+
+test("detached Electron cleanup hydrates archive metadata without showing a window", { skip: !process.env.CHATGPT_ELECTRON_TEST_BINARY }, async () => {
+  const { execFile } = require("node:child_process");
+  const { promisify } = require("node:util");
+  const path = require("node:path");
+  const result = await promisify(execFile)(process.env.CHATGPT_ELECTRON_TEST_BINARY,
+    [path.join(__dirname, "fixtures/retired-chat-archive-electron.cjs")], { timeout: 25000 });
+  const report = result.stdout.split("\n").filter(Boolean).map(line => {
+    try { return JSON.parse(line); } catch { return null; }
+  }).find(value => value?.fixture === "retired-chat-archive");
+  assert.equal(report?.initialVisibility, "hidden");
+  assert.equal(report?.archived, true);
+  assert.equal(report?.passed, true);
+  assert.equal(report?.windowShown, false);
+  assert.equal(report?.mutations, 1, "verification never repeats the archive mutation");
 });

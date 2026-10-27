@@ -129,7 +129,9 @@ reuse. The retired saved-chat preference is discarded when loading an older conf
 **Archive replaced browser chats** is a separate, opt-in launcher setting. When a completed,
 launcher-owned conversation is released, the launcher uses ChatGPT's English archive menu in
 the background, observes the exact UI-generated archive request finishing successfully, and
-verifies the saved state. Page navigation alone is optimistic and is not an acknowledgement. It preserves active and retained conversations,
+verifies Unarchive in a fresh, never-shown window using the same signed-in session. Detached
+views remain document-hidden and can defer saved-conversation hydration. Navigation alone is
+optimistic and is not an acknowledgement. It preserves active and retained conversations,
 failed pages, manual Zero Risk chats, and unrelated history. Cleanup is event-driven: it does
 not schedule Codex runs or send model messages. It is best effort; unavailable controls or
 account errors are logged in Activity and suppress further cleanup for five minutes, without

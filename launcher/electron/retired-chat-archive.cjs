@@ -151,22 +151,34 @@ async function archiveChatUi({ url, surfaceId, verifyOnly, settleTimeoutMs = 300
   return { status: "submitted", actionAt };
 }
 
-async function archiveDocument(tab) {
+function createArchiveVerificationWindow(contents) {
+  const { BrowserWindow } = require("electron");
+  return new BrowserWindow({
+    show: false, focusable: false, skipTaskbar: true, width: 1200, height: 900,
+    webPreferences: { session: contents.session, contextIsolation: true,
+      nodeIntegration: false, sandbox: true, backgroundThrottling: false },
+  });
+}
+
+async function archiveDocument(tab, { createVerificationWindow = createArchiveVerificationWindow } = {}) {
   const contents = tab.view.webContents;
   const url = tab.archiveConversationUrl;
-  const locationKind = () => {
+  const locationKind = (target = contents) => {
     try {
-      const current = new URL(contents.getURL());
+      const current = new URL(target.getURL());
       if (current.origin !== "https://chatgpt.com") return "foreign";
       if (current.pathname === "/") return "home";
       if (current.pathname.startsWith("/c/local-chatgpt")) return "local";
       return savedChatUrl(current.href) ? "saved" : "other";
     } catch { return "unavailable"; }
   };
-  const check = phase => {
-    if (!contents || contents.isDestroyed() || savedChatUrl(contents.getURL()) !== url) throw new Error("archive_location_" + locationKind() + "_" + phase);
+  const check = (phase, target = contents) => {
+    if (!target || target.isDestroyed() || savedChatUrl(target.getURL()) !== url) throw new Error("archive_location_" + locationKind(target) + "_" + phase);
   };
   check("before_action");
+  // Keep bounded UI timers awake. A detached view remains document-hidden even
+  // with throttling disabled; persisted-state verification uses a hidden host.
+  contents.setBackgroundThrottling(false);
   const script = verifyOnly => "(" + archiveChatUi.toString() + ")(" + JSON.stringify({ url, surfaceId: tab.surfaceId, verifyOnly }) + ")";
   const acknowledgement = await observeArchiveAcknowledgement(contents, url);
   let first;
@@ -177,39 +189,47 @@ async function archiveDocument(tab) {
     // finishes can abort the UI's request and discard an otherwise valid archive.
     await acknowledgement.wait(first?.actionAt);
   } finally { acknowledgement.close(); }
-  // Reopen the exact saved URL to verify server-persisted Unarchive state. An
-  // optimistic menu update or disappearing sidebar row alone is not success.
-  await new Promise((resolve, reject) => {
-    let settled = false, loadSettled = false;
-    const done = error => {
-      if (settled) return;
-      settled = true; clearTimeout(timer);
-      contents.off("destroyed", gone);
-      for (const name of ["did-navigate", "did-navigate-in-page", "did-stop-loading"]) contents.off(name, ready);
-      if (error) reject(error); else resolve();
-    };
-    const gone = () => done(new Error("archive_browser_closed"));
-    const ready = () => {
-      if (loadSettled && savedChatUrl(contents.getURL()) === url
-        && (typeof contents.isLoadingMainFrame !== "function" || !contents.isLoadingMainFrame())) done();
-    };
-    const timer = setTimeout(() => done(new Error("archive_location_" + locationKind() + "_after_reopen")), 5000);
-    contents.once("destroyed", gone);
-    for (const name of ["did-navigate", "did-navigate-in-page", "did-stop-loading"]) contents.on(name, ready);
-    Promise.resolve().then(() => contents.loadURL(url)).then(() => { loadSettled = true; ready(); }, done);
-  });
-  check("after_reopen");
-  // Navigation replaces the document marker. The view remains privately owned
-  // by this cleanup job and cannot be acquired by a helper or selected in the UI.
-  // Keep ownership establishment and verification in one renderer operation.
-  // A late navigation between separate IPC calls can otherwise discard the
-  // marker after it was installed, falsely reporting a successful archive as a failure.
-  const verified = await runBrowserPageScript(contents, "(() => {"
-    + "if(location.origin+location.pathname.replace(/\\/$/,'')!==" + JSON.stringify(url)
-    + ")throw new Error('archive_document_changed_before_verification');"
-    + "Object.defineProperty(globalThis,'__CODEX_WEB_GPT_SURFACE_ID__',{value:"
-    + JSON.stringify(tab.surfaceId) + ",configurable:true});return " + script(true) + ";})()", 15000);
-  if (verified?.status !== "archived") throw new Error("archive_not_verified");
+  // A detached WebContentsView stays document-hidden and ChatGPT can defer its
+  // conversation hydration indefinitely. A fresh, never-shown BrowserWindow
+  // gives this read-only check an active document in the same signed-in session.
+  // Never transfer the original view or expose either document to a helper.
+  const verificationWindow = createVerificationWindow(contents);
+  const verification = verificationWindow.webContents;
+  const cancelVerification = () => { try { verificationWindow.destroy(); } catch {} };
+  contents.once("destroyed", cancelVerification);
+  try {
+    await new Promise((resolve, reject) => {
+      let settled = false, loadSettled = false;
+      const done = error => {
+        if (settled) return;
+        settled = true; clearTimeout(timer);
+        verification.off("destroyed", gone);
+        for (const name of ["did-navigate", "did-navigate-in-page", "did-stop-loading"]) verification.off(name, ready);
+        if (error) reject(error); else resolve();
+      };
+      const gone = () => done(new Error("archive_browser_closed"));
+      const ready = () => {
+        if (loadSettled && savedChatUrl(verification.getURL()) === url
+          && (typeof verification.isLoadingMainFrame !== "function" || !verification.isLoadingMainFrame())) done();
+      };
+      const timer = setTimeout(() => done(new Error("archive_location_" + locationKind(verification) + "_after_reopen")), 5000);
+      verification.once("destroyed", gone);
+      for (const name of ["did-navigate", "did-navigate-in-page", "did-stop-loading"]) verification.on(name, ready);
+      Promise.resolve().then(() => verification.loadURL(url)).then(() => { loadSettled = true; ready(); }, done);
+    });
+    check("after_reopen", verification);
+    // Establish ownership and verify in one renderer operation, after exact
+    // navigation. This window never performs an Archive or Unarchive mutation.
+    const verified = await runBrowserPageScript(verification, "(() => {"
+      + "if(location.origin+location.pathname.replace(/\\/$/,'')!==" + JSON.stringify(url)
+      + ")throw new Error('archive_document_changed_before_verification');"
+      + "Object.defineProperty(globalThis,'__CODEX_WEB_GPT_SURFACE_ID__',{value:"
+      + JSON.stringify(tab.surfaceId) + ",configurable:true});return " + script(true) + ";})()", 15000);
+    if (verified?.status !== "archived") throw new Error("archive_not_verified");
+  } finally {
+    contents.off("destroyed", cancelVerification);
+    cancelVerification();
+  }
 }
 
 class RetiredChatArchiver {
