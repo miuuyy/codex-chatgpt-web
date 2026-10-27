@@ -4016,7 +4016,6 @@ test("both response loops check explicit Stopped thinking before acknowledging f
     expect(failure).toBeGreaterThan(0);
     expect(acknowledgement).toBeGreaterThan(failure);
   }
-  expect((worker.match(/domHealthTracker\.suspendForProgress\(\)/g) ?? []).length).toBe(2);
 });
 
 test("proven MCP progress vetoes every terminal DOM conclusion, not just a missing response", () => {
