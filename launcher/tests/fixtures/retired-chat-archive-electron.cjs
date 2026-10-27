@@ -61,11 +61,12 @@ app.whenReady().then(async () => {
   window.contentView.removeChildView(view);
   contents.setBackgroundThrottling(true);
   const initialVisibility = await contents.executeJavaScript("document.visibilityState");
-  let error;
-  try { await archiveDocument({ surfaceId: "surface", archiveConversationUrl: url, view }); }
+  let error, result;
+  try { result = await archiveDocument({ surfaceId: "surface", archiveConversationUrl: url, view }); }
   catch (failure) { error = failure.message; }
-  console.log(JSON.stringify({ fixture: "retired-chat-archive", passed: !error, archived, mutations, initialVisibility, windowShown, error }));
+  const verified = !error && (!result || result.status === "archived");
+  console.log(JSON.stringify({ fixture: "retired-chat-archive", passed: verified, archived, mutations, initialVisibility, windowShown, error }));
   contents.close(); window.destroy();
   try { fs.rmSync(scratch, { recursive: true, force: true }); } catch {}
-  app.exit(error ? 1 : 0);
+  app.exit(verified ? 0 : 1);
 }).catch(error => { console.error(error.message); app.exit(1); });
