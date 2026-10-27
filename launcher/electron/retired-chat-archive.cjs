@@ -132,7 +132,17 @@ async function archiveChatUi({ url, surfaceId, verifyOnly, settleTimeoutMs = 300
   if (!ownsDocument()) throw new Error("archive_document_changed_after_menu");
   if (!choice) throw new Error("archive_controls_unavailable");
   if (choice.textContent.trim() === "Unarchive") return { status: "archived" };
-  if (verifyOnly) throw new Error("archive_not_persisted");
+  if (verifyOnly) {
+    // The header/menu can render with default archive metadata before the
+    // saved conversation hydrates. Read only: never click Archive again or
+    // treat a successful mutation ACK as proof of persisted account state.
+    const persisted = await waitFor(() => {
+      if (!ownsDocument()) throw new Error("archive_document_changed_while_verifying");
+      return readChoice()?.textContent.trim() === "Unarchive";
+    }, 10000);
+    if (!persisted) throw new Error("archive_not_persisted");
+    return { status: "archived" };
+  }
   if ([...document.querySelectorAll(stopSelector)].some(visible)) return { status: "skipped", code: "archive_generation_active" };
   if (!verifyOnly && document.querySelectorAll('[data-message-author-role="user"]').length !== userCount) throw new Error("archive_user_turn_changed");
   // This is the only mutation. Never choose Delete or a sidebar conversation.
@@ -198,7 +208,7 @@ async function archiveDocument(tab) {
     + "if(location.origin+location.pathname.replace(/\\/$/,'')!==" + JSON.stringify(url)
     + ")throw new Error('archive_document_changed_before_verification');"
     + "Object.defineProperty(globalThis,'__CODEX_WEB_GPT_SURFACE_ID__',{value:"
-    + JSON.stringify(tab.surfaceId) + ",configurable:true});return " + script(true) + ";})()", 5000);
+    + JSON.stringify(tab.surfaceId) + ",configurable:true});return " + script(true) + ";})()", 15000);
   if (verified?.status !== "archived") throw new Error("archive_not_verified");
 }
 

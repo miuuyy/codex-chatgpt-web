@@ -136,10 +136,18 @@ test("archive UI uses only the owned header and verifies persistence after reloa
   const { chromium } = require("playwright-core");
   const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
   try {
-    for (const [persist, replaceVerificationDocument, lateNavigation] of [[true, false, false], [false, false, false], [true, true, false], [true, false, true]]) {
+    for (const [persist, replaceVerificationDocument, lateNavigation, delayedArchiveMetadata] of [[true, false, false], [false, false, false], [true, true, false], [true, false, true], [true, false, false, true]]) {
       const page = await browser.newPage();
       let loads = 0, replaceAfterNextCheck = false, reportedUrl;
-      function renderFixture({ archived, persist }) {
+      function renderFixture({ archived, persist, delayedArchiveMetadata }) {
+        // A saved chat's header can hydrate before its archived metadata. The
+        // first menu must not be treated as a settled server-state readback.
+        let metadataReady = !delayedArchiveMetadata;
+        setTimeout(() => {
+          metadataReady = true;
+          const choice = document.querySelector('[data-archive-choice]');
+          if (choice && archived) choice.textContent = "Unarchive";
+        }, 500);
         const stopControl = document.createElement("button");
         stopControl.dataset.testid = "stop-button"; stopControl.textContent = "Stop";
         document.querySelector("main").append(stopControl);
@@ -157,7 +165,8 @@ test("archive UI uses only the owned header and verifies persistence after reloa
             if (event.key !== "Enter") return;
             const menu = document.createElement("div"); menu.role = "menu";
             const choice = document.createElement("button"); choice.role = "menuitem";
-            choice.textContent = archived ? "Unarchive" : "Archive";
+            choice.dataset.archiveChoice = "true";
+            choice.textContent = archived && metadataReady ? "Unarchive" : "Archive";
             choice.onclick = () => {
               if (document.querySelector('[data-testid="stop-button"]')) throw Error("generation active");
               void fetch("/fixture/11111111-2222-3333-4444-555555555555", {
@@ -180,7 +189,7 @@ test("archive UI uses only the owned header and verifies persistence after reloa
         }
         const archived = (route.request().headers().cookie || "").includes("fixtureArchived=yes");
         await route.fulfill({ contentType: "text/html", body: "<main></main><script>(" + renderFixture.toString()
-          + ")(" + JSON.stringify({ archived, persist }) + ");</script>" });
+          + ")(" + JSON.stringify({ archived, persist, delayedArchiveMetadata }) + ");</script>" });
       });
       await page.goto(URL);
       await page.waitForSelector('[data-message-author-role="user"]');
