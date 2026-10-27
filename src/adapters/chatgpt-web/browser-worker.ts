@@ -5173,6 +5173,11 @@ export class ChatGptBrowserWorker {
       console.info(
         `[chatgpt-web] browser turn ${turn.traceId} opened (transport=${prepared.multipart ? `multipart-${prepared.multipart.parts.length}` : "inline"}, maxMessageChars=${maxMessageChars}, estimatedInputTokens=${estimatedInputTokens}, images=${prepared.images.length}, compactionTrimmedMessages=${prepared.trimmedCompactionMessages ?? 0})`,
       );
+      if (prepared.nativeTaskBinding) {
+        console.info(`[chatgpt-web] native_task_binding ${JSON.stringify({
+          traceId: turn.traceId, ...prepared.nativeTaskBinding,
+        })}`);
+      }
       if (prepared.contextTokenBreakdown) {
         // Per-record counts are diagnostic, not additive usage: the full estimate also owns
         // transport framing, acknowledgements, attachments, and the platform reserve.

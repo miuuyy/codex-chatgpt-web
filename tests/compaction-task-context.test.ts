@@ -19,7 +19,7 @@ for (const format of ["v1", "v2"] as const) {
         const human = { type: "message", role: "user", id: "msg_human", content: [{ type: "input_text", text: "Report the goal status only." }],
           internal_chat_message_metadata_passthrough: { turn_id: "earlier", content_item_kinds: ["user.text"] } };
         const taskText = kind === "goal"
-          ? '<codex_internal_context source="goal">Implement the next checked milestone.</codex_internal_context>'
+          ? '<codex_internal_context source="goal">Implement the next checked milestone. Preserve `config["task"]` and https://example.com/check.</codex_internal_context>'
           : '<codex_delegation><source_thread_id>coordinator</source_thread_id><input>Implement the next checked milestone.</input></codex_delegation>';
         const task = kind === "goal"
           ? { type: "message", role: "user", id: "msg_task", content: taskText,
@@ -67,14 +67,17 @@ for (const format of ["v1", "v2"] as const) {
                 expect(tasks).toHaveLength(0);
                 expect(messages.some((m: any) => m.content === "Stop and report the new steering request.")).toBe(true);
                 expect(binding).toBeNull();
+                expect(prompt.nativeTaskBinding).toBeUndefined();
               } else {
                 expect(tasks).toHaveLength(1);
                 expect(tasks[0].role).toBe(kind === "goal" ? "user" : "agent_message");
                 expect(messages.indexOf(tasks[0])).toBeLessThan(messages.findIndex((m: any) => m.content === "LATEST_TOOL_RESULT"));
                 expect(binding).not.toBeNull();
                 const active = JSON.parse(binding![1]!);
-                expect(active).toEqual({ kind, message_index: messages.indexOf(tasks[0]) });
+                expect(active).toEqual({ kind, message_index: messages.indexOf(tasks[0]), message: tasks[0] });
                 expect(messages[active.message_index].content).toBe(taskText);
+                expect(resume).toContain("Earlier one-turn requests retained by compaction belong to their earlier turns");
+                expect(prompt.nativeTaskBinding).toEqual({ kind, messageIndex: active.message_index, restored: true });
               }
             }
             expect(JSON.stringify(parsed.context.messages)).toBe(before);

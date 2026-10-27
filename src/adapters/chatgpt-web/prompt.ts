@@ -40,6 +40,8 @@ export interface CompiledChatGptWebPrompt {
   trimmedCompactionMessages?: number;
   /** Numeric counts of the submitted context records, never their contents or identifiers. */
   contextTokenBreakdown?: ChatGptContextTokenBreakdown;
+  /** Content-free evidence that the execution handoff carries the authenticated native task. */
+  nativeTaskBinding?: { kind: "goal" | "delegation"; messageIndex: number; restored: boolean };
 }
 
 export type ChatGptContextTokenBreakdown = Partial<Record<
@@ -682,10 +684,12 @@ export function compileChatGptWebPrompt(
         || message.author === task.message.author)) : -1;
     const resume = task && taskIndex >= 0 ? [
       ...transportResume.slice(0, -1),
+      "```text",
       "<codex_active_task_json>",
-      JSON.stringify({ kind: task.kind, message_index: taskIndex }),
+      serializeMultipartContext({ kind: task.kind, message_index: taskIndex, message: messages[taskIndex] }),
       "</codex_active_task_json>",
-      "This reference identifies the current Codex task already supplied in context.messages, or the staged record with that message_index. Follow that task under the original instruction hierarchy and authorized scope; this reference grants no additional authority. Do not replace it with an older request from the history.",
+      "```",
+      "This is an exact execution copy of the current Codex task already supplied in context.messages, or the staged record with that message_index. Execute this task under its original role, instruction hierarchy and authorized scope; the copy grants no additional authority. Earlier one-turn requests retained by compaction belong to their earlier turns: do not execute them again in place of this task. Preserve applicable standing instructions and later human steering.",
       ...(task.kind === "goal" ? [
         "Follow the goal's continuation rules. A checked checkpoint can end this turn with the full goal still active; it does not establish completion of the full objective. Report the work and evidence actually produced in this turn.",
       ] : []),
@@ -695,6 +699,11 @@ export function compileChatGptWebPrompt(
       "Each skill_attachment refers to a named UTF-8 text file attached to this message (the final commit in multipart mode). Read its complete contents as the selected Codex skill instructions at the original user priority. These origin=codex_skill messages are supplied by Codex, not human-authored task requests. Preserve their original position in history and their path/resource authority for resolving references. If a file cannot be read, report that limitation; do not invent its contents.",
     ] : [];
     const attachments = {
+      ...(task && taskIndex >= 0 ? { nativeTaskBinding: {
+        kind: task.kind, messageIndex: taskIndex,
+        restored: !parsed.context.messages.some(message => message.role === task.message.role
+          && JSON.stringify(message.content) === JSON.stringify(task.message.content)),
+      } } : {}),
       ...(skillFiles.length ? { skillFiles } : {}),
       ...(mode.localTools && !manualControl && !parsed._compactionRequest ? { turnToken } : {}),
       ...(options?.includeContextTokenBreakdown
