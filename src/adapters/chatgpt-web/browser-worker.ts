@@ -3036,7 +3036,9 @@ export class ChatGptBrowserWorker {
         && state.turnIdentities.every(turn => acceptedTurns.has(turn) || turn === user || turn === identity);
       let matches = false;
       if (replacement) {
-        const locator = page.locator(chatGptAssistantTurnSelector(identity!));
+        // Expanding the user bubble may unmount the assistant in this same group.
+        // Its stable container must remain addressable throughout expansion and cleanup.
+        const locator = page.locator(chatGptTurnContainerSelector(identity!));
         matches = baseline.acceptedUserIdentity
           ? user === baseline.acceptedUserIdentity
           : Boolean(baseline.submittedText) && await this.userMessageMatchesSubmission(
@@ -4075,8 +4077,16 @@ export class ChatGptBrowserWorker {
       // Turn IDs can be reused in another conversation. A changed URL needs the submitted
       // capability/compaction marker or exact message text as well as the bound DOM identity.
       if (!baseline.submittedText || !await this.userMessageMatchesSubmission(
-        binding.locator, baseline.submittedText, signal, baseline.turnToken, baseline.compactionSubmissionId,
+        page.locator(chatGptTurnContainerSelector(binding.identity)),
+        baseline.submittedText, signal, baseline.turnToken, baseline.compactionSubmissionId,
       )) return undefined;
+      // Expansion yields to the renderer. It must restore the same sole accepted exchange,
+      // not pin a URL after a concurrent foreign user/assistant appeared during the read.
+      const verified = await this.submissionDomState(page, {}, signal);
+      const verifiedUsers = verified.userIdentities.filter(identity => !initial.has(identity));
+      const verifiedResponses = verified.responseIdentities.filter(identity => !initial.has(identity));
+      if (verifiedUsers.length !== 1 || verifiedUsers[0] !== users[0]
+        || verifiedResponses.length !== 1 || verifiedResponses[0] !== binding.identity) return undefined;
       return await this.currentSavedConversationUrl(page, signal) === url ? url : undefined;
     } catch (error) {
       if (error instanceof ChatGptBrowserObservationTimeoutError

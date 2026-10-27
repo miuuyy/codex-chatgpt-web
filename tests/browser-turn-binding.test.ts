@@ -101,6 +101,47 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("one empty-page reload restor
   } finally { await browser.close(); }
 }, 20_000);
 
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("saved-route proof survives message expansion unmounting the same assistant", async () => {
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  try {
+    const page = await browser.newPage();
+    page.setDefaultTimeout(500);
+    const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+    const url = "https://chatgpt.com/c/00000000-0000-4000-8000-000000000001";
+    const submitted = "Current task\n".repeat(1000) + "EXACT_END";
+    await page.route(url, route => route.fulfill({ contentType: "text/html", body: "<main></main>" }));
+    for (const scenario of ["same", "rebind", "foreign-text", "competing-user"] as const) {
+      await page.goto(url);
+      const baseline = await worker.captureSubmissionBaseline(page, submitted, []);
+      await page.locator("main").evaluate(node => { node.innerHTML = '<div data-turn-key="accepted"><div data-user-message-bubble>'
+        + '<div data-search-result-target>Preview</div><button type="button" aria-expanded="false" data-thread-find-skip="true" data-markdown-copy="exclude">Show more</button></div>'
+        + '<div data-conversation-role="assistant"></div><div data-markdown-text-style="assistant-message">Verified result.</div></div>'; });
+      if (scenario !== "rebind") await worker.currentSubmissionEvidence(page, baseline);
+      let binding = await worker.waitForNewAssistantTurn(page, baseline, Date.now() + 2000);
+      await page.locator("button").evaluate((button, { submitted, scenario }) => {
+        const assistant = document.querySelector('[data-conversation-role="assistant"]')!;
+        button.addEventListener("click", () => {
+          const open = button.getAttribute("aria-expanded") !== "true";
+          button.setAttribute("aria-expanded", String(open));
+          button.parentElement!.querySelector('[data-search-result-target]')!.textContent = open
+            ? scenario === "foreign-text" ? submitted + "CHANGED" : submitted : "Preview";
+          if (open) {
+            assistant.remove();
+            if (scenario === "competing-user") document.querySelector("main")!.insertAdjacentHTML("beforeend", '<div data-turn-key="foreign"><div data-user-message-bubble>Foreign task</div></div>');
+          } else button.closest('[data-turn-key]')!.append(assistant);
+        });
+      }, { submitted, scenario });
+      if (scenario === "rebind") {
+        await page.locator('[data-turn-key="accepted"]').evaluate(node => node.setAttribute("data-turn-key", "persisted"));
+        binding = await worker.reconcileAssistantTurnBinding(page, baseline, binding);
+      }
+      expect(await worker.acceptedResponseConversationUrl(page, baseline, binding)).toBe(scenario === "same" || scenario === "rebind" ? url : undefined);
+      expect(await page.locator("button").getAttribute("aria-expanded")).toBe("false");
+      expect(await binding.locator.count()).toBe(1);
+    }
+  } finally { await browser.close(); }
+}, 10_000);
+
 test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("read-only compaction rebinds rewritten JSON using its exact prepared marker", async () => {
   const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
   try {
