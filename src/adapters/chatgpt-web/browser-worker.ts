@@ -5431,6 +5431,7 @@ export class ChatGptBrowserWorker {
       let sawRunning = false;
       let loggedCompletionWait = false;
       let capturedResponse = false;
+      let sawAnswerText = false;
       const sentAt = Date.now();
       const visibleTrace = new ChatGptVisibleTraceTracker();
       const markdownBuffer = new ChatGptMarkdownBuffer(undefined, undefined, turn.compaction ? "complete" : "stream");
@@ -5604,6 +5605,7 @@ export class ChatGptBrowserWorker {
             if (trace.kind === "commentary") turn.onCommentary?.(trace.text, trace.continuation === true);
             else turn.onReasoningSummary?.(trace.text, trace.continuation === true);
           }
+          if (snapshot.visibleText.trim()) sawAnswerText = true;
           if (textDelta) emitMarkdownDelta(textDelta);
           const domError = domHealthTracker.update({
             responsePresent: snapshot.responsePresent,
@@ -5614,7 +5616,9 @@ export class ChatGptBrowserWorker {
             responseStreamActive,
             activityText: JSON.stringify(snapshot.traceBlocks),
           });
-          if (domError) throw chatGptResponseIncompleteError(domError);
+          if (domError) throw chatGptResponseIncompleteError(domError, {
+            emptyResponseWithoutPendingTools: !sawAnswerText && !externalToolCallsInFlight,
+          });
           const completionReady = completionTracker.update({
             responsePresent: snapshot.responsePresent,
             running,
@@ -5693,7 +5697,9 @@ export class ChatGptBrowserWorker {
             externalProgressLive,
             responseStreamActive,
           });
-          if (domError) throw chatGptResponseIncompleteError(domError);
+          if (domError) throw chatGptResponseIncompleteError(domError, {
+            emptyResponseWithoutPendingTools: !sawAnswerText && !externalToolCallsInFlight,
+          });
         }
         await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
        } catch (error) {

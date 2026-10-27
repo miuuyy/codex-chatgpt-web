@@ -30,9 +30,16 @@ export function chatGptToolTimeoutError(tool: string, timeoutMs: number): ChatGp
   );
 }
 
-export function chatGptResponseIncompleteError(message: string): ChatGptWebAdapterError {
+export function chatGptResponseIncompleteError(
+  message: string,
+  state: { emptyResponseWithoutPendingTools?: boolean } = {},
+): ChatGptWebAdapterError {
+  // Only the observer can prove this empty, idle case. Preserve partial answers,
+  // lost DOM, completed-empty replies, limits and permission failures as terminal.
+  const retryable = state.emptyResponseWithoutPendingTools === true
+    && /^ChatGPT has shown no new response activity for \d+(?:\.\d+)? seconds without a final answer\./.test(message);
   return new ChatGptWebAdapterError(message, {
-    status: 502, errorType: "server_error", code: "chatgpt_response_incomplete", retryable: false,
+    status: 502, errorType: "server_error", code: "chatgpt_response_incomplete", retryable,
   });
 }
 

@@ -430,6 +430,56 @@ describe("ChatGPT outer-native harness v4", () => {
     }
   });
 
+  test("only a proven empty idle response allows incomplete-response recovery", () => {
+    const silent = "ChatGPT has shown no new response activity for 600 seconds without a final answer. Check the ChatGPT tab before retrying.";
+    expect(chatGptResponseIncompleteError(silent, { emptyResponseWithoutPendingTools: true }).retryable).toBeTrue();
+    expect(chatGptResponseIncompleteError(silent).retryable).toBeFalse();
+    expect(chatGptResponseIncompleteError(silent, { emptyResponseWithoutPendingTools: false }).retryable).toBeFalse();
+    for (const message of [
+      "ChatGPT response DOM disappeared while the browser turn was active.",
+      "ChatGPT completed without a final answer.",
+      "ChatGPT stopped showing generation or tool activity without a final answer.",
+    ]) {
+      expect(chatGptResponseIncompleteError(message, { emptyResponseWithoutPendingTools: true }).retryable).toBeFalse();
+    }
+  });
+
+  test("a proven empty idle response starts a fresh browser session on native reconnect", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-empty-idle-retry-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web", baseUrl: `browser://chatgpt-empty-idle-retry-${Date.now()}`,
+      chatgptWeb: { brokerSocketPath: socketPath, localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run;
+    let browserStarts = 0;
+    worker.run = async turn => {
+      browserStarts += 1;
+      turn.onSendActivated?.();
+      if (browserStarts === 1) throw chatGptResponseIncompleteError(
+        "ChatGPT has shown no new response activity for 600 seconds without a final answer. Check the ChatGPT tab before retrying.",
+        { emptyResponseWithoutPendingTools: true },
+      );
+      const answer = "Recovered after an empty idle response";
+      turn.onTextDelta(answer);
+      return answer;
+    };
+    try {
+      const first: AdapterEvent[] = [];
+      await createChatGptWebAdapter(provider).runTurn!(rawWireRequest(environmentXml),
+        { headers: new Headers() }, event => first.push(event));
+      expect(first.at(-1)).toMatchObject({ type: "error", code: "chatgpt_response_incomplete", retryable: true });
+      const recovered: AdapterEvent[] = [];
+      await createChatGptWebAdapter(provider).runTurn!(rawWireRequest(environmentXml),
+        { headers: new Headers() }, event => recovered.push(event));
+      expect(browserStarts).toBe(2);
+      expect(recovered.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+    } finally {
+      worker.run = originalRun;
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
+
   test.each([
     [false, false], [true, false], [false, true], [true, true],
   ])("sequential native messages honor fresh conversation=%s and Luna Bigger Context=%s", async (freshConversation, luna) => {
