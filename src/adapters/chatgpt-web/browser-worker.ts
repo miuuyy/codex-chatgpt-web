@@ -4008,27 +4008,81 @@ export class ChatGptBrowserWorker {
 
   private async reloadVanishedResponsePage(
     page: Page,
-    acceptedUrl: string,
-    state: { running: boolean; responseStreamActive: boolean; externalToolCallsInFlight: boolean; deadline?: number },
+    acceptedUrl: string | undefined,
+    state: { running: boolean; responseStreamActive: boolean; externalToolCallsInFlight: boolean; deadline?: number; traceId?: string },
     signal?: AbortSignal,
   ): Promise<boolean> {
     if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
-    if (state.running || state.responseStreamActive || state.externalToolCallsInFlight) return false;
+    const skip = (reason: string): false => {
+      if (state.traceId) console.warn("[chatgpt-web] response_page_reload_skipped " + JSON.stringify({
+        traceId: state.traceId, reason,
+      }));
+      return false;
+    };
+    if (state.running || state.responseStreamActive || state.externalToolCallsInFlight) return skip("active_generation_or_tools");
     const timeout = Math.min(60_000, state.deadline === undefined ? 60_000 : state.deadline - Date.now());
     if (timeout <= 0) throw new Error("ChatGPT web turn timed out");
-    let saved: URL;
-    try { saved = new URL(acceptedUrl); } catch { return false; }
-    if (saved.origin !== "https://chatgpt.com"
-      || !/^\/c\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\/?$/i.test(saved.pathname)
-      || page.url() !== acceptedUrl) return false;
+    const saved = this.savedConversationUrl(acceptedUrl);
+    if (!saved) return skip("accepted_conversation_not_pinned");
+    if (await this.currentSavedConversationUrl(page, signal) !== saved) return skip("current_conversation_differs");
     // Recover only an empty SPA document at the exact accepted saved URL. Existing or competing
     // turns must use normal binding/health checks, never navigation to a guessed conversation.
     if (await page.locator(CHATGPT_USER_TURN_SELECTOR).count()
-      || await page.locator(CHATGPT_ASSISTANT_TURN_SELECTOR).count()) return false;
-    if (page.url() !== acceptedUrl) return false;
+      || await page.locator(CHATGPT_ASSISTANT_TURN_SELECTOR).count()) return skip("conversation_dom_present");
+    if (await this.currentSavedConversationUrl(page, signal) !== saved) return skip("conversation_changed_during_probe");
     if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
-    await withBrowserTurnAbort(page.reload({ waitUntil: "domcontentloaded", timeout }), signal);
-    return page.url() === acceptedUrl;
+    const reloadTimeout = Math.min(timeout, state.deadline === undefined ? timeout : state.deadline - Date.now());
+    if (reloadTimeout <= 0) throw new Error("ChatGPT web turn timed out");
+    await withBrowserTurnAbort(page.reload({ waitUntil: "domcontentloaded", timeout: reloadTimeout }), signal);
+    return await this.currentSavedConversationUrl(page, signal) === saved || skip("conversation_changed_during_reload");
+  }
+
+  private savedConversationUrl(value: string | undefined): string | undefined {
+    if (!value) return undefined;
+    let url: URL;
+    try { url = new URL(value); } catch { return undefined; }
+    if (url.origin !== "https://chatgpt.com"
+      || !/^\/c\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\/?$/i.test(url.pathname)) return undefined;
+    return url.origin + url.pathname.replace(/\/$/, "");
+  }
+
+  private async currentSavedConversationUrl(page: Page, signal?: AbortSignal): Promise<string | undefined> {
+    // Read the live document rather than relying on Playwright's cached frame URL across
+    // the launcher's CDP session and the SPA's optimistic-to-saved route transition.
+    const href = await withChatGptBrowserObservationTimeout(
+      withBrowserTurnAbort(page.evaluate(() => location.href), signal),
+    );
+    return this.savedConversationUrl(href);
+  }
+
+  private async acceptedResponseConversationUrl(
+    page: Page,
+    baseline: ChatGptSubmissionBaseline,
+    binding: ChatGptAssistantTurnBinding,
+    signal?: AbortSignal,
+  ): Promise<string | undefined> {
+    // Send can be acknowledged before the SPA installs its saved URL. Pin only while the
+    // exact accepted exchange is still observable, never infer ownership from an empty page.
+    try {
+      const url = await this.currentSavedConversationUrl(page, signal);
+      if (!url) return undefined;
+      const state = await this.submissionDomState(page, {}, signal);
+      const initial = new Set(baseline.initialTurnIdentities);
+      const users = state.userIdentities.filter(identity => !initial.has(identity));
+      const responses = state.responseIdentities.filter(identity => !initial.has(identity));
+      if (users.length !== 1 || responses.length !== 1 || responses[0] !== binding.identity) return undefined;
+      if (baseline.acceptedUserIdentity && users[0] !== baseline.acceptedUserIdentity) return undefined;
+      // Turn IDs can be reused in another conversation. A changed URL needs the submitted
+      // capability/compaction marker or exact message text as well as the bound DOM identity.
+      if (!baseline.submittedText || !await this.userMessageMatchesSubmission(
+        binding.locator, baseline.submittedText, signal, baseline.turnToken, baseline.compactionSubmissionId,
+      )) return undefined;
+      return await this.currentSavedConversationUrl(page, signal) === url ? url : undefined;
+    } catch (error) {
+      if (error instanceof ChatGptBrowserObservationTimeoutError
+        || error instanceof Error && /Execution context was destroyed|Cannot find context with specified id/.test(error.message)) return undefined;
+      throw error;
+    }
   }
 
   private async responseDomSnapshot(
@@ -5449,7 +5503,9 @@ export class ChatGptBrowserWorker {
           : undefined,
         generation,
       );
-      const acceptedConversationUrl = page.url();
+      let acceptedConversationUrl = await this.acceptedResponseConversationUrl(
+        page, submissionBaseline, responseTurn, turn.abortSignal,
+      );
       await diagnostics.capture(page, "send-accepted");
 
       let lastHeartbeat = 0;
@@ -5617,6 +5673,19 @@ export class ChatGptBrowserWorker {
         if (running || responseStreamActive) generation.progress();
         if (running) sawRunning = true;
         if (snapshot.responsePresent) {
+          const currentConversation = this.savedConversationUrl(page.url());
+          if (!acceptedConversationUrl || currentConversation && currentConversation !== acceptedConversationUrl) {
+            const verified = await this.acceptedResponseConversationUrl(
+              page, submissionBaseline, responseTurn, turn.abortSignal,
+            );
+            if (verified) {
+              console.info("[chatgpt-web] response_conversation_bound " + JSON.stringify({
+                traceId: turn.traceId, replacedPreviousPin: acceptedConversationUrl !== undefined,
+                cachedUrlMatchesDocument: this.savedConversationUrl(page.url()) === verified,
+              }));
+              acceptedConversationUrl = verified;
+            }
+          }
           if (!capturedResponse) {
             capturedResponse = true;
             await diagnostics.capture(page, "response-visible");
@@ -5728,7 +5797,7 @@ export class ChatGptBrowserWorker {
             && !reloadedVanishedResponse) {
             reloadedVanishedResponse = true;
             if (await this.reloadVanishedResponsePage(page, acceptedConversationUrl, {
-              running, responseStreamActive, externalToolCallsInFlight, deadline,
+              running, responseStreamActive, externalToolCallsInFlight, deadline, traceId: turn.traceId,
             }, turn.abortSignal)) {
               console.info(`[chatgpt-web] browser turn ${turn.traceId} reloaded its accepted conversation after an empty response DOM`);
               submissionBaseline.domCache = {};

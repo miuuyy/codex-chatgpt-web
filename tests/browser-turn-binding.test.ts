@@ -32,7 +32,7 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("one empty-page reload restor
       + '<div data-markdown-text-style="assistant-message"><p>Verified result: 7.</p></div></div>'
       + '<div class="turn-action-controls"><button>Copy</button></div></div></main>';
     const methods: string[] = [];
-    await page.route(url, route => { methods.push(route.request().method()); return route.fulfill({ contentType: "text/html", body: html }); });
+    await page.route(url + "*", route => { methods.push(route.request().method()); return route.fulfill({ contentType: "text/html", body: html }); });
     await page.goto(url);
     await page.setContent("<main></main>");
     const baseline = await worker.captureSubmissionBaseline(page, "CURRENT TASK", []);
@@ -42,7 +42,7 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("one empty-page reload restor
     const markdown = new ChatGptMarkdownBuffer(undefined, 0);
     markdown.observe((await worker.responseDomSnapshot(binding.locator, {})).markdownSegments, 0);
     await page.locator("main").evaluate(node => { node.innerHTML = ""; });
-    expect(await worker.reloadVanishedResponsePage(page, url, { running: false, responseStreamActive: false, externalToolCallsInFlight: false })).toBe(true);
+    expect(await worker.reloadVanishedResponsePage(page, url + "?model=fixture#composer", { running: false, responseStreamActive: false, externalToolCallsInFlight: false })).toBe(true);
     const rebound = await worker.reconcileAssistantTurnBinding(page, { ...baseline, domCache: {} }, binding);
     expect(rebound.identity).toBe(binding.identity);
     const restored = await worker.responseDomSnapshot(rebound.locator, {});
@@ -50,6 +50,36 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("one empty-page reload restor
     markdown.observe(restored.markdownSegments, 1);
     expect(markdown.finish().markdown).toBe("Verified result: 7.");
     expect(methods).toEqual(["GET", "GET"]);
+    // Send/assistant acceptance can precede installation of the saved route. A later saved
+    // URL requires the same accepted user and response, and cannot be learned from emptiness.
+    await page.evaluate(() => history.replaceState(null, "", "/"));
+    expect(await worker.acceptedResponseConversationUrl(page, baseline, rebound)).toBeUndefined();
+    await page.evaluate(saved => history.replaceState(null, "", saved), url + "?model=fixture#composer");
+    const pinned = await worker.acceptedResponseConversationUrl(page, baseline, rebound);
+    expect(pinned).toBe(url);
+    const stalePage = new Proxy(page, {
+      get(target, property) {
+        if (property === "url") return () => "https://chatgpt.com/";
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    expect(await worker.acceptedResponseConversationUrl(stalePage, baseline, rebound)).toBe(url);
+    await page.locator('[data-user-message-bubble] [data-search-result-target]').evaluate(node => { node.textContent = "FOREIGN TASK"; });
+    expect(await worker.acceptedResponseConversationUrl(page, baseline, rebound)).toBeUndefined();
+    await page.locator('[data-user-message-bubble] [data-search-result-target]').evaluate(node => { node.textContent = "CURRENT TASK"; });
+    expect(await worker.acceptedResponseConversationUrl(page, { ...baseline, acceptedUserIdentity: "group:user:foreign" }, rebound)).toBeUndefined();
+    expect(await worker.acceptedResponseConversationUrl(page, baseline, { ...rebound, identity: "group:assistant:foreign" })).toBeUndefined();
+    await page.locator("main").evaluate(node => {
+      node.insertAdjacentHTML("beforeend", '<div data-turn-key="foreign"><div data-user-message-bubble>Foreign</div></div>');
+    });
+    expect(await worker.acceptedResponseConversationUrl(page, baseline, rebound)).toBeUndefined();
+    await page.locator("main").evaluate(node => { node.innerHTML = ""; });
+    expect(await worker.acceptedResponseConversationUrl(page, baseline, rebound)).toBeUndefined();
+    expect(await worker.reloadVanishedResponsePage(page, undefined, { running: false, responseStreamActive: false, externalToolCallsInFlight: false })).toBe(false);
+    expect(await worker.reloadVanishedResponsePage(stalePage, pinned, { running: false, responseStreamActive: false, externalToolCallsInFlight: false })).toBe(true);
+    const savedAgain = await worker.reconcileAssistantTurnBinding(page, { ...baseline, domCache: {} }, rebound);
+    expect((await worker.responseDomSnapshot(savedAgain.locator, {})).visibleText).toBe("Verified result: 7.");
     for (const state of [
       { running: true, responseStreamActive: false, externalToolCallsInFlight: false },
       { running: false, responseStreamActive: true, externalToolCallsInFlight: false },
@@ -63,11 +93,11 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("one empty-page reload restor
     const aborted = new AbortController();
     aborted.abort();
     await expect(worker.reloadVanishedResponsePage(page, url, idle, aborted.signal)).rejects.toThrow("aborted");
-    expect(await worker.reloadVanishedResponsePage(page, url + "?different=1", idle)).toBe(false);
+    expect(await worker.reloadVanishedResponsePage(page, url.replace(/1$/, "2"), idle)).toBe(false);
     expect(await worker.reloadVanishedResponsePage(page, "https://example.com/c/00000000-0000-4000-8000-000000000001", idle)).toBe(false);
     await page.setContent(html);
     expect(await worker.reloadVanishedResponsePage(page, url, idle)).toBe(false);
-    expect(methods).toEqual(["GET", "GET"]);
+    expect(methods).toEqual(["GET", "GET", "GET"]);
   } finally { await browser.close(); }
 }, 20_000);
 
