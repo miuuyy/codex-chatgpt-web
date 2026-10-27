@@ -115,9 +115,9 @@ async function archiveChatUi({ url, surfaceId, verifyOnly, settleTimeoutMs = 300
     return nodes[0];
   };
   // Full navigation can complete before ChatGPT hydrates its conversation header.
-  const trigger = await waitFor(() => single([...document.querySelectorAll('main [data-testid="app-shell-header-context-menu-surface"] button[aria-label="Chat actions"]')].filter(visible)), 2000);
+  const trigger = await waitFor(() => single([...document.querySelectorAll('main [data-testid="app-shell-header-context-menu-surface"] button[aria-label="Chat actions"]')].filter(visible)), verifyOnly ? 10000 : 2000);
   if (!ownsDocument()) throw new Error("archive_document_changed_after_header");
-  if (!trigger) throw new Error("archive_controls_unavailable");
+  if (!trigger) throw new Error(verifyOnly ? "archive_verification_header_unavailable" : "archive_header_unavailable");
   const quiet = await waitFor(() => {
     if (!ownsDocument()) throw new Error("archive_document_changed_while_settling");
     if (!verifyOnly && document.querySelectorAll('[data-message-author-role="user"]').length !== userCount) throw new Error("archive_user_turn_changed");
@@ -130,7 +130,7 @@ async function archiveChatUi({ url, surfaceId, verifyOnly, settleTimeoutMs = 300
   let choice = await waitFor(readChoice, 150);
   if (!choice) { trigger.click(); choice = await waitFor(readChoice, 2000); }
   if (!ownsDocument()) throw new Error("archive_document_changed_after_menu");
-  if (!choice) throw new Error("archive_controls_unavailable");
+  if (!choice) throw new Error(verifyOnly ? "archive_verification_menu_unavailable" : "archive_menu_unavailable");
   if (choice.textContent.trim() === "Unarchive") return { status: "archived" };
   if (verifyOnly) {
     // The header/menu can render with default archive metadata before the
@@ -224,7 +224,7 @@ async function archiveDocument(tab, { createVerificationWindow = createArchiveVe
       + "if(location.origin+location.pathname.replace(/\\/$/,'')!==" + JSON.stringify(url)
       + ")throw new Error('archive_document_changed_before_verification');"
       + "Object.defineProperty(globalThis,'__CODEX_WEB_GPT_SURFACE_ID__',{value:"
-      + JSON.stringify(tab.surfaceId) + ",configurable:true});return " + script(true) + ";})()", 15000);
+      + JSON.stringify(tab.surfaceId) + ",configurable:true});return " + script(true) + ";})()", 25000);
     if (verified?.status !== "archived") throw new Error("archive_not_verified");
   } finally {
     contents.off("destroyed", cancelVerification);

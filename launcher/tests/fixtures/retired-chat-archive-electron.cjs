@@ -43,6 +43,10 @@ app.whenReady().then(async () => {
         };
         menu.append(choice); document.body.append(menu);
       });
+      if (isArchived) {
+        const header = document.querySelector("header"); header.remove();
+        setTimeout(() => document.querySelector("main").append(header), 2500);
+      }
     }
     return new Response('<main><header data-testid="app-shell-header-context-menu-surface"><button aria-label="Chat actions">Actions</button></header></main><script>('
       + render.toString() + ")(" + JSON.stringify(archived) + ");</script>", { headers: { "content-type": "text/html" } });
