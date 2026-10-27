@@ -4006,6 +4006,31 @@ export class ChatGptBrowserWorker {
     }
   }
 
+  private async reloadVanishedResponsePage(
+    page: Page,
+    acceptedUrl: string,
+    state: { running: boolean; responseStreamActive: boolean; externalToolCallsInFlight: boolean; deadline?: number },
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
+    if (state.running || state.responseStreamActive || state.externalToolCallsInFlight) return false;
+    const timeout = Math.min(60_000, state.deadline === undefined ? 60_000 : state.deadline - Date.now());
+    if (timeout <= 0) throw new Error("ChatGPT web turn timed out");
+    let saved: URL;
+    try { saved = new URL(acceptedUrl); } catch { return false; }
+    if (saved.origin !== "https://chatgpt.com"
+      || !/^\/c\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\/?$/i.test(saved.pathname)
+      || page.url() !== acceptedUrl) return false;
+    // Recover only an empty SPA document at the exact accepted saved URL. Existing or competing
+    // turns must use normal binding/health checks, never navigation to a guessed conversation.
+    if (await page.locator(CHATGPT_USER_TURN_SELECTOR).count()
+      || await page.locator(CHATGPT_ASSISTANT_TURN_SELECTOR).count()) return false;
+    if (page.url() !== acceptedUrl) return false;
+    if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
+    await withBrowserTurnAbort(page.reload({ waitUntil: "domcontentloaded", timeout }), signal);
+    return page.url() === acceptedUrl;
+  }
+
   private async responseDomSnapshot(
     responseTurn: Locator,
     cache?: ChatGptResponseDomCache,
@@ -5424,6 +5449,7 @@ export class ChatGptBrowserWorker {
           : undefined,
         generation,
       );
+      const acceptedConversationUrl = page.url();
       await diagnostics.capture(page, "send-accepted");
 
       let lastHeartbeat = 0;
@@ -5432,6 +5458,7 @@ export class ChatGptBrowserWorker {
       let loggedCompletionWait = false;
       let capturedResponse = false;
       let sawAnswerText = false;
+      let reloadedVanishedResponse = false;
       const sentAt = Date.now();
       const visibleTrace = new ChatGptVisibleTraceTracker();
       const markdownBuffer = new ChatGptMarkdownBuffer(undefined, undefined, turn.compaction ? "complete" : "stream");
@@ -5697,6 +5724,21 @@ export class ChatGptBrowserWorker {
             externalProgressLive,
             responseStreamActive,
           });
+          if (domError === "ChatGPT response DOM disappeared while the browser turn was active"
+            && !reloadedVanishedResponse) {
+            reloadedVanishedResponse = true;
+            if (await this.reloadVanishedResponsePage(page, acceptedConversationUrl, {
+              running, responseStreamActive, externalToolCallsInFlight, deadline,
+            }, turn.abortSignal)) {
+              console.info(`[chatgpt-web] browser turn ${turn.traceId} reloaded its accepted conversation after an empty response DOM`);
+              submissionBaseline.domCache = {};
+              responseDomCache.key = undefined;
+              responseDomCache.snapshot = undefined;
+              domHealthTracker.suspendForProgress();
+              await diagnostics.capture(page, "response-page-reloaded");
+              continue;
+            }
+          }
           if (domError) throw chatGptResponseIncompleteError(domError, {
             emptyResponseWithoutPendingTools: !sawAnswerText && !externalToolCallsInFlight,
           });

@@ -21,6 +21,56 @@ test("only isolated compaction receives a fresh non-capability submission identi
   expect(withChatGptCompactionSubmissionIdentity(multipart, true)).toEqual({ prompt: multipart });
 });
 
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("one empty-page reload restores the same accepted response without a new submission", async () => {
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  try {
+    const page = await browser.newPage();
+    const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+    const url = "https://chatgpt.com/c/00000000-0000-4000-8000-000000000001";
+    const html = '<main><div data-turn-key="accepted"><div data-user-message-bubble><div data-search-result-target>CURRENT TASK</div></div>'
+      + '<div data-content-search-unit-key="accepted:assistant"><div data-conversation-role="assistant"></div>'
+      + '<div data-markdown-text-style="assistant-message"><p>Verified result: 7.</p></div></div>'
+      + '<div class="turn-action-controls"><button>Copy</button></div></div></main>';
+    const methods: string[] = [];
+    await page.route(url, route => { methods.push(route.request().method()); return route.fulfill({ contentType: "text/html", body: html }); });
+    await page.goto(url);
+    await page.setContent("<main></main>");
+    const baseline = await worker.captureSubmissionBaseline(page, "CURRENT TASK", []);
+    await page.locator("main").evaluate((node, markup) => { node.innerHTML = markup; }, html.slice(6, -7));
+    expect(await worker.currentSubmissionEvidence(page, baseline)).toBe("user_turn");
+    const binding = await worker.waitForNewAssistantTurn(page, baseline, Date.now() + 2000);
+    const markdown = new ChatGptMarkdownBuffer(undefined, 0);
+    markdown.observe((await worker.responseDomSnapshot(binding.locator, {})).markdownSegments, 0);
+    await page.locator("main").evaluate(node => { node.innerHTML = ""; });
+    expect(await worker.reloadVanishedResponsePage(page, url, { running: false, responseStreamActive: false, externalToolCallsInFlight: false })).toBe(true);
+    const rebound = await worker.reconcileAssistantTurnBinding(page, { ...baseline, domCache: {} }, binding);
+    expect(rebound.identity).toBe(binding.identity);
+    const restored = await worker.responseDomSnapshot(rebound.locator, {});
+    expect(restored.visibleText).toBe("Verified result: 7.");
+    markdown.observe(restored.markdownSegments, 1);
+    expect(markdown.finish().markdown).toBe("Verified result: 7.");
+    expect(methods).toEqual(["GET", "GET"]);
+    for (const state of [
+      { running: true, responseStreamActive: false, externalToolCallsInFlight: false },
+      { running: false, responseStreamActive: true, externalToolCallsInFlight: false },
+      { running: false, responseStreamActive: false, externalToolCallsInFlight: true },
+    ]) {
+      await page.locator("main").evaluate(node => { node.innerHTML = ""; });
+      expect(await worker.reloadVanishedResponsePage(page, url, state)).toBe(false);
+    }
+    const idle = { running: false, responseStreamActive: false, externalToolCallsInFlight: false };
+    await expect(worker.reloadVanishedResponsePage(page, url, { ...idle, deadline: Date.now() - 1 })).rejects.toThrow("timed out");
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(worker.reloadVanishedResponsePage(page, url, idle, aborted.signal)).rejects.toThrow("aborted");
+    expect(await worker.reloadVanishedResponsePage(page, url + "?different=1", idle)).toBe(false);
+    expect(await worker.reloadVanishedResponsePage(page, "https://example.com/c/00000000-0000-4000-8000-000000000001", idle)).toBe(false);
+    await page.setContent(html);
+    expect(await worker.reloadVanishedResponsePage(page, url, idle)).toBe(false);
+    expect(methods).toEqual(["GET", "GET"]);
+  } finally { await browser.close(); }
+}, 20_000);
+
 test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("read-only compaction rebinds rewritten JSON using its exact prepared marker", async () => {
   const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
   try {
