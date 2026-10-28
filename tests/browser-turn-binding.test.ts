@@ -236,6 +236,52 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("read-only compaction rebinds
   } finally { await browser.close(); }
 }, 20_000);
 
+for (const kind of ["compaction", "broker"]) {
+  test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)(`${kind} submission proof preserves rendered line boundaries without accepting foreign or ambiguous identities`, async () => {
+    const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+    try {
+      const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+      const token = "turn_12345678901234567890123456789012";
+      const compact = withChatGptCompactionSubmissionIdentity({ text: "Summarize current work.", images: [] }, true);
+      const identity = kind === "compaction" ? compact.identity! : token;
+      const submitted = kind === "compaction" ? compact.prompt.text : `Current task. ${token}\nThis is the next line.`;
+      for (const layout of ["br", "paragraph", "inline-split", "foreign", "duplicate", "attached-suffix", "hidden-only", "hidden-duplicate", "foreign-hidden"]) {
+        const page = await browser.newPage();
+        await page.setContent("<main></main>");
+        const baseline = await worker.captureSubmissionBaseline(page, submitted, [],
+          kind === "broker" ? token : undefined, kind === "compaction" ? identity : undefined);
+        const binding = {
+          identity: "group:assistant:optimistic",
+          locator: page.locator('[data-turn-key="optimistic"]'),
+          acceptedTurnIdentities: ["group:assistant:optimistic"],
+        };
+        const foreign = identity.replace(/.$/, identity.endsWith("a") ? "b" : "a");
+        const text = layout === "foreign" ? foreign : identity;
+        const html = layout === "paragraph" ? `<p>Identity: ${text}</p><p>This is the next line.</p>`
+          : layout === "inline-split" ? `<p>Identity: <span>${text.slice(0, 12)}</span><span>${text.slice(12)}</span><br>This is the next line.</p>`
+          : layout === "duplicate" ? `<p>${text}</p><p>${text}</p>`
+          : layout === "attached-suffix" ? `<p>${text}This is the same word.</p>`
+          : layout === "hidden-only" ? `<p>No visible proof.<span hidden>${text}</span></p>`
+          : layout === "hidden-duplicate" ? `<p>${text}<br>This is the next line.</p><span hidden>${text}</span>`
+          : layout === "foreign-hidden" ? `<p>${text}<br>This is the next line.</p><span hidden> ${foreign} </span>`
+          : `<p>Identity: ${text}<br>This is the next line.</p>`;
+        await page.locator("main").evaluate((node, html) => {
+          node.innerHTML = '<div data-turn-key="persisted"><div data-user-message-bubble><div data-search-result-target>'
+            + html + '</div></div><div data-conversation-role="assistant"></div></div>';
+        }, html);
+        // Captured October 28: textContent joins the exact ID to "This" across BR/P,
+        // so a correct literal boundary check fails even though the rendered ID is intact.
+        if (["br", "paragraph", "inline-split"].includes(layout) || kind === "compaction" && layout === "foreign-hidden") {
+          expect(await worker.reconcileAssistantTurnBinding(page, baseline, binding)).toMatchObject({ identity: "group:assistant:persisted" });
+        } else {
+          await expect(worker.reconcileAssistantTurnBinding(page, baseline, binding)).rejects.toThrow("another user turn");
+        }
+        await page.close();
+      }
+    } finally { await browser.close(); }
+  }, 60_000);
+}
+
 test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("CodeMirror language invalidates the response cache and incomplete code is not delivered", async () => {
   const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
   try {

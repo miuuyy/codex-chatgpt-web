@@ -3161,10 +3161,15 @@ export class ChatGptBrowserWorker {
         if (turnToken !== undefined || !/^compact_[a-f0-9]{32}$/.test(compactionSubmissionId)
           || !submitted.includes(compactionSubmissionId)) return false;
         return withChatGptBrowserObservationTimeout(withBrowserTurnAbort(content.evaluate((element, expected) => {
-          const identities = (element.textContent ?? '').match(/(?<![A-Za-z0-9_-])compact_[a-f0-9]{32}(?![A-Za-z0-9_-])/g) ?? [];
+          // textContent joins adjacent rendered lines ("compact_…" + BR + "This")
+          // into one word, falsely rejecting this exact submission after a rekey.
+          const raw = element.textContent ?? "";
+          const text = (element as HTMLElement).innerText ?? raw;
+          const identities = text.match(/(?<![A-Za-z0-9_-])compact_[a-f0-9]{32}(?![A-Za-z0-9_-])/g) ?? [];
           // A prior checkpoint may quote an older correlation marker. Only this
           // prepared submission's exact marker must occur once.
-          return identities.filter(identity => identity === expected).length === 1;
+          return identities.filter(identity => identity === expected).length === 1
+            && raw.indexOf(expected) >= 0 && raw.indexOf(expected) === raw.lastIndexOf(expected);
         }, compactionSubmissionId), signal));
       }
       if (turnToken !== undefined) {
@@ -3173,8 +3178,13 @@ export class ChatGptBrowserWorker {
         // exact broker identity for this turn, never a shared prompt prefix or a
         // token inferred from the rendered message. Expand first to expose its tail.
         return withChatGptBrowserObservationTimeout(withBrowserTurnAbort(content.evaluate((element, token) => {
-          const tokens = (element.textContent ?? "").match(/(?<![A-Za-z0-9_-])turn_[A-Za-z0-9_-]{32}(?![A-Za-z0-9_-])/g) ?? [];
-          return tokens.length === 1 && tokens[0] === token;
+          const raw = element.textContent ?? "";
+          const text = (element as HTMLElement).innerText ?? raw;
+          const tokens = text.match(/(?<![A-Za-z0-9_-])turn_[A-Za-z0-9_-]{32}(?![A-Za-z0-9_-])/g) ?? [];
+          const rawTokens = raw.match(/(?<![A-Za-z0-9_-])turn_[A-Za-z0-9_-]{32}(?![A-Za-z0-9_-])/g) ?? [];
+          return tokens.length === 1 && tokens[0] === token
+            && raw.indexOf(token) >= 0 && raw.indexOf(token) === raw.lastIndexOf(token)
+            && rawTokens.every(value => value === token);
         }, turnToken), signal));
       }
       const observed = await withChatGptBrowserObservationTimeout(withBrowserTurnAbort(
