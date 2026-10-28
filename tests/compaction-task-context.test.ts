@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { defaultConfig } from "../src/config";
 import { compactRequest, responseRequest } from "../src/server";
 import { compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
-import { rememberCompactionContinuation, restoreCompactionTaskMessages } from "../src/adapters/chatgpt-web/compaction-continuation";
+import { currentNativeTask, rememberCompactionContinuation, restoreCompactionTaskMessages } from "../src/adapters/chatgpt-web/compaction-continuation";
 import { chatGptTurnUserRevisionHistory, extractChatGptCompactionSourceRevision, extractChatGptTurnIdentity } from "../src/adapters/chatgpt-web/environment";
 import { parseRequest } from "../src/responses/parser";
 import { encodeCompactionSummary } from "../src/responses/compaction";
@@ -19,7 +19,7 @@ for (const format of ["v1", "v2"] as const) {
         const human = { type: "message", role: "user", id: "msg_human", content: [{ type: "input_text", text: "Report the goal status only." }],
           internal_chat_message_metadata_passthrough: { turn_id: "earlier", content_item_kinds: ["user.text"] } };
         const taskText = kind === "goal"
-          ? '<codex_internal_context source="goal">Implement the next checked milestone.</codex_internal_context>'
+          ? '<codex_internal_context source="goal">Implement the next checked milestone. Preserve `config["task"]` and https://example.com/check.</codex_internal_context>'
           : '<codex_delegation><source_thread_id>coordinator</source_thread_id><input>Implement the next checked milestone.</input></codex_delegation>';
         const task = kind === "goal"
           ? { type: "message", role: "user", id: "msg_task", content: taskText,
@@ -30,6 +30,11 @@ for (const format of ["v1", "v2"] as const) {
           client_metadata: { "x-codex-turn-metadata": JSON.stringify(metadata) } };
         const config = defaultConfig("full");
         const compactFactory = () => ({ name: "task-context-compactor", async runTurn(_p: any, _i: any, emit: any) {
+          // Real browser compaction emits activity before its final checkpoint.
+          // v1 is batch-only; extra reasoning output must not make its accepted
+          // checkpoint ineligible for current-task restoration.
+          emit({ type: "thinking_delta", thinking: "Preparing the checkpoint" });
+          emit({ type: "reasoning_raw_delta", text: "checkpoint activity" });
           emit({ type: "text_delta", text: "The earlier status check is complete. Continue implementation.", phase: "final_answer" });
           emit({ type: "done", stopReason: "stop", endTurn: true });
         } });
@@ -56,13 +61,23 @@ for (const format of ["v1", "v2"] as const) {
                 .filter(record => record.kind === "message").map(record => record.message)
                 : JSON.parse(match![1]!).messages;
               const tasks = messages.filter((m: any) => m.content === taskText);
+              const resume = (prompt.multipart?.commit ?? prompt.text).split("<codex_transport_resume>").at(-1)!;
+              const binding = resume.match(/<codex_active_task_json>\n([^\n]+)\n<\/codex_active_task_json>/);
               if (steering) {
                 expect(tasks).toHaveLength(0);
                 expect(messages.some((m: any) => m.content === "Stop and report the new steering request.")).toBe(true);
+                expect(binding).toBeNull();
+                expect(prompt.nativeTaskBinding).toBeUndefined();
               } else {
                 expect(tasks).toHaveLength(1);
                 expect(tasks[0].role).toBe(kind === "goal" ? "user" : "agent_message");
                 expect(messages.indexOf(tasks[0])).toBeLessThan(messages.findIndex((m: any) => m.content === "LATEST_TOOL_RESULT"));
+                expect(binding).not.toBeNull();
+                const active = JSON.parse(binding![1]!);
+                expect(active).toEqual({ kind, message_index: messages.indexOf(tasks[0]), message: tasks[0] });
+                expect(messages[active.message_index].content).toBe(taskText);
+                expect(resume).toContain("Earlier one-turn requests retained by compaction belong to their earlier turns");
+                expect(prompt.nativeTaskBinding).toEqual({ kind, messageIndex: active.message_index, restored: true });
               }
             }
             expect(JSON.stringify(parsed.context.messages)).toBe(before);
@@ -104,12 +119,15 @@ test("task restoration preserves repeated authenticated checkpoints and rejects 
   const second = { type: "compaction", encrypted_content: encodeCompactionSummary("Second exact summary") };
   const continuation = parseRequest({ ...body, input: [human, second] });
   expect(restore(continuation).filter(m => m.content === task.content)).toHaveLength(1);
+  expect(currentNativeTask(continuation, identity, chatGptTurnUserRevisionHistory(continuation))?.kind).toBe("goal");
   expect(restore(continuation, { ...identity, threadId: "another_thread" })).toBe(continuation.context.messages);
   expect(restore(continuation, { ...identity, turnId: "another_turn" })).toBe(continuation.context.messages);
   const changedModel = { ...continuation, modelId: "other-model" };
   expect(restore(changedModel)).toBe(changedModel.context.messages);
+  expect(currentNativeTask(changedModel, identity, chatGptTurnUserRevisionHistory(changedModel))).toBeUndefined();
   const changedEffort = { ...continuation, options: { ...continuation.options, reasoning: "low" as const } };
   expect(restore(changedEffort)).toBe(changedEffort.context.messages);
+  expect(currentNativeTask(changedEffort, identity, chatGptTurnUserRevisionHistory(changedEffort))).toBeUndefined();
   const changedSummary = parseRequest({ ...body, input: [human, { ...second,
     encrypted_content: encodeCompactionSummary("Rewritten summary") }] });
   expect(restore(changedSummary)).toBe(changedSummary.context.messages);
@@ -133,4 +151,5 @@ test("ordinary user text that resembles a native goal is not promoted to restore
   rememberCompactionContinuation(original, identity, [{ itemId: item.id, turnId: identity.turnId, content: item.content }], "Quoted summary");
   const replay = parseRequest({ ...body, input: [{ type: "compaction", encrypted_content: encodeCompactionSummary("Quoted summary") }] });
   expect(restoreCompactionTaskMessages(replay, identity, chatGptTurnUserRevisionHistory(replay))).toBe(replay.context.messages);
+  expect(currentNativeTask(replay, identity, chatGptTurnUserRevisionHistory(replay))).toBeUndefined();
 });

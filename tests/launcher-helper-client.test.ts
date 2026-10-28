@@ -314,6 +314,7 @@ test("launcher helper protocol preserves multipart context, broker identity and 
       multipart: { parts: Array.from({ length: 6 }, (_, index) => JSON.stringify({ part: index + 1 })), commit: "commit" },
       trimmedCompactionMessages: 4,
       contextTokenBreakdown: { developer: { records: 1, chars: 400, tokens: 100 } },
+      nativeTaskBinding: { kind: "goal", messageIndex: 3, restored: true },
       release() {},
     }),
     onTextDelta() {},
@@ -333,6 +334,7 @@ test("launcher helper protocol preserves multipart context, broker identity and 
         multipart: { parts: Array.from({ length: 6 }, (_, index) => JSON.stringify({ part: index + 1 })), commit: "commit" },
         trimmedCompactionMessages: 4,
         contextTokenBreakdown: { developer: { records: 1, chars: 400, tokens: 100 } },
+        nativeTaskBinding: { kind: "goal", messageIndex: 3, restored: true },
     },
   });
 });

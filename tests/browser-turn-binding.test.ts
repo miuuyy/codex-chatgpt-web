@@ -1,8 +1,286 @@
 import { expect, test } from "bun:test";
-import { chromium, type Locator, type Page } from "playwright-core";
-import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
+import { chromium, errors as playwrightErrors, type Locator, type Page } from "playwright-core";
+import { ChatGptBrowserWorker, withChatGptCompactionSubmissionIdentity } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptHtmlToMarkdown, ChatGptMarkdownBuffer } from "../src/adapters/chatgpt-web/markdown";
 import { readFileSync } from "node:fs";
+
+test("only isolated compaction receives a fresh non-capability submission identity", () => {
+  const release = () => {};
+  const input = { text: 'Summarize task context.', images: [], release };
+  const first = withChatGptCompactionSubmissionIdentity(input, true);
+  const second = withChatGptCompactionSubmissionIdentity(input, true);
+  expect(first.identity).toMatch(/^compact_[a-f0-9]{32}$/);
+  expect(second.identity).not.toBe(first.identity);
+  expect(first.prompt.text).toContain(first.identity!);
+  expect(first.prompt.release).toBe(release);
+  expect(input.text).toBe('Summarize task context.');
+  expect(withChatGptCompactionSubmissionIdentity(input, false).prompt).toBe(input);
+  const capable = { ...input, turnToken: 'turn_0123456789abcdef0123456789abcdef' };
+  expect(withChatGptCompactionSubmissionIdentity(capable, true)).toEqual({ prompt: capable });
+  const multipart = { ...input, multipart: { parts: ['one', 'two'], commit: 'commit' } };
+  expect(withChatGptCompactionSubmissionIdentity(multipart, true)).toEqual({ prompt: multipart });
+});
+
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("one empty-page reload restores the same accepted response without a new submission", async () => {
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  try {
+    const page = await browser.newPage();
+    const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+    const url = "https://chatgpt.com/c/00000000-0000-4000-8000-000000000001";
+    const html = '<main><div data-turn-key="accepted"><div data-user-message-bubble><div data-search-result-target>CURRENT TASK</div></div>'
+      + '<div data-content-search-unit-key="accepted:assistant"><div data-conversation-role="assistant"></div>'
+      + '<div data-markdown-text-style="assistant-message"><p>Verified result: 7.</p></div></div>'
+      + '<div class="turn-action-controls"><button>Copy</button></div></div></main>';
+    const methods: string[] = [];
+    await page.route(url + "*", route => { methods.push(route.request().method()); return route.fulfill({ contentType: "text/html", body: html }); });
+    await page.goto(url);
+    await page.setContent("<main></main>");
+    const baseline = await worker.captureSubmissionBaseline(page, "CURRENT TASK", []);
+    await page.locator("main").evaluate((node, markup) => { node.innerHTML = markup; }, html.slice(6, -7));
+    expect(await worker.currentSubmissionEvidence(page, baseline)).toBe("user_turn");
+    const binding = await worker.waitForNewAssistantTurn(page, baseline, Date.now() + 2000);
+    const markdown = new ChatGptMarkdownBuffer(undefined, 0);
+    markdown.observe((await worker.responseDomSnapshot(binding.locator, {})).markdownSegments, 0);
+    await page.locator("main").evaluate(node => { node.innerHTML = ""; });
+    expect(await worker.reloadVanishedResponsePage(page, url + "?model=fixture#composer", { running: false, responseStreamActive: false, externalToolCallsInFlight: false })).toBe(true);
+    const rebound = await worker.reconcileAssistantTurnBinding(page, { ...baseline, domCache: {} }, binding);
+    expect(rebound.identity).toBe(binding.identity);
+    const restored = await worker.responseDomSnapshot(rebound.locator, {});
+    expect(restored.visibleText).toBe("Verified result: 7.");
+    markdown.observe(restored.markdownSegments, 1);
+    expect(markdown.finish().markdown).toBe("Verified result: 7.");
+    expect(methods).toEqual(["GET", "GET"]);
+    // Send/assistant acceptance can precede installation of the saved route. A later saved
+    // URL requires the same accepted user and response, and cannot be learned from emptiness.
+    await page.evaluate(() => history.replaceState(null, "", "/"));
+    expect(await worker.acceptedResponseConversationUrl(page, baseline, rebound)).toBeUndefined();
+    await page.evaluate(saved => history.replaceState(null, "", saved), url + "?model=fixture#composer");
+    const pinned = await worker.acceptedResponseConversationUrl(page, baseline, rebound);
+    expect(pinned).toBe(url);
+    const stalePage = new Proxy(page, {
+      get(target, property) {
+        if (property === "url") return () => "https://chatgpt.com/";
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    expect(await worker.acceptedResponseConversationUrl(stalePage, baseline, rebound)).toBe(url);
+    await page.locator('[data-user-message-bubble] [data-search-result-target]').evaluate(node => { node.textContent = "FOREIGN TASK"; });
+    expect(await worker.acceptedResponseConversationUrl(page, baseline, rebound)).toBeUndefined();
+    await page.locator('[data-user-message-bubble] [data-search-result-target]').evaluate(node => { node.textContent = "CURRENT TASK"; });
+    expect(await worker.acceptedResponseConversationUrl(page, { ...baseline, acceptedUserIdentity: "group:user:foreign" }, rebound)).toBeUndefined();
+    expect(await worker.acceptedResponseConversationUrl(page, baseline, { ...rebound, identity: "group:assistant:foreign" })).toBeUndefined();
+    await page.locator("main").evaluate(node => {
+      node.insertAdjacentHTML("beforeend", '<div data-turn-key="foreign"><div data-user-message-bubble>Foreign</div></div>');
+    });
+    expect(await worker.acceptedResponseConversationUrl(page, baseline, rebound)).toBeUndefined();
+    await page.locator("main").evaluate(node => { node.innerHTML = ""; });
+    expect(await worker.acceptedResponseConversationUrl(page, baseline, rebound)).toBeUndefined();
+    expect(await worker.reloadVanishedResponsePage(page, undefined, { running: false, responseStreamActive: false, externalToolCallsInFlight: false })).toBe(false);
+    expect(await worker.reloadVanishedResponsePage(stalePage, pinned, { running: false, responseStreamActive: false, externalToolCallsInFlight: false })).toBe(true);
+    const savedAgain = await worker.reconcileAssistantTurnBinding(page, { ...baseline, domCache: {} }, rebound);
+    expect((await worker.responseDomSnapshot(savedAgain.locator, {})).visibleText).toBe("Verified result: 7.");
+    for (const state of [
+      { running: true, responseStreamActive: false, externalToolCallsInFlight: false },
+      { running: false, responseStreamActive: true, externalToolCallsInFlight: false },
+      { running: false, responseStreamActive: false, externalToolCallsInFlight: true },
+    ]) {
+      await page.locator("main").evaluate(node => { node.innerHTML = ""; });
+      expect(await worker.reloadVanishedResponsePage(page, url, state)).toBe(false);
+    }
+    const idle = { running: false, responseStreamActive: false, externalToolCallsInFlight: false };
+    await expect(worker.reloadVanishedResponsePage(page, url, { ...idle, deadline: Date.now() - 1 })).rejects.toThrow("timed out");
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(worker.reloadVanishedResponsePage(page, url, idle, aborted.signal)).rejects.toThrow("aborted");
+    expect(await worker.reloadVanishedResponsePage(page, url.replace(/1$/, "2"), idle)).toBe(false);
+    expect(await worker.reloadVanishedResponsePage(page, "https://example.com/c/00000000-0000-4000-8000-000000000001", idle)).toBe(false);
+    await page.setContent(html);
+    expect(await worker.reloadVanishedResponsePage(page, url, idle)).toBe(false);
+    expect(methods).toEqual(["GET", "GET", "GET"]);
+  } finally { await browser.close(); }
+}, 20_000);
+
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("saved-route proof survives message expansion unmounting the same assistant", async () => {
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  try {
+    const page = await browser.newPage();
+    page.setDefaultTimeout(500);
+    const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+    const url = "https://chatgpt.com/c/00000000-0000-4000-8000-000000000001";
+    const submitted = "Current task\n".repeat(1000) + "EXACT_END";
+    await page.route(url, route => route.fulfill({ contentType: "text/html", body: "<main></main>" }));
+    for (const scenario of ["same", "rebind", "foreign-text", "competing-user", "activity-unmount", "cancelled-unmount"] as const) {
+      await page.goto(url);
+      const baseline = await worker.captureSubmissionBaseline(page, submitted, []);
+      await page.locator("main").evaluate(node => { node.innerHTML = '<div data-turn-key="accepted"><div data-user-message-bubble>'
+        + '<div data-search-result-target>Preview</div><button type="button" aria-expanded="false" data-thread-find-skip="true" data-markdown-copy="exclude">Show more</button></div>'
+        + '<div data-conversation-role="assistant"></div><div data-markdown-text-style="assistant-message">Verified result.</div></div>'; });
+      if (scenario !== "rebind") await worker.currentSubmissionEvidence(page, baseline);
+      let binding = await worker.waitForNewAssistantTurn(page, baseline, Date.now() + 2000);
+      await page.locator("button").evaluate((button, { submitted, scenario }) => {
+        const assistant = document.querySelector('[data-conversation-role="assistant"]')!;
+        button.addEventListener("click", () => {
+          const open = button.getAttribute("aria-expanded") !== "true";
+          button.setAttribute("aria-expanded", String(open));
+          button.parentElement!.querySelector('[data-search-result-target]')!.textContent = open
+            ? scenario === "foreign-text" ? submitted + "CHANGED" : submitted : "Preview";
+          if (open) {
+            assistant.remove();
+            if (scenario === "competing-user") document.querySelector("main")!.insertAdjacentHTML("beforeend", '<div data-turn-key="foreign"><div data-user-message-bubble>Foreign task</div></div>');
+          } else button.closest('[data-turn-key]')!.append(assistant);
+        });
+      }, { submitted, scenario });
+      if (scenario === "rebind") {
+        await page.locator('[data-turn-key="accepted"]').evaluate(node => node.setAttribute("data-turn-key", "persisted"));
+        binding = await worker.reconcileAssistantTurnBinding(page, baseline, binding);
+      }
+      if (scenario.endsWith("unmount")) {
+        const original = worker.withExpandedUserMessage;
+        const controller = new AbortController();
+        let restoredMarkup = "";
+        let mutationReached = false;
+        // Fault injection at the observed read/cleanup boundary: Activity replaces the
+        // user bubble after its text was read, while the accepted assistant remains live.
+        worker.withExpandedUserMessage = (group: Locator, read: (content: Locator) => Promise<unknown>, signal?: AbortSignal) =>
+          original.call(worker, group, async (content: Locator) => {
+            const value = await read(content);
+            await page.locator('[data-turn-key]').evaluate(node => {
+              if (!node.querySelector('[data-conversation-role="assistant"]')) node.insertAdjacentHTML("beforeend", '<div data-conversation-role="assistant"></div>');
+            });
+            restoredMarkup = await page.locator("main").innerHTML();
+            await page.locator('[data-user-message-bubble]').evaluate(node => node.remove());
+            mutationReached = true;
+            if (scenario === "cancelled-unmount") controller.abort();
+            return value;
+          }, signal);
+        try {
+          let outcome: { value?: string; error?: Error } = {};
+          for (let attempt = 0; attempt < 2 && !mutationReached; attempt++) {
+            outcome = await worker.acceptedResponseConversationUrl(page, baseline, binding, controller.signal)
+              .then((value: string | undefined) => ({ value }), (error: Error) => ({ error }));
+            if (outcome.error) break;
+          }
+          expect(mutationReached).toBe(true);
+          if (scenario === "cancelled-unmount") expect(outcome.error?.message).toMatch(/aborted/i);
+          else expect(outcome).toEqual({ value: undefined });
+          expect(await page.locator("button").count()).toBe(0);
+          expect(await binding.locator.count()).toBe(1);
+        } finally { worker.withExpandedUserMessage = original; }
+        await page.locator("main").evaluate((node, markup) => { node.innerHTML = markup; }, restoredMarkup);
+        // A skipped optional probe establishes no ownership. A later complete observation
+        // still needs and can obtain the exact current submitted-message proof.
+        expect(await worker.acceptedResponseConversationUrl(page, baseline, binding)).toBe(url);
+        continue;
+      }
+      expect(await worker.acceptedResponseConversationUrl(page, baseline, binding)).toBe(scenario === "same" || scenario === "rebind" ? url : undefined);
+      expect(await page.locator("button").getAttribute("aria-expanded")).toBe("false");
+      expect(await binding.locator.count()).toBe(1);
+    }
+  } finally { await browser.close(); }
+}, 20_000);
+
+test("optional saved-route proof preserves cancellation and unexpected faults", async () => {
+  const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+  const timeout = new playwrightErrors.TimeoutError("Temporary widget timeout");
+  worker.currentSavedConversationUrl = async () => { throw timeout; };
+  expect(await worker.acceptedResponseConversationUrl({}, {}, {})).toBeUndefined();
+  const unexpected = new Error("Unexpected verifier defect");
+  unexpected.name = "TimeoutError";
+  worker.currentSavedConversationUrl = async () => { throw unexpected; };
+  await expect(worker.acceptedResponseConversationUrl({}, {}, {})).rejects.toBe(unexpected);
+  const controller = new AbortController();
+  const aborted = new DOMException("Caller cancelled the turn", "AbortError");
+  controller.abort(aborted);
+  worker.currentSavedConversationUrl = async () => { throw timeout; };
+  await expect(worker.acceptedResponseConversationUrl({}, {}, {}, controller.signal)).rejects.toBe(aborted);
+});
+
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("read-only compaction rebinds rewritten JSON using its exact prepared marker", async () => {
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  try {
+    const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+    const prepared = withChatGptCompactionSubmissionIdentity({ text: 'Summarize the JSON at https://example.com/task.', images: [] }, true);
+    const page = await browser.newPage();
+    await page.setContent('<main></main>');
+    const baseline = await worker.captureSubmissionBaseline(page, prepared.prompt.text, [], undefined, prepared.identity);
+    // Send was acknowledged by generation before the user group mounted.
+    await page.locator('main').evaluate(node => { node.innerHTML = '<div data-turn-key="optimistic"><span hidden data-chatgpt-agent-turn-start></span></div>'; });
+    const binding = await worker.waitForNewAssistantTurn(page, baseline, Date.now() + 2000);
+    await page.locator('main').evaluate(node => {
+      node.innerHTML = '<div data-turn-key="persisted"><div data-user-message-bubble><div data-search-result-target>'
+        + '<a href="https://example.com/task" data-search-result-target>task</a></div>'
+        + '<button type="button" aria-expanded="false" data-thread-find-skip="true" data-markdown-copy="exclude">Show more</button></div>'
+        + '<div data-conversation-role="assistant"></div><div data-markdown-text-style="assistant-message">Checkpoint.</div></div>';
+    });
+    await page.locator('button').evaluate((button, identity) => {
+      button.addEventListener('click', () => {
+        const open = button.getAttribute('aria-expanded') !== 'true';
+        button.setAttribute('aria-expanded', String(open));
+        if (open) button.parentElement!.querySelector('[data-search-result-target]')!.textContent = 'Rewritten task JSON ' + identity;
+      });
+    }, prepared.identity);
+    expect((await worker.reconcileAssistantTurnBinding(page, baseline, binding)).identity).toBe('group:assistant:persisted');
+    // Reuse the real reader without expansion for the negative identity cases.
+    // Existing rebind tests cover competing groups, changed user IDs and old groups.
+    await page.locator('button').evaluate(button => button.remove());
+    const group = page.locator('[data-turn-key="persisted"]');
+    const historical = 'compact_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ' + prepared.identity;
+    for (const identity of [prepared.identity, historical, 'compact_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '', prepared.identity + ' ' + prepared.identity, prepared.identity + 'extra']) {
+      await page.locator('[data-search-result-target]').evaluate((node, identity) => { node.textContent = 'Rewritten JSON ' + identity; }, identity);
+      expect(await worker.userMessageMatchesSubmission(group, prepared.prompt.text, undefined, undefined, prepared.identity)).toBe(identity === prepared.identity || identity === historical);
+    }
+    expect(await worker.userMessageMatchesSubmission(group, prepared.prompt.text)).toBeFalse();
+    await expect(worker.captureSubmissionBaseline(page, 'No prepared marker', [], undefined, prepared.identity)).rejects.toThrow('compaction identity');
+    await page.close();
+  } finally { await browser.close(); }
+}, 20_000);
+
+for (const kind of ["compaction", "broker"]) {
+  test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)(`${kind} submission proof preserves rendered line boundaries without accepting foreign or ambiguous identities`, async () => {
+    const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+    try {
+      const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+      const token = "turn_12345678901234567890123456789012";
+      const compact = withChatGptCompactionSubmissionIdentity({ text: "Summarize current work.", images: [] }, true);
+      const identity = kind === "compaction" ? compact.identity! : token;
+      const submitted = kind === "compaction" ? compact.prompt.text : `Current task. ${token}\nThis is the next line.`;
+      for (const layout of ["br", "paragraph", "inline-split", "foreign", "duplicate", "attached-suffix", "hidden-only", "hidden-duplicate", "foreign-hidden"]) {
+        const page = await browser.newPage();
+        await page.setContent("<main></main>");
+        const baseline = await worker.captureSubmissionBaseline(page, submitted, [],
+          kind === "broker" ? token : undefined, kind === "compaction" ? identity : undefined);
+        const binding = {
+          identity: "group:assistant:optimistic",
+          locator: page.locator('[data-turn-key="optimistic"]'),
+          acceptedTurnIdentities: ["group:assistant:optimistic"],
+        };
+        const foreign = identity.replace(/.$/, identity.endsWith("a") ? "b" : "a");
+        const text = layout === "foreign" ? foreign : identity;
+        const html = layout === "paragraph" ? `<p>Identity: ${text}</p><p>This is the next line.</p>`
+          : layout === "inline-split" ? `<p>Identity: <span>${text.slice(0, 12)}</span><span>${text.slice(12)}</span><br>This is the next line.</p>`
+          : layout === "duplicate" ? `<p>${text}</p><p>${text}</p>`
+          : layout === "attached-suffix" ? `<p>${text}This is the same word.</p>`
+          : layout === "hidden-only" ? `<p>No visible proof.<span hidden>${text}</span></p>`
+          : layout === "hidden-duplicate" ? `<p>${text}<br>This is the next line.</p><span hidden>${text}</span>`
+          : layout === "foreign-hidden" ? `<p>${text}<br>This is the next line.</p><span hidden> ${foreign} </span>`
+          : `<p>Identity: ${text}<br>This is the next line.</p>`;
+        await page.locator("main").evaluate((node, html) => {
+          node.innerHTML = '<div data-turn-key="persisted"><div data-user-message-bubble><div data-search-result-target>'
+            + html + '</div></div><div data-conversation-role="assistant"></div></div>';
+        }, html);
+        // Captured October 28: textContent joins the exact ID to "This" across BR/P,
+        // so a correct literal boundary check fails even though the rendered ID is intact.
+        if (["br", "paragraph", "inline-split"].includes(layout) || kind === "compaction" && layout === "foreign-hidden") {
+          expect(await worker.reconcileAssistantTurnBinding(page, baseline, binding)).toMatchObject({ identity: "group:assistant:persisted" });
+        } else {
+          await expect(worker.reconcileAssistantTurnBinding(page, baseline, binding)).rejects.toThrow("another user turn");
+        }
+        await page.close();
+      }
+    } finally { await browser.close(); }
+  }, 60_000);
+}
 
 test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("CodeMirror language invalidates the response cache and incomplete code is not delivered", async () => {
   const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
