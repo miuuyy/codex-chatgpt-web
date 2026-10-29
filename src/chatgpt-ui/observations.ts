@@ -1,5 +1,5 @@
 import { CHATGPT_COMPOSER_VARIANTS, CHATGPT_STOP_VARIANTS, CHATGPT_THINK_VARIANTS } from "./composer";
-import { CHATGPT_SLIDER_VARIANTS } from "./model-picker";
+import { CHATGPT_EFFORT_CONTROL_VARIANTS, CHATGPT_SLIDER_VARIANTS } from "./model-picker";
 import { CHATGPT_TURN_VARIANTS } from "./turns";
 
 const prefixed = (component: string, variants: Record<string, string>): Record<string, string> =>
@@ -12,6 +12,7 @@ export const CHATGPT_UI_VARIANT_SELECTORS = {
   ...prefixed("stop", CHATGPT_STOP_VARIANTS),
   ...prefixed("think", CHATGPT_THINK_VARIANTS),
   ...prefixed("slider", CHATGPT_SLIDER_VARIANTS),
+  ...prefixed("modelControl", CHATGPT_EFFORT_CONTROL_VARIANTS),
   ...prefixed("turn", CHATGPT_TURN_VARIANTS),
 };
 

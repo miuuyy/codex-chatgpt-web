@@ -4,6 +4,7 @@ import { expect, test } from "bun:test";
 import { chromium } from "playwright-core";
 import { ChatGptBrowserWorker, ChatGptModelControlsNotReadyError } from "../src/adapters/chatgpt-web/browser-worker";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
+import { CHATGPT_EFFORT_CONTROL_SELECTOR } from "../src/chatgpt-ui/model-picker";
 import { readChatGptUsageModel } from "../src/adapters/chatgpt-web/limits";
 
 // October 28 picker: Default mixes model families; explicit Sol has five
@@ -184,3 +185,21 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("missing initial model contro
     }
   } finally { await browser.close(); }
 }, 30_000);
+
+// Captured October29 in signed-in Chromium: the inline control lost data-tone and
+// data-codex-intelligence-trigger, retaining navigation target + selected effort.
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("inline reasoning control is recognized without obsolete tone/trigger attributes", async () => {
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  try {
+    const page = await browser.newPage();
+    const attrs = 'data-composer-navigation-target="reasoning" data-selected-reasoning-effort="high" aria-label="Select ChatGPT model"';
+    await page.setContent(EXPLICIT_PICKER.replace('data-tone="neutral"', attrs));
+    expect(await page.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).count()).toBe(1);
+    const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+    const mode = await worker.selectModelAndEffort(page, CHATGPT_WEB_MODEL_ID, "high", {localToolsEnabled:false,solAvailable:true,extraHighAvailable:true,proAvailable:true}, undefined, true, "6");
+    expect(mode.selection.label).toBe('6 Sol High');
+    expect(await page.locator('#prompt-textarea').innerText()).toBe('Draft');
+    await page.setContent('<form><button aria-haspopup="menu" data-composer-navigation-target="reasoning">Other</button><button aria-haspopup="menu" data-selected-reasoning-effort="high">Other</button></form>');
+    expect(await page.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).count()).toBe(0);
+  } finally { await browser.close(); }
+}, 15_000);

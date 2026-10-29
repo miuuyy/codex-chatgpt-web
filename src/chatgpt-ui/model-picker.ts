@@ -2,14 +2,17 @@ import type { Locator, Page } from "playwright-core";
 
 // Control, slider, model rows and announcement formats roll out independently.
 // Keep their evidence here; do not choose an entire page version from one marker.
-export const CHATGPT_EFFORT_CONTROL_SELECTOR = [
+export const CHATGPT_EFFORT_CONTROL_VARIANTS = {
   // 2026-08-28 (7869843): neutral composer button.
-  'button[aria-haspopup="menu"][data-tone="neutral"]',
+  neutral: 'button[aria-haspopup="menu"][data-tone="neutral"]',
   // Tracked since 2026-08-08 (0dfacc6); original rollout date unknown.
-  'button[data-testid="model-switcher-dropdown-button"][aria-haspopup="menu"]',
+  dropdown: 'button[data-testid="model-switcher-dropdown-button"][aria-haspopup="menu"]',
   // 2026-09-25 (2933410): power picker inside the markdown composer.
-  'button[data-codex-intelligence-trigger="true"][data-composer-navigation-target="reasoning"][aria-haspopup="menu"]',
-].join(", ");
+  codexReasoning: 'button[data-codex-intelligence-trigger="true"][data-composer-navigation-target="reasoning"][aria-haspopup="menu"]',
+  // Captured 2026-10-29: inline reasoning trigger omits both older tone/trigger attributes.
+  inlineReasoning: 'button[data-composer-navigation-target="reasoning"][data-selected-reasoning-effort][aria-haspopup="menu"]',
+} as const;
+export const CHATGPT_EFFORT_CONTROL_SELECTOR = Object.values(CHATGPT_EFFORT_CONTROL_VARIANTS).join(", ");
 export const CHATGPT_EFFORT_MENU_SELECTOR = [
   '[data-testid="composer-intelligence-picker-content"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider])',
   '[role="menu"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider])',
