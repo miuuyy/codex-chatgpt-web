@@ -134,6 +134,30 @@ export function recoverCompactionInstruction(
   } : undefined;
 }
 
+/**
+ * Pre-turn compaction can run before Codex appends the new goal instruction. Its
+ * historical source may exist only in the previous turn's completed checkpoint.
+ * This is compaction input only: ordinary task replay keeps its exact turn scope.
+ */
+export function recoverPreTurnCompactionSource(
+  parsed: CodexParsedRequest,
+  identity: ChatGptTurnIdentity,
+): ChatGptTurnUserRevision | undefined {
+  if (!parsed._compactionRequest || !identity.threadId || !identity.turnId) return undefined;
+  if (checkpoints.has(scope(parsed, identity)!)) return undefined;
+  const matches: CompletedCheckpoint[] = [];
+  // Snapshot keys because validating a checkpoint updates its LRU position.
+  for (const key of [...checkpoints.keys()]) {
+    const [threadId, turnId] = JSON.parse(key) as string[];
+    if (threadId !== identity.threadId || turnId === identity.turnId
+      || key !== scope(parsed, { ...identity, turnId })) continue;
+    const accepted = acceptedCheckpoint(parsed, { ...identity, turnId });
+    if (accepted) matches.push(accepted.checkpoint);
+    if (matches.length > 1) return undefined;
+  }
+  return matches.length === 1 ? structuredClone(matches[0]!.source) : undefined;
+}
+
 function acceptedCheckpoint(
   parsed: CodexParsedRequest,
   identity: ChatGptTurnIdentity,

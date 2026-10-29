@@ -3,7 +3,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isReadableCompactionSummaryText, OPAQUE_COMPACTION_NOTE } from "../../responses/compaction";
 import { isNativeAgentsMdContext, readNativeThreadDelegation } from "../../responses/native-context";
 import type { CodexContentPart, CodexParsedRequest, CodexTool } from "../../types";
-import { isAcceptedCompactionContinuation, recoverCompactionInstruction } from "./compaction-continuation";
+import { isAcceptedCompactionContinuation, recoverCompactionInstruction, recoverPreTurnCompactionSource } from "./compaction-continuation";
 
 export type ChatGptSandboxPolicy =
   | { type: "dangerFullAccess" }
@@ -341,7 +341,9 @@ export function findChatGptCompactionSourceRevision(
   options: { recoverCheckpoint?: boolean } = {},
 ): ChatGptTurnUserRevision | undefined {
   if (!parsed._compactionRequest) throw new Error("ChatGPT web compaction source requires a compaction request");
-  return latestChatGptTurnUserRevision(parsed, extractChatGptTurnIdentity(parsed).turnId, options.recoverCheckpoint !== false);
+  const identity = extractChatGptTurnIdentity(parsed);
+  return latestChatGptTurnUserRevision(parsed, identity.turnId, options.recoverCheckpoint !== false)
+    ?? (options.recoverCheckpoint !== false ? recoverPreTurnCompactionSource(parsed, identity) : undefined);
 }
 
 /** A completed checkpoint identifies the current turn's rebuilt environment preamble. */
