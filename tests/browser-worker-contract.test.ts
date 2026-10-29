@@ -2879,6 +2879,17 @@ test("the current response error action identifies short and localized failures 
   }
 });
 
+test("identifies transient delivery timeout banner as a retryable turn error (#929)", async () => {
+  const fixture = dialogPage("Message delivery timed out. Please try again.", "Got it", false);
+  await expect(throwIfChatGptTerminalErrorAlert(fixture.page)).rejects.toMatchObject({
+    name: "ChatGptWebAdapterError",
+    code: "chatgpt_transient_delivery_timeout",
+    status: 503,
+    retryable: true,
+  });
+  expect(fixture.pressed).toEqual([]);
+});
+
 test("a previous response error cannot reject a newly accepted user submission", async () => {
   const fixture = dialogPage("Something went wrong. Please see help.openai.com.", "Retry", true);
   const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {

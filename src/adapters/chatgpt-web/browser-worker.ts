@@ -595,11 +595,21 @@ type SelectedChatGptWebModelMode = ChatGptWebModelMode & {
   usageModel?: ChatGptUsageModel;
 };
 
+const chatGptTransientDeliveryTimeoutAlert = (scope: ChatGptTextScope): Locator => scope
+  .getByText(/Message delivery timed out/i)
+  .last();
+
 export async function throwIfChatGptTerminalErrorAlert(scope: ChatGptTextScope): Promise<void> {
   if (await scope.getByTestId("regenerate-thread-error-button").last().isVisible().catch(() => false)) {
     throw new ChatGptWebAdapterError(
       "ChatGPT displayed an error for this response. Check the ChatGPT tab for the exact error, then retry the turn.",
       { status: 502, errorType: "server_error", code: "upstream_server_error", retryable: true },
+    );
+  }
+  if (await chatGptTransientDeliveryTimeoutAlert(scope).isVisible().catch(() => false)) {
+    throw new ChatGptWebAdapterError(
+      "ChatGPT transient delivery timeout. Retrying on a fresh surface.",
+      { status: 503, errorType: "server_error", code: "chatgpt_transient_delivery_timeout", retryable: true },
     );
   }
   if (!await chatGptTerminalErrorAlert(scope).isVisible().catch(() => false)) return;
@@ -2232,6 +2242,7 @@ export class ChatGptBrowserWorker {
     this.browser = await chromium.launch({
       executablePath: this.config.chromeExecutablePath,
       headless: !this.config.headed,
+      args: ["--no-first-run", "--no-default-browser-check", "--disable-dev-shm-usage"],
     });
     this.context = await this.browser.newContext({ storageState: this.config.storageStatePath });
     this.page = await this.context.newPage();
@@ -2250,6 +2261,7 @@ export class ChatGptBrowserWorker {
       const browser = await chromium.launch({
         executablePath: this.config.chromeExecutablePath,
         headless: !this.config.headed,
+        args: ["--no-first-run", "--no-default-browser-check", "--disable-dev-shm-usage"],
       });
       const context = await browser.newContext({ storageState: this.config.storageStatePath });
       this.browser = browser;
