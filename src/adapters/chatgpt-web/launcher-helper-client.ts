@@ -227,6 +227,11 @@ export class LauncherBrowserHelperClient {
         "Launcher browser helper does not support the MCP completion fence; update or restart the launcher",
       );
     }
+    if (turn.preferClipboardPaste && !this.helperFeatures.has("clipboard-paste")) {
+      throw new Error(
+        "Launcher browser helper does not support native clipboard prompt paste; update or restart the launcher",
+      );
+    }
     return await new Promise<string>((resolveResult, rejectResult) => {
         if (this.pending.has(turn.traceId)) {
           rejectResult(new Error(`Duplicate launcher browser turn: ${turn.traceId}`));
@@ -293,6 +298,7 @@ export class LauncherBrowserHelperClient {
             ...(turn.compaction ? { compaction: true } : {}),
             ...(turn.captureLunaCheckpoint ? { captureLunaCheckpoint: true } : {}),
             ...(turn.externalProgress ? { externalProgress: true } : {}),
+            ...(turn.preferClipboardPaste ? { preferClipboardPaste: true } : {}),
           },
         })
           // Only mirror once the run frame is on the wire, so the helper never sees progress for a

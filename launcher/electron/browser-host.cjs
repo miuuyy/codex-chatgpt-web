@@ -360,6 +360,8 @@ class BrowserHost {
     this.publishState = publishState;
     this.showWindow = showWindow;
     this.clipboard = clipboardApi;
+    this.clipboardPasteTail = Promise.resolve();
+    this.clipboardPasteLeases = new Map();
     this.getBrowserInteractionMode = getBrowserInteractionMode;
     this.getUseTemporaryChats = getUseTemporaryChats;
     this.runBrowserHelperOperation = runBrowserHelperOperation;
@@ -2214,6 +2216,96 @@ class BrowserHost {
     this.clipboard.writeText(prompt);
   }
 
+  async pasteTurnPrompt(traceId, helperPid, prompt) {
+    let releaseClipboardLease;
+    const clipboardLease = new Promise(resolve => { releaseClipboardLease = resolve; });
+    const previousPasteTail = this.clipboardPasteTail;
+    const operation = previousPasteTail.then(async () => {
+      const tab = [...this.turnTabs.values()].find(candidate => candidate.traceId === traceId);
+      if (!tab || tab.interactionMode !== "automatic" || tab.status !== "running") {
+        throw new Error(`Browser turn ownership mismatch: no running automatic tab owns ${traceId}`);
+      }
+      if (tab.helperPid !== helperPid) {
+        throw new Error(`Browser helper ownership mismatch: expected ${tab.helperPid}, received ${helperPid}`);
+      }
+      const contents = tab.view?.webContents;
+      if (!contents || contents.isDestroyed()
+        || (typeof contents.sendInputEvent !== "function" && typeof contents.paste !== "function")) {
+        throw new Error("Electron browser tab cannot perform a native paste");
+      }
+      if (!this.clipboard || typeof this.clipboard.writeText !== "function") {
+        throw new Error("Electron clipboard is unavailable");
+      }
+      const previous = typeof this.clipboard.readText === "function"
+        ? this.clipboard.readText()
+        : undefined;
+      const pasteId = randomBytes(18).toString("base64url");
+      const lease = {
+        pasteId,
+        traceId,
+        helperPid,
+        previous,
+        release: releaseClipboardLease,
+        timeout: null,
+      };
+      try {
+        this.clipboard.writeText(prompt);
+        contents.focus();
+        if (typeof contents.sendInputEvent === "function") {
+          const modifier = process.platform === "darwin" ? "meta" : "control";
+          contents.sendInputEvent({ type: "keyDown", keyCode: "V", modifiers: [modifier] });
+          contents.sendInputEvent({ type: "keyUp", keyCode: "V", modifiers: [modifier] });
+        } else {
+          contents.paste();
+        }
+        this.clipboardPasteLeases.set(pasteId, lease);
+        lease.timeout = setTimeout(() => {
+          try {
+            this.releaseTurnPromptPaste(traceId, helperPid, pasteId, "timeout");
+          } catch (error) {
+            this.logger.warn("browser.turn_prompt_clipboard_restore_failed", {
+              traceId,
+              message: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }, 20_000);
+        lease.timeout.unref?.();
+      } catch (error) {
+        if (previous !== undefined) this.clipboard.writeText(previous);
+        releaseClipboardLease();
+        throw error;
+      }
+      this.logger.info("browser.turn_prompt_pasted", { traceId, chars: prompt.length, pasteId });
+      return { pasteId };
+    });
+    // Keep every prompt's clipboard contents exclusively leased until the browser worker proves
+    // that ChatGPT consumed the paste. A later concurrent turn waits here rather than overwriting
+    // the shared system clipboard while Chromium still has a queued paste event.
+    this.clipboardPasteTail = operation.then(() => clipboardLease, () => undefined);
+    return operation;
+  }
+
+  releaseTurnPromptPaste(traceId, helperPid, pasteId, reason = "acknowledged") {
+    const lease = this.clipboardPasteLeases.get(pasteId);
+    if (!lease) return { restored: false };
+    if (lease.traceId !== traceId || lease.helperPid !== helperPid) {
+      throw new Error("Browser prompt clipboard lease ownership mismatch");
+    }
+    if (lease.timeout) clearTimeout(lease.timeout);
+    this.clipboardPasteLeases.delete(pasteId);
+    let restoreError;
+    try {
+      if (lease.previous !== undefined) this.clipboard.writeText(lease.previous);
+    } catch (error) {
+      restoreError = error;
+    } finally {
+      lease.release();
+    }
+    if (restoreError) throw restoreError;
+    this.logger.info("browser.turn_prompt_clipboard_restored", { traceId, pasteId, reason });
+    return { restored: true };
+  }
+
   beginManualTurn(traceId, helperPid, prompt, conversationKey, resumePrompt, compaction = false) {
     if (this.manualOperation) {
       throw new Error(`ChatGPT browser is busy with ${this.manualOperation}`);
@@ -3284,6 +3376,14 @@ class BrowserHost {
 
   destroy() {
     this.destroyed = true;
+    for (const lease of this.clipboardPasteLeases.values()) {
+      if (lease.timeout) clearTimeout(lease.timeout);
+      try {
+        if (lease.previous !== undefined) this.clipboard.writeText(lease.previous);
+      } catch {}
+      lease.release();
+    }
+    this.clipboardPasteLeases.clear();
     if (this.authenticationCookieListener) {
       this.view.webContents.session.cookies.off("changed", this.authenticationCookieListener);
     }

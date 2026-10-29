@@ -158,6 +158,51 @@ test("assistant tracking rebinds only one proven replacement after React detache
   )).toThrow("2 new conversation turns");
 });
 
+test("clipboard-backed Codex turn adopts the structurally paired user identity after assistant DOM replacement", async () => {
+  const state = {
+    userIdentities: ["group:user:accepted"],
+    responseIdentities: ["group:assistant:accepted"],
+    turnIdentities: ["group:user:accepted", "group:assistant:accepted"],
+  };
+  let renderedMessageChecks = 0;
+  const page = {
+    locator: () => ({ count: async () => 1 }),
+  } as unknown as Page;
+  const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+  worker.submissionDomState = async () => state;
+  worker.reconcileMultipartHistory = async () => {};
+  worker.userMessageMatchesSubmission = async () => {
+    renderedMessageChecks += 1;
+    return false;
+  };
+  const baseline = {
+    initialTurnIdentities: [],
+    domCache: {},
+    submittedText: "large native codex prompt",
+    turnToken: "turn_abcdefghijklmnopqrstuvwxyzABCDEF",
+    nativeClipboardPromptAccepted: true,
+    acceptedUserIdentity: undefined as string | undefined,
+  };
+  const binding = {
+    identity: "group:assistant:temporary",
+    locator: { count: async () => 0 },
+    acceptedTurnIdentities: [],
+  };
+
+  const rebound = await worker.reconcileAssistantTurnBinding(page, baseline, binding);
+  expect(rebound.identity).toBe("group:assistant:accepted");
+  expect(baseline.acceptedUserIdentity).toBe("group:user:accepted");
+  expect(renderedMessageChecks).toBe(0);
+
+  state.userIdentities = ["group:user:foreign"];
+  state.responseIdentities = ["group:assistant:foreign"];
+  state.turnIdentities = ["group:user:foreign", "group:assistant:foreign"];
+  await expect(worker.reconcileAssistantTurnBinding(page, baseline, {
+    ...rebound,
+    locator: { count: async () => 0 },
+  })).rejects.toThrow("opened another user turn");
+});
+
 test("power turn identity separates roles and keeps virtualized groups in the submission baseline", async () => {
   const { createWindow } = require("@mixmark-io/domino");
   const window = createWindow('<div data-turn-id-container="legacy"><section data-testid="conversation-turn-0" data-turn="assistant" data-turn-id="legacy"></section></div><div data-turn-key="history"></div><div data-turn-key="previous"><div data-user-message-bubble></div><h4 data-conversation-role="assistant"></h4><div data-turn-id-container="search-only"><section data-testid="conversation-turn-search" data-turn="assistant"><div data-message-author-role="assistant"></div></section></div></div>');
@@ -2043,6 +2088,81 @@ test("tool-capable prompts use the shared Playwright connector selection before 
     ["selectedFocus"],
     ["plainText", " context"],
     ["assertPrompt"],
+  ]);
+});
+
+test("large tool-capable prompts select the connector before native clipboard paste", async () => {
+  const controller = new AbortController();
+  const prompt = "codex context line\n".repeat(3_000);
+  const calls: Array<[string, string?]> = [];
+  const selectedComposer = {
+    focus: async (options?: { signal?: AbortSignal }) => {
+      expect(options?.signal).toBeDefined();
+      calls.push(["focus"]);
+    },
+    press: async (value: string, options?: { signal?: AbortSignal }) => {
+      expect(options?.signal).toBeDefined();
+      calls.push(["press", value]);
+    },
+  };
+  const attachPrompt = (ChatGptBrowserWorker.prototype as unknown as {
+    attachPrompt(
+      page: unknown,
+      prompt: string,
+      localTools: boolean,
+      captureDiagnostic?: unknown,
+      abortSignal?: AbortSignal,
+      catalogRefreshAvailable?: boolean,
+      connectorAttemptBudget?: unknown,
+      requireThink?: boolean,
+      preferClipboardPaste?: boolean,
+      clipboardPasteTraceId?: string,
+    ): Promise<void>;
+  }).attachPrompt;
+
+  await attachPrompt.call({
+    config: {
+      appName: "Codex Native2",
+      browserHost: "launcher",
+      browserHostDescriptorPath: "/tmp/browser-host.json",
+    },
+    selectConnector: async () => {
+      calls.push(["selectConnector"]);
+      return selectedComposer;
+    },
+    pastePromptText: async (traceId: string, text: string) => {
+      expect(traceId).toBe("codex-clipboard-trace");
+      expect(text).toBe(prompt);
+      calls.push(["paste", String(text.length)]);
+      return "paste-lease-tool";
+    },
+    assertClipboardPromptAttached: async (_page: unknown, text: string) => {
+      expect(text).toBe(prompt);
+      calls.push(["assertClipboard"]);
+    },
+    releasePromptPaste: async (traceId: string, pasteId: string) => {
+      expect(traceId).toBe("codex-clipboard-trace");
+      expect(pasteId).toBe("paste-lease-tool");
+      calls.push(["releasePaste"]);
+    },
+    connectorIsSelected: async (composer: unknown) => {
+      expect(composer).toBe(selectedComposer);
+      calls.push(["verifyConnector"]);
+      return true;
+    },
+    insertPromptText: async () => { throw new Error("chunk insertion must not run"); },
+    assertPromptAttached: async () => { throw new Error("plain text assertion must not run"); },
+    clearChatGptComposerState: async () => {},
+  }, dialogPage("").page, prompt, true, undefined, controller.signal, false, undefined, false, true, "codex-clipboard-trace");
+
+  expect(calls).toEqual([
+    ["selectConnector"],
+    ["focus"],
+    ["press", CHATGPT_COMPOSER_DOCUMENT_END_KEY],
+    ["paste", String(prompt.length)],
+    ["assertClipboard"],
+    ["releasePaste"],
+    ["verifyConnector"],
   ]);
 });
 

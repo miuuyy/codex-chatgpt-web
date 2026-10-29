@@ -812,6 +812,11 @@ export function createChatGptWebAdapter(
       ...(retainConversation ? { retainConversation: true, conversationKey } : {}),
       abortSignal: browserAbort.signal,
       ...(parsed._compactionRequest ? { compaction: true } : {}),
+      // Large Codex turns already select the configured connector explicitly. After that pill is
+      // bound, let the launcher paste the context natively so ChatGPT can accept it as pasted text
+      // (including its attachment representation) instead of forcing the entire payload through
+      // the Lexical editor insertion loop.
+      preferClipboardPaste: true,
       ...submissionLifecycle,
       ...multipartProgressLifecycle,
       onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),

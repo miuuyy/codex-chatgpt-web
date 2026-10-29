@@ -4,6 +4,7 @@ const { releaseRetainedConversation } = require("./retained-turn-release.cjs");
 
 const MAX_BODY_BYTES = 16 * 1024;
 const MAX_MANUAL_START_BODY_BYTES = 3 * 1024 * 1024;
+const MAX_AUTOMATIC_PASTE_PROMPT_CHARS = 2 * 1024 * 1024;
 const MANUAL_SENT_OBSERVER_TIMEOUT_MS = 35_000;
 
 function secureTokenMatches(expected, authorization) {
@@ -101,6 +102,8 @@ class BrowserControlServer {
       || request.url === "/v1/turn/approval"
       || request.url === "/v1/turn/end";
     const isTurnRelease = request.url === "/v1/turn/release";
+    const isTurnPaste = request.url === "/v1/turn/paste";
+    const isTurnPasteRelease = request.url === "/v1/turn/paste/release";
     const isSessionInspect = request.url === "/v1/session/inspect";
     const isProxyResolution = request.url === "/v1/network/resolve-proxy";
     const manualAction = new Map([
@@ -111,14 +114,14 @@ class BrowserControlServer {
       ["/v1/manual/end", "end"],
       ["/v1/manual/cancel", "cancel"],
     ]).get(request.url);
-    if (request.method !== "POST" || (!isTurn && !isTurnRelease && !isSessionInspect && !isProxyResolution && !manualAction)) {
+    if (request.method !== "POST" || (!isTurn && !isTurnRelease && !isTurnPaste && !isTurnPasteRelease && !isSessionInspect && !isProxyResolution && !manualAction)) {
       writeJson(response, 404, { error: "not_found" });
       return;
     }
     try {
       const body = await readJson(
         request,
-        manualAction === "start" ? MAX_MANUAL_START_BODY_BYTES : MAX_BODY_BYTES,
+        manualAction === "start" || isTurnPaste ? MAX_MANUAL_START_BODY_BYTES : MAX_BODY_BYTES,
       );
       if (isProxyResolution) {
         const url = new URL(body?.url);
@@ -292,6 +295,25 @@ class BrowserControlServer {
           body.retain === true,
         );
         writeJson(response, 200, { ok: true, ...release });
+        return;
+      }
+      if (isTurnPaste) {
+        if (host.browserInteractionMode() === "manual") throw new Error("Automatic browser interaction is disabled");
+        if (typeof body.prompt !== "string" || body.prompt.length < 1
+          || body.prompt.length > MAX_AUTOMATIC_PASTE_PROMPT_CHARS) {
+          throw new Error("automatic browser paste prompt is invalid");
+        }
+        const lease = await host.pasteTurnPrompt(body.traceId, body.helperPid, body.prompt);
+        writeJson(response, 200, { ok: true, ...lease });
+        return;
+      }
+      if (isTurnPasteRelease) {
+        if (host.browserInteractionMode() === "manual") throw new Error("Automatic browser interaction is disabled");
+        if (typeof body.pasteId !== "string" || !/^[A-Za-z0-9_-]{16,64}$/.test(body.pasteId)) {
+          throw new Error("automatic browser paste lease is invalid");
+        }
+        const restored = host.releaseTurnPromptPaste(body.traceId, body.helperPid, body.pasteId);
+        writeJson(response, 200, { ok: true, ...restored });
         return;
       }
       if (request.url === "/v1/turn/approval") {

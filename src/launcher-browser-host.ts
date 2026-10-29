@@ -421,6 +421,7 @@ export const LAUNCHER_TURN_START_TIMEOUT_MS = 30_000;
 export const LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS = 10_000;
 export const LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS = 5_000;
 export const LAUNCHER_TURN_END_TIMEOUT_MS = 15_000;
+export const LAUNCHER_TURN_PASTE_TIMEOUT_MS = 30_000;
 
 export interface LauncherManualTurnOwner {
   traceId: string;
@@ -732,6 +733,80 @@ export async function notifyLauncherTurn(
       || error instanceof LauncherBrowserTurnOwnerLostError
       || error instanceof LauncherRetainedConversationUnavailableError) throw error;
     throw new Error(`Launcher browser control channel failed: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function pasteLauncherTurnPrompt(
+  descriptorPath: string,
+  traceId: string,
+  prompt: string,
+  timeoutMs = LAUNCHER_TURN_PASTE_TIMEOUT_MS,
+  signal?: AbortSignal,
+): Promise<string> {
+  const descriptor = readLauncherBrowserHostDescriptor(descriptorPath);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${descriptor.control.endpoint}/v1/turn/paste`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${descriptor.control.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ traceId, helperPid: process.pid, prompt }),
+      signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+      const detail = typeof body.error === "string" ? body.error : "";
+      throw new Error(`HTTP ${response.status}${detail ? `: ${detail}` : ""}`);
+    }
+    const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+    if (body.ok !== true) throw new Error("Launcher returned an invalid paste result");
+    if (typeof body.pasteId !== "string" || !/^[A-Za-z0-9_-]{16,64}$/.test(body.pasteId)) {
+      throw new Error("Launcher returned an invalid paste lease");
+    }
+    return body.pasteId;
+  } catch (error) {
+    if (signal?.aborted) throw new DOMException("Launcher browser paste cancelled", "AbortError");
+    if (controller.signal.aborted) throw new Error(`Launcher browser paste timed out after ${timeoutMs}ms`);
+    throw new Error(`Launcher browser paste failed: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function releaseLauncherTurnPromptPaste(
+  descriptorPath: string,
+  traceId: string,
+  pasteId: string,
+  timeoutMs = LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS,
+): Promise<void> {
+  const descriptor = readLauncherBrowserHostDescriptor(descriptorPath);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${descriptor.control.endpoint}/v1/turn/paste/release`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${descriptor.control.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ traceId, helperPid: process.pid, pasteId }),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+      const detail = typeof body.error === "string" ? body.error : "";
+      throw new Error(`HTTP ${response.status}${detail ? `: ${detail}` : ""}`);
+    }
+    const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+    if (body.ok !== true) throw new Error("Launcher returned an invalid paste-release result");
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error(`Launcher browser paste release timed out after ${timeoutMs}ms`);
+    throw new Error(`Launcher browser paste release failed: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     clearTimeout(timer);
   }

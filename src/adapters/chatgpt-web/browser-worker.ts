@@ -95,6 +95,8 @@ import {
   LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS,
   LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS,
   notifyLauncherTurn,
+  pasteLauncherTurnPrompt,
+  releaseLauncherTurnPromptPaste,
 } from "../../launcher-browser-host";
 import {
   CHATGPT_LUNA_BROWSER_INPUT_TOKEN_BUDGET,
@@ -167,6 +169,7 @@ export const CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS = 60_000;
 export const MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS = 3;
 const CHATGPT_CONNECTOR_MENTION_QUERY = "@codex";
 const CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS = 10_000;
+const CHATGPT_CLIPBOARD_PASTE_MIN_CHARS = 32_768;
 const CHATGPT_SMOKE_TEXT = "Reply with exactly: CODEX WEB GPT READY";
 const CHATGPT_SMOKE_EXPECTED = "CODEX WEB GPT READY";
 /**
@@ -1055,6 +1058,8 @@ export interface BrowserTurn {
   /** Select the Codex Native connector without advertising the ordinary turn tool environment. */
   nativeConnector?: boolean;
   retainConversation?: boolean;
+  /** Prefer a real Electron clipboard paste for large one-shot prompts. */
+  preferClipboardPaste?: boolean;
   requireRetainedConversation?: boolean;
   conversationKey?: string;
   onPreparedSelected?: (reused: boolean) => void | Promise<void>;
@@ -1102,6 +1107,7 @@ interface ChatGptSubmissionBaseline {
   submittedText?: string;
   turnToken?: string;
   acceptedUserIdentity?: string;
+  nativeClipboardPromptAccepted?: boolean;
   acknowledgedStages?: readonly ChatGptAcknowledgedMultipartStage[];
 }
 
@@ -3060,12 +3066,22 @@ export class ChatGptBrowserWorker {
         const locator = page.locator(chatGptAssistantTurnSelector(identity!));
         matches = baseline.acceptedUserIdentity
           ? user === baseline.acceptedUserIdentity
-          : Boolean(baseline.submittedText) && await this.userMessageMatchesSubmission(locator, baseline.submittedText!, signal, baseline.turnToken);
+          : baseline.nativeClipboardPromptAccepted && baseline.turnToken
+            // A large native Codex prompt can be represented by ChatGPT as a pasted-text
+            // attachment. Its user bubble no longer exposes the broker turn token or the full
+            // submitted text, so the ordinary rendered-message proof is unavailable after React
+            // replaces the temporary assistant group. The paste itself was already verified in
+            // the owned launcher tab before Send; at this point the strict one-new-user/assistant
+            // structural replacement above is the remaining ownership proof. Bind that user ID
+            // immediately so any later replacement must match the same accepted turn exactly.
+            ? true
+            : Boolean(baseline.submittedText) && await this.userMessageMatchesSubmission(locator, baseline.submittedText!, signal, baseline.turnToken);
         // The accepted user identity, broker token or exact text establishes ownership.
         // Activity can replace its temporary group while still generating; requiring
         // a completed answer here mistakes that same unfinished turn for a foreign one.
       }
       if (!matches) throw new Error("ChatGPT opened another user turn while the bound assistant response was detached");
+      if (!baseline.acceptedUserIdentity) baseline.acceptedUserIdentity = user;
       // Expanding a truncated bubble can yield to another DOM update. Keep the
       // no-competing-turn check valid after that action, not just before it.
       const current = await this.submissionDomState(page, baseline.domCache, signal);
@@ -3228,6 +3244,44 @@ export class ChatGptBrowserWorker {
     const commonPrefix = this.promptEquivalentPrefixLength(prompt, observed);
     throw new ChatGptPromptAttachmentIntegrityError(
       `ChatGPT composer did not preserve the complete prompt (expectedChars=${prompt.length}, actualChars=${observed.length}, commonPrefixChars=${commonPrefix})`,
+    );
+  }
+
+  private async assertClipboardPromptAttached(
+    page: Page,
+    prompt: string,
+    abortSignal?: AbortSignal,
+  ): Promise<void> {
+    const composer = await this.activeComposer(page, 30_000, abortSignal);
+    const composerForm = composer.locator("xpath=ancestor::form[1]");
+    const attachmentSurface = composerForm.locator(".composer-attachment-surface");
+    const send = composerForm.locator(CHATGPT_SEND_BUTTON_SELECTOR);
+    const deadline = Date.now() + 15_000;
+    let observed = "";
+    while (Date.now() < deadline) {
+      throwIfPromptAttachmentAborted(abortSignal);
+      const [currentText, attachments, sendEnabled] = await Promise.all([
+        this.attachedPromptText(page, abortSignal),
+        attachmentSurface.count().catch(() => 0),
+        send.isEnabled().catch(() => false),
+      ]);
+      observed = currentText;
+      if (sendEnabled && this.promptTextEquivalent(prompt, observed)) {
+        console.info(`[chatgpt-web] clipboard prompt accepted as composer text chars=${prompt.length}`);
+        return;
+      }
+      if (attachments > 0 && sendEnabled) {
+        console.info(`[chatgpt-web] clipboard prompt accepted as attachment chars=${prompt.length} attachments=${attachments}`);
+        return;
+      }
+      await withBrowserTurnAbort(
+        new Promise(resolveSleep => setTimeout(resolveSleep, 50)),
+        abortSignal,
+      );
+    }
+    const commonPrefix = this.promptEquivalentPrefixLength(prompt, observed);
+    throw new ChatGptPromptAttachmentIntegrityError(
+      `ChatGPT did not accept the clipboard prompt (expectedChars=${prompt.length}, actualChars=${observed.length}, commonPrefixChars=${commonPrefix})`,
     );
   }
 
@@ -3502,6 +3556,8 @@ export class ChatGptBrowserWorker {
     catalogRefreshAvailable = false,
     connectorAttemptBudget?: ChatGptConnectorAttemptBudget,
     requireThink = false,
+    preferClipboardPaste = false,
+    clipboardPasteTraceId?: string,
   ): Promise<void> {
     throwIfPromptAttachmentAborted(abortSignal);
     await throwIfChatGptRateLimitDialog(page);
@@ -3519,8 +3575,21 @@ export class ChatGptBrowserWorker {
         if (requireThink) {
           await setChatGptThinkMode(composer, true, captureDiagnostic, abortSignal);
         }
-        await this.insertPromptText(page, prompt, abortSignal);
-        await this.assertPromptAttached(page, prompt, abortSignal);
+        if (preferClipboardPaste
+          && clipboardPasteTraceId
+          && prompt.length >= CHATGPT_CLIPBOARD_PASTE_MIN_CHARS
+          && this.config.browserHost === "launcher"
+          && this.config.browserHostDescriptorPath) {
+          const pasteId = await this.pastePromptText(clipboardPasteTraceId, prompt, abortSignal);
+          try {
+            await this.assertClipboardPromptAttached(page, prompt, abortSignal);
+          } finally {
+            await this.releasePromptPaste(clipboardPasteTraceId, pasteId);
+          }
+        } else {
+          await this.insertPromptText(page, prompt, abortSignal);
+          await this.assertPromptAttached(page, prompt, abortSignal);
+        }
         return;
       }
       // A retained tab preserves history, but ChatGPT can require the plugin on each new
@@ -3545,8 +3614,29 @@ export class ChatGptBrowserWorker {
         signal: abortSignal,
         timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
       });
-      await this.insertPromptText(page, ` ${prompt}`, abortSignal);
-      await this.assertPromptAttached(page, prompt, abortSignal);
+      if (preferClipboardPaste
+        && clipboardPasteTraceId
+        && prompt.length >= CHATGPT_CLIPBOARD_PASTE_MIN_CHARS
+        && this.config.browserHost === "launcher"
+        && this.config.browserHostDescriptorPath) {
+        // Keep the connector mention as an ordinary ChatGPT composer selection, then paste only
+        // the large Codex payload. ChatGPT may keep it as text or promote it to a pasted-text
+        // attachment; either form avoids asking Lexical to ingest the entire context piecemeal.
+        const pasteId = await this.pastePromptText(clipboardPasteTraceId, prompt, abortSignal);
+        try {
+          await this.assertClipboardPromptAttached(page, prompt, abortSignal);
+        } finally {
+          await this.releasePromptPaste(clipboardPasteTraceId, pasteId);
+        }
+        if (!await this.connectorIsSelected(selectedComposer, abortSignal)) {
+          throw new ChatGptPromptAttachmentIntegrityError(
+            `ChatGPT dropped the ${JSON.stringify(this.config.appName)} connector while accepting the clipboard prompt`,
+          );
+        }
+      } else {
+        await this.insertPromptText(page, ` ${prompt}`, abortSignal);
+        await this.assertPromptAttached(page, prompt, abortSignal);
+      }
     } catch (error) {
       if (!composerMutationStarted || error instanceof ChatGptPersistentBrowserStateError) throw error;
       try {
@@ -3841,6 +3931,7 @@ export class ChatGptBrowserWorker {
     catalogRefreshAvailable = false,
     connectorAttemptBudget?: ChatGptConnectorAttemptBudget,
     requireThink = false,
+    clipboardPasteTraceId?: string,
   ): Promise<void> {
     let retryAvailable = compaction;
     for (;;) {
@@ -3854,6 +3945,8 @@ export class ChatGptBrowserWorker {
           catalogRefreshAvailable,
           connectorAttemptBudget,
           requireThink,
+          clipboardPasteTraceId !== undefined,
+          clipboardPasteTraceId,
         );
         return;
       } catch (error) {
@@ -3891,6 +3984,34 @@ export class ChatGptBrowserWorker {
         "ChatGPT composer rejected the plain-text editing command",
       );
     }
+  }
+
+  private async pastePromptText(
+    traceId: string,
+    text: string,
+    abortSignal?: AbortSignal,
+  ): Promise<string> {
+    if (this.config.browserHost !== "launcher" || !this.config.browserHostDescriptorPath) {
+      throw new Error("Native clipboard paste requires the launcher browser host");
+    }
+    return pasteLauncherTurnPrompt(
+      this.config.browserHostDescriptorPath,
+      traceId,
+      text,
+      undefined,
+      abortSignal,
+    );
+  }
+
+  private async releasePromptPaste(traceId: string, pasteId: string): Promise<void> {
+    if (this.config.browserHost !== "launcher" || !this.config.browserHostDescriptorPath) {
+      throw new Error("Native clipboard paste release requires the launcher browser host");
+    }
+    await releaseLauncherTurnPromptPaste(
+      this.config.browserHostDescriptorPath,
+      traceId,
+      pasteId,
+    );
   }
 
   private async verifyConnectorExclusive(
@@ -5348,6 +5469,7 @@ export class ChatGptBrowserWorker {
                 catalogRefreshAvailable,
                 connectorAttemptBudget,
                 mode.thinkEnabled,
+                turn.preferClipboardPaste ? turn.traceId : undefined,
               );
             },
             chatGptSuspensionClock,
@@ -5385,6 +5507,16 @@ export class ChatGptBrowserWorker {
         }
       }
       await diagnostics.capture(page, "prompt-attachment-complete");
+      if (turn.preferClipboardPaste
+        && finalPrompt.length >= CHATGPT_CLIPBOARD_PASTE_MIN_CHARS
+        && this.config.browserHost === "launcher"
+        && this.config.browserHostDescriptorPath) {
+        // `attachPrompt` only returns after the launcher paste has been accepted by ChatGPT and
+        // its clipboard lease has been acknowledged. Remember that proof for later response-DOM
+        // rebinding, where ChatGPT may expose only a generic pasted-text attachment in the user
+        // bubble instead of the original Codex turn token.
+        submissionBaseline.nativeClipboardPromptAccepted = true;
+      }
       await this.runStage(turn.traceId, "file_attachment", browserStageTimeouts.fileAttachment, (stageSignal) => (
         this.attachFiles(page, prepared, turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal)
       ));

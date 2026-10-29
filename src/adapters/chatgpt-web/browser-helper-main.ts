@@ -36,6 +36,7 @@ interface RunMessage {
     compaction?: boolean;
     captureLunaCheckpoint?: boolean;
     externalProgress?: boolean;
+    preferClipboardPaste?: boolean;
   };
 }
 
@@ -187,6 +188,10 @@ async function run(message: RunMessage): Promise<void> {
   if (message.turn.externalProgress !== undefined && typeof message.turn.externalProgress !== "boolean") {
     throw new Error("Browser helper external progress flag is invalid");
   }
+  if (message.turn.preferClipboardPaste !== undefined
+    && typeof message.turn.preferClipboardPaste !== "boolean") {
+    throw new Error("Browser helper clipboard-paste preference is invalid");
+  }
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: "https://chatgpt.com",
@@ -231,6 +236,7 @@ async function run(message: RunMessage): Promise<void> {
     ...(message.turn.conversationKey ? { conversationKey: message.turn.conversationKey } : {}),
     abortSignal: abortController.signal,
     ...(message.turn.compaction ? { compaction: true } : {}),
+    ...(message.turn.preferClipboardPaste ? { preferClipboardPaste: true } : {}),
     ...(progress ? {
       externalProgress: progress,
       completionFence: {
@@ -538,4 +544,4 @@ process.once("SIGTERM", () => {
 });
 
 // Advertise the optional frames this helper understands so the daemon can negotiate them explicitly.
-writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack", "skill-attachments"] });
+writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack", "skill-attachments", "clipboard-paste"] });
