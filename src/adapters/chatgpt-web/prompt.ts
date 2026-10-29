@@ -2,14 +2,19 @@ import { createHash } from "node:crypto";
 import { CHATGPT_CONNECTOR_NAME, ZERO_RISK_CHATGPT_CONNECTOR_NAME } from "../../config";
 import { selectedSkillFile, skillFileTokens, type ChatGptSkillFile } from "./skill-attachments";
 import {
+  CHATGPT_WEB_BACKEND_MODEL,
   CHATGPT_WEB_GPT6_INSTANT_BIGGER_CONTEXT_ERROR,
+  CHATGPT_WEB_LUNA_BACKEND_MODEL,
+  CHATGPT_WEB_PLATFORM_RESERVE_TOKENS,
   chatGptWebImageTokenReserve,
   isChatGptWebZeroRiskBackendModel,
+  resolveChatGptWebContextLimits,
   resolveChatGptWebMessageTokenBudget,
   resolveChatGptWebStagingTokenBudget,
   resolveChatGptWebTransportLimits,
   supportsChatGptWebBiggerContext,
 } from "../../chatgpt-web-models";
+import { estimateCompiledChatGptWebInputTokens } from "./input-tokens";
 import { ChatGptWebAdapterError } from "./adapter-error";
 import { restoreCompactionTaskMessages } from "./compaction-continuation";
 import { chatGptTurnUserRevisionHistory, extractChatGptTurnIdentity } from "./environment";
@@ -791,12 +796,45 @@ export function compileChatGptWebPrompt(
   let compiled = build(sourceMessages);
   if (!parsed._compactionRequest) return compiled;
 
-  // The 110k edge budget was measured for the old single-message compaction envelope. Bigger
-  // Context stages are governed by the same model-specific per-message token and composer limits
-  // as ordinary multipart turns in browser-worker. Applying the legacy byte cap here silently
-  // discarded context that the staged transport can carry; preserve it and let browser preflight
-  // fail explicitly if any atomic record is genuinely too large for one stage.
-  if (compiled.multipart) return compiled;
+  // Bigger Context stages are governed by model-specific context window and staging limits.
+  // When a multipart compaction request exceeds its experimental ceiling, trim oldest history
+  // while preserving the cumulative checkpoint and the final compaction instruction.
+  if (compiled.multipart) {
+    const backendModel = parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID
+      ? CHATGPT_WEB_LUNA_BACKEND_MODEL
+      : CHATGPT_WEB_BACKEND_MODEL;
+    const limits = resolveChatGptWebContextLimits(
+      backendModel,
+      mode.effort,
+      { ...capabilities, experimentalBiggerContext: true },
+      parsed._chatgptModelFamily,
+    );
+    const baseBudget = resolveChatGptWebMessageTokenBudget(backendModel, mode.effort, capabilities)
+      + CHATGPT_WEB_PLATFORM_RESERVE_TOKENS + 1;
+    const multipartCeiling = Math.min(limits.contextWindow, baseBudget * compiled.multipart.parts.length);
+
+    const exceedsMultipartBudget = (): boolean => (
+      Boolean(compiled.multipart)
+      && estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId) >= multipartCeiling * 0.98
+    );
+
+    let checkpointIndex = sourceMessages.findLastIndex(message =>
+      message.role === "user" && isReadableCompactionSummaryText(plainMessageText(message))
+    );
+    while (exceedsMultipartBudget() && sourceMessages.length > 1) {
+      const discardIndex = checkpointIndex === 0 ? 1 : 0;
+      if (discardIndex === sourceMessages.length - 1) break;
+      sourceMessages.splice(discardIndex, 1);
+      if (checkpointIndex > discardIndex) checkpointIndex -= 1;
+      compiled = build(sourceMessages, initialMessageCount - sourceMessages.length);
+      if (!compiled.multipart) break;
+    }
+
+    if (compiled.multipart) {
+      const trimmedCompactionMessages = initialMessageCount - sourceMessages.length;
+      return trimmedCompactionMessages > 0 ? { ...compiled, trimmedCompactionMessages } : compiled;
+    }
+  }
 
   const exceedsCompactionBudget = (): boolean => (
     chatGptPromptJsonBytes(compiled.text) > CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET

@@ -755,3 +755,32 @@ test("inline and multipart transports preserve code while escaping its Markdown 
   }
   expect(JSON.stringify(multipart.multipart!.parts.map(part => JSON.parse(part)))).toContain("```python");
 });
+
+test("Bigger Context compaction trims oldest history when exceeding the multipart ceiling (#930)", () => {
+  const compact = request("high");
+  compact._compactionRequest = true;
+  compact.context.systemPrompt = [];
+  compact.context.messages = [
+    { role: "user", content: `${SUMMARY_PREFIX}\nInitial checkpoint ${"c".repeat(10_000)}`, timestamp: 1 },
+    ...Array.from({ length: 24 }, (_unused, index) => ({
+      role: "user" as const,
+      content: `oversized-stage-${index + 1}-${"x".repeat(120_000)}`,
+      timestamp: index + 2,
+    })),
+    { role: "user", content: "final-compaction-instruction-now", timestamp: 100 },
+  ];
+
+  const multipart = compileChatGptWebPrompt(
+    compact,
+    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    undefined,
+    { experimentalMultipartParts: CHATGPT_BIGGER_CONTEXT_PARTS },
+  );
+
+  expect(multipart.trimmedCompactionMessages).toBeDefined();
+  expect(multipart.trimmedCompactionMessages).toBeGreaterThan(0);
+  expect(multipart.multipart?.parts).toBeDefined();
+  const staged = multipart.multipart!.parts.join("\n");
+  expect(staged).toContain("Initial checkpoint");
+  expect(staged).toContain("final-compaction-instruction-now");
+}, 30_000);
