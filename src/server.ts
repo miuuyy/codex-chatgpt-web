@@ -53,7 +53,7 @@ import type { CodexProviderConfig } from "./types";
 import type { ProviderAdapter } from "./adapters/base";
 import { VERSION } from "./version";
 
-type HttpTrackedEndpoint = "models" | "responses" | "compact" | "search" | "unspecified" | NativeImageEndpoint;
+type HttpTrackedEndpoint = "models" | "responses" | "chat_completions" | "compact" | "search" | "unspecified" | NativeImageEndpoint;
 
 export interface NativeCodexTurnIdentity {
   threadId: string;
@@ -845,6 +845,187 @@ export async function responseRequest(
   return Response.json(json);
 }
 
+export async function chatCompletionsRequest(
+  req: Request,
+  config: AppConfig,
+  adapterFactory: ChatGptWebAdapterFactory = createChatGptWebAdapter,
+  options: ResponseRequestOptions = {},
+): Promise<Response> {
+  let raw: unknown;
+  try {
+    raw = await readJsonRequestBody(req);
+  } catch (error) {
+    return formatErrorResponse(
+      400,
+      "invalid_request_error",
+      error instanceof Error ? error.message : "Request body must be valid JSON",
+    );
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return formatErrorResponse(400, "invalid_request_error", "Request body must be a JSON object");
+  }
+  const body = raw as Record<string, unknown>;
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  if (messages.length === 0) {
+    return formatErrorResponse(400, "invalid_request_error", "messages must be a non-empty array");
+  }
+
+  const now = Date.now();
+  const turnId = `turn_compat_${now}_${Math.random().toString(36).slice(2, 8)}`;
+  const threadId = `thread_compat_${createHash("sha256").update(JSON.stringify(messages)).digest("hex").slice(0, 16)}`;
+
+  let model = typeof body.model === "string" ? body.model : "chatgpt-web/gpt-6-sol";
+  if (!model.startsWith("chatgpt-web/")) {
+    if (model.includes("pro")) model = "chatgpt-web/gpt-6-pro";
+    else if (model.includes("instant") || model.includes("light")) model = "chatgpt-web/gpt-6-sol-instant";
+    else model = "chatgpt-web/gpt-6-sol";
+  }
+
+  const input = messages.map((m: any, idx: number) => {
+    const role = m.role === "assistant" ? "assistant" : m.role === "system" ? "system" : "user";
+    const text = typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "");
+    return {
+      type: "message",
+      role,
+      id: `msg_chat_${idx}_${now}`,
+      content: [{ type: "input_text", text }],
+      internal_chat_message_metadata_passthrough: {
+        turn_id: turnId,
+        content_item_kinds: ["message.text"],
+      },
+    };
+  });
+
+  const responsesPayload = {
+    ...body,
+    model,
+    input,
+    stream: body.stream === true,
+    client_metadata: {
+      "x-codex-turn-metadata": JSON.stringify({
+        turn_id: turnId,
+        thread_id: threadId,
+        request_kind: "turn",
+      }),
+    },
+  };
+
+  const adaptedReq = new Request(req.url, {
+    method: "POST",
+    headers: { ...Object.fromEntries(req.headers.entries()), "content-type": "application/json" },
+    body: JSON.stringify(responsesPayload),
+    signal: req.signal,
+  });
+
+  const response = await responseRequest(adaptedReq, config, adapterFactory, options);
+  if (!response.ok) return response;
+
+  const completionId = `chatcmpl-${crypto.randomUUID().replace(/-/g, "")}`;
+  const created = Math.floor(Date.now() / 1000);
+
+  if (body.stream === true && response.body) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    const encoder = new TextEncoder();
+    let buffer = "";
+
+    const stream = new ReadableStream({
+      async pull(controller) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            controller.close();
+            return;
+          }
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              const dataStr = line.slice(6).trim();
+              if (!dataStr || dataStr === "[DONE]") continue;
+              try {
+                const event = JSON.parse(dataStr);
+                if (typeof event.delta === "string") {
+                  const chunk = {
+                    id: completionId,
+                    object: "chat.completion.chunk",
+                    created,
+                    model,
+                    choices: [{
+                      index: 0,
+                      delta: { content: event.delta },
+                      finish_reason: null,
+                    }],
+                  };
+                  controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+                } else if (event.response?.status === "completed" || event.type === "response.completed") {
+                  const finalChunk = {
+                    id: completionId,
+                    object: "chat.completion.chunk",
+                    created,
+                    model,
+                    choices: [{
+                      index: 0,
+                      delta: {},
+                      finish_reason: "stop",
+                    }],
+                  };
+                  controller.enqueue(encoder.encode(`data: ${JSON.stringify(finalChunk)}\n\n`));
+                }
+              } catch {}
+            }
+          }
+        }
+      },
+      cancel() {
+        void reader.cancel();
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+      },
+    });
+  }
+
+  try {
+    const resJson = await response.json() as Record<string, unknown>;
+    let answerText = "";
+    if (Array.isArray(resJson.output)) {
+      for (const item of resJson.output) {
+        if (item?.type === "message" && Array.isArray(item.content)) {
+          for (const part of item.content) {
+            if (part?.type === "output_text" && typeof part.text === "string") {
+              answerText += part.text;
+            }
+          }
+        }
+      }
+    }
+    return Response.json({
+      id: completionId,
+      object: "chat.completion",
+      created,
+      model,
+      choices: [{
+        index: 0,
+        message: { role: "assistant", content: answerText },
+        finish_reason: "stop",
+      }],
+      usage: resJson.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    });
+  } catch {
+    return formatErrorResponse(500, "server_error", "Failed to decode adapter response");
+  }
+}
+
 export async function compactRequest(
   req: Request,
   config: AppConfig,
@@ -1248,6 +1429,20 @@ export function startServer(
           req.signal,
           process.platform,
           "responses",
+        );
+      }
+      if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
+        if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
+        return httpTurns.track(
+          (signal, bindIdentity) => chatCompletionsRequest(
+            new Request(req, { signal }),
+            config,
+            dependencies.adapterFactory,
+            { onTurnIdentity: bindIdentity },
+          ),
+          req.signal,
+          process.platform,
+          "chat_completions",
         );
       }
       if (req.method === "POST" && url.pathname === "/v1/responses/compact") {
