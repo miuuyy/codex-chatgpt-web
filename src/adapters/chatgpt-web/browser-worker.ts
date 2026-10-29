@@ -238,6 +238,15 @@ function chatGptConnectorUnavailableError(message: string): ChatGptWebAdapterErr
 
 const CHATGPT_MODEL_CONTROL_UNAVAILABLE_MESSAGE = "ChatGPT model controls are unavailable. Reload ChatGPT and retry the task.";
 
+/** Only an absent initial control qualifies for an empty-page refresh. */
+export class ChatGptModelControlsNotReadyError extends ChatGptWebAdapterError {
+  constructor() {
+    super(CHATGPT_MODEL_CONTROL_UNAVAILABLE_MESSAGE, {
+      status: 502, errorType: "server_error", code: "chatgpt_model_controls_unavailable", retryable: false,
+    });
+  }
+}
+
 function chatGptModelControlUnavailableError(diagnostic: string): Error {
   return new Error(CHATGPT_MODEL_CONTROL_UNAVAILABLE_MESSAGE, { cause: new Error(diagnostic) });
 }
@@ -2278,6 +2287,49 @@ export class ChatGptBrowserWorker {
     return await context.newPage();
   }
 
+  /** One refresh before any attachment/Send; retained or nonempty pages never qualify. */
+  private async selectInitialModelAndEffort<T>(
+    page: Page,
+    select: () => Promise<T>,
+    state: { reuseConversation: boolean; activeResponse: () => boolean; deadline?: number; traceId?: string },
+    captureDiagnostic?: (checkpoint: string) => Promise<void>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    signal?.throwIfAborted();
+    try { return await select(); }
+    catch (error) {
+      signal?.throwIfAborted();
+      if (!(error instanceof ChatGptModelControlsNotReadyError) || state.reuseConversation
+        || state.activeResponse() || (state.deadline !== undefined && state.deadline <= Date.now())) throw error;
+      await throwIfChatGptRateLimitDialog(page);
+      await throwIfChatGptSessionFailureAlert(page);
+      await assertAuthenticatedChatGptPage(page);
+      const expected = chatGptNewChatUrl(this.config.useTemporaryChats);
+      // A live location check also rejects a saved conversation or a foreign SPA route.
+      if (page.url() !== expected || await page.evaluate(() => location.href) !== expected) throw error;
+      const remainsEmpty = async () => page.url() === expected && await page.evaluate(() => location.href) === expected
+        && await page.locator(CHATGPT_USER_TURN_SELECTOR + ", " + CHATGPT_ASSISTANT_TURN_SELECTOR).count() === 0
+        && await chatGptStopButton(page).count() === 0
+        && (await (await this.activeComposer(page)).innerText()).trim() === "";
+      if (!await remainsEmpty() || state.activeResponse()) throw error;
+      await captureDiagnostic?.("model-controls-not-ready");
+      signal?.throwIfAborted();
+      const timeout = Math.min(60_000, state.deadline === undefined ? 60_000 : state.deadline - Date.now());
+      if (timeout <= 0 || state.activeResponse() || !await remainsEmpty()) throw error;
+      signal?.throwIfAborted();
+      await withBrowserTurnAbort(page.reload({ waitUntil: "domcontentloaded", timeout }), signal);
+      await assertNewChatPage(page, this.config.useTemporaryChats);
+      await this.activeComposer(page, Math.min(30_000, state.deadline === undefined ? 30_000 : Math.max(1, state.deadline - Date.now())), signal);
+      await assertAuthenticatedChatGptPage(page);
+      signal?.throwIfAborted();
+      await captureDiagnostic?.("model-controls-page-refreshed");
+      if (state.traceId) console.info(`[chatgpt-web] initial_model_controls_refreshed ${JSON.stringify({ traceId: state.traceId })}`);
+      // No loop: another absence remains a visible terminal failure. Exact model and
+      // effort verification are rerun by the same callback, with no model fallback.
+      return await select();
+    }
+  }
+
   private async selectModelAndEffort(
     page: Page,
     modelId: string,
@@ -2319,9 +2371,7 @@ export class ChatGptBrowserWorker {
       if (error instanceof ChatGptWebAdapterError) throw error;
       await throwIfChatGptRateLimitDialog(page);
       await throwIfChatGptSessionFailureAlert(page);
-      throw chatGptModelControlUnavailableError(
-        "ChatGPT rendered the composer but its model/effort control did not become ready",
-      );
+      throw new ChatGptModelControlsNotReadyError();
     } finally {
       effortWaitAbort.abort();
     }
@@ -5124,7 +5174,12 @@ export class ChatGptBrowserWorker {
           stagingFamily,
         )
       );
-      let mode = await this.runStage(turn.traceId, "effort_selection", browserStageTimeouts.effortSelection, selectStagingMode);
+      let mode = await this.selectInitialModelAndEffort(
+        page,
+        () => this.runStage(turn.traceId, "effort_selection", browserStageTimeouts.effortSelection, selectStagingMode),
+        { reuseConversation, activeResponse: generation.active, deadline, traceId: turn.traceId },
+        checkpoint => diagnostics.capture(page, checkpoint), turn.abortSignal,
+      );
       await diagnostics.capture(page, "effort-selection-complete");
 
       // One receipt per physical Send, not per native tool call or stream attachment.

@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { expect, test } from "bun:test";
 import { chromium } from "playwright-core";
-import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
+import { ChatGptBrowserWorker, ChatGptModelControlsNotReadyError } from "../src/adapters/chatgpt-web/browser-worker";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { readChatGptUsageModel } from "../src/adapters/chatgpt-web/limits";
 
@@ -135,3 +135,52 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("localized position punctuati
     expect(await selectGpt6Pro(picker)).toEqual({ ok: true, label: "Pro", usageModel: "gpt-6-pro", draft: "Draft" });
   }
 }, 60_000);
+
+// October29: three real goals stopped on an empty new-chat composer with no model controls.
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("missing initial model controls reload only a proven empty new chat once", async () => {
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  try {
+    const page = await browser.newPage();
+    let loads = 0;
+    await page.route("https://chatgpt.com/**", route => {
+      loads++;
+      return route.fulfill({ contentType: "text/html", body: '<form><div id="prompt-textarea" contenteditable="true"></div></form>' });
+    });
+    const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+    worker.config = { useTemporaryChats: true };
+    const url = "https://chatgpt.com/?temporary-chat=true";
+    await page.goto(url);
+    let selections = 0;
+    const mode = { effort: "high", modelFamily: "6" };
+    const select = async () => { if (++selections === 1) throw new ChatGptModelControlsNotReadyError(); return mode; };
+    expect(await worker.selectInitialModelAndEffort(page, select, { reuseConversation: false, activeResponse: () => false })).toBe(mode);
+    expect(selections).toBe(2); expect(loads).toBe(2); expect(page.url()).toBe(url);
+    selections = 0;
+    let failure: unknown;
+    try { await worker.selectInitialModelAndEffort(page, async () => { selections++; throw new ChatGptModelControlsNotReadyError(); }, { reuseConversation: false, activeResponse: () => false }); }
+    catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(ChatGptModelControlsNotReadyError);
+    expect(selections).toBe(2); expect(loads).toBe(3);
+    for (const guard of ["retained", "stream", "draft", "user", "assistant", "stop", "foreign", "cancelled", "deadline", "diagnostic-race", "rate-limit", "expired"]) {
+      await page.goto(url);
+      if (guard === "draft") await page.locator('#prompt-textarea').fill('Keep this draft');
+      if (guard === "user") await page.locator('form').evaluate(node => node.insertAdjacentHTML('afterend', '<div data-turn-key="user"><div data-user-message-bubble>Accepted</div></div>'));
+      if (guard === "assistant") await page.locator('form').evaluate(node => node.insertAdjacentHTML('afterend', '<div data-turn-key="assistant"><div data-conversation-role="assistant"></div></div>'));
+      if (guard === "stop") await page.locator('form').evaluate(node => node.insertAdjacentHTML('beforeend', '<button data-testid="stop-button">Stop</button>'));
+      if (guard === "rate-limit") await page.locator('form').evaluate(node => node.insertAdjacentHTML('afterend', '<div role="dialog">Too many requests, making requests too quickly</div>'));
+      if (guard === "expired") await page.locator('form').evaluate(node => node.insertAdjacentHTML('afterend', '<div role="alert">Your session has expired</div>'));
+      if (guard === "foreign") await page.evaluate(() => history.replaceState(null, '', '/c/foreign'));
+      const controller = new AbortController(); if (guard === "cancelled") controller.abort();
+      const before = loads; let calls = 0; failure = undefined;
+      try { await worker.selectInitialModelAndEffort(page, async () => { calls++; throw new ChatGptModelControlsNotReadyError(); }, { reuseConversation: guard === "retained", activeResponse: () => guard === "stream", deadline: guard === "deadline" ? Date.now()-1 : undefined }, guard === "diagnostic-race" ? async () => { await page.locator('#prompt-textarea').fill('Keep late draft'); } : undefined, controller.signal); }
+      catch (error) { failure = error; }
+      expect(failure).toBeDefined(); expect(calls).toBeLessThanOrEqual(1); expect(loads).toBe(before);
+    }
+    for (const terminal of [new Error('Unknown model'), new Error('rate limit'), new Error('sign in')]) {
+      await page.goto(url); const before = loads; failure = undefined;
+      try { await worker.selectInitialModelAndEffort(page, async () => { throw terminal; }, { reuseConversation: false, activeResponse: () => false }); }
+      catch (error) { failure = error; }
+      expect(failure).toBe(terminal); expect(loads).toBe(before);
+    }
+  } finally { await browser.close(); }
+}, 30_000);
