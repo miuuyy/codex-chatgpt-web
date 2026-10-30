@@ -373,12 +373,16 @@ export interface ChatGptEnvironmentClaim {
   statesNetworkAccess: boolean;
   /** Later calendar fragments remain claims until the current rollout corroborates them. */
   calendarDelta?: ChatGptCalendarEnvironmentDelta;
+  /** The exact rendered element, comparable only with Codex's own current world state. */
+  filesystemXml?: string;
 }
 
 function environmentClaim(parsed: CodexParsedRequest, text: string): ChatGptEnvironmentClaim {
+  const filesystem = text.match(/<filesystem>[\s\S]*?<\/filesystem>/g);
   return {
     environment: parseChatGptEnvironmentText(parsed, text),
     statesNetworkAccess: /<network_access\b/i.test(text) || /network access is /i.test(text),
+    ...(filesystem?.length === 1 ? { filesystemXml: filesystem[0] } : {}),
   };
 }
 
@@ -515,19 +519,29 @@ export function extractChatGptCalendarEnvironmentDelta(
       || !kinds.includes("environments.environment_context")) return undefined;
   }
 
-  let deltas = 0;
-  const workspaceRoots: string[][] = [];
-  const filesystemProfiles: string[] = [];
+  // Match the whole native fragment, not just the presence of a permission profile: another
+  // profile, a malformed cwd, or any additional permission declaration must fail closed.
+  // Native midnight updates can also repeat a worker inventory. Its exact name-only
+  // shape is contextual; it grants neither filesystem authority nor child ownership.
+  const calendarFragment = (text: string) => /^<environment_context>\s*<current_date>\d{4}-\d{2}-\d{2}<\/current_date>\s*(?:<timezone>[^<>]+<\/timezone>\s*)?<filesystem>\s*(?:<workspace_roots>((?:\s*<root>[^<>]+<\/root>\s*)+)<\/workspace_roots>\s*)?(<permission_profile type="(?:disabled|managed)">[\s\S]*?<\/permission_profile>)\s*<\/filesystem>\s*(?:<subagents>\s*(?:<agent name="[^<>"\r\n]+"\s*\/>\s*)*<\/subagents>\s*)?<\/environment_context>$/.exec(text);
+  const fragments: string[] = [];
+  // Codex renders no workspace_roots for a turn that has none (#936). Such a fragment names
+  // no root and no cwd, so it can precede the instruction; with roots it is an ordinary claim.
+  const leading = options ? undefined : environmentBeforeUser(input, activeIndex, turnId, metadata);
+  const leadingMatch = leading ? calendarFragment(leading) : null;
+  if (leading && leadingMatch && leadingMatch[1] === undefined) fragments.push(leading);
   for (let index = activeIndex + 1; index < input.length; index += 1) {
     const item = record(input[index]);
     if (!hasEnvironmentContextFragment(item)) continue;
     if (item.role !== "user" || itemTurnId(item) !== turnId || typeof item.id !== "string" || !item.id) return undefined;
-    const text = rawMessageText(item).trim();
-    // Match the whole native fragment, not just the presence of a permission profile: another
-    // profile, a malformed cwd, or any additional permission declaration must fail closed.
-    // Native midnight updates can also repeat a worker inventory. Its exact name-only
-    // shape is contextual; it grants neither filesystem authority nor child ownership.
-    const match = /^<environment_context>\s*<current_date>\d{4}-\d{2}-\d{2}<\/current_date>\s*(?:<timezone>[^<>]+<\/timezone>\s*)?<filesystem>\s*(?:<workspace_roots>((?:\s*<root>[^<>]+<\/root>\s*)+)<\/workspace_roots>\s*)?(<permission_profile type="(?:disabled|managed)">[\s\S]*?<\/permission_profile>)\s*<\/filesystem>\s*(?:<subagents>\s*(?:<agent name="[^<>"\r\n]+"\s*\/>\s*)*<\/subagents>\s*)?<\/environment_context>$/.exec(text);
+    fragments.push(rawMessageText(item).trim());
+  }
+
+  let deltas = 0;
+  const workspaceRoots: string[][] = [];
+  const filesystemProfiles: string[] = [];
+  for (const text of fragments) {
+    const match = calendarFragment(text);
     if (!match
       || !sandboxMetadataMatchesEnvironment(canonicalSandboxMetadata(metadata), text)
       || [metadata.sandbox_mode, metadata.sandbox].some(value => (

@@ -1379,6 +1379,149 @@ describe("trusted Codex task environment continuity", () => {
     });
   });
 
+  // Captured Codex Desktop shape: turn_context has no workspace_roots and session_meta keeps the
+  // roots the task started with, so only world_state records a later turn's current roots.
+  function currentRootsFixture(sessionRoots: string[] = [root]) {
+    const fixture = resumedRootFixture();
+    const visualization = join(fixture.codexHome, "visualizations", "2026", "10", "29", rolloutThreadId);
+    const filesystem = (roots: string[], profile = dangerFullAccessProfileXml) => "<filesystem>"
+      + (roots.length > 0 ? `<workspace_roots>${roots.map(path => `<root>${path}</root>`).join("")}</workspace_roots>` : "")
+      + `${profile}</filesystem>`;
+    const envelope = (filesystemXml: string, cwd?: string) => `<environment_context>\n${
+      cwd ? `  <cwd>${cwd}</cwd>\n  <shell>zsh</shell>\n` : ""
+    }  <current_date>2026-10-29</current_date>\n  <timezone>Europe/Moscow</timezone>\n  ${filesystemXml}\n</environment_context>`;
+    const worldState = (full: boolean, filesystemXml: string | null) => ({
+      type: "world_state", payload: { full, state: { environments: { filesystem: filesystemXml } } },
+    });
+    const environment = {
+      type: "message", role: "user", id: "msg_current_environment",
+      internal_chat_message_metadata_passthrough: { turn_id: rolloutTurnId, content_item_kinds: ["environments.environment_context"] },
+      content: [{ type: "input_text", text: "" }],
+    };
+    const body = fixture.request._rawBody as { input: Array<Record<string, unknown>>; client_metadata: Record<string, string> };
+    body.input.unshift(environment);
+    const context = childTurnContext();
+    delete (context.payload as Record<string, unknown>).workspace_roots;
+    const writeRollout = (records: unknown[]) => writeFileSync(fixture.rolloutPath, [
+      { type: "session_meta", payload: { id: rolloutThreadId, source: "vscode", cwd: root, runtime_workspace_roots: sessionRoots } },
+      ...records, context,
+    ].map(value => JSON.stringify(value)).join("\n") + "\n");
+    return {
+      ...fixture, request: parseRequest({ ...body, model: "chatgpt-web/pro" }), body, visualization,
+      filesystem, envelope, worldState, environment, context, writeRollout,
+    };
+  }
+
+  test("a Full Access turn accepts the current roots Codex itself recorded instead of its start roots (#939)", () => {
+    const { codexHome, request, visualization, filesystem, envelope, worldState, environment, writeRollout } = currentRootsFixture();
+    environment.content[0]!.text = envelope(filesystem([visualization]));
+    writeRollout([worldState(true, filesystem([root, visualization])), worldState(false, filesystem([visualization]))]);
+    expect(new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request)).toEqual({
+      cwd: root, roots: [root, visualization], writableRoots: [root, visualization],
+      sandboxPolicy: { type: "dangerFullAccess" }, tools: [],
+    });
+  });
+
+  test("Codex's current roots may keep the native cwd yet omit another start root", () => {
+    const auxiliary = resolve(root, "..", "second-project");
+    const { codexHome, request, visualization, filesystem, envelope, worldState, environment, writeRollout } = currentRootsFixture([root, auxiliary]);
+    environment.content[0]!.text = envelope(filesystem([visualization, root]));
+    writeRollout([worldState(false, filesystem([visualization, root]))]);
+    expect(new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request)).toMatchObject({
+      cwd: root, roots: [root, auxiliary, visualization],
+    });
+  });
+
+  test("the latest current-roots record is found behind later calendar and tool updates", () => {
+    const { codexHome, request, visualization, filesystem, envelope, worldState, environment, writeRollout } = currentRootsFixture();
+    environment.content[0]!.text = envelope(filesystem([visualization]));
+    writeRollout([
+      worldState(false, filesystem([visualization])),
+      { type: "world_state", payload: { full: false, state: { environments: { current_date: "2026-10-30" } } } },
+      { type: "world_state", payload: { full: false, state: { tools: {} } } },
+    ]);
+    expect(new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request).cwd).toBe(root);
+  });
+
+  for (const format of ["v1", "v2"]) test(`${format} compaction continuation accepts the rebuilt roots Codex recorded (#939, #945)`, () => {
+    const { codexHome, request, body, visualization, filesystem, envelope, worldState, environment, writeRollout } = currentRootsFixture();
+    const oldTurnId = "01a06c66-0000-75c6-a0df-318f890ef6de";
+    const instruction = body.input[1]!;
+    instruction.internal_chat_message_metadata_passthrough = { turn_id: oldTurnId };
+    const summary = `Current roots checkpoint ${format}`;
+    rememberCompactionContinuation({ ...request, _compactionRequest: true }, extractChatGptTurnIdentity(request), [
+      { turnId: oldTurnId, content: instruction.content },
+    ], summary);
+    body.input.push(format === "v2"
+      ? { type: "compaction", encrypted_content: encodeCompactionSummary(summary) }
+      : { type: "message", role: "user", content: [{ type: "input_text", text: `${SUMMARY_PREFIX}\n${summary}` }] });
+    environment.content[0]!.text = envelope(filesystem([visualization]), root);
+    writeRollout([worldState(true, filesystem([visualization]))]);
+    expect(isChatGptCompactionContinuation(request)).toBe(true);
+    expect(new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request)).toMatchObject({
+      cwd: root, roots: [root, visualization],
+    });
+    writeRollout([worldState(true, filesystem([root, visualization]))]);
+    expect(() => new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request)).toThrow("Compaction continuation environment conflicts");
+  });
+
+  test("current roots need Codex's exact current record and never change cwd, permissions or the turn", () => {
+    const { codexHome, request, visualization, filesystem, envelope, worldState, environment, context, writeRollout } = currentRootsFixture();
+    const resolveCurrent = () => new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request);
+    const claimed = filesystem([visualization]);
+    const foreign = filesystem([join(codexHome, "visualizations", "2026", "10", "29", rolloutParentId)]);
+    environment.content[0]!.text = envelope(claimed);
+    for (const records of [
+      [],
+      [worldState(true, filesystem([root, visualization]))],
+      [worldState(false, foreign)],
+      [worldState(false, claimed), worldState(false, filesystem([root, visualization]))],
+      [worldState(false, claimed), worldState(false, null)],
+      [worldState(false, claimed), { type: "world_state", payload: { full: true, state: { tools: {} } } }],
+      [worldState(false, claimed), { type: "world_state", payload: { full: false, state: { environments: null } } }],
+    ]) {
+      writeRollout(records);
+      expect(resolveCurrent).toThrow("fields: workspace_roots, writable_roots");
+    }
+
+    writeRollout([worldState(false, claimed)]);
+    expect(resolveCurrent().cwd).toBe(root);
+    environment.content[0]!.text = envelope(claimed, dirname(root));
+    expect(resolveCurrent).toThrow("cwd");
+    environment.content[0]!.text = `${envelope(claimed)}\n${claimed}`;
+    expect(resolveCurrent).toThrow();
+    environment.content[0]!.text = envelope(filesystem([visualization], readOnlyProfileXml));
+    writeRollout([worldState(false, filesystem([visualization], readOnlyProfileXml))]);
+    expect(resolveCurrent).toThrow("sandbox_policy");
+
+    environment.content[0]!.text = envelope(claimed);
+    writeRollout([worldState(false, claimed)]);
+    const payload = context.payload as Record<string, unknown>;
+    payload.turn_id = "01a06c66-ffff-75c6-a0df-318f890ef6de";
+    writeRollout([worldState(false, claimed)]);
+    expect(resolveCurrent).toThrow("current turn");
+    payload.turn_id = rolloutTurnId;
+    payload.sandbox_policy = { type: "read-only", network_access: false };
+    payload.permission_profile = { type: "managed", file_system: { type: "restricted", entries: [
+      { path: { type: "special", value: { kind: "root" } }, access: "read" },
+    ] }, network: "restricted" };
+    writeRollout([worldState(false, claimed)]);
+    expect(resolveCurrent).toThrow();
+  });
+
+  test("a turn-start update without workspace roots uses the current native turn (#936)", () => {
+    const { codexHome, request, rolloutPath, filesystem, envelope, worldState, environment, writeRollout } = currentRootsFixture();
+    environment.content[0]!.text = envelope(filesystem([]));
+    writeRollout([worldState(false, filesystem([]))]);
+    const store = new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome);
+    expect(store.resolve(request)).toMatchObject({ cwd: root, roots: [root], sandboxPolicy: { type: "dangerFullAccess" } });
+    environment.content[0]!.text = envelope(filesystem([], readOnlyProfileXml));
+    expect(() => store.resolve(request)).toThrow();
+    environment.content[0]!.text = envelope(filesystem([]));
+    rmSync(rolloutPath);
+    expect(() => store.resolve(request)).toThrow("missing cwd");
+  });
+
   function midnightRolloutFixture() {
     const fixture = resumedRootFixture();
     const body = fixture.request._rawBody as { input: Array<Record<string, unknown>>; client_metadata: Record<string, string> };
