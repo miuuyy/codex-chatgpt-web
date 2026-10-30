@@ -16,6 +16,8 @@ import { ChatGptWebAdapterError } from "./adapter-error";
 import { restoreCompactionTaskMessages } from "./compaction-continuation";
 import { chatGptTurnUserRevisionHistory, extractChatGptTurnIdentity } from "./environment";
 import { estimateCompiledChatGptWebInputTokens } from "./input-tokens";
+import { structuredCompactionHandoffInstruction } from "./native-compaction-control";
+import type { CompactionTransactionHandle } from "./compaction-transaction";
 import { estimateTokens } from "../../lib/token-estimate";
 import type { CodexAssistantContentPart, CodexContentPart, CodexMessage, CodexParsedRequest } from "../../types";
 import { isOnePixelPngDataUrl, isReadableCompactionSummaryText } from "../../responses/compaction";
@@ -51,6 +53,8 @@ export type ChatGptContextTokenBreakdown = Partial<Record<
 >>;
 
 export interface CompileChatGptWebPromptOptions {
+  /** Summary-only receipt; never an ordinary local-tool capability. */
+  compactionControl?: CompactionTransactionHandle;
   /** The same display name used to select the ChatGPT plugin for this turn. */
   appName?: string;
   captureLunaCheckpoint?: boolean;
@@ -500,6 +504,12 @@ export function compileChatGptWebPrompt(
   const mode = manualControl
     ? { localTools: true, effort: "low" as const, displayLabel: "Zero Risk" as const }
     : resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
+  const compactionControl = options?.compactionControl;
+  if (compactionControl && (!parsed._compactionRequest || manualControl || mode.localTools || turnToken)) {
+    throw new Error("A summary-only compaction receipt requires an automatic read-only compaction request");
+  }
+  const receiptInstruction = compactionControl
+    ? [structuredCompactionHandoffInstruction(compactionControl, appName)] : [];
   const captureLunaCheckpoint = options?.captureLunaCheckpoint === true;
   const multipartParts = options?.experimentalMultipartParts;
   const multipartEnabled = multipartParts !== undefined;
@@ -568,8 +578,11 @@ export function compileChatGptWebPrompt(
       ]
       : [
       "This is a Codex history-compaction checkpoint, not a normal task turn.",
-      "Do not call local or ChatGPT-native tools. Summarize only the supplied task context according to the final compaction instruction.",
-      "Return only the checkpoint summary that the next model needs to resume the task.",
+      compactionControl
+        ? "Do not call work tools or ChatGPT-native tools. Summarize only the supplied task context, then submit it through the reserved summary-only control operation specified below."
+        : "Do not call local or ChatGPT-native tools. Summarize only the supplied task context according to the final compaction instruction.",
+      compactionControl ? "The control receipt is the checkpoint result; ordinary reply text does not submit it."
+        : "Return only the checkpoint summary that the next model needs to resume the task.",
       ]
     : mode.localTools
     ? [
@@ -641,7 +654,8 @@ export function compileChatGptWebPrompt(
       ]
       : [
       "<codex_transport_resume>",
-      "The task context is complete. Produce the requested checkpoint summary now without calling tools.",
+      compactionControl ? "The task context is complete. Produce the checkpoint and submit it through the reserved summary-only control operation below."
+        : "The task context is complete. Produce the requested checkpoint summary now without calling tools.",
       "</codex_transport_resume>",
       ]
     : manualControl
@@ -683,18 +697,20 @@ export function compileChatGptWebPrompt(
     const attachments = {
       ...(skillFiles.length ? { skillFiles } : {}),
       ...(mode.localTools && !manualControl && !parsed._compactionRequest ? { turnToken } : {}),
+      ...(compactionControl ? { turnToken: compactionControl.token } : {}),
       ...(options?.includeContextTokenBreakdown
         ? { contextTokenBreakdown: contextTokenBreakdown(system, messages, multipartEnabled) }
         : {}),
     };
-    const answerContract = captureLunaCheckpoint
+    const answerContract = compactionControl ? "Submit only the requested checkpoint through the reserved control operation below."
+      : captureLunaCheckpoint
       ? "Return the complete answer that the outer Codex task should receive, then the required private checkpoint tail."
       : "Return only the answer that the outer Codex task should receive.";
     const resume = omittedMessages > 0 ? [
       "<codex_transport_resume>",
       `${omittedMessages} earlier history items were omitted to fit this compaction request; the supplied history is incomplete.`,
       "Preserve still-relevant progress, constraints and pending work from any supplied cumulative checkpoint and the remaining evidence. Do not infer that omitted work was never done or invent missing details.",
-      manualControl
+      manualControl || compactionControl
         ? "Produce the requested checkpoint summary now."
         : "Produce the requested checkpoint summary now without calling tools.",
       "</codex_transport_resume>",
@@ -722,6 +738,7 @@ export function compileChatGptWebPrompt(
           ...checkpointContract,
           answerContract,
           ...resume,
+          ...receiptInstruction,
         ].join("\n"),
       };
       const imageTokens = images.reduce((sum, image) => sum + chatGptWebImageTokenReserve(image.detail), 0);
@@ -784,6 +801,7 @@ export function compileChatGptWebPrompt(
       "</codex_context_json>",
       "```",
       ...resume,
+      ...receiptInstruction,
     ].join("\n");
     return { text, images, ...attachments };
   };

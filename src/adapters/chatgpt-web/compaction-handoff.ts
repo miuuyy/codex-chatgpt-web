@@ -9,6 +9,7 @@ import type { ChatGptBrowserWorker } from "./browser-worker";
 import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError } from "./adapter-error";
 import type { CompactionTransactionHandle } from "./compaction-transaction";
 import type { ChatGptWebCapabilities } from "./model";
+import type { CompiledChatGptWebPrompt } from "./prompt";
 import {
   activeCompactionToolResultInstruction,
   structuredCompactionHandoffInstruction,
@@ -290,13 +291,49 @@ export async function requestRetainedCompactionHandoff(
 ): Promise<string> {
   const conversationKey = source.conversationKey();
   if (!conversationKey) throw new Error("The completed ChatGPT source has no retained conversation identity");
+  return requestCompactionHandoff(worker, parsed, broker, capabilities, traceId, signal, timeoutMs, { conversationKey });
+}
+
+export interface FreshCompactionHandoff {
+  prepare(transaction: CompactionTransactionHandle): Promise<CompiledChatGptWebPrompt & { release(): void }>;
+  retainOwnershipUntil(settlement: Promise<void>): void;
+  onSubmitted(): void;
+  onGenerationProgress(): void;
+  onMultipartStageAcknowledged(part: number): void;
+}
+
+/** Fresh history is inert; the connector receives only the one-shot summary receipt. */
+export function requestFreshCompactionHandoff(
+  worker: ChatGptBrowserWorker,
+  parsed: CodexParsedRequest,
+  broker: TurnBroker,
+  capabilities: ChatGptWebCapabilities,
+  traceId: string,
+  signal: AbortSignal,
+  timeoutMs: number,
+  fresh: FreshCompactionHandoff,
+): Promise<string> {
+  return requestCompactionHandoff(worker, parsed, broker, capabilities, traceId, signal, timeoutMs, { fresh });
+}
+
+async function requestCompactionHandoff(
+  worker: ChatGptBrowserWorker,
+  parsed: CodexParsedRequest,
+  broker: TurnBroker,
+  capabilities: ChatGptWebCapabilities,
+  traceId: string,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+  options: { conversationKey?: string; fresh?: FreshCompactionHandoff },
+): Promise<string> {
   const operationTimeoutMs = boundedCompactionTimeout(timeoutMs);
   const deadline = new AbortController();
-  const deadlineTimer = setTimeout(
+  // Fresh compaction's owner already bounds each transport/generation phase, including sleep.
+  const deadlineTimer = options.fresh ? undefined : setTimeout(
     () => deadline.abort(new Error(`ChatGPT compaction handoff timed out after ${operationTimeoutMs}ms`)),
     operationTimeoutMs,
   );
-  deadlineTimer.unref?.();
+  deadlineTimer?.unref?.();
   const operationSignal = signal
     ? AbortSignal.any([signal, deadline.signal])
     : deadline.signal;
@@ -307,7 +344,8 @@ export async function requestRetainedCompactionHandoff(
   if (operationSignal.aborted) abortBrowser();
   else operationSignal.addEventListener("abort", abortBrowser, { once: true });
   try {
-    const transactionPromise = broker.beginCompactionTransaction(traceId, operationTimeoutMs);
+    const transactionPromise = broker.beginCompactionTransaction(traceId, operationTimeoutMs,
+      options.fresh ? operationSignal : undefined);
     void transactionPromise.then(lateTransaction => {
       if (operationSignal.aborted && transaction !== lateTransaction) {
         broker.abortCompactionTransaction(lateTransaction.token);
@@ -315,7 +353,9 @@ export async function requestRetainedCompactionHandoff(
     }, () => {});
     transaction = await withCompactionAbort(transactionPromise, operationSignal);
     const instruction = structuredCompactionHandoffInstruction(transaction, worker.appName);
-    const prepare = async () => ({ text: instruction, images: [], release: () => {} });
+    const handle = transaction;
+    const prepare = options.fresh ? () => options.fresh!.prepare(handle)
+      : async () => ({ text: instruction, images: [], release: () => {} });
     browser = worker.run({
       traceId,
       modelId: parsed.modelId,
@@ -327,12 +367,17 @@ export async function requestRetainedCompactionHandoff(
       nativeConnector: true,
       prepare,
       prepareResume: prepare,
-      conversationKey,
-      requireRetainedConversation: true,
+      ...(options.conversationKey ? { conversationKey: options.conversationKey, requireRetainedConversation: true } : {}),
       compaction: true,
       abortSignal: browserAbort.signal,
       onTextDelta: () => {},
+      ...(options.fresh ? {
+        onSubmitted: () => options.fresh!.onSubmitted(),
+        onGenerationProgress: () => options.fresh!.onGenerationProgress(),
+        onMultipartStageAcknowledged: (part: number) => options.fresh!.onMultipartStageAcknowledged(part),
+      } : {}),
     });
+    options.fresh?.retainOwnershipUntil(browser.then(() => {}, () => {}));
     const handoff = broker.waitForCompactionHandoff(transaction.token, operationSignal);
     const browserWithoutHandoff = browser.then<never>(() => {
       // The control handler accepts the summary before replying to ChatGPT. A fully
@@ -371,7 +416,7 @@ export async function requestRetainedCompactionHandoff(
       ).catch(() => {});
     }
     operationSignal.removeEventListener("abort", abortBrowser);
-    clearTimeout(deadlineTimer);
+    if (deadlineTimer) clearTimeout(deadlineTimer);
   }
 }
 

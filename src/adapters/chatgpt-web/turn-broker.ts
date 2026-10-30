@@ -409,9 +409,10 @@ export class TurnBroker implements TurnBrokerOwner {
   async beginCompactionTransaction(
     traceId: string,
     ttlMs = 120_000,
+    ownerSignal?: AbortSignal,
   ): Promise<CompactionTransactionHandle> {
     await this.start();
-    return this.compactionTransactions.begin(traceId, ttlMs);
+    return this.compactionTransactions.begin(traceId, ttlMs, ownerSignal);
   }
 
   waitForCompactionHandoff(token: string, signal?: AbortSignal): Promise<string> {
@@ -421,6 +422,7 @@ export class TurnBroker implements TurnBrokerOwner {
   abortCompactionTransaction(token: string): void {
     this.compactionTransactions.abort(token);
   }
+
 
   revokeCompactionTransactions(traceId: string): void {
     this.compactionTransactions.abortTrace(traceId);

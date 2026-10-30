@@ -17,6 +17,8 @@ interface CompactionTransaction extends CompactionTransactionHandle {
   summary?: string;
   waiter?: TransactionWaiter;
   timer?: ReturnType<typeof setTimeout>;
+  ownerSignal?: AbortSignal;
+  onOwnerAbort?: () => void;
 }
 
 function opaqueId(prefix: "turn" | "handoff"): string {
@@ -27,11 +29,12 @@ function opaqueId(prefix: "turn" | "handoff"): string {
 export class CompactionTransactionStore {
   private readonly transactions = new Map<string, CompactionTransaction>();
 
-  begin(traceId: string, ttlMs: number): CompactionTransactionHandle {
+  begin(traceId: string, ttlMs: number, ownerSignal?: AbortSignal): CompactionTransactionHandle {
     if (!traceId.trim()) throw new Error("compaction transaction trace id is required");
     if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
       throw new Error("compaction transaction TTL must be a positive finite number");
     }
+    if (ownerSignal?.aborted) throw new Error("compaction transaction owner was cancelled");
     const transaction: CompactionTransaction = {
       // The native MCP contract accepts turn_ capabilities. Authority comes from
       // this summary-only store; this token never enters the ordinary tool registry.
@@ -39,10 +42,18 @@ export class CompactionTransactionStore {
       handoffId: opaqueId("handoff"),
       traceId,
     };
-    transaction.timer = setTimeout(() => {
-      this.finishError(transaction, new Error("compaction transaction timed out"));
-    }, ttlMs);
-    transaction.timer.unref?.();
+    if (ownerSignal) {
+      // The adapter owns the suspension-aware phase deadline. A second wall-clock TTL
+      // would expire during laptop sleep or consume the next multipart phase's budget.
+      transaction.ownerSignal = ownerSignal;
+      transaction.onOwnerAbort = () => this.finishError(transaction, new Error("compaction transaction owner was cancelled"));
+      ownerSignal.addEventListener("abort", transaction.onOwnerAbort, { once: true });
+    } else {
+      transaction.timer = setTimeout(() => {
+        this.finishError(transaction, new Error("compaction transaction timed out"));
+      }, ttlMs);
+      transaction.timer.unref?.();
+    }
     this.transactions.set(transaction.token, transaction);
     return { token: transaction.token, handoffId: transaction.handoffId };
   }
@@ -136,6 +147,9 @@ export class CompactionTransactionStore {
   }
 
   private detachWaiter(transaction: CompactionTransaction): void {
+    if (transaction.ownerSignal && transaction.onOwnerAbort) {
+      transaction.ownerSignal.removeEventListener("abort", transaction.onOwnerAbort);
+    }
     const waiter = transaction.waiter;
     if (waiter?.signal && waiter.onAbort) {
       waiter.signal.removeEventListener("abort", waiter.onAbort);
