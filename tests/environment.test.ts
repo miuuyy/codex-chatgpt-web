@@ -1379,6 +1379,71 @@ describe("trusted Codex task environment continuity", () => {
     });
   });
 
+  function sameThreadVisualizationDeltaFixture() {
+    const fixture = resumedRootFixture();
+    const visualization = join(fixture.codexHome, "visualizations", "2026", "10", "29", rolloutThreadId);
+    const filesystem = (roots: string[]) => "<filesystem><workspace_roots>"
+      + roots.map(path => "<root>" + path + "</root>").join("")
+      + "</workspace_roots>" + dangerFullAccessProfileXml + "</filesystem>";
+    const full = { type: "world_state", payload: {
+      full: true, state: { environments: { filesystem: filesystem([root, visualization]) } },
+    } };
+    const delta = { type: "world_state", payload: {
+      full: false, state: { environments: { filesystem: filesystem([visualization]) } },
+    } };
+    const original = readFileSync(fixture.rolloutPath, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    const writeRollout = (records: unknown[]) => writeFileSync(fixture.rolloutPath,
+      records.map(value => JSON.stringify(value)).join("\n") + "\n");
+    writeRollout([...original, full, delta]);
+    const body = fixture.request._rawBody as {
+      input: Record<string, unknown>[];
+      client_metadata: Record<string, string>;
+    };
+    body.input = [
+      { type: "message", role: "user", id: "msg_partial_environment",
+        content: [{ type: "input_text", text: "<environment_context><current_date>2026-10-29</current_date>"
+          + "<filesystem>" + "<workspace_roots><root>" + visualization + "</root></workspace_roots>"
+          + dangerFullAccessProfileXml + "</filesystem></environment_context>" }],
+      },
+      { type: "message", role: "user", id: "msg_actual_instruction",
+        internal_chat_message_metadata_passthrough: { turn_id: rolloutTurnId },
+        content: [{ type: "input_text", text: "Continue the authorized project task" }],
+      },
+    ];
+    const request = parseRequest({ ...body, model: "chatgpt-web/pro" });
+    return { ...fixture, request, visualization, original, full, delta, filesystem, writeRollout };
+  }
+
+  test("current native same-thread visualization-only delta retains project authority (#939)", () => {
+    const f = sameThreadVisualizationDeltaFixture();
+    const resolved = new ChatGptThreadEnvironmentStore(undefined, Date.now, f.codexHome).resolve(f.request);
+    expect(resolved).toMatchObject({
+      cwd: root, roots: [root], writableRoots: [root], sandboxPolicy: { type: "dangerFullAccess" },
+    });
+  });
+
+  test("visualization-only delta never substitutes foreign roots, stale proof or changed policy (#939)", () => {
+    const f = sameThreadVisualizationDeltaFixture();
+    const store = new ChatGptThreadEnvironmentStore(undefined, Date.now, f.codexHome);
+    const valid = store.resolve(f.request);
+    expect(valid.roots).toEqual([root]);
+    // A foreign root has no native authority even when a prior valid turn was cached.
+    for (const variant of [
+      [...f.original, f.full, { ...f.delta, payload: {
+        full: false, state: { environments: { filesystem: f.filesystem([join(f.codexHome, "foreign")]) } },
+      } }],
+      [...f.original, { ...f.full, payload: {
+        full: true, state: { environments: { filesystem: f.filesystem([f.visualization]) } },
+      } }, f.delta],
+      [...f.original, { ...f.delta, payload: { ...f.delta.payload, full: true } }],
+      [...f.original, f.full],
+    ]) {
+      f.writeRollout(variant);
+      expect(() => store.resolve(f.request)).toThrow();
+    }
+    f.writeRollout([...f.original, f.full, f.delta]);
+  });
+
   function midnightRolloutFixture() {
     const fixture = resumedRootFixture();
     const body = fixture.request._rawBody as { input: Array<Record<string, unknown>>; client_metadata: Record<string, string> };

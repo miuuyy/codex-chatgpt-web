@@ -29,6 +29,8 @@ export interface CodexRolloutEnvironment {
   workspaceRootsDeclared: boolean;
   /** Native model-visible projection; never used to grant execution permissions. */
   filesystemProfileXml?: string;
+  /** Authenticated partial same-thread visualization delta, never an authority grant. */
+  verifiedVisualizationOnlyDeltaRoot?: string;
 }
 
 const CODEX_ID_SOURCE = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
@@ -201,7 +203,9 @@ function firstRolloutRecord(fd: number, size: number): Record<string, unknown> {
   throw new Error("Codex rollout has no complete session metadata record");
 }
 
-function latestRolloutPayload(fd: number, size: number, type: "turn_context" | "compacted"): Record<string, unknown> | undefined {
+function latestRolloutPayload(fd: number, size: number, type: "turn_context" | "compacted" | "world_state",
+  predicate: (payload: Record<string, unknown>) => boolean = () => true,
+): Record<string, unknown> | undefined {
   let position = size;
   let carry = Buffer.alloc(0);
   let firstSegmentAtEof = true;
@@ -230,7 +234,10 @@ function latestRolloutPayload(fd: number, size: number, type: "turn_context" | "
         throw new Error("Codex rollout JSONL record exceeds the bounded record size");
       }
       const item = parseJsonLine(line);
-      if (item.type === type) return record(item.payload);
+      if (item.type === type) {
+        const payload = record(item.payload);
+        if (payload && predicate(payload)) return payload;
+      }
     }
     carry = Buffer.from(data.subarray(0, lineEnd));
     if (carry.length > MAX_ROLLOUT_JSON_LINE_BYTES) {
@@ -239,7 +246,8 @@ function latestRolloutPayload(fd: number, size: number, type: "turn_context" | "
   }
   if (carry.length === 0) return undefined;
   const item = parseJsonLine(carry);
-  return item.type === type ? record(item.payload) : undefined;
+  const payload = item.type === type ? record(item.payload) : undefined;
+  return payload && predicate(payload) ? payload : undefined;
 }
 
 function verifyCompactedEnvironmentItems(fd: number, size: number, items: Record<string, unknown>[]): void {
@@ -602,6 +610,60 @@ function environmentFromTurnContext(
 }
 
 /**
+ * Authenticate a visualization-only partial world state against this exact native
+ * rollout's last full snapshot. Neither snapshot grants new execution authority.
+ */
+function verifiedVisualizationOnlyDeltaRoot(
+  fd: number,
+  size: number,
+  codexHome: string,
+  threadId: string,
+  nativeRoots: string[],
+): string | undefined {
+  const delta = latestRolloutPayload(fd, size, "world_state");
+  if (delta?.full !== false) return undefined;
+  const deltaState = record(delta.state);
+  if (!deltaState || Object.keys(deltaState).length !== 1 || !record(deltaState.environments)) return undefined;
+  const deltaEnvironments = record(deltaState.environments)!;
+  if (Object.keys(deltaEnvironments).length !== 1) return undefined;
+
+  const profile = '<permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile>';
+  const parseRoots = (xml: unknown): string[] | undefined => {
+    if (typeof xml !== "string") return undefined;
+    const prefix = "<filesystem><workspace_roots>";
+    const suffix = "</workspace_roots>" + profile + "</filesystem>";
+    if (!xml.startsWith(prefix) || !xml.endsWith(suffix)) return undefined;
+    const rawRoots = xml.slice(prefix.length, -suffix.length);
+    const matches = [...rawRoots.matchAll(/<root>([^<>]+)<\/root>/g)];
+    if (matches.length === 0 || matches.map(match => match[0]).join("") !== rawRoots) return undefined;
+    const roots = matches.map(match => match[1]!);
+    if (roots.some(root => !isAbsolute(root))) return undefined;
+    return roots;
+  };
+  const deltaRoots = parseRoots(deltaEnvironments.filesystem);
+  if (deltaRoots?.length !== 1) return undefined;
+  const visualizationRoot = deltaRoots[0]!;
+  const relativeRoot = relative(pathIdentity(join(codexHome, "visualizations")), pathIdentity(visualizationRoot));
+  if (!relativeRoot || relativeRoot.startsWith("..") || isAbsolute(relativeRoot)) return undefined;
+  const parts = relativeRoot.split(/[\\/]/);
+  if (parts.length !== 4 || !/^\d{4}$/.test(parts[0]!)
+    || !/^(?:0[1-9]|1[0-2])$/.test(parts[1]!)
+    || !/^(?:0[1-9]|[12]\d|3[01])$/.test(parts[2]!)
+    || parts[3]!.toLowerCase() !== threadId.toLowerCase()) return undefined;
+
+  const full = latestRolloutPayload(fd, size, "world_state", payload => payload.full === true);
+  const fullState = record(full?.state);
+  const fullEnvironments = record(fullState?.environments);
+  const fullRoots = parseRoots(fullEnvironments?.filesystem);
+  if (!fullRoots || fullRoots.length !== nativeRoots.length + 1) return undefined;
+  const expected = new Set([...nativeRoots, visualizationRoot].map(pathIdentity));
+  const actual = new Set(fullRoots.map(pathIdentity));
+  if (actual.size !== fullRoots.length || actual.size !== expected.size
+    || [...expected].some(root => !actual.has(root))) return undefined;
+  return visualizationRoot;
+}
+
+/**
  * Codex's model-visible projection, after environmentFromTurnContext validates execution policy.
  * See codex-rs/core/src/context/environment_context.rs (rust-v0.154.0): expand project roots,
  * deduplicate full entries, omit missing_path_behavior, and mark deny entries non-escalatable.
@@ -743,7 +805,13 @@ export function resolveCurrentCodexRolloutEnvironment(options: {
         verifyCompactedEnvironmentItems(fd, size, options.compactedEnvironmentItems);
       }
       const filesystemProfileXml = renderFilesystemProfile(latest.permission_profile, environment.roots);
-      matching.push({ environment, workspaceRootsDeclared, filesystemProfileXml });
+      const verifiedVisualizationRoot = environment.sandboxPolicy.type === "dangerFullAccess"
+        ? verifiedVisualizationOnlyDeltaRoot(fd, size, owner.home, lineage.threadId, environment.roots)
+        : undefined;
+      matching.push({
+        environment, workspaceRootsDeclared, filesystemProfileXml,
+        ...(verifiedVisualizationRoot ? { verifiedVisualizationOnlyDeltaRoot: verifiedVisualizationRoot } : {}),
+      });
     } finally {
       closeSync(fd);
     }
