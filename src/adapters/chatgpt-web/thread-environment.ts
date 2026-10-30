@@ -271,7 +271,29 @@ export class ChatGptThreadEnvironmentStore {
               throw new Error("Calendar environment delta conflicts with its current Codex rollout");
             }
           }
-          const conflicts = currentClaim ? conflictingAuthorityFields(currentClaim, rolloutEnvironment) : [];
+          // The native rollout may emit a visualization-only partial world-state
+          // update after compaction. Reconcile only an authenticated same-thread
+          // fragment, retaining the exact native current-turn execution authority.
+          const visualization = rollout.verifiedVisualizationOnlyDeltaRoot;
+          const fragment = currentClaim?.environment;
+          const matchesNativeDelta = Boolean(
+            visualization
+            && (initialClaim || currentCompaction || nativeCompaction)
+            && fragment !== undefined
+            && fragment.cwd === undefined
+            && fragment.sandboxPolicy.type === "dangerFullAccess"
+            && rolloutEnvironment.sandboxPolicy.type === "dangerFullAccess"
+            && fragment.roots.length === 1
+            && fragment.writableRoots.length === 1
+            && pathIdentity(fragment.roots[0]!) === pathIdentity(visualization!)
+            && pathIdentity(fragment.writableRoots[0]!) === pathIdentity(visualization!),
+          );
+          const checkedClaim = matchesNativeDelta
+            ? { ...currentClaim!, environment: {
+              ...fragment!, roots: rolloutEnvironment.roots, writableRoots: rolloutEnvironment.writableRoots,
+            } }
+            : currentClaim;
+          const conflicts = checkedClaim ? conflictingAuthorityFields(checkedClaim, rolloutEnvironment) : [];
           if (conflicts.length > 0) {
             const source = currentCompaction || nativeCompaction ? "Compaction continuation" : initialClaim ? "Current" : "Steering";
             // Field names are safe to export; paths, request text and permission
