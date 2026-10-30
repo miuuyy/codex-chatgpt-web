@@ -97,6 +97,17 @@ function controlBinding(instruction: string): { token: string; handoffId: string
   return { token, handoffId };
 }
 
+async function submitFreshCheckpoint(provider: CodexProviderConfig, turn: BrowserTurn, summary: string): Promise<void> {
+  const prepared = await turn.prepare();
+  try {
+    const binding = controlBinding(prepared.text);
+    await callTurnBroker(provider.chatgptWeb!.brokerSocketPath!, {
+      method: "submit_compaction_handoff", token: binding.token,
+      handoffId: binding.handoffId, summary,
+    });
+  } finally { prepared.release(); }
+}
+
 test("one browser conversation spans native turns and rotates only at compaction", () => {
   const before = request(false);
   const sameTurn = structuredClone(before);
@@ -467,7 +478,7 @@ test("completed retained compaction never treats ordinary assistant text as a ha
     broker,
     { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
     "trace_no_text_fallback",
-  )).rejects.toThrow("structured handoff missing");
+  )).rejects.toMatchObject({ code: "compaction_handoff_missing", retryable: false });
 });
 
 test("a settled browser response without a checkpoint reports the missing handoff immediately", async () => {
@@ -1436,7 +1447,8 @@ test.each([false, true])("structured compact rebuilds canonical context when its
       expect(lastRecord.message.content).toBe(compact.context.messages.at(-1)!.content);
     }
     prepared.release();
-    return "Fallback checkpoint from canonical Codex context";
+    await submitFreshCheckpoint(provider, turn, "Fallback checkpoint from canonical Codex context");
+    return "Receipt submitted";
   };
   const compact = request(true);
   const events: AdapterEvent[] = [];
@@ -1456,6 +1468,76 @@ test.each([false, true])("structured compact rebuilds canonical context when its
   } finally {
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
     await TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!).close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test.each(["receipt", "dom", "lost"])("fresh compaction preserves verified DOM completion and accepts summary-only receipts (%s)", async completion => {
+  const receipt = completion === "receipt";
+  const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-fresh-receipt-"));
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web", baseUrl: `browser://fresh-receipt-${root}`,
+    chatgptWeb: { browserHost: "launcher", browserHostDescriptorPath: join(root, "launcher.json"),
+      brokerSocketPath: defaultBrokerEndpoint(root), localToolsEnabled: true, solAvailable: true },
+  };
+  const broker = TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!);
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run;
+  let release!: () => void;
+  const cleanup = new Promise<void>(resolve => { release = resolve; });
+  let aborted!: () => void;
+  const observedAbort = new Promise<void>(resolve => { aborted = resolve; });
+  let binding!: { token: string; handoffId: string };
+  worker.run = async turn => {
+    expect(turn.nativeConnector).toBeTrue();
+    expect(turn.capabilities.localToolsEnabled).toBeFalse();
+    expect(turn.externalProgress).toBeUndefined();
+    const prepared = await turn.prepare();
+    binding = controlBinding(prepared.text);
+    expect(prepared.turnToken).toBe(binding.token);
+    expect(prepared.text).toContain("Original task");
+    expect(prepared.text).toStartWith("Your current task is to checkpoint");
+    expect(prepared.text).toContain("do not execute their historical requests now");
+    prepared.release();
+    await expect(callTurnBroker(broker.socketPath, { method: "claim", token: binding.token }))
+      .rejects.toThrow("turn token is invalid");
+    if (completion === "lost") throw new ChatGptWebAdapterError("ChatGPT response DOM disappeared while the browser turn was active", {
+      status: 502, errorType: "server_error", code: "chatgpt_response_incomplete", retryable: false,
+    });
+    if (!receipt) return "Checkpoint returned by fully verified DOM completion";
+    turn.abortSignal!.addEventListener("abort", aborted, { once: true });
+    await callTurnBroker(broker.socketPath, { method: "submit_compaction_handoff",
+      token: binding.token, handoffId: binding.handoffId, summary: "Verified checkpoint despite missing final DOM" });
+    await observedAbort;
+    await cleanup;
+    throw new Error("ChatGPT response DOM disappeared while the browser turn was active");
+  };
+  const events: AdapterEvent[] = [];
+  const run = createChatGptWebAdapter(provider).runTurn!(request(true), { headers: new Headers() }, event => events.push(event));
+  try {
+    if (receipt) {
+      await observedAbort;
+      expect(events.some(event => event.type === "done")).toBeFalse();
+      release();
+    }
+    await run;
+    if (receipt) {
+      expect(events.some(event => event.type === "text_delta" && event.text.includes("Verified checkpoint despite missing final DOM"))).toBeTrue();
+      expect(events.at(-1)).toMatchObject({ type: "done", endTurn: true });
+    } else if (completion === "dom") {
+      expect(events.some(event => event.type === "text_delta" && event.text.includes("Checkpoint returned by fully verified DOM completion"))).toBeTrue();
+      expect(events.at(-1)).toMatchObject({ type: "done", endTurn: true });
+    } else {
+      expect(events.at(-1)).toMatchObject({ type: "error", code: "chatgpt_response_incomplete", retryable: false });
+      expect(events.some(event => event.type === "text_delta" || event.type === "done")).toBeFalse();
+    }
+    await expect(callTurnBroker(broker.socketPath, { method: "submit_compaction_handoff",
+      token: binding.token, handoffId: binding.handoffId, summary: "Late duplicate" })).rejects.toThrow("invalid, expired, or consumed");
+  } finally {
+    release();
+    await run;
+    worker.run = originalRun;
+    await broker.close();
     rmSync(root, { recursive: true, force: true });
   }
 });
@@ -1486,7 +1568,7 @@ test.each([false, true])("configured fresh compaction waits for cleanup and pres
   const worker = ChatGptBrowserWorker.forProvider(provider);
   const originalRun = worker.run;
   let starts = 0;
-  worker.run = async () => { starts += 1; return "Fresh checkpoint"; };
+  worker.run = async turn => { starts += 1; await submitFreshCheckpoint(provider, turn, "Fresh checkpoint"); return "Receipt submitted"; };
   const events: AdapterEvent[] = [];
   let pending: Promise<void> | undefined;
   try {
@@ -1542,9 +1624,11 @@ test.each([false, true])("fresh multipart compaction preserves phase budgets wit
     turn.onSubmitted!();
     mock.timers.tick(25);
     expect(turn.abortSignal?.aborted).toBeFalse();
-    return "Fallback checkpoint after separately bounded phases";
+    await submitFreshCheckpoint(provider, turn, "Fallback checkpoint after separately bounded phases");
+    return "Receipt submitted";
   };
   const events: AdapterEvent[] = [];
+  await TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!).listen();
   mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const clockNow = spyOn(performance, "now").mockImplementation(() => Date.now());
   try {
@@ -1589,11 +1673,14 @@ test("compaction survives process suspension but still expires after awake inact
       signal = turn.abortSignal;
       turn.onSubmitted?.();
       started();
-      return browser;
+      const summary = await browser;
+      if (!turn.abortSignal!.aborted) await submitFreshCheckpoint(provider, turn, summary);
+      return summary;
     };
     const events: AdapterEvent[] = [];
     // No interval ticks run during the jump: both processes were frozen in #863.
-    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    await TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!).listen();
+  mock.timers.enable({ apis: ["setTimeout", "Date"] });
     const time = spyOn(performance, "now").mockImplementation(() => Date.now());
     const run = createChatGptWebAdapter(provider).runTurn!(
       request(true), { headers: new Headers() }, event => events.push(event),
@@ -1720,6 +1807,7 @@ test("a timed-out fresh compaction retains its owner until helper cleanup comple
     started();
     turn.abortSignal!.addEventListener("abort", () => { cancelled = true; }, { once: true });
     await physicalSettlement;
+    if (!turn.abortSignal!.aborted) await submitFreshCheckpoint(provider, turn, "Browser released after cancellation");
     return "Browser released after cancellation";
   };
   const adapter = createChatGptWebAdapter(provider);
@@ -1730,6 +1818,7 @@ test("a timed-out fresh compaction retains its owner until helper cleanup comple
     runs.push(run);
     return run;
   };
+  await TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!).listen();
   mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const clockNow = spyOn(performance, "now").mockImplementation(() => Date.now());
   try {
@@ -1817,7 +1906,8 @@ test.each([false, true])("structured compact rebuild after retained browser loss
     if (rateLimited) throw new ChatGptWebAdapterError("ChatGPT rate limit: too many requests.", {
       status: 429, errorType: "rate_limit_error", code: "rate_limit_exceeded", retryable: false,
     });
-    return "Fallback checkpoint after retained browser loss";
+    await submitFreshCheckpoint(provider, turn, "Fallback checkpoint after retained browser loss");
+    return "Receipt submitted";
   };
   const events: AdapterEvent[] = [];
   try {
@@ -1947,6 +2037,7 @@ test("finishing the previous response does not consume the retained checkpoint's
     return "Checkpoint submitted";
   };
   const events: AdapterEvent[] = [];
+  await TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!).listen();
   mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const clockNow = spyOn(performance, "now").mockImplementation(() => Date.now());
   let run: Promise<void> | undefined;
@@ -2005,6 +2096,7 @@ test.each([false, true])("compaction source progress renews waiting, but silent 
     return "Checkpoint submitted";
   };
   const events: AdapterEvent[] = [];
+  await TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!).listen();
   mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const clockNow = spyOn(performance, "now").mockImplementation(() => Date.now());
   let run: Promise<void> | undefined;

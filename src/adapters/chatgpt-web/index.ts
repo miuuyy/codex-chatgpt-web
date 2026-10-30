@@ -40,6 +40,7 @@ import {
   canonicalizeCompactionHandoff,
   existingStructuredCompactionRun,
   MAX_COMPACTION_HANDOFF_TIMEOUT_MS,
+  requestFreshCompactionHandoff,
   requestRetainedCompactionHandoff,
   runStructuredCompactionOnce,
   settleActiveCompactionSource,
@@ -1045,6 +1046,33 @@ export function createChatGptWebAdapter(
                     // and the final accepted compact prompt re-arms the five-minute liveness budget;
                     // transport time cannot consume the model-generation window.
                     armHandoffDeadline();
+                    if (!manualRequest) {
+                      const summary = await requestFreshCompactionHandoff(
+                        worker, parsed, structuredBroker!, turnCapabilities,
+                        freshCompactionTraceId, operationSignal, handoffTimeoutMs, {
+                          prepare: async transaction => {
+                            const experimentalMultipartParts = experimentalBiggerContext
+                              ? resolveBiggerContextMultipartParts(parsed, turnCapabilities, experimentalSkillAttachments, worker.appName)
+                              : undefined;
+                            return {
+                              ...compileChatGptWebPrompt(parsed, turnCapabilities, undefined, {
+                                appName: worker.appName,
+                                includeContextTokenBreakdown: true,
+                                experimentalSkillAttachments,
+                                ...(experimentalMultipartParts !== undefined ? { experimentalMultipartParts } : {}),
+                                compactionControl: transaction,
+                              }),
+                              release: () => {},
+                            };
+                          },
+                          retainOwnershipUntil,
+                          onSubmitted: () => armHandoffDeadline("submitted"),
+                          onGenerationProgress: () => armHandoffDeadline("generation"),
+                          onMultipartStageAcknowledged: part => armHandoffDeadline("multipart_acknowledged", part),
+                        },
+                      );
+                      return canonicalizeCompactionHandoff(parsed, summary);
+                    }
                     const fallbackRuntime = startRuntime(
                       parsed,
                       manualRequest ? environment : undefined,
