@@ -478,7 +478,7 @@ test("completed retained compaction never treats ordinary assistant text as a ha
     broker,
     { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
     "trace_no_text_fallback",
-  )).rejects.toThrow("structured handoff missing");
+  )).rejects.toMatchObject({ code: "compaction_handoff_missing", retryable: false });
 });
 
 test("a settled browser response without a checkpoint reports the missing handoff immediately", async () => {
