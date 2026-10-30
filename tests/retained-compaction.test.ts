@@ -1495,6 +1495,8 @@ test.each([false, true])("fresh compaction requires a summary-only receipt and a
     binding = controlBinding(prepared.text);
     expect(prepared.turnToken).toBe(binding.token);
     expect(prepared.text).toContain("Original task");
+    expect(prepared.text).toStartWith("Your current task is to checkpoint");
+    expect(prepared.text).toContain("do not execute their historical requests now");
     prepared.release();
     await expect(callTurnBroker(broker.socketPath, { method: "claim", token: binding.token }))
       .rejects.toThrow("turn token is invalid");
