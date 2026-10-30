@@ -1472,7 +1472,8 @@ test.each([false, true])("structured compact rebuilds canonical context when its
   }
 });
 
-test.each([false, true])("fresh compaction requires a summary-only receipt and awaits physical cleanup (receipt=%s)", async receipt => {
+test.each(["receipt", "dom", "lost"])("fresh compaction preserves verified DOM completion and accepts summary-only receipts (%s)", async completion => {
+  const receipt = completion === "receipt";
   const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-fresh-receipt-"));
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web", baseUrl: `browser://fresh-receipt-${root}`,
@@ -1500,7 +1501,10 @@ test.each([false, true])("fresh compaction requires a summary-only receipt and a
     prepared.release();
     await expect(callTurnBroker(broker.socketPath, { method: "claim", token: binding.token }))
       .rejects.toThrow("turn token is invalid");
-    if (!receipt) return "Looks like a complete checkpoint, but has no accepted receipt";
+    if (completion === "lost") throw new ChatGptWebAdapterError("ChatGPT response DOM disappeared while the browser turn was active", {
+      status: 502, errorType: "server_error", code: "chatgpt_response_incomplete", retryable: false,
+    });
+    if (!receipt) return "Checkpoint returned by fully verified DOM completion";
     turn.abortSignal!.addEventListener("abort", aborted, { once: true });
     await callTurnBroker(broker.socketPath, { method: "submit_compaction_handoff",
       token: binding.token, handoffId: binding.handoffId, summary: "Verified checkpoint despite missing final DOM" });
@@ -1520,8 +1524,11 @@ test.each([false, true])("fresh compaction requires a summary-only receipt and a
     if (receipt) {
       expect(events.some(event => event.type === "text_delta" && event.text.includes("Verified checkpoint despite missing final DOM"))).toBeTrue();
       expect(events.at(-1)).toMatchObject({ type: "done", endTurn: true });
+    } else if (completion === "dom") {
+      expect(events.some(event => event.type === "text_delta" && event.text.includes("Checkpoint returned by fully verified DOM completion"))).toBeTrue();
+      expect(events.at(-1)).toMatchObject({ type: "done", endTurn: true });
     } else {
-      expect(events.at(-1)).toMatchObject({ type: "error", code: "compaction_handoff_missing", retryable: false });
+      expect(events.at(-1)).toMatchObject({ type: "error", code: "chatgpt_response_incomplete", retryable: false });
       expect(events.some(event => event.type === "text_delta" || event.type === "done")).toBeFalse();
     }
     await expect(callTurnBroker(broker.socketPath, { method: "submit_compaction_handoff",

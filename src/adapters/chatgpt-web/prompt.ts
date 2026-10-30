@@ -586,7 +586,7 @@ export function compileChatGptWebPrompt(
       compactionControl
         ? "Do not call work tools or ChatGPT-native tools. Summarize only the supplied task context, then submit it through the reserved summary-only control operation specified below."
         : "Do not call local or ChatGPT-native tools. Summarize only the supplied task context according to the final compaction instruction.",
-      compactionControl ? "The control receipt is the checkpoint result; ordinary reply text does not submit it."
+      compactionControl ? "The control receipt delivers the complete checkpoint to Codex without depending on a final browser reply."
         : "Return only the checkpoint summary that the next model needs to resume the task.",
       ]
     : mode.localTools

@@ -379,7 +379,11 @@ async function requestCompactionHandoff(
     });
     options.fresh?.retainOwnershipUntil(browser.then(() => {}, () => {}));
     const handoff = broker.waitForCompactionHandoff(transaction.token, operationSignal);
-    const browserWithoutHandoff = browser.then<never>(() => {
+    const browserResult = browser.then(summary => {
+      // Fresh compaction already compiled canonical history as a summary-only task.
+      // Preserve its existing fully verified DOM completion path; never substitute a
+      // snapshot's text/counts for worker.run's ownership and completion checks.
+      if (options.fresh) return { summary, receipt: false };
       // The control handler accepts the summary before replying to ChatGPT. A fully
       // settled response without that receipt cannot become a successful checkpoint.
       throw new ChatGptWebAdapterError(
@@ -387,22 +391,25 @@ async function requestCompactionHandoff(
         { status: 409, errorType: "invalid_request_error", code: "compaction_handoff_missing", retryable: false },
       );
     });
-    const summary = await withCompactionAbort(
+    const completed = await withCompactionAbort(
       Promise.race([
-        handoff,
-        browserWithoutHandoff,
+        handoff.then(summary => ({ summary, receipt: true })),
+        browserResult,
       ]),
       operationSignal,
     );
     // The one-shot control submission is the terminal event for this purpose-built response.
     // ChatGPT may render no assistant text after a tool-only response, and therefore no Copy
     // action. End our owned turn explicitly and wait for the launcher/helper cleanup handshake.
-    browserAbort.abort(new ChatGptCompactionHandoffAccepted());
+    if (completed.receipt) browserAbort.abort(new ChatGptCompactionHandoffAccepted());
     await withCompactionAbort(
       browser.then(() => undefined, () => undefined),
       operationSignal,
     );
-    return summary;
+    console.info(`[chatgpt-web] compaction_checkpoint_completed ${JSON.stringify({
+      traceId, completion: completed.receipt ? "receipt" : "verified_dom",
+    })}`);
+    return completed.summary;
   } finally {
     browserAbort.abort();
     if (transaction) broker.abortCompactionTransaction(transaction.token);
