@@ -4,6 +4,37 @@ import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker
 import { chatGptHtmlToMarkdown, ChatGptMarkdownBuffer } from "../src/adapters/chatgpt-web/markdown";
 import { readFileSync } from "node:fs";
 
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("retained document remembers fully unmounted history across worker instances without accepting competing submissions", async () => {
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  try {
+    const page = await browser.newPage();
+    const group = (key: string, text: string) => `<div data-turn-key="${key}"><div data-user-message-bubble><div data-search-result-target>${text}</div></div><div data-conversation-role="assistant">${text} answer</div></div>`;
+    const history = group("previous", "OLD TASK");
+    const current = group("current", "CURRENT TASK");
+    await page.setContent(`<main>${history}</main>`);
+    const previousWorker = Object.create(ChatGptBrowserWorker.prototype) as any;
+    await previousWorker.submissionDomState(page);
+    // The retained page survives helper retirement, but every old group can be
+    // virtualized out when the next helper captures its pre-Send baseline.
+    await page.locator("main").evaluate(node => { node.innerHTML = ""; });
+    const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+    const baseline = await worker.captureSubmissionBaseline(page, "CURRENT TASK");
+    await page.locator("main").evaluate((node, html) => { node.innerHTML = html; }, history + current);
+    expect(await worker.currentSubmissionEvidence(page, baseline)).toBe("user_turn");
+    expect(baseline.acceptedUserIdentity).toBe("group:user:current");
+    const bound = await worker.waitForNewAssistantTurn(page, baseline, Date.now() + 2000);
+    expect(bound.identity).toBe("group:assistant:current");
+    await page.locator("main").evaluate((node, html) => { node.innerHTML += html; }, group("foreign", "FOREIGN TASK"));
+    await expect(worker.currentSubmissionEvidence(page, baseline)).rejects.toThrow("2 new conversation turns");
+    // History belongs to the exact document, not to a worker, URL or browser.
+    await page.goto("about:blank");
+    await page.setContent("<main></main>");
+    const fresh = await worker.captureSubmissionBaseline(page, "CURRENT TASK");
+    await page.locator("main").evaluate((node, html) => { node.innerHTML = html; }, history + current);
+    await expect(worker.currentSubmissionEvidence(page, fresh)).rejects.toThrow("2 new conversation turns");
+  } finally { await browser.close(); }
+});
+
 test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("CodeMirror language invalidates the response cache and incomplete code is not delivered", async () => {
   const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
   try {
