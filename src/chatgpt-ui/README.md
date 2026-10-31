@@ -47,6 +47,17 @@ The language-independent structural selector was independently proposed by
 The selected-effort attribute identifies the control; it does not authorize an effort.
 The existing menu verification still checks the requested model and slider position before Send.
 
+The account model catalog is not a remaining-allowance measurement. An observed
+October 31 restriction kept GPT-6 presets advertised as available but replaced the
+intended thinking model with a smaller default and removed the usable effort slider.
+`model-availability.ts` passively reads only the owned page's startup response and
+reports `chatgpt_reasoning_limit` only when a future reasoning restriction, matching
+model limit and explicit fallback agree. It does not issue requests, infer Pro
+exhaustion, select the fallback or cancel a submission after Send activation.
+Unreferenced `sr-only` quota strings are template labels, not active-limit evidence.
+Closed trigger labels exclude hidden animated placeholders; exact model/family and
+effort verification still runs before Send.
+
 Other UI contracts still live with their specialized reader: connector pill/menu
 verification in `browser-worker.ts` (including the 2026-10-14 `app-mention-*` format),
 expanded user bubbles in the same file (2026-10-15), CodeMirror responses in

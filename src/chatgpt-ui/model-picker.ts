@@ -21,6 +21,30 @@ export const CHATGPT_EFFORT_MENU_SELECTOR = [
   '[role="menu"]:has([data-model-picker-power-slider])',
 ].join(", ");
 export const CHATGPT_EFFORT_ITEM_SELECTOR = '[role="menuitemradio"]';
+
+/** Animated triggers retain an invisible placeholder. innerText includes opacity
+ * and ARIA-hidden text and even changes newlines as the composer resizes. */
+export async function readChatGptModelControlLabel(control: Locator): Promise<string> {
+  return control.evaluate(element => {
+    const words: string[] = [];
+    const walker = element.ownerDocument.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      let rendered = true;
+      for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+        const style = getComputedStyle(parent);
+        if (parent.matches('[hidden], [inert], [aria-hidden="true"]')
+          || style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
+          rendered = false;
+          break;
+        }
+        if (parent === element) break;
+      }
+      const word = node.textContent?.trim();
+      if (rendered && word) words.push(word);
+    }
+    return words.join(" ").replace(/\s+/g, " ").trim();
+  });
+}
 export const CHATGPT_SLIDER_VARIANTS = {
   // Tracked since 2026-08-08 (0dfacc6): every tick explicitly declares its lock.
   reasoning: '[data-model-reasoning-effort-slider]',
