@@ -816,7 +816,7 @@ test("two-part saved chats re-prove unchanged effort after the first message cre
   let url = "https://chatgpt.com/";
   const savedUrl = "https://chatgpt.com/c/00000000-0000-4000-8000-000000000001";
   const selections: string[] = [];
-  const control = { innerText: async () => "Instant", getAttribute: async () => "false" };
+  const control = { innerText: async () => "Instant", evaluate: async () => "Instant", getAttribute: async () => "false" };
   const controls: any = { filter: () => controls, count: async () => 1, first: () => control };
   const composer = { locator: () => ({ locator: () => controls }), isEditable: async () => true };
   const page = Object.assign(new EventEmitter(), {
@@ -2860,7 +2860,7 @@ test("completed SSE size errors reject only their current submission, not model 
 test("effort readback rejects a changed selection or surface before activating Send", async () => {
   const selection = { url: "https://chatgpt.com/", label: "Alto" };
   const state = { url: selection.url, label: "Alto", expanded: "false", editable: true, count: 1 };
-  const control = { innerText: async () => state.label, getAttribute: async () => state.expanded };
+  const control = { innerText: async () => state.label, evaluate: async () => state.label, getAttribute: async () => state.expanded };
   const controls = { filter() { return this; }, count: async () => state.count, first: () => control };
   const composer = { locator: () => ({ locator: () => controls }), isEditable: async () => state.editable };
   const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), { activeComposer: async () => composer }) as {

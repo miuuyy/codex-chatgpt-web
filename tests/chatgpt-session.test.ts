@@ -320,6 +320,7 @@ function reasoningPicker(options: { max?: string; locks?: Array<string | null>; 
     count: async () => 1, waitFor: async () => {}, isVisible: async () => true,
     click: async () => { opened = true; },
     innerText: async () => opened ? "Thinking effort" : ["Instant", "Medium", "High", "Extra High", "Pro"][value]!,
+    evaluate: async () => opened ? "Thinking effort" : ["Instant", "Medium", "High", "Extra High", "Pro"][value]!,
     getAttribute: async (name: string) => name === "aria-expanded" ? String(opened) : null,
   };
   const composer = { filter() { return this; }, last() { return this; }, count: async () => 1, isEditable: async () => true, locator: () => ({ count: async () => 1, locator: () => control }) };

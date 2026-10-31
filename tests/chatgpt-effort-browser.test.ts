@@ -3,9 +3,30 @@ import { readFileSync } from "node:fs";
 import { chromium } from "playwright-core";
 import { ChatGptBrowserWorker, setChatGptThinkMode } from "../src/adapters/chatgpt-web/browser-worker";
 import { CHATGPT_COMPOSER_SELECTOR } from "../src/chatgpt-ui/composer";
-import { CHATGPT_EFFORT_CONTROL_SELECTOR } from "../src/chatgpt-ui/model-picker";
+import { CHATGPT_EFFORT_CONTROL_SELECTOR, readChatGptModelControlLabel } from "../src/chatgpt-ui/model-picker";
 import { detectChatGptAccountCapabilities } from "../src/chatgpt-session";
 import { assertChatGptModelFamily } from "../src/adapters/chatgpt-web/model-selection";
+
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("pre-Send readback ignores hidden animated placeholders but rejects a real label change", async () => {
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`<form><div id="prompt-textarea" contenteditable="true">Unsent draft</div>
+      <button type="button" data-tone="neutral" aria-haspopup="menu" aria-expanded="false">
+      <span aria-hidden="true" style="opacity:0;display:block">Thinking effort</span><span id="actual">GPT-6 High</span></button></form>`);
+    const control = page.locator("button");
+    const raw = await control.innerText();
+    const mode = { selection: { url: page.url(), label: await readChatGptModelControlLabel(control) } };
+    const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+    await worker.assertSelectedEffort(page, mode);
+    await page.locator('[aria-hidden="true"]').evaluate(e => { (e as HTMLElement).style.display = "inline"; });
+    expect(await control.innerText()).not.toBe(raw);
+    await worker.assertSelectedEffort(page, mode);
+    await page.locator("#actual").evaluate(e => { e.textContent = "GPT-6 Medium"; });
+    await expect(worker.assertSelectedEffort(page, mode)).rejects.toMatchObject({ code: "upstream_server_error" });
+    expect(await page.locator("#prompt-textarea").innerText()).toBe("Unsent draft");
+  } finally { await browser.close(); }
+}, 15_000);
 
 test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("GPT-5.6 Pro verifies the split model/effort header before Send (#875)", async () => {
   const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
