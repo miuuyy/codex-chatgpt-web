@@ -194,7 +194,10 @@ function plainJsonFragment(html: string): string | undefined {
     const element = node as HTMLElement;
     if (!["P", "DIV", "SPAN", "BR"].includes(element.nodeName)) return false;
     for (const attribute of Array.from(element.attributes)) {
-      if (!["data-start", "data-end", "data-is-last-node"].includes(attribute.name)) return false;
+      if (["data-start", "data-end", "data-is-last-node"].includes(attribute.name)) continue;
+      if (attribute.name === "dir" && ["auto", "ltr", "rtl"].includes(attribute.value)) continue;
+      if (attribute.name === "class" && element.nodeName === "P" && /^Paragraph-[A-Za-z0-9_-]+$/.test(attribute.value)) continue;
+      return false;
     }
     const block = element.nodeName === "P" || element.nodeName === "DIV";
     if (block || element.nodeName === "BR") text += "\n";

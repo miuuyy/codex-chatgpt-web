@@ -37,13 +37,17 @@ can reject an otherwise valid approval result.
 
 The HTML-to-Markdown boundary now preserves a complete JSON object or array before Markdown
 escaping and wiki-link rewriting. This applies only to plain text and `p`, `div`, `span`, and
-`br` layout with no attributes except `data-start`, `data-end`, and `data-is-last-node`.
-Code, semantic markup, other attributes, and incomplete JSON keep normal Markdown conversion.
-The strict checker parser is unchanged.
+`br` layout. Allowed attributes are `data-start`, `data-end`, `data-is-last-node`, and `dir`
+with the value `auto`, `ltr`, or `rtl`. A `p` element can also have exactly one generated
+`Paragraph-` class whose nonempty suffix contains only letters, digits, underscores, or hyphens.
+The observed ChatGPT DOM uses `class="Paragraph-kKnbIo" dir="auto"` around JSON fragmented
+across plain spans. Extra classes, including `sr-only`, remain ineligible. Style, hidden,
+semantic, and other unknown attributes also keep normal Markdown conversion, as do code,
+semantic markup, and incomplete JSON. The strict checker parser is unchanged.
 
 A source change does not replace code already loaded by a bridge process or bundled app.
 Update the runtime or app through its normal update path, then fully quit and reopen it.
-This note does not mean an existing installation has already received the fix.
+A source checkout alone does not establish which version the running app uses.
 
 ## Models do not appear, or setup remains on step 3
 
