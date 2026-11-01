@@ -60,6 +60,16 @@ The launcher now requires a recognized model picker or Luna/Think control before
 result. If neither is recognized, report the setup error with a safe log; do not force Luna to run
 under a different selected model.
 
+Capability inspection opens the effort picker through the same click and pointer interaction used
+for model selection. It reads the selected model's rendered slider range and locked ticks, then
+closes the picker without submitting or changing the draft. A picker that ignores Enter must not
+cause inspection to time out or save guessed capabilities. If inspection still fails, export a
+safe log rather than forcing Extra High or Pro flags.
+
+The launcher runs capability inspection through its bundled browser helper. A source fix must
+reach that helper through a rebuilt runtime and launcher. Replacing only an extracted CLI helper
+does not update the launcher's inspection path.
+
 ### Windows: Cannot bind the local port (EACCES)
 
 `Cannot bind 127.0.0.1:17841: listen EACCES: permission denied` means Windows refused access to
