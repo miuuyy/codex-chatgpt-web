@@ -171,6 +171,26 @@ test("captured activity summaries use the status stream and keep actual commenta
   expect(hidden.traceBlocks.some(block => block.text === "status 1")).toBeFalse();
 });
 
+test("busy accessibility announcements never become assistant reasoning", async () => {
+  for (const label of ["ChatGPT가 응답 중입니다", "ChatGPT is responding"]) {
+    const busy = `<span aria-busy="true" role="status"><span class="sr-only">${label}</span><span aria-hidden="true"></span></span>`;
+    for (const progress of [busy, `<div data-streaming-response-status>${busy}</div>`]) {
+      const result = await snapshot(`<section id="turn">${progress}<div class="markdown"><p>Earth's axial tilt causes seasons.</p></div></section>`);
+      expect(new ChatGptVisibleTraceTracker(0).observe(result.traceBlocks, true)).toEqual([]);
+      expect(result.visibleText).toBe("Earth's axial tilt causes seasons.");
+    }
+    const result = await snapshot(`<section id="turn"><div data-streaming-response-status>${busy}
+      <button data-testid="cot-v5-reasoning">Comparing axial tilt with orbital distance</button>
+      <div class="markdown"><p>The tilt changes sunlight duration.</p></div>
+      </div><div class="markdown"><p>Earth's axial tilt causes seasons.</p></div></section>`);
+    expect(new ChatGptVisibleTraceTracker(0).observe(result.traceBlocks, true)).toEqual([
+      { kind: "reasoning", text: "Comparing axial tilt with orbital distance" },
+      { kind: "commentary", text: "The tilt changes sunlight duration." },
+    ]);
+    expect(result.visibleText).toBe("Earth's axial tilt causes seasons.");
+  }
+});
+
 test("keeps an unfinished hyperlink buffered and detects changed destinations after delivery", async () => {
   const page = (href: string) => `<section id="turn"><div class="markdown"><p data-start="0" data-end="99"><strong><a${href}>Open report</a></strong>.</p><p data-start="100" data-end="115">Next paragraph.</p></div></section>`;
   const buffer = new ChatGptMarkdownBuffer(markdown => markdown, 0);
