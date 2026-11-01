@@ -28,6 +28,16 @@ Active captures are never removed by cleanup. A burst of failures can exhaust th
 so copy any specifically requested checkpoint files before continuing a long investigation.
 The safe-log export is separate and does not include these browser checkpoint files.
 
+### Browser progress appears as assistant reasoning
+
+ChatGPT's busy indicator uses `role="status"` and `aria-busy="true"` with a localized
+screen-reader announcement. The bridge classifies that indicator as UI control metadata,
+not a model-authored reasoning summary. This prevents browser interface text from reaching
+downstream reasoning consumers, including language-policy checkers. Genuine public reasoning
+summaries, intermediate commentary, final answers, and generation tracking retain their channels.
+
+Update the app or runtime and fully restart it to replace code already loaded by the bridge.
+
 ## Models do not appear, or setup remains on step 3
 
 **Install models** updates the Codex route. Once installation finishes, step 3 is complete and you
