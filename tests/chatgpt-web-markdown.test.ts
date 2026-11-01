@@ -8,6 +8,35 @@ test("plain checker JSON reaches strict consumers without Markdown escapes", () 
   expect(JSON.parse(markdown)).toEqual({ overrides: [], artifacts: [] });
 });
 
+test("observed paragraph presentation preserves fragmented checker JSON for strict consumers", () => {
+  const json = '{"overrides":[{"field":"humanFinal","language":"en","excerpt":"이번 최종 답변은 영어로 작성하라.","persistent":false}],"artifacts":[]}';
+  const html = '<p class="Paragraph-kKnbIo" dir="auto"><span>{"overrides"</span>'
+    + ':[{"field":"humanFinal","language":"en","excerpt":"이번 최종 답변은 영어로 작성하라.","persistent":false}]'
+    + '<span>,"artifacts"</span>:[]<span>}</span></p>';
+  const markdown = chatGptHtmlToMarkdown(html);
+  expect(markdown).toBe(json);
+  expect(JSON.parse(markdown)).toEqual({
+    overrides: [{ field: "humanFinal", language: "en", excerpt: "이번 최종 답변은 영어로 작성하라.", persistent: false }],
+    artifacts: [],
+  });
+});
+
+test("plain JSON admits only narrow paragraph classes and direction values", () => {
+  const json = '{"items":[]}';
+  for (const dir of ["auto", "ltr", "rtl"]) {
+    expect(chatGptHtmlToMarkdown(`<p class="Paragraph-aZ09_-" dir="${dir}">${json}</p>`)).toBe(json);
+  }
+  expect(chatGptHtmlToMarkdown(`<div dir="ltr"><span dir="rtl">${json}</span></div>`)).toBe(json);
+  for (const attributes of [
+    'class="Paragraph-kKnbIo sr-only"', 'class="Paragraph-"', 'class="Paragraph-a.b"',
+    'class="plain"', 'dir="invalid"', 'class="Paragraph-kKnbIo" style="display:none"',
+    'class="Paragraph-kKnbIo" hidden', 'class="Paragraph-kKnbIo" role="status"',
+  ]) {
+    expect(chatGptHtmlToMarkdown(`<p ${attributes}>${json}</p>`)).toBe('{"items":\\[\\]}');
+  }
+  expect(chatGptHtmlToMarkdown(`<span class="Paragraph-kKnbIo">${json}</span>`)).toBe('{"items":\\[\\]}');
+});
+
 test("plain JSON preserves nested data and original lexical spelling", () => {
   const json = String.raw`[{"nested":{"items":["*_text_*","[[Notes/item|label]]","a & b < c","quote: \" slash: \\ newline: \n unicode: \u0041"]},"n":1.2300e+02,"zero":-0,"same":1,"same":2}]`;
   const html = json.replaceAll("&", "&amp;").replaceAll("<", "&lt;");
