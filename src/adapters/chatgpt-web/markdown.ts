@@ -179,8 +179,48 @@ function linkObsidianWikiLinks(markdown: string): string {
   }).join("\n");
 }
 
+function plainJsonFragment(html: string): string | undefined {
+  if (!/[{\[]/.test(html) || !/[}\]]/.test(html)) return undefined;
+  const root = createDocument().createElement("div");
+  root.innerHTML = html;
+  let text = "";
+  const visit = (node: Node): boolean => {
+    if (node.nodeType === 3) {
+      text += node.textContent ?? "";
+      return true;
+    }
+    if (node.nodeType === 8) return true;
+    if (node.nodeType !== 1) return false;
+    const element = node as HTMLElement;
+    if (!["P", "DIV", "SPAN", "BR"].includes(element.nodeName)) return false;
+    for (const attribute of Array.from(element.attributes)) {
+      if (!["data-start", "data-end", "data-is-last-node"].includes(attribute.name)) return false;
+    }
+    const block = element.nodeName === "P" || element.nodeName === "DIV";
+    if (block || element.nodeName === "BR") text += "\n";
+    for (const child of Array.from(element.childNodes)) {
+      if (!visit(child)) return false;
+    }
+    if (block) text += "\n";
+    return true;
+  };
+  for (const child of Array.from(root.childNodes)) {
+    if (!visit(child)) return undefined;
+  }
+  const fragment = text.trim();
+  if (!fragment.startsWith("{") && !fragment.startsWith("[")) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(fragment);
+    return parsed !== null && typeof parsed === "object" ? fragment : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function chatGptHtmlToMarkdown(html: string): string {
   if (!html.trim()) return "";
+  const json = plainJsonFragment(html);
+  if (json !== undefined) return json;
   return linkObsidianWikiLinks(turndown.turndown(preserveKatexSource(html))).trim();
 }
 

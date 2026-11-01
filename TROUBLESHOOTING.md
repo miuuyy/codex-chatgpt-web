@@ -28,6 +28,23 @@ Active captures are never removed by cleanup. A burst of failures can exhaust th
 so copy any specifically requested checkpoint files before continuing a long investigation.
 The safe-log export is separate and does not include these browser checkpoint files.
 
+### Language guard rejects checker JSON
+
+The ChatGPT Web bridge could convert valid checker output such as
+`{"overrides":[],"artifacts":[]}` into `{"overrides":\[\],"artifacts":\[\]}`.
+Those Markdown escapes make the response invalid JSON, so a strict Language guard parser
+can reject an otherwise valid approval result.
+
+The HTML-to-Markdown boundary now preserves a complete JSON object or array before Markdown
+escaping and wiki-link rewriting. This applies only to plain text and `p`, `div`, `span`, and
+`br` layout with no attributes except `data-start`, `data-end`, and `data-is-last-node`.
+Code, semantic markup, other attributes, and incomplete JSON keep normal Markdown conversion.
+The strict checker parser is unchanged.
+
+A source change does not replace code already loaded by a bridge process or bundled app.
+Update the runtime or app through its normal update path, then fully quit and reopen it.
+This note does not mean an existing installation has already received the fix.
+
 ## Models do not appear, or setup remains on step 3
 
 **Install models** updates the Codex route. Once installation finishes, step 3 is complete and you
