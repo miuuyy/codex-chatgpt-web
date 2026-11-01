@@ -4587,11 +4587,13 @@ export class ChatGptBrowserWorker {
           text: traceText(candidate),
           key: traceKey(candidate, kind),
           ...(kind === "commentary" ? { complete: hasFollowingRenderedSibling(candidate) } : {}),
+          // Busy live-region announcements describe browser activity, not model reasoning.
           // Footer controls such as the model picker and overflow menu are siblings of the final
           // Markdown inside the assistant turn. They are UI, not model trace. Real action buttons
           // are scoped by ChatGPT's streaming-status container.
-          uiControl: candidate.matches("button")
-            && candidate.closest("[data-streaming-response-status]") === null,
+          uiControl: candidate.matches('[role="status"][aria-busy="true"]')
+            || (candidate.matches("button")
+              && candidate.closest("[data-streaming-response-status]") === null),
         }))
         .filter(block => block.text.length > 0)
         .forEach((block, index) => {
