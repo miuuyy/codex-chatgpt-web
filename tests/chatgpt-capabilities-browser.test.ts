@@ -10,21 +10,43 @@ const probe = { selectorTimeoutMs: 150, stableAbsenceMs: 0 };
 test.skipIf(!browserPath)("setup reads the October inline control on paid accounts and rejects stale Luna selection (#932)", async () => {
   const browser = await chromium.launch({ executablePath: browserPath, headless: true });
   try {
-    for (const paidRange of [3, 5]) {
+    for (const { paidRange, locked } of [
+      { paidRange: 3, locked: false }, { paidRange: 5, locked: false }, { paidRange: 5, locked: true },
+    ]) {
       const page = await browser.newPage();
       let html = readFileSync(new URL('./fixtures/chatgpt-model-picker-power-2026-09-29.html', import.meta.url), 'utf8')
         .replace('data-tone="neutral"', 'data-composer-navigation-target="reasoning" data-selected-reasoning-effort="medium" aria-label="选择 ChatGPT 模型"');
       if (paidRange === 3) html = html.replace('["Instant", "Medium", "High", "Extra High", "Pro"]', '["Instant", "Medium", "High"]')
         .replaceAll('aria-valuemax="4"', 'aria-valuemax="2"').replace('Math.min(4,', 'Math.min(2,');
       await page.setContent('<script>window.pickerHeader=()=>"6";window.pickerStatus=(effort,value)=>`6 ${effort}, ${value+1}.`;</script>' + html);
+      await page.evaluate(({ locked }) => {
+        const control = document.querySelector('button')!;
+        control.addEventListener('keydown', event => {
+          if (event.key === 'Enter') event.preventDefault();
+        });
+        document.querySelector('form')!.dataset.submissions = '0';
+        document.querySelector('form')!.addEventListener('submit', event => {
+          event.preventDefault();
+          const form = document.querySelector('form')!;
+          form.dataset.submissions = String(Number(form.dataset.submissions) + 1);
+        });
+        if (locked) {
+          const original = control.onclick!;
+          control.onclick = function (event) {
+            original.call(this, event);
+            const ticks = document.querySelectorAll('[data-orientation="horizontal"] > [data-selected]');
+            for (const tick of Array.from(ticks).slice(3)) tick.setAttribute('data-locked', 'true');
+          };
+        }
+      }, { locked });
       const composer = page.locator('#prompt-textarea');
       const draft = await composer.innerHTML();
-      // This is the setup/reinstall reader, not just normal turn selection.
       expect(await detectChatGptAccountCapabilities(page, probe)).toEqual({
-        solAvailable: true, extraHighAvailable: paidRange === 5, proAvailable: paidRange === 5,
+        solAvailable: true, extraHighAvailable: paidRange === 5 && !locked, proAvailable: paidRange === 5 && !locked,
       });
       expect(await page.locator('#picker').isVisible()).toBeFalse();
       expect(await composer.innerHTML()).toBe(draft);
+      expect(await page.locator('form').getAttribute('data-submissions')).toBe('0');
       const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
       for (const reasoning of ['low', 'medium']) {
         await expect(worker.selectModelAndEffort(page, 'gpt-5.6-luna', reasoning,
