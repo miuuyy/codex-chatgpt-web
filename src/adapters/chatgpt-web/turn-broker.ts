@@ -437,8 +437,13 @@ export class TurnBroker implements TurnBrokerOwner {
     // A no-tool Zero Risk answer can complete before its outer Responses observer reaches this owner
     // readback. The environment is already proven identical, so completion makes this a no-op.
     if (channel.safe?.state === "completed") return;
+    if (environment.imageContextThreadId !== undefined
+      && environment.imageContextThreadId !== channel.environment.imageContextThreadId) {
+      throw new Error("Image context thread changed during an active tool loop");
+    }
     channel.environment = {
       ...environment,
+      ...(channel.environment.imageContextThreadId ? { imageContextThreadId: channel.environment.imageContextThreadId } : {}),
       ...(channel.environment.expiresAt !== undefined
         ? { expiresAt: channel.environment.expiresAt }
         : {}),

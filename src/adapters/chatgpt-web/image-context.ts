@@ -6,7 +6,7 @@ import type { CodexMessage } from "../../types";
 import { isOnePixelPngDataUrl } from "../../responses/compaction";
 
 interface SavedImage { id: string; url: string; caption: string; }
-interface State { version: 1; latest: string; latestTool?: string; active: string[]; images: SavedImage[]; }
+interface State { version: 1; latest: string; latestTool?: string; accesses?: Record<string, number>; lastAccess?: { action: string; ids: string[] }; active: string[]; images: SavedImage[]; }
 export interface ImageContext { threadId: string; active: string[]; }
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 export const imageContextId = (url: string) => `codex-image-${hash(url).slice(0, 24)}`;
@@ -65,6 +65,8 @@ export function accessImageContext(threadId: string, action: "list" | "get" | "r
     if (active.length > 10) throw new Error("Image working set exceeds 10 attachments");
     state.active = active; write(threadId, root, state);
   }
+  state.accesses = { ...state.accesses, [action]: (state.accesses?.[action] ?? 0) + 1 };
+  state.lastAccess = { action, ids }; write(threadId, root, state);
   const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [{ type: "text", text: JSON.stringify({ active: state.active, images: state.images.slice(offset, offset + limit).map(({ id, caption }) => ({ id, caption })), total: state.images.length, next_offset: offset + limit < state.images.length ? offset + limit : null }) }];
   if (action !== "list") for (const image of selected) {
     const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/=\r\n]+)$/.exec(image.url);

@@ -21,6 +21,9 @@ test("image retrieval over MCP is bound to the authenticated thread without chan
   try {
     await client.connect(transport);
     const get = (t: string) => client.callTool({ name: "codex_tool_call", arguments: { turn_token: t, wire_name: "codex.image_context", arguments: { action: "get", ids: [imageContextId(url)] } } });
+    // Outer Responses observers refresh tools without the runtime-only archive binding.
+    broker.updateEnvironment(token, base);
+    expect(() => broker.updateEnvironment(token, { ...base, imageContextThreadId: "thread-b" })).toThrow("thread changed");
     const fetched = await get(token);
     expect(fetched.isError).not.toBeTrue();
     expect(fetched.content).toContainEqual({ type: "image", mimeType: "image/png", data: "aGVsbG8=" });
