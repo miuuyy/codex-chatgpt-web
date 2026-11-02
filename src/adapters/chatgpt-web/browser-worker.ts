@@ -22,7 +22,7 @@ import {
   LEGACY_CHATGPT_CONNECTOR_NAMES,
 } from "../../config";
 import { estimateTokens } from "../../lib/token-estimate";
-import { CHATGPT_STOPPED_THINKING_LABELS } from "./ui-labels";
+import { CHATGPT_SIZE_REJECTION_LABELS, CHATGPT_STOPPED_THINKING_LABELS } from "./ui-labels";
 import type { CodexProviderConfig } from "../../types";
 import { parseDataUrl } from "../image";
 import {
@@ -86,7 +86,7 @@ import {
   activateChatGptEffortMenu,
   readChatGptEffortSnapshot,
 } from "../../chatgpt-ui/model-picker";
-import { loginVerificationMarkerPath } from "../../browser-login";
+import { loginVerificationMarkerPath, readChatGptProPlan } from "../../browser-login";
 import {
   connectLauncherBrowserHost,
   LauncherBrowserTurnCancelledError,
@@ -175,6 +175,8 @@ const CHATGPT_SMOKE_EXPECTED = "CODEX WEB GPT READY";
  */
 export const CHATGPT_UI_SETTLE_MS = 250;
 export const CHATGPT_SEND_ENABLE_GRACE_MS = 5_000;
+/** Headroom for a cleared Lexical composer to publish its empty state back to the DOM. */
+const CHATGPT_COMPOSER_CLEAR_GRACE_MS = 2_000;
 
 const CHATGPT_DOM_REVISION_ATTRIBUTES = [
   "aria-hidden",
@@ -529,14 +531,15 @@ export class ChatGptSubmissionRejectionObserver {
   async captureAlertBaseline(): Promise<void> {
     if (!this.page) throw new Error("Cannot capture submission alerts before observing its page");
     const generation = this.generation;
-    const baseline = await this.page.evaluateHandle(() => {
+    const baseline = await this.page.evaluateHandle((labels: readonly string[]) => {
+      const sizeRejections = new Set(labels);
       const errors = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('[role="alert"]')]
         .filter(element => !element.closest('.markdown, [data-turn-key], [data-turn-id-container], [data-message-author-role], [data-user-message-bubble], [contenteditable="true"]')
           && element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
-          && /^The message you submitted was too long(?:, please edit it and resubmit)?\.$/.test(element.innerText.trim()));
+          && sizeRejections.has(element.innerText.trim()));
       const initial = new WeakSet(errors());
       return { hasNewSizeError: () => errors().some(element => !initial.has(element)) };
-    });
+    }, [...CHATGPT_SIZE_REJECTION_LABELS]);
     if (generation !== this.generation) { await baseline.dispose(); return; }
     this.alertBaseline = baseline;
   }
@@ -2139,6 +2142,7 @@ export class ChatGptBrowserWorker {
     solAvailable?: boolean;
     extraHighAvailable?: boolean;
     proAvailable?: boolean;
+    proPlan?: boolean;
   }> {
     return this.enqueueMaintenance("session inspection", () => this.inspectSessionExclusive(detectCapabilities));
   }
@@ -3300,6 +3304,57 @@ export class ChatGptBrowserWorker {
       + `; create a connector with that exact name before retrying` + temporaryChatHint;
   }
 
+  /**
+   * ChatGPT restores its own persisted draft into the composer, and attachment may only start from
+   * an empty editor. Delete a leftover draft through the editor's own selection keys and report the
+   * remainder instead of appending this turn to the previous one.
+   */
+  private async clearComposerForAttachment(page: Page, abortSignal?: AbortSignal): Promise<void> {
+    throwIfPromptAttachmentAborted(abortSignal);
+    const composer = await this.activeComposer(page, 30_000, abortSignal);
+    await composer.fill("", { signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
+    if (await this.waitForEmptyComposer(page, abortSignal) === 0) return;
+    const target = await this.activeComposer(page, 30_000, abortSignal);
+    await target.focus({ signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
+    await target.press(CHATGPT_COMPOSER_SELECT_ALL_KEY, {
+      signal: abortSignal,
+      timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
+    });
+    await target.press("Backspace", { signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
+    const leftover = await this.waitForEmptyComposer(page, abortSignal);
+    if (leftover > 0) {
+      throw new ChatGptPersistentBrowserStateError(
+        [],
+        `ChatGPT composer kept ${leftover} restored character(s) after select-all and Backspace`,
+      );
+    }
+  }
+
+  private async waitForEmptyComposer(page: Page, abortSignal?: AbortSignal): Promise<number> {
+    const deadline = Date.now() + CHATGPT_COMPOSER_CLEAR_GRACE_MS;
+    const read = async (): Promise<number> => {
+      const composer = await this.activeComposer(page, 30_000, abortSignal);
+      return composer.evaluate(
+        element => (element.textContent ?? "").trim().length,
+        undefined,
+        { timeout: CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, signal: abortSignal },
+      );
+    };
+    let observed = await read();
+    while (observed > 0 && Date.now() < deadline) {
+      const sleep = Promise.withResolvers<void>();
+      const timer = setTimeout(sleep.resolve, 100);
+      try {
+        await withBrowserTurnAbort(sleep.promise, abortSignal);
+      } finally {
+        clearTimeout(timer);
+      }
+      throwIfPromptAttachmentAborted(abortSignal);
+      observed = await read();
+    }
+    return observed;
+  }
+
   private async clearChatGptComposerState(page: Page): Promise<void> {
     await runChatGptConnectorCleanup(async (deadline, signal) => {
       await pressChatGptConnectorEscape(page, deadline, signal);
@@ -3509,12 +3564,12 @@ export class ChatGptBrowserWorker {
     let composerMutationStarted = false;
     try {
       if (!localTools) {
-        const composer = await this.activeComposer(page, 30_000, abortSignal);
         // Playwright's multiline fill maps through an input action that ChatGPT's Lexical editor can
         // collapse to the first paragraph on the launcher-owned Electron surface. Clear separately,
         // then transport the complete text through the browser's plain-text editing command.
         composerMutationStarted = true;
-        await composer.fill("", { signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
+        await this.clearComposerForAttachment(page, abortSignal);
+        const composer = await this.activeComposer(page, 30_000, abortSignal);
         await composer.focus({ signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
         if (requireThink) {
           await setChatGptThinkMode(composer, true, captureDiagnostic, abortSignal);
@@ -3545,6 +3600,14 @@ export class ChatGptBrowserWorker {
         signal: abortSignal,
         timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
       });
+      const connectorDraft = await this.attachedPromptText(page, abortSignal);
+      if (connectorDraft.length > 0) {
+        throw new ChatGptPersistentBrowserStateError(
+          [],
+          `ChatGPT composer held ${connectorDraft.length} character(s) beside the selected connector`
+          + " before this prompt",
+        );
+      }
       await this.insertPromptText(page, ` ${prompt}`, abortSignal);
       await this.assertPromptAttached(page, prompt, abortSignal);
     } catch (error) {
@@ -3630,6 +3693,15 @@ export class ChatGptBrowserWorker {
       if (await sendButton.isEnabled()) break;
       if (Date.now() >= sendEnableDeadline) {
         await captureDiagnostic?.("send-disabled");
+        // The prompt was never submitted, so a persisted draft would be restored into the next
+        // composer. Clear it best effort; the disabled Send remains the failure to report.
+        try {
+          await this.clearChatGptComposerState(page);
+        } catch (error) {
+          console.warn(
+            `[chatgpt-web] could not clear the unsent composer draft: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
         throw new Error("ChatGPT send button remained disabled after the complete prompt was attached");
       }
       await settleChatGptUi();
@@ -3875,6 +3947,13 @@ export class ChatGptBrowserWorker {
   private async insertPromptText(page: Page, text: string, abortSignal?: AbortSignal): Promise<void> {
     throwIfPromptAttachmentAborted(abortSignal);
     const composer = await this.activeComposer(page, 30_000, abortSignal);
+    const existing = await this.attachedPromptText(page, abortSignal);
+    if (existing.length > 0) {
+      throw new ChatGptPersistentBrowserStateError(
+        [],
+        `ChatGPT composer held ${existing.length} character(s) before this prompt was inserted`,
+      );
+    }
     await composer.focus({ signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
     // CDP Input.insertText is interpreted as live typing by ChatGPT's Lexical plugins. On a large
     // JSON transport it can turn literal Markdown backticks into rich code nodes, remove the
@@ -3934,13 +4013,14 @@ export class ChatGptBrowserWorker {
     solAvailable?: boolean;
     extraHighAvailable?: boolean;
     proAvailable?: boolean;
+    proPlan?: boolean;
   }> {
     const page = await this.ensurePage();
     await this.prepareChatSurface(page);
     const url = page.url();
     if (!detectCapabilities) return { authenticated: true, newChat: true, url };
     const capabilities = await detectChatGptAccountCapabilities(page);
-    return { authenticated: true, newChat: true, url, ...capabilities };
+    return { authenticated: true, newChat: true, url, ...capabilities, proPlan: await readChatGptProPlan(page) };
   }
 
   private async smokeTestExclusive(abortSignal?: AbortSignal): Promise<{ effort: string; response: string }> {
@@ -3961,7 +4041,7 @@ export class ChatGptBrowserWorker {
     }
     // Core smoke runs before the optional MCP connector is configured, so it must remain a
     // browser-only transport check. Connector setup has its own explicit verification operation.
-    const capabilities: ChatGptWebCapabilities = { ...account, localToolsEnabled: false };
+    const capabilities: ChatGptWebCapabilities = { ...account, localToolsEnabled: false, proPlan: false };
     const modelId = account.solAvailable ? CHATGPT_WEB_MODEL_ID : CHATGPT_WEB_LUNA_MODEL_ID;
     const reasoning = account.solAvailable ? "high" : "low";
     const mode = resolveChatGptWebModelMode(modelId, reasoning, capabilities);

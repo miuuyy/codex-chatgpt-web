@@ -1259,7 +1259,6 @@ test("large Markdown-rich context uses one plain-text editing command before exa
     focus: async () => { calls.push(["focus"]); },
     evaluate: async (fn: unknown, value?: string, options?: unknown) => {
       expect(typeof fn).toBe("function");
-      // The attachment reads the composer back before it owns the editor.
       if (value === undefined) return 0;
       calls.push(["evaluate", value]);
       calls.push(["evaluateOptions", options]);
@@ -3658,7 +3657,6 @@ test("Bigger Context stages use the lowest account mode that can carry the stage
   expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 100_000, 600_000).effort).toBe("max");
   expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 104_000, 1_200_000).effort).toBe("max");
   const team = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: false };
-  // A Pro-capable Team account keeps the Instant composer boundary, so this stage needs Medium.
   expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", team, 60_000, 295_819).effort).toBe("medium");
   expect(resolveChatGptWebMultipartStagingMode(
     "gpt-5.6-luna",

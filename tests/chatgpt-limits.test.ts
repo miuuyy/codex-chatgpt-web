@@ -5,6 +5,7 @@ import {
   readChatGptUsageAccount,
   supportsChatGptUsageTracking,
 } from "../src/adapters/chatgpt-web/limits";
+import { readChatGptProPlan } from "../src/browser-login";
 
 test("Limits reads exact personal account tiers without inspecting billing UI", async () => {
   for (const [planType, expected] of [["pro", "pro_200"], ["prolite", "pro_100"], ["promax", "unsupported"], ["free", "unsupported"]] as const) {
@@ -43,6 +44,21 @@ test("Limits exposes only hashed account identity and distinguishes personal and
   const workspace = await readChatGptUsageAccount(page as never);
   expect(workspace.personal).toBe(false);
   expect(workspace.accountKey).not.toBe(personal.accountKey);
+});
+
+test("the billing tier sizes the composer independently of the model selector", async () => {
+  const pageFor = (planType: string) => ({
+    url: () => "https://chatgpt.com/",
+    evaluate: async () => ({ userId: "u", accountId: "a", planType, structure: "workspace", needsAttention: false }),
+  });
+  for (const planType of ["pro", "prolite"] as const) {
+    expect(await readChatGptProPlan(pageFor(planType) as never)).toBe(true);
+  }
+  for (const planType of ["team", "plus", "free", "business"] as const) {
+    expect(await readChatGptProPlan(pageFor(planType) as never)).toBe(false);
+  }
+  const unreadable = { url: () => "https://chatgpt.com/", evaluate: async () => { throw new Error("no session"); } };
+  expect(await readChatGptProPlan(unreadable as never)).toBe(false);
 });
 
 test("unsupported plans and payment problems never activate browser plan inspection", async () => {

@@ -209,13 +209,14 @@ describe("fixed ChatGPT Web model routes", () => {
   });
 
   test("a Pro-capable team plan keeps Plus composer boundaries and the Pro message budget", () => {
-    // The Pro effort row can be available while the account's plan keeps the Instant composer
-    // boundary, so the composer follows the proven plan and the token budget takes the context.
     const team = { solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: false };
     expect(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, "low", team)).toEqual({
       browserComposerCharLimit: 211_256,
     });
     expect(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, "medium", team)).toEqual({
+      browserComposerCharLimit: 500_000,
+    });
+    expect(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, "max", team)).toEqual({
       browserComposerCharLimit: 500_000,
     });
     expect(resolveChatGptWebMessageTokenBudget(CHATGPT_WEB_BACKEND_MODEL, "medium", team)).toBe(103_000);

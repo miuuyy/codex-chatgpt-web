@@ -117,6 +117,8 @@ export interface AppConfig {
   solAvailable: boolean;
   extraHighAvailable?: boolean;
   proAvailable: boolean;
+  /** Billing tier proven by the session probe; absent until a probe reads it. */
+  proPlan?: boolean;
   experimentalBiggerContext: boolean;
   composerPredictionsEnabled: boolean;
   experimentalSkillAttachments: boolean;
@@ -532,6 +534,9 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (parsed.proAvailable !== undefined && typeof parsed.proAvailable !== "boolean") {
     throw new Error(`Invalid proAvailable in ${path}`);
   }
+  if (parsed.proPlan !== undefined && typeof parsed.proPlan !== "boolean") {
+    throw new Error(`Invalid proPlan in ${path}`);
+  }
   if (parsed.solAvailable !== undefined && typeof parsed.solAvailable !== "boolean") {
     throw new Error(`Invalid solAvailable in ${path}`);
   }
@@ -548,6 +553,7 @@ function parseConfig(value: unknown, path: string): AppConfig {
   }
   const solAvailable = parsed.solAvailable !== false;
   const proAvailable = parsed.proAvailable === true;
+  const proPlan = typeof parsed.proPlan === "boolean" ? parsed.proPlan : undefined;
   if (parsed.experimentalSkillAttachments !== undefined && typeof parsed.experimentalSkillAttachments !== "boolean") {
     throw new Error(`Invalid experimentalSkillAttachments in ${path}`);
   }
@@ -587,6 +593,7 @@ function parseConfig(value: unknown, path: string): AppConfig {
     subagentProtocol,
     solAvailable,
     proAvailable,
+    ...(proPlan === undefined ? {} : { proPlan }),
     experimentalBiggerContext,
     composerPredictionsEnabled,
     experimentalSkillAttachments,
@@ -646,6 +653,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       solAvailable: manual ? false : config.solAvailable,
       extraHighAvailable: !manual && config.extraHighAvailable === true,
       proAvailable: manual ? false : config.proAvailable,
+      proPlan: manual ? false : config.proPlan === true,
       experimentalBiggerContext: manual ? false : config.experimentalBiggerContext,
       experimentalSkillAttachments: manual ? false : config.experimentalSkillAttachments,
       experimentalFreshConversationPerTurn: !manual && config.experimentalFreshConversationPerTurn === true,

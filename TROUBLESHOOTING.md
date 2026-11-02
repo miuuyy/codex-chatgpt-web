@@ -209,6 +209,15 @@ mean that the ChatGPT UI did not expose a structure the bridge can safely prove.
 
 Free and Go accounts normally expose Luna and Think without the paid-account effort selector. A
 missing paid selector on those accounts is not itself a sign-in failure.
+
+`ChatGPT send button remained disabled after the complete prompt was attached` is a generic Send failure. The bridge attempts to clear the unsent draft first, so the next turn normally starts from an empty composer. It does not report the prompt as too large, because a disabled Send can also come from an upload or a blocking UI state. Check the selected mode, then retry once ChatGPT is responsive.
+
+Composer limits follow the billing tier that setup reads from the ChatGPT session. An account that
+upgrades from an older release, or one that was set up while offline, keeps the non-Pro limits until
+the next probe. Run `codex-chatgpt-web setup --refresh-account-capabilities` once with the launcher
+open to record the tier. A Team workspace keeps the non-Pro limits even when its model selector
+offers the Pro effort.
+
 Luna and Think use rolling summaries with **Settings → Bigger Context** off. Experimental Bigger
 Context keeps the task conversation and sends large histories in parts. If earlier details
 are lost in long Free-account chats, turn Bigger Context off and restart Codex.

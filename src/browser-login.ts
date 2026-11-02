@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { chromium, type BrowserContext, type BrowserContextOptions } from "playwright-core";
+import { chromium, type BrowserContext, type BrowserContextOptions, type Page } from "playwright-core";
 import type { AppConfig } from "./config";
 import { atomicWriteFile } from "./config";
 import {
@@ -12,6 +12,7 @@ import {
 } from "./chatgpt-session";
 import { CHATGPT_COMPOSER_SELECTOR } from "./chatgpt-ui/composer";
 import type { ChatGptWebAccountCapabilities } from "./chatgpt-web-models";
+import { readChatGptUsageAccount } from "./adapters/chatgpt-web/limits";
 
 export interface BrowserLoginResult {
   storageStatePath: string;
@@ -19,6 +20,7 @@ export interface BrowserLoginResult {
   solAvailable: boolean;
   extraHighAvailable: boolean;
   proAvailable: boolean;
+  proPlan: boolean;
 }
 
 export type BrowserLoginStorageState = Awaited<ReturnType<BrowserContext["storageState"]>>;
@@ -48,6 +50,7 @@ interface LoginVerificationMarker {
   solAvailable?: boolean;
   extraHighAvailable?: boolean;
   proAvailable?: boolean;
+  proPlan?: boolean;
 }
 
 const SYSTEM_LOGIN_TIMEOUT_MS = 10 * 60_000;
@@ -157,7 +160,7 @@ function writeVerificationMarker(
 async function inspectStoredState(
   config: AppConfig,
   storageState: NonNullable<BrowserContextOptions["storageState"]>,
-): Promise<ChatGptWebAccountCapabilities & { url: string }> {
+): Promise<ChatGptWebAccountCapabilities & { url: string; proPlan: boolean }> {
   const verifierBrowser = await chromium.launch({
     executablePath: config.chromeExecutablePath,
     headless: false,
@@ -172,7 +175,8 @@ async function inspectStoredState(
       await verifierPage.locator(CHATGPT_COMPOSER_SELECTOR).filter({ visible: true }).first().waitFor({ state: "visible", timeout: 60_000 });
       await assertAuthenticatedChatGptPage(verifierPage);
       await assertNewChatPage(verifierPage);
-      return { ...await detectChatGptAccountCapabilities(verifierPage), url: verifierPage.url() };
+      const capabilities = await detectChatGptAccountCapabilities(verifierPage);
+      return { ...capabilities, proPlan: await readChatGptProPlan(verifierPage), url: verifierPage.url() };
     } finally {
       await verifierContext.close();
     }
@@ -181,11 +185,26 @@ async function inspectStoredState(
   }
 }
 
+/** Read the billing tier independently of model-selector availability. */
+export async function readChatGptProPlan(page: Page): Promise<boolean> {
+  try {
+    const { planType } = await readChatGptUsageAccount(page);
+    return planType === "pro" || planType === "prolite";
+  } catch {
+    return false;
+  }
+}
+
 export async function inspectBrowserLoginCapabilities(config: AppConfig): Promise<ChatGptWebAccountCapabilities> {
   if (!browserLoginStateExists(config)) throw new Error("ChatGPT login state is missing or unverified");
   const inspected = await inspectStoredState(config, config.storageStatePath);
   writeVerificationMarker(config.storageStatePath, inspected);
-  return { solAvailable: inspected.solAvailable, extraHighAvailable: inspected.extraHighAvailable, proAvailable: inspected.proAvailable };
+  return {
+    solAvailable: inspected.solAvailable,
+    extraHighAvailable: inspected.extraHighAvailable,
+    proAvailable: inspected.proAvailable,
+    proPlan: inspected.proPlan,
+  };
 }
 
 export function storedBrowserLoginCapabilities(
@@ -198,6 +217,7 @@ export function storedBrowserLoginCapabilities(
       ...(typeof marker.solAvailable === "boolean" ? { solAvailable: marker.solAvailable } : {}),
       ...(typeof marker.extraHighAvailable === "boolean" ? { extraHighAvailable: marker.extraHighAvailable } : {}),
       ...(typeof marker.proAvailable === "boolean" ? { proAvailable: marker.proAvailable } : {}),
+      ...(typeof marker.proPlan === "boolean" ? { proPlan: marker.proPlan } : {}),
     };
   } catch {
     return {};
@@ -434,6 +454,7 @@ export async function loginToChatGpt(
       solAvailable: inspected.solAvailable,
       extraHighAvailable: inspected.extraHighAvailable === true,
       proAvailable: inspected.proAvailable,
+      proPlan: inspected.proPlan,
     };
   } finally {
     await context.close();

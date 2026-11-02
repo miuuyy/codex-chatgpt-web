@@ -64,3 +64,13 @@ export const CHATGPT_STOPPED_THINKING_LABELS = [
   "已停止思考", // zh-CN, zh-HK
   "已中斷思考", // zh-TW
 ] as const;
+
+// The composer's own size-rejection alert, which ChatGPT renders in the page locale. The Korean
+// sentences were observed verbatim on a Korean-locale account; matching the visible sentence, not
+// an English regex, is what classifies a localized rejection as a context-length failure.
+export const CHATGPT_SIZE_REJECTION_LABELS = [
+  "The message you submitted was too long, please edit it and resubmit.", // en-US
+  "The message you submitted was too long.", // en-US, short form
+  "제출한 메시지가 너무 깁니다. 수정 후 다시 제출해 주세요.", // ko-KR
+  "제출한 메시지가 너무 깁니다 수정 후 다시 제출해 주세요", // ko-KR without terminal punctuation
+] as const;

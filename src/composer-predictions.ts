@@ -35,6 +35,7 @@ export function assertComposerPredictionFits(parsed: CodexParsedRequest, config:
     localToolsEnabled: false,
     solAvailable: config.solAvailable,
     proAvailable: config.proAvailable,
+    proPlan: config.proPlan === true,
     extraHighAvailable: config.extraHighAvailable === true,
   };
   const compiled = compileChatGptWebPrompt(parsed, capabilities);

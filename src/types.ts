@@ -304,6 +304,8 @@ export interface CodexProviderConfig {
     /** Account capability proven by the authenticated browser probe. */
     extraHighAvailable?: boolean;
     proAvailable?: boolean;
+    /** Pro-plan billing tier, read from the authenticated session that the launcher shares. */
+    proPlan?: boolean;
     /** Authorize per-call "Allow once" confirmation clicks for this connector. */
     autoApproveToolCalls?: boolean;
     /** Experimental transport: adapt one context across one, two, or six ChatGPT messages. */

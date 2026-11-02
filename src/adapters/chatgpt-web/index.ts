@@ -392,6 +392,7 @@ export function createChatGptWebAdapter(
     solAvailable: provider.chatgptWeb?.solAvailable !== false,
     extraHighAvailable: provider.chatgptWeb?.extraHighAvailable === true,
     proAvailable: provider.chatgptWeb?.proAvailable === true,
+    proPlan: provider.chatgptWeb?.proPlan === true,
   };
   const manualInteraction = provider.chatgptWeb?.browserInteractionMode === "manual";
   const freshConversationPerTurn = provider.chatgptWeb?.experimentalFreshConversationPerTurn === true;

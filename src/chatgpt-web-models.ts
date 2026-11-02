@@ -226,11 +226,15 @@ export function resolveChatGptWebTransportLimits(
   if (backendModel === CHATGPT_WEB_LUNA_BACKEND_MODEL) {
     return { browserMessageTokenLimit: CHATGPT_LUNA_BROWSER_INPUT_TOKEN_BUDGET - CHATGPT_WEB_PLATFORM_RESERVE_TOKENS };
   }
-  if (!capabilities.proAvailable) {
+  if (!capabilities.proPlan) {
     if (effort === "low") {
       return { browserComposerCharLimit: CHATGPT_WEB_INSTANT_COMPOSER_CHAR_LIMIT };
     }
     if (effort === "medium" || effort === "high" || (effort === "xhigh" && capabilities.extraHighAvailable)) {
+      return { browserComposerCharLimit: CHATGPT_WEB_MEDIUM_HIGH_COMPOSER_CHAR_LIMIT };
+    }
+    if (effort === "max") {
+      // Max has no measured composer boundary on this billing tier, so it reuses the 500k ceiling.
       return { browserComposerCharLimit: CHATGPT_WEB_MEDIUM_HIGH_COMPOSER_CHAR_LIMIT };
     }
     throw new Error(`ChatGPT Plus transport limit is not defined for unavailable effort: ${effort}`);
@@ -328,11 +332,21 @@ export interface ChatGptWebAccountCapabilities {
   solAvailable: boolean;
   /** Missing in older saved observations; setup must probe before exposing Extra High. */
   extraHighAvailable?: boolean;
+  /** Pro model effort is exposed by the authenticated account's model selector. */
   proAvailable: boolean;
+  /**
+   * Billing tier proven by the session probe. Absent means unproven, which keeps the conservative
+   * non-Pro composer boundary instead of assuming a paid plan.
+   */
+  proPlan?: boolean;
   experimentalBiggerContext?: boolean;
   browserInteractionMode?: "automatic" | "manual";
   zeroRiskProEnabled?: boolean;
 }
+
+/** Model-selector evidence: the efforts this account exposes, independent of its billing tier. */
+export type ChatGptWebSelectorCapabilities =
+  Pick<ChatGptWebAccountCapabilities, "solAvailable" | "proAvailable"> & { extraHighAvailable: boolean };
 
 export const CHATGPT_WEB_ZERO_RISK_MODEL_ROUTE: ChatGptWebZeroRiskModelRoute = {
   slug: "chatgpt-web/zero-risk",

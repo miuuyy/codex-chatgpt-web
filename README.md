@@ -41,6 +41,8 @@ Full harness mode connects ChatGPT to the current task’s files, terminal, tool
 
 The app includes its browser and runtime. No separate Chrome, Node, or Bun installation is needed.
 
+In automatic mode, setup reads the billing tier from the ChatGPT session, separately from model availability. A Team account can expose Pro models without Pro composer limits. Before attaching a prompt, the bridge clears any draft ChatGPT restored into the composer.
+
 <details>
 <summary><strong>Terminal install, updates & repair</strong></summary>
 

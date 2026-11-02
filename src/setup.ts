@@ -149,6 +149,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     solAvailable: before.solAvailable,
     extraHighAvailable: before.extraHighAvailable,
     proAvailable: before.proAvailable,
+    proPlan: before.proPlan,
     experimentalBiggerContext: before.experimentalBiggerContext,
     composerPredictionsEnabled: before.composerPredictionsEnabled,
     experimentalSkillAttachments: before.experimentalSkillAttachments,
@@ -181,6 +182,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     solAvailable: after.solAvailable,
     extraHighAvailable: after.extraHighAvailable,
     proAvailable: after.proAvailable,
+    proPlan: after.proPlan,
     experimentalBiggerContext: after.experimentalBiggerContext,
     composerPredictionsEnabled: after.composerPredictionsEnabled,
     experimentalSkillAttachments: after.experimentalSkillAttachments,
@@ -355,7 +357,7 @@ async function inspectLauncherCapabilities(
   existing: AppConfig | undefined,
   refreshAccountCapabilities: boolean,
   expectedProfile: "production" | "development",
-): Promise<{ solAvailable: boolean; extraHighAvailable: boolean; proAvailable: boolean }> {
+): Promise<{ solAvailable: boolean; extraHighAvailable: boolean; proAvailable: boolean; proPlan: boolean }> {
   const detectCapabilities = launcherCapabilityProbeRequired(
     existing,
     refreshAccountCapabilities,
@@ -368,6 +370,7 @@ async function inspectLauncherCapabilities(
       solAvailable: existing!.solAvailable,
       extraHighAvailable: existing!.extraHighAvailable === true,
       proAvailable: existing!.proAvailable,
+      proPlan: existing!.proPlan === true,
     };
   }
   const inspected = await inspectLauncherBrowserHost(config.browserHostDescriptorPath!, {
@@ -378,6 +381,7 @@ async function inspectLauncherCapabilities(
     solAvailable: inspected.solAvailable === true,
     extraHighAvailable: inspected.extraHighAvailable === true,
     proAvailable: inspected.proAvailable === true,
+    proPlan: inspected.proPlan === true,
   };
 }
 
@@ -553,6 +557,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   let solAvailable: boolean | undefined = config.solAvailable;
   let extraHighAvailable: boolean | undefined = config.extraHighAvailable;
   let proAvailable: boolean | undefined = config.proAvailable;
+  let proPlan: boolean | undefined = config.proPlan;
   if (config.browserInteractionMode === "manual") {
     // The generic manual route is independent of account capabilities. The launcher may open the
     // authenticated surface, but setup must not inspect its model selector or infer availability.
@@ -567,18 +572,21 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     solAvailable = capabilities.solAvailable;
     extraHighAvailable = capabilities.extraHighAvailable;
     proAvailable = capabilities.proAvailable;
+    proPlan = capabilities.proPlan;
   } else {
     const stored = storedBrowserLoginCapabilities(config);
     solAvailable = stored.solAvailable;
     extraHighAvailable = stored.extraHighAvailable;
     proAvailable = stored.proAvailable;
+    proPlan = stored.proPlan;
     const loginRequired = options.forceLogin || !browserLoginStateExists(config);
     const capabilityProbeRequired = !loginRequired
       && (options.refreshAccountCapabilities === true
         || existing?.browserInteractionMode === "manual"
         || solAvailable === undefined
         || extraHighAvailable === undefined
-        || proAvailable === undefined);
+        || proAvailable === undefined
+        || proPlan === undefined);
     if (beforeService.loaded && (loginRequired || capabilityProbeRequired) && !options.restartService) {
       throw new Error(
         "Setup must verify the browser account before changing the running daemon. "
@@ -591,17 +599,21 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
       solAvailable = login.solAvailable;
       extraHighAvailable = login.extraHighAvailable;
       proAvailable = login.proAvailable;
+      proPlan = login.proPlan;
       loginCreated = true;
     } else if (capabilityProbeRequired) {
       const inspected = await inspectBrowserLoginCapabilities(config);
       solAvailable = inspected.solAvailable;
       extraHighAvailable = inspected.extraHighAvailable;
       proAvailable = inspected.proAvailable;
+      proPlan = inspected.proPlan;
     }
   }
   config.solAvailable = solAvailable === true;
   config.extraHighAvailable = config.solAvailable && extraHighAvailable === true;
   config.proAvailable = config.solAvailable && proAvailable === true;
+  config.proPlan = proPlan;
+
   const explicitTunnelChange = Boolean(options.tunnelId || options.runtimeKeyFile || options.runtimeKeyValue);
   const preliminaryChange = Boolean(existing && (meaningfulRuntimeChange(existing, config) || explicitTunnelChange || options.forceLogin));
   if (beforeService.loaded && preliminaryChange && !options.restartService) {
@@ -714,6 +726,7 @@ export async function setupDevProfile(options: SetupOptions): Promise<DevProfile
     config.solAvailable = capabilities.solAvailable;
     config.extraHighAvailable = capabilities.solAvailable && capabilities.extraHighAvailable;
     config.proAvailable = capabilities.solAvailable && capabilities.proAvailable;
+    config.proPlan = capabilities.proPlan;
   }
 
 

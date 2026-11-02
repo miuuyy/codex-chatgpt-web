@@ -7,7 +7,7 @@ import {
   type ChatGptEffortActivation,
 } from "./chatgpt-ui/model-picker";
 import type { Locator, Page } from "playwright-core";
-import type { ChatGptWebAccountCapabilities } from "./chatgpt-web-models";
+import type { ChatGptWebSelectorCapabilities } from "./chatgpt-web-models";
 
 export const CHATGPT_NEW_CHAT_URL = "https://chatgpt.com/";
 export function chatGptNewChatUrl(useTemporaryChats = false): string {
@@ -105,7 +105,7 @@ export async function waitForChatGptEffortControl(
 export async function readChatGptEffortCapabilities(
   { sliderContainer, slider }: Pick<ChatGptEffortActivation, "sliderContainer" | "slider">,
   options: Pick<ChatGptCapabilityProbeOptions, "selectorTimeoutMs" | "signal"> = {},
-): Promise<ChatGptWebAccountCapabilities & { extraHighAvailable: boolean }> {
+): Promise<ChatGptWebSelectorCapabilities> {
   options.signal?.throwIfAborted();
   const timeout = options.selectorTimeoutMs ?? 70_000;
   // Model radio rows can hydrate before the effort control. They carry no evidence
@@ -120,7 +120,7 @@ export async function readChatGptEffortCapabilities(
 export async function detectChatGptAccountCapabilities(
   page: Page,
   options: ChatGptCapabilityProbeOptions = {},
-): Promise<ChatGptWebAccountCapabilities & { extraHighAvailable: boolean }> {
+): Promise<ChatGptWebSelectorCapabilities> {
   const effortButton = await waitForChatGptEffortControl(page, options);
   if (!effortButton) return { solAvailable: false, extraHighAvailable: false, proAvailable: false };
   try {
