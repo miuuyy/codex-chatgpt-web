@@ -138,7 +138,7 @@ test("Luna checkpoint stream still rejects a marker that was lost by Markdown se
 
 test("Luna prompt requests the strict private checkpoint only when capture is enabled", () => {
   const parsed = request("thread_prompt", "turn_prompt", [message("user", "Inspect it.", "turn_prompt")]);
-  const capabilities = { localToolsEnabled: false, solAvailable: false, extraHighAvailable: false, proAvailable: false };
+  const capabilities = { localToolsEnabled: false, solAvailable: false, extraHighAvailable: false, proAvailable: false, proPlan: false };
   const normal = compileChatGptWebPrompt(parsed, capabilities);
   const rolling = compileChatGptWebPrompt(parsed, capabilities, undefined, { captureLunaCheckpoint: true });
   expect(normal.text).not.toContain(CHATGPT_LUNA_CHECKPOINT_MARKER);
@@ -187,7 +187,7 @@ test("Luna checkpoint replaces only exact-parent history and preserves the curre
   expect(encoded).toContain("Continue with the second step");
   expect(encoded).not.toContain("Old operational contract");
   expect(encoded).not.toContain("Original task");
-  const capabilities = { localToolsEnabled: false, solAvailable: false, extraHighAvailable: false, proAvailable: false };
+  const capabilities = { localToolsEnabled: false, solAvailable: false, extraHighAvailable: false, proAvailable: false, proPlan: false };
   expect(estimateChatGptWebInputTokens(applied.parsed, capabilities))
     .toBeLessThan(estimateChatGptWebInputTokens(next, capabilities));
 

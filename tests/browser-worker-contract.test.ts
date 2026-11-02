@@ -283,7 +283,7 @@ test("browser turns run concurrently up to the five-tab limit", async () => {
   const browserTurn = (traceId: string) => ({
     traceId,
     modelId: "chatgpt-web/high",
-    capabilities: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    capabilities: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true },
     prepare: async () => ({ text: traceId, images: [], release() {} }),
     onTextDelta() {},
   });
@@ -582,7 +582,7 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
     chatgptWeb: {
       localToolsEnabled: true,
       solAvailable: true,
-      extraHighAvailable: true, proAvailable: true,
+      extraHighAvailable: true, proAvailable: true, proPlan: true,
       storageStatePath: `/tmp/issue-285-${Date.now()}-${Math.random()}.json`,
     },
   };
@@ -720,7 +720,7 @@ test("Bigger Context send activation keeps the outer stage budget instead of res
     chatgptWeb: {
       localToolsEnabled: true,
       solAvailable: true,
-      extraHighAvailable: true, proAvailable: true,
+      extraHighAvailable: true, proAvailable: true, proPlan: true,
       storageStatePath: `/tmp/multipart-send-budget-${Date.now()}-${Math.random()}.json`,
     },
   };
@@ -778,7 +778,7 @@ test("Bigger Context send activation keeps the outer stage budget instead of res
 
 test.each(["low", "high"] as const)("GPT-6 Plus stages High but keeps the Instant exclusion (%s)", async reasoning => {
   const root = mkdtempSync(join(tmpdir(), "gpt6-context-"));
-  const capabilities = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false };
+  const capabilities = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false, proPlan: false };
   let released = false;
   let browserStages = 0;
   const prepared = { ...compileChatGptWebPrompt({
@@ -801,7 +801,7 @@ test.each(["low", "high"] as const)("GPT-6 Plus stages High but keeps the Instan
 
 test("two-part saved chats re-prove unchanged effort after the first message creates the conversation URL", async () => {
   const root = mkdtempSync(join(tmpdir(), "saved-chat-multipart-"));
-  const capabilities = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false };
+  const capabilities = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false, proPlan: false };
   const prepared = { ...compileChatGptWebPrompt({
     modelId: CHATGPT_WEB_MODEL_ID, stream: true, options: { reasoning: "low" },
     context: { systemPrompt: ["Keep literal paths."], messages: [
@@ -860,7 +860,7 @@ test("submission observation recovery resumes with rebound locators and is stric
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: `browser://submission-recovery-${Date.now()}-${Math.random()}`,
-    chatgptWeb: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    chatgptWeb: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true },
   };
   type Evidence = "user_turn" | "assistant_turn" | "generation_running" | "mcp_tool_call";
   type Recovery = { page: Page; baseline: unknown };
@@ -935,7 +935,7 @@ test("an accepted turn rebinds the missing assistant observation and acknowledge
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: `browser://assistant-recovery-${Date.now()}-${Math.random()}`,
-    chatgptWeb: { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    chatgptWeb: { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true },
   };
   type Baseline = {
     initialTurnIdentities: string[];
@@ -1051,7 +1051,7 @@ test("missing-assistant expiry checks fresh DOM after a delayed wake while prese
       const worker = ChatGptBrowserWorker.forProvider({
         adapter: "chatgpt-web",
         baseUrl: `browser://assistant-expiry-${scenario}-${Math.random()}`,
-        chatgptWeb: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+        chatgptWeb: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true },
       }) as unknown as {
         waitForNewAssistantTurn(page: Page, baseline: Baseline, deadline: number | undefined): Promise<{
           identity: string; locator: unknown;
@@ -1257,25 +1257,25 @@ test("large Markdown-rich context uses one plain-text editing command before exa
   const composer = {
     fill: async (value: string) => { calls.push(["fill", value]); },
     focus: async () => { calls.push(["focus"]); },
-    evaluate: async (fn: unknown, value: string, options: unknown) => {
+    evaluate: async (fn: unknown, value?: string, options?: unknown) => {
+      expect(typeof fn).toBe("function");
+      // The attachment reads the composer back before it owns the editor.
+      if (value === undefined) return 0;
       calls.push(["evaluate", value]);
       calls.push(["evaluateOptions", options]);
-      expect(typeof fn).toBe("function");
       return true;
     },
   };
-  const attachPrompt = (ChatGptBrowserWorker.prototype as unknown as {
-    attachPrompt(page: unknown, prompt: string, localTools: boolean): Promise<void>;
-  }).attachPrompt;
-  const insertPromptText = (ChatGptBrowserWorker.prototype as unknown as {
-    insertPromptText(page: unknown, text: string): Promise<void>;
-  }).insertPromptText;
-
-  await attachPrompt.call({
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
     activeComposer: async () => composer,
-    insertPromptText,
+    attachedPromptText: async () => "",
+    insertPromptText: (ChatGptBrowserWorker.prototype as unknown as {
+      insertPromptText(page: unknown, text: string): Promise<void>;
+    }).insertPromptText,
     assertPromptAttached: async (_page: unknown, value: string) => { asserted = value; },
-  }, dialogPage("").page, prompt, false);
+  }) as unknown as { attachPrompt(page: unknown, prompt: string, localTools: boolean): Promise<void> };
+
+  await worker.attachPrompt(dialogPage("").page, prompt, false);
 
   expect(calls[0]).toEqual(["fill", ""]);
   expect(calls.filter(call => call[0] === "evaluate")).toEqual([["evaluate", prompt]]);
@@ -1296,9 +1296,81 @@ test("plain-text editing command fails closed when the focused composer rejects 
 
   await expect(insertPromptText.call({
     activeComposer: async () => composer,
+    attachedPromptText: async () => "",
   }, {}, "literal `markdown`"))
     .rejects.toThrow("rejected the plain-text editing command");
 });
+
+test("a restored draft is deleted with select-all and Backspace before attachment fails closed", async () => {
+  const pressed: string[] = [];
+  let draft = "";
+  let editorDeletes = true;
+  const composer = {
+    fill: async () => {},
+    focus: async () => {},
+    evaluate: async () => draft.trim().length,
+    press: async (key: string) => {
+      pressed.push(key);
+      if (key === "Backspace" && editorDeletes) draft = "";
+    },
+  };
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    activeComposer: async () => composer,
+  }) as unknown as { clearComposerForAttachment(page: unknown): Promise<void> };
+
+  await worker.clearComposerForAttachment({});
+  expect(pressed).toEqual([]);
+
+  draft = "restored draft";
+  await worker.clearComposerForAttachment({});
+  expect(pressed).toEqual([CHATGPT_COMPOSER_SELECT_ALL_KEY, "Backspace"]);
+  expect(draft).toBe("");
+
+  draft = "stuck";
+  editorDeletes = false;
+  await expect(worker.clearComposerForAttachment({})).rejects.toMatchObject({
+    name: "ChatGptPersistentBrowserStateError",
+    message: expect.stringContaining("5 restored character(s)"),
+  });
+  expect(pressed).toEqual([
+    CHATGPT_COMPOSER_SELECT_ALL_KEY, "Backspace", CHATGPT_COMPOSER_SELECT_ALL_KEY, "Backspace",
+  ]);
+}, 20_000);
+
+test("prompt insertion refuses a composer that still holds earlier text", async () => {
+  const commands: string[] = [];
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    activeComposer: async () => ({
+      focus: async () => {},
+      evaluate: async (_fn: unknown, text: string) => { commands.push(text); return true; },
+    }),
+    attachedPromptText: async () => "restored draft",
+  }) as unknown as { insertPromptText(page: unknown, text: string): Promise<void> };
+
+  await expect(worker.insertPromptText({}, "the next task")).rejects.toMatchObject({
+    name: "ChatGptPersistentBrowserStateError",
+    message: expect.stringContaining("14 character(s)"),
+  });
+  expect(commands).toEqual([]);
+});
+
+test("prompt attachment refuses to append on top of a draft it could not clear", async () => {
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    activeComposer: async () => ({
+      fill: async () => {},
+      focus: async () => {},
+      press: async () => {},
+      evaluate: async () => "previous task".length,
+    }),
+    insertPromptText: async () => { throw new Error("prompt insertion must not run"); },
+  }) as unknown as { attachPrompt(page: unknown, prompt: string, localTools: boolean): Promise<void> };
+  const dialog = { filter() { return this; }, last() { return this; }, isVisible: async () => false };
+
+  await expect(worker.attachPrompt({ locator: () => dialog }, "next task", false)).rejects.toMatchObject({
+    name: "ChatGptPersistentBrowserStateError",
+    message: expect.stringContaining("13 restored character(s)"),
+  });
+}, 20_000);
 
 test("compaction prompt attachment retries once only before submission evidence", async () => {
   const attachWithRetry = (ChatGptBrowserWorker.prototype as unknown as {
@@ -2023,6 +2095,7 @@ test("tool-capable prompts use the shared Playwright connector selection before 
     insertPromptText,
     connectorIsSelected: async () => selected,
     selectedConnectorControl: () => selectedConnector,
+    attachedPromptText: async () => "",
     activeComposer: async () => {
       activeComposerCalls += 1;
       return selected ? selectedComposer : initialComposer;
@@ -2222,6 +2295,7 @@ test("an abort while inserting a connector prompt clears the selected pill and p
 
   const attachment = attachPrompt.call({
     selectConnector: async () => selectedComposer,
+    attachedPromptText: async () => "",
     insertPromptText: async (_page: unknown, text: string) => {
       composerText += text;
       controller.abort();
@@ -2256,6 +2330,7 @@ test("each new tool prompt verifies its connector after the previous Send cleare
   };
   const worker = {
     activeComposer: async () => composer,
+    attachedPromptText: async () => "",
     selectConnector: async () => { selected = true; selections += 1; return composer; },
     insertPromptText: async (_page: unknown, text: string) => {
       if (!selected) throw new Error("The new message has no plugin attached");
@@ -2509,12 +2584,13 @@ test("Think attachment preserves the plugin on first and follow-up messages and 
     const ui = thinkButtonFixture();
     let connectorSelections = 0;
     const submitted: boolean[] = [];
-    const worker = {
+    const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
       activeComposer: async () => ui.composer,
+      attachedPromptText: async () => ui.state.draft,
       selectConnector: async () => { connectorSelections += 1; ui.state.connectors = ["Codex Native2"]; return ui.composer; },
       insertPromptText: async () => { submitted.push(ui.state.pressed); },
       assertPromptAttached: async () => {}, clearChatGptComposerState: async () => { ui.state.draft = ""; ui.state.connectors = []; },
-    };
+    });
     await attach.call(worker, ui.page, "requested task", localTools, undefined, undefined, false, undefined, true);
     expect(submitted).toEqual([true]);
     expect(connectorSelections).toBe(localTools ? 1 : 0);
@@ -2535,6 +2611,7 @@ test("Think attachment clears the selected plugin without inserting a prompt whe
   let selections = 0;
   const worker = {
     activeComposer: async () => ui.composer,
+    attachedPromptText: async () => ui.state.draft,
     selectConnector: async () => { selections += 1; ui.state.connectors = ["Codex Native2"]; return ui.composer; },
     insertPromptText: async () => { insertions += 1; },
     assertPromptAttached: async () => {},
@@ -2557,6 +2634,7 @@ test("Think attachment enables Think after plugin selection resets it, on every 
   let cleanup = 0;
   const worker = {
     activeComposer: async () => ui.composer,
+    attachedPromptText: async () => ui.state.draft,
     selectConnector: async () => { ui.state.pressed = false; ui.state.connectors = ["Codex Native2"]; return ui.composer; },
     insertPromptText: async () => { insertions.push({ pressed: ui.state.pressed, connectors: [...ui.state.connectors] }); },
     assertPromptAttached: async () => {},
@@ -3256,9 +3334,9 @@ test("auto-approval recognizes the observed non-dialog approval card", async () 
 });
 
 test("browser preflight separates model context from one-message transport limits", () => {
-  const plus = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false };
-  const pro = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true };
-  const luna = { localToolsEnabled: false, solAvailable: false, extraHighAvailable: false, proAvailable: false };
+  const plus = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false, proPlan: false };
+  const pro = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true };
+  const luna = { localToolsEnabled: false, solAvailable: false, extraHighAvailable: false, proAvailable: false, proPlan: false };
 
   try {
     assertChatGptWebInputWithinLimits(90_000, 81_808, "gpt-5.6-sol", "medium", plus);
@@ -3369,7 +3447,7 @@ test("browser preflight separates model context from one-message transport limit
 });
 
 test("GPT-6 staged input enforces its measured account and effort ceiling before submission", () => {
-  const pro = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true };
+  const pro = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true };
   for (const effort of ["medium", "high", "xhigh"] as const) {
     expect(() => assertChatGptWebMultipartInputWithinLimits(
       239_999, 40_000, "gpt-5.6-sol", effort, pro, 200_000, 6, undefined, "6",
@@ -3402,7 +3480,7 @@ test("GPT-6 staged input enforces its measured account and effort ceiling before
 });
 
 test("Bigger Context fits mixed-density whole records within both token and composer limits", () => {
-  const capabilities = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false, experimentalBiggerContext: true };
+  const capabilities = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false, proPlan: false, experimentalBiggerContext: true };
   const dense = "a!b@c#d$e%f^g&h*".repeat(3_750);
   const sparse = "x".repeat(dense.length);
   const whitespace = " ".repeat(450_000);
@@ -3454,13 +3532,13 @@ test("Bigger Context preflight expands only the total context ceiling and keeps 
   const plus = {
     localToolsEnabled: false,
     solAvailable: true,
-    extraHighAvailable: false, proAvailable: false,
+    extraHighAvailable: false, proAvailable: false, proPlan: false,
     experimentalBiggerContext: true,
   };
   const pro = {
     localToolsEnabled: false,
     solAvailable: true,
-    extraHighAvailable: true, proAvailable: true,
+    extraHighAvailable: true, proAvailable: true, proPlan: true,
     experimentalBiggerContext: true,
   };
   expect(() => assertChatGptWebMultipartInputWithinLimits(
@@ -3540,15 +3618,15 @@ test("Bigger Context preflight expands only the total context ceiling and keeps 
     10_000,
     "gpt-5.6-luna",
     "low",
-    { localToolsEnabled: false, solAvailable: false, extraHighAvailable: false, proAvailable: false },
+    { localToolsEnabled: false, solAvailable: false, extraHighAvailable: false, proAvailable: false, proPlan: false },
     40_000,
     2,
   )).not.toThrow();
 });
 
 test("Bigger Context stages use the lowest account mode that can carry the stage", () => {
-  const plus = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false };
-  const pro = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true };
+  const plus = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false, proPlan: false };
+  const pro = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true };
   expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 20_000, 200_000).effort).toBe("low");
   expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 23_807, 200_000).effort).toBe("low");
   expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 23_808, 200_000).effort).toBe("medium");
@@ -3579,9 +3657,12 @@ test("Bigger Context stages use the lowest account mode that can carry the stage
   expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 100_000, 500_000).effort).toBe("low");
   expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 100_000, 600_000).effort).toBe("max");
   expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 104_000, 1_200_000).effort).toBe("max");
+  const team = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: false };
+  // A Pro-capable Team account keeps the Instant composer boundary, so this stage needs Medium.
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", team, 60_000, 295_819).effort).toBe("medium");
   expect(resolveChatGptWebMultipartStagingMode(
     "gpt-5.6-luna",
-    { localToolsEnabled: false, solAvailable: false, extraHighAvailable: false, proAvailable: false },
+    { localToolsEnabled: false, solAvailable: false, extraHighAvailable: false, proAvailable: false, proPlan: false },
     10_000,
     20_000,
   ).effort).toBe("low");
@@ -4523,7 +4604,7 @@ test("a stage that spans a system sleep is not charged for the slept time", asyn
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: `browser://suspension-stage-${Date.now()}`,
-    chatgptWeb: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    chatgptWeb: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true },
   };
   const worker = ChatGptBrowserWorker.forProvider(provider) as unknown as {
     runStage<T>(

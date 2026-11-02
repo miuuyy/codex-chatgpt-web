@@ -8,7 +8,7 @@ import { compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
 import { parseRequest } from "../src/responses/parser";
 import type { AdapterEvent, CodexProviderConfig } from "../src/types";
 
-const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true };
+const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true };
 const turnToken = "turn_12345678901234567890123456789012";
 const parse = (text: unknown) => parseRequest({
   model: CHATGPT_WEB_MODEL_ID,
@@ -73,7 +73,7 @@ async function runStrictAdapterAnswer(answer: string): Promise<AdapterEvent[]> {
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: `browser://strict-output-${nonce}`,
-    chatgptWeb: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    chatgptWeb: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true },
   };
   const worker = ChatGptBrowserWorker.forProvider(provider);
   const originalRun = worker.run.bind(worker);

@@ -23,7 +23,7 @@ test.skipIf(!process.env.LAUNCHER_TEST_ELECTRON)("encoded context avoids the Chr
     const compiled = compileChatGptWebPrompt({
       modelId: "gpt-5.6-sol", stream: true, options: { reasoning: "high" },
       context: { systemPrompt: [], messages: [{ role: "user", content: code, timestamp: 1 }] },
-    }, { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    }, { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true },
     "turn_12345678901234567890123456789012");
     const envelope = compiled.text.match(/<codex_context_json>\n(.+)\n<\/codex_context_json>/s)![1]!;
     const encoded = envelope.match(/"messages":(\[.*\])/s)![1]!;

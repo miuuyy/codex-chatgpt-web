@@ -22,7 +22,7 @@ test.each([
   const cancellationCase = owned && !tools && !multipart;
   const effort = gpt6Pro ? "max" : tools ? "xhigh" : "high";
   const finalResponse = cancellationCase ? chatGptBrowserTabClosedError() : new Error("fixture reached final response observation");
-  const capabilities = { localToolsEnabled: tools, solAvailable: true, extraHighAvailable: true, proAvailable: true };
+  const capabilities = { localToolsEnabled: tools, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true };
   const progress = tools ? new ChatGptExternalTurnProgress() : undefined;
   const recoveryCallbacks: unknown[] = [];
   const actions: string[] = [];
@@ -121,6 +121,7 @@ test.each([
       attachPrompt: (ChatGptBrowserWorker.prototype as any).attachPrompt,
       attachPromptWithCompactionRetry: (ChatGptBrowserWorker.prototype as any).attachPromptWithCompactionRetry,
       activeComposer: async () => composer,
+      attachedPromptText: async () => "",
       selectConnector: async () => { connectorSelected = true; actions.push("attach:tools"); return composer; },
       insertPromptText: async () => { expect(connectorSelected).toBeTrue(); },
       assertPromptAttached: async () => {},

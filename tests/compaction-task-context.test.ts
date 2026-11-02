@@ -8,7 +8,7 @@ import { parseRequest } from "../src/responses/parser";
 import { encodeCompactionSummary } from "../src/responses/compaction";
 
 const model = "chatgpt-web/high";
-const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true };
+const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true };
 
 for (const format of ["v1", "v2"] as const) {
   for (const kind of ["goal", "delegation"] as const) {

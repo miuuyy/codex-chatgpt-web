@@ -51,7 +51,7 @@ test("launcher setup refreshes account capabilities only when missing or explici
   const verifiedLauncher = {
     browserHost: "launcher",
     solAvailable: true,
-    extraHighAvailable: false, proAvailable: false,
+    extraHighAvailable: false, proAvailable: false, proPlan: false,
   };
 
   expect(launcherCapabilityProbeRequired(undefined)).toBe(true);
@@ -59,7 +59,7 @@ test("launcher setup refreshes account capabilities only when missing or explici
   expect(launcherCapabilityProbeRequired({ ...verifiedLauncher, extraHighAvailable: undefined } as never)).toBe(true);
   expect(launcherCapabilityProbeRequired({
     browserHost: "launcher",
-    extraHighAvailable: false, proAvailable: false,
+    extraHighAvailable: false, proAvailable: false, proPlan: false,
   } as never)).toBe(true);
   expect(launcherCapabilityProbeRequired(verifiedLauncher as never, true)).toBe(true);
   expect(launcherCapabilityProbeRequired({
@@ -270,7 +270,7 @@ test.skipIf(process.platform !== "darwin")("external service setup retains valid
     spyOn(integration, "preflightCodexIntegration").mockImplementation(() => {}),
     spyOn(integration, "installCodexIntegration").mockImplementation(() => ({} as never)),
     spyOn(browserLogin, "browserLoginStateExists").mockReturnValue(true),
-    spyOn(browserLogin, "storedBrowserLoginCapabilities").mockReturnValue({ solAvailable: true, extraHighAvailable: false, proAvailable: false } as never),
+    spyOn(browserLogin, "storedBrowserLoginCapabilities").mockReturnValue({ solAvailable: true, extraHighAvailable: false, proAvailable: false, proPlan: false } as never),
     spyOn(service, "getServiceStatus").mockReturnValue({ installed: true, loaded: true } as never),
     spyOn(service, "assertServiceIdle").mockResolvedValue(undefined),
     spyOn(service, "installService").mockReturnValue({ installed: true, loaded: true } as never),

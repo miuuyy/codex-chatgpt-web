@@ -8,7 +8,7 @@ import { retainedConversationResumeRequest } from "../src/adapters/chatgpt-web/c
 import { estimateCompiledChatGptWebInputTokens, estimateCompiledChatGptWebMessageTokens } from "../src/adapters/chatgpt-web/input-tokens";
 import { skillFileTokens } from "../src/adapters/chatgpt-web/skill-attachments";
 
-const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true };
+const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true };
 const token = "turn_12345678901234567890123456789012";
 const text = (name = "testing", body = "Read references/checks.md. Verify café 日本語.") =>
   `<skill>\n<name>${name}</name>\n<path>/workspace/skills/${name}/SKILL.md</path>\n${body}\n</skill>`;

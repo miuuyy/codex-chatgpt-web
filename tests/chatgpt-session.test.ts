@@ -405,7 +405,7 @@ test("effort confirmation tolerates disappearing Pro only while the requested ef
     const fixture = reasoningPicker({ maxAfterClose: "3", locksAfterClose: ["false", "false", "false", String(locked)] });
     const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), { activeComposer: async () => fixture.composer }) as any;
     const result = worker.selectModelAndEffort(fixture.page, "gpt-5.6-sol", "xhigh", {
-      localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true,
+      localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true,
     });
     if (locked) await expect(result).rejects.toThrow();
     else expect((await result).selection.label).toBe("Extra High");
@@ -417,7 +417,7 @@ test("effort confirmation rejects a newly locked selection even when the range a
   const fixture = reasoningPicker({ locksAfterClose: ["false", "false", "true", "true", "true"] });
   const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), { activeComposer: async () => fixture.composer }) as any;
   await expect(worker.selectModelAndEffort(fixture.page, "gpt-5.6-sol", "high", {
-    localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true,
+    localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true,
   })).rejects.toThrow();
 });
 
@@ -453,7 +453,7 @@ test("stale saved capabilities cannot activate a locked effort; High remains sel
       activeComposer: async () => fixture.composer,
     }) as { selectModelAndEffort(...args: unknown[]): Promise<{ selection: { label: string } }> };
     const selection = worker.selectModelAndEffort(fixture.page, "gpt-5.6-sol", effort, {
-      localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true,
+      localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true,
     });
     if (effort === "xhigh") {
       await expect(selection).rejects.toMatchObject({ code: "chatgpt_effort_locked", retryable: false });
@@ -472,7 +472,7 @@ test("Pro selection verifies the persisted hidden slider through its visible own
       activeComposer: async () => fixture.composer,
     }) as { selectModelAndEffort(...args: unknown[]): Promise<{ selection: { label: string } }> };
     const selection = worker.selectModelAndEffort(fixture.page, "gpt-5.6-sol", "max", {
-      localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true,
+      localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true,
     });
     if (loseSelectionOnClose) await expect(selection).rejects.toMatchObject({ retryable: false });
     else expect((await selection).selection.label).toBe("Pro");

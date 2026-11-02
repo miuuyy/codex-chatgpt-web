@@ -30,7 +30,7 @@ function request(reasoning: "low" | "medium" | "high" | "xhigh" | "max"): CodexP
 }
 
 test("custom plugin identity stays explicit in inline and multipart execution without rewriting task history", () => {
-  const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true };
+  const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true };
   const parsed = request("high");
   parsed.context.messages[1]!.content = "Compare Codex Native2 with the selected plugin.";
   for (const appName of ["Codex app", "Codex Native2 DEV", "Codex Робота"]) {
@@ -55,7 +55,7 @@ test("inline and staged history escape Markdown delimiters without changing deco
   const code = '```ts\nconst value = "`key`";\n``` '.repeat(20) + '\\u0060 \\` [text](https://example.com) 中文';
   parsed.context.systemPrompt = [code];
   parsed.context.messages[1]!.content = code;
-  const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true };
+  const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true };
   const inline = compileChatGptWebPrompt(parsed, capabilities, "turn_12345678901234567890123456789012");
   const encoded = inline.text.match(/<codex_context_json>\n(.+)\n<\/codex_context_json>/s)![1]!;
   expect(encoded).not.toContain("`");
@@ -83,7 +83,7 @@ test("multipart JSON shields the rich user renderer's delimiters while preservin
     + 'Literal \\u0022 \\u005c \\n; Unicode 中文 😀; tab\t and CR\r.';
   parsed.context.systemPrompt = [content];
   parsed.context.messages[1]!.content = content;
-  const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true };
+  const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true };
   const token = "turn_12345678901234567890123456789012";
   const inline = compileChatGptWebPrompt(parsed, capabilities, token);
   const inlineJson = inline.text.match(/<codex_context_json>\n(.+)\n<\/codex_context_json>/s)![1]!;
@@ -129,7 +129,7 @@ test("Full-mode Pro prompts pass one stable turn token directly to native action
   parsed.context.messages[1]!.content = `Diagnose an invalid binding_id safety failure without replaying ${token}`;
   const compiled = compileChatGptWebPrompt(
     parsed,
-    { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true },
     token,
   );
   const envelopeEnd = compiled.text.indexOf("</codex_context_json>");
@@ -163,7 +163,7 @@ test("Full-mode Pro prompts pass one stable turn token directly to native action
 
 test("Pro preserves the same native Codex delegation contract as Extra High", () => {
   const token = "turn_12345678901234567890123456789012";
-  const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true };
+  const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true };
   const pro = compileChatGptWebPrompt(request("max"), capabilities, token);
   const extraHigh = compileChatGptWebPrompt(request("xhigh"), capabilities, token);
 
@@ -179,7 +179,7 @@ test("Pro preserves the same native Codex delegation contract as Extra High", ()
 test("read-only prompts resume without exposing a bind capability", () => {
   const compiled = compileChatGptWebPrompt(
     request("max"),
-    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true },
   );
 
   expect(compiled.text).toContain("The task context is complete. Execute the latest active user request now under the capability contract above.");
@@ -203,7 +203,7 @@ test("Bigger Context sends six semantic record envelopes and starts work from th
   );
   const compiled = compileChatGptWebPrompt(
     parsed,
-    { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true },
     token,
     { experimentalMultipartParts: CHATGPT_BIGGER_CONTEXT_PARTS },
   );
@@ -262,7 +262,7 @@ test("Bigger Context uses the minimum transport and reserves six parts for compa
 
   const compiled = compileChatGptWebPrompt(
     request("high"),
-    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true },
     undefined,
     { experimentalMultipartParts: 2 },
   );
@@ -280,7 +280,7 @@ test("Bigger Context uses the minimum transport and reserves six parts for compa
 });
 
 test("browser-only Medium directs users to the full harness", () => {
-  const capabilities = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true };
+  const capabilities = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true };
   const warning = chatGptReadOnlyContextWarning(request("medium"), capabilities);
   expect(warning).toStartWith("> **Local tools unavailable**");
   expect(warning).toContain("`MCP`");
@@ -299,7 +299,7 @@ test("compaction prompts are isolated summarization turns without local or nativ
   compact._compactionRequest = true;
   const compiled = compileChatGptWebPrompt(
     compact,
-    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true },
   );
 
   expect(compiled.text).toContain("This is a Codex history-compaction checkpoint, not a normal task turn.");
@@ -327,7 +327,7 @@ test("Web compaction trims only the oldest history until the browser request fit
 
   const compiled = compileChatGptWebPrompt(
     compact,
-    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true },
   );
   const encoded = compiled.text.match(/<codex_context_json>\n(.+)\n<\/codex_context_json>/s)?.[1];
   const envelope = JSON.parse(encoded!) as { messages: Array<{ role: string; content: unknown }> };
@@ -344,7 +344,7 @@ test("Web compaction trims only the oldest history until the browser request fit
   delete normal._compactionRequest;
   const untrimmed = compileChatGptWebPrompt(
     normal,
-    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true },
   );
   expect(untrimmed.text).toContain("oldest-static");
   expect(untrimmed.text).toContain("newer-static");
@@ -367,7 +367,7 @@ test("inline compaction carries the newest cumulative checkpoint across discarde
     ];
     const before = structuredClone(compact);
     const compiled = compileChatGptWebPrompt(compact, {
-      localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true,
+      localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true,
     });
     const envelope = JSON.parse(compiled.text.split("<codex_context_json>\n")[1]!.split("\n</codex_context_json>")[0]!);
     expect(envelope.messages.map((message: { role: string }) => message.role)).toEqual(["user", "assistant", "user"]);
@@ -381,7 +381,7 @@ test("inline compaction carries the newest cumulative checkpoint across discarde
     expect(chatGptPromptJsonBytes(compiled.text)).toBeLessThanOrEqual(CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET);
     expect(compact).toEqual(before);
     const manual = compileChatGptWebPrompt(compact, {
-      localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true,
+      localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true,
     }, "turn_12345678901234567890123456789012", { manualControl: true });
     expect(manual.text).toContain("Verified cumulative scope:");
     expect(manual.text).toContain("history is incomplete");
@@ -400,7 +400,7 @@ test("inline compaction rejects a required checkpoint that cannot fit instead of
     { role: "user", content: "checkpoint-now", timestamp: 3 },
   ];
   expect(() => compileChatGptWebPrompt(compact, {
-    localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true,
+    localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true,
   })).toThrow("cumulative checkpoint");
 });
 
@@ -416,7 +416,7 @@ test("Bigger Context compaction preserves history above the retired inline byte 
 
   const multipart = compileChatGptWebPrompt(
     compact,
-    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true },
     undefined,
     { experimentalMultipartParts: CHATGPT_BIGGER_CONTEXT_PARTS },
   );
@@ -449,7 +449,7 @@ test("Bigger Context keeps preliminary parts small and preserves all records in 
 
   const multipart = compileChatGptWebPrompt(
     compact,
-    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false },
+    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false, proPlan: false },
     undefined,
     { experimentalMultipartParts: CHATGPT_BIGGER_CONTEXT_PARTS },
   );
@@ -480,7 +480,7 @@ test("Web compaction rebuilds attachments after trimming an oversized oldest ima
 
   const compiled = compileChatGptWebPrompt(
     compact,
-    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true },
   );
 
   const envelope = compiled.text.split("<codex_context_json>")[1]!.split("</codex_context_json>")[0]!;
@@ -497,7 +497,7 @@ test("Luna rejects a separate compaction prompt because continuity is already ro
   compact._compactionRequest = true;
   expect(() => compileChatGptWebPrompt(
     compact,
-    { localToolsEnabled: false, solAvailable: false, extraHighAvailable: false, proAvailable: false },
+    { localToolsEnabled: false, solAvailable: false, extraHighAvailable: false, proAvailable: false, proPlan: false },
   )).toThrow("does not accept a separate compaction turn");
 });
 
@@ -509,7 +509,7 @@ test("Web compaction fails closed when its final instruction alone exceeds the t
 
   expect(() => compileChatGptWebPrompt(
     compact,
-    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true },
   )).toThrow("final compaction instruction alone exceeds");
 });
 
@@ -530,7 +530,7 @@ test("assigns prior assistant output to the model and never attributes Codex con
   ];
   const compiled = compileChatGptWebPrompt(
     attributed,
-    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true },
   );
   const encoded = compiled.text.match(/<codex_context_json>\n(.+)\n<\/codex_context_json>/s)?.[1];
   const envelope = JSON.parse(encoded!) as { messages: Array<Record<string, unknown>> };
@@ -567,7 +567,7 @@ test("a long task keeps the newest images and drops the overflow instead of fail
 
   const compiled = compileChatGptWebPrompt(
     replayed,
-    { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true },
     "turn_12345678901234567890123456789012",
   );
 
@@ -602,7 +602,7 @@ test("Web compaction attaches the newest ten images as files and never embeds th
 
   const compiled = compileChatGptWebPrompt(
     parsed,
-    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true },
   );
 
   expect(compiled.images.map(image => image.imageUrl)).toEqual(
@@ -633,7 +633,7 @@ test("persisted one-pixel image sentinels are not attached to ChatGPT", () => {
     options: { reasoning: "high" },
   };
 
-  const compiled = compileChatGptWebPrompt(parsed, { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true });
+  const compiled = compileChatGptWebPrompt(parsed, { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true });
 
   expect(compiled.images.map(image => image.imageUrl)).toEqual(["data:image/png;base64,real-image"]);
   expect(compiled.text.match(/"type":"image_attachment"/g)).toHaveLength(1);
@@ -669,7 +669,7 @@ test("the replayed context never carries a finished turn's broker handles", () =
     options: { reasoning: "high" },
   };
 
-  const compiled = compileChatGptWebPrompt(replayed, { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true }, token);
+  const compiled = compileChatGptWebPrompt(replayed, { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true }, token);
 
   expect(compiled.text).not.toContain(staleToken);
   expect(compiled.text).not.toContain(staleBinding);
@@ -684,7 +684,7 @@ test("the replayed context never carries a finished turn's broker handles", () =
 test("requires ChatGPT-native rich results to include a safe Markdown answer for Codex", () => {
   const compiled = compileChatGptWebPrompt(
     request("max"),
-    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true },
   );
 
   expect(compiled.text).toContain("also provide the relevant result as ordinary Markdown in the final answer");
@@ -695,7 +695,7 @@ test("requires ChatGPT-native rich results to include a safe Markdown answer for
 test("uses the public Instant name without leaking the browser menu alias into the prompt", () => {
   const compiled = compileChatGptWebPrompt(
     request("low"),
-    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true },
   );
 
   expect(compiled.text).toContain("This is ChatGPT Web Instant with no local Codex bridge");
@@ -716,7 +716,7 @@ test("keeps large contexts intact in the inline text envelope", () => {
   });
   const compiled = compileChatGptWebPrompt(
     large,
-    { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true },
     token,
   );
 
@@ -742,7 +742,7 @@ test("serialized history cannot feed code-fence backtracking into ChatGPT's link
 test("inline and multipart transports preserve code while escaping its Markdown delimiters", () => {
   const parsed = request("high");
   parsed.context.messages[1]!.content = '```python\nprint("hello")\n``` '.repeat(20);
-  const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true };
+  const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true };
   const inline = compileChatGptWebPrompt(parsed, capabilities, "turn_12345678901234567890123456789012");
   const envelope = inline.text.split("<codex_context_json>\n")[1]!.split("\n</codex_context_json>")[0]!;
   expect(envelope).not.toContain("`");

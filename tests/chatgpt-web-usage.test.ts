@@ -8,7 +8,7 @@ import type { CodexParsedRequest } from "../src/types";
 import { resolveChatGptWebMessageTokenBudget, resolveChatGptWebStagingTokenBudget } from "../src/chatgpt-web-models";
 import { parseRequest } from "../src/responses/parser";
 
-const capabilities = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true };
+const capabilities = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true };
 
 function request(text: string): CodexParsedRequest {
   return {
@@ -74,7 +74,7 @@ test.each([
 }, 15_000);
 
 test("multipart selection accounts for whole-record and composer fit before submission", () => {
-  const plus = { ...capabilities, extraHighAvailable: false, proAvailable: false };
+  const plus = { ...capabilities, extraHighAvailable: false, proAvailable: false, proPlan: false };
   for (const [contents, expected] of [
     [["small task"], undefined],
     [[50_000, 40_000, 50_000, 5_000].map(n => "word ".repeat(n)), 6],
@@ -123,7 +123,7 @@ test("GPT-6 Sol stages complete Plus and Pro history with consistent usage accou
   }));
   const original = structuredClone(parsed);
   for (const proAvailable of [false, true]) {
-    const caps = { ...capabilities, proAvailable };
+    const caps = { ...capabilities, proAvailable, proPlan: proAvailable };
     const parts = resolveBiggerContextMultipartParts(parsed, caps);
     expect(parts).toBe(2);
     const staged = compileChatGptWebPrompt(parsed, caps, undefined, { experimentalMultipartParts: parts });
@@ -138,7 +138,7 @@ test("GPT-6 Sol stages complete Plus and Pro history with consistent usage accou
 test("GPT-6 compaction respects the selected account and effort", () => {
   const parsed = { ...request("Summarize this task."), _chatgptModelFamily: "6" as const, _compactionRequest: true };
   for (const proAvailable of [false, true]) {
-    const caps = { ...capabilities, proAvailable };
+    const caps = { ...capabilities, proAvailable, proPlan: proAvailable };
     for (const effort of ["low", "medium", "high", "xhigh"] as const) {
       parsed.options.reasoning = effort;
       const supported = effort !== "low";
@@ -162,7 +162,7 @@ test("GPT-6 compaction respects the selected account and effort", () => {
 });
 
 test("Plus history is rebalanced into smaller Instant uploads and a larger selected-mode final message", () => {
-  const plus = { ...capabilities, proAvailable: false, extraHighAvailable: false };
+  const plus = { ...capabilities, proAvailable: false, extraHighAvailable: false, proPlan: false };
   const parsed = request("");
   parsed.context.messages = Array.from({ length: 60 }, (_, index) => ({
     role: "user", content: `record-${index}: ${"word ".repeat(3000)}`, timestamp: index + 1,
@@ -187,11 +187,11 @@ test("Plus history is rebalanced into smaller Instant uploads and a larger selec
 
 test("multipart planning leaves room for final attachments and execution instructions without losing history", () => {
   for (const scenario of [
-    { extraHighAvailable: false, proAvailable: false, images: 3, schema: false },
-    { extraHighAvailable: true, proAvailable: true, images: 10, schema: false },
-    { extraHighAvailable: false, proAvailable: false, images: 0, schema: true },
+    { extraHighAvailable: false, proAvailable: false, proPlan: false, images: 3, schema: false },
+    { extraHighAvailable: true, proAvailable: true, proPlan: true, images: 10, schema: false },
+    { extraHighAvailable: false, proAvailable: false, proPlan: false, images: 0, schema: true },
   ]) {
-    const caps = { ...capabilities, proAvailable: scenario.proAvailable };
+    const caps = { ...capabilities, proAvailable: scenario.proAvailable, proPlan: scenario.proPlan };
     const parsed = request("");
     const texts = Array.from({ length: 36 }, (_, index) => `record ${index}: ${"word ".repeat(5_000)}`);
     parsed.context.messages = texts.map((content, index) => ({ role: "user", content, timestamp: index + 1 }));

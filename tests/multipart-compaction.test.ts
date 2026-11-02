@@ -19,7 +19,7 @@ import { SUMMARY_PREFIX } from "../src/responses/compaction";
 import type { CodexParsedRequest } from "../src/types";
 
 const capabilities: ChatGptWebCapabilities = {
-  localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true,
+  localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true,
 };
 const turnToken = `turn_${"0".repeat(32)}`;
 
@@ -109,7 +109,7 @@ test.each([
     })),
     { role: "user", content: "checkpoint now", timestamp: scenario.count + 1 },
   ];
-  const caps = { ...capabilities, proAvailable: scenario.pro };
+  const caps = { ...capabilities, proAvailable: scenario.pro, proPlan: scenario.pro };
   const compiled = compileChatGptWebPrompt(parsed, caps, turnToken, { experimentalMultipartParts: scenario.parts });
   expect(compiled.trimmedCompactionMessages).toBeGreaterThan(0);
   expect(estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId)).toBeLessThan(scenario.ceiling);
@@ -131,7 +131,7 @@ test("Luna multipart compaction uses its experimental ceiling instead of its rol
     })),
     { role: "user", content: "checkpoint now", timestamp: 12 },
   ];
-  const caps = { ...capabilities, solAvailable: false, extraHighAvailable: false, proAvailable: false };
+  const caps = { ...capabilities, solAvailable: false, extraHighAvailable: false, proAvailable: false, proPlan: false };
   const compiled = compileChatGptWebPrompt(parsed, caps, turnToken, { experimentalMultipartParts: 6 });
   expect(compiled.trimmedCompactionMessages).toBeGreaterThan(0);
   expect(estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId)).toBeLessThan(84_000);

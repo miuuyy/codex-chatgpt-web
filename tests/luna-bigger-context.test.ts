@@ -9,7 +9,7 @@ import { CHATGPT_LUNA_BROWSER_INPUT_TOKEN_BUDGET, CHATGPT_WEB_PLATFORM_RESERVE_T
 import { parseRequest } from "../src/responses/parser";
 import type { CodexParsedRequest } from "../src/types";
 
-const caps = { localToolsEnabled: false, solAvailable: false, extraHighAvailable: false, proAvailable: false };
+const caps = { localToolsEnabled: false, solAvailable: false, extraHighAvailable: false, proAvailable: false, proPlan: false };
 const model = "gpt-5.6-luna";
 function request(count: number, words: number, reasoning = "low"): CodexParsedRequest {
   return parseRequest({ model, reasoning: { effort: reasoning }, stream: false,

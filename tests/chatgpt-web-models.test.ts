@@ -18,6 +18,7 @@ import {
   requireChatGptWebModelRoute,
   resolveChatGptWebContextLimits,
   resolveChatGptWebTransportLimits,
+  resolveChatGptWebMessageTokenBudget,
 } from "../src/chatgpt-web-models";
 import { defaultConfig } from "../src/config";
 import { routeChatGptWebRequest } from "../src/server";
@@ -34,8 +35,8 @@ function parsed(modelId: string, reasoning = "medium"): CodexParsedRequest {
 }
 
 describe("fixed ChatGPT Web model routes", () => {
-  const plus = { solAvailable: true, extraHighAvailable: false, proAvailable: false };
-  const pro = { solAvailable: true, extraHighAvailable: true, proAvailable: true };
+  const plus = { solAvailable: true, extraHighAvailable: false, proAvailable: false, proPlan: false };
+  const pro = { solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true };
 
   test("keeps the published legacy bindings while advertising named families", () => {
     expect(new Set(CHATGPT_WEB_MODEL_ROUTES.map(route => route.slug)).size).toBe(CHATGPT_WEB_MODEL_ROUTES.length);
@@ -60,7 +61,7 @@ describe("fixed ChatGPT Web model routes", () => {
       "chatgpt-web/gpt-5.6-sol-instant",
       "chatgpt-web/gpt-5.6-sol",
     ]);
-    expect(availableChatGptWebModelRoutes({ solAvailable: true, extraHighAvailable: true, proAvailable: true }))
+    expect(availableChatGptWebModelRoutes({ solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true }))
       .toEqual(CHATGPT_WEB_MODEL_ROUTES);
     expect(() => requireChatGptWebModelRoute("chatgpt-web/extra-high", plus))
       .toThrow("Extra High is not available for this account");
@@ -85,7 +86,7 @@ describe("fixed ChatGPT Web model routes", () => {
   });
 
   test("exposes Luna and Think when the authenticated account has no Sol selector", () => {
-    const free = { solAvailable: false, extraHighAvailable: false, proAvailable: false };
+    const free = { solAvailable: false, extraHighAvailable: false, proAvailable: false, proPlan: false };
     expect(availableChatGptWebModelRoutes(free)).toEqual(CHATGPT_WEB_LUNA_MODEL_ROUTES);
     expect(requireChatGptWebModelRoute("chatgpt-web/luna", free).backendModel)
       .toBe(CHATGPT_WEB_LUNA_BACKEND_MODEL);
@@ -95,14 +96,14 @@ describe("fixed ChatGPT Web model routes", () => {
       .toThrow("Luna-only account");
     expect(() => requireChatGptWebModelRoute("chatgpt-web/luna", {
       solAvailable: true,
-      extraHighAvailable: false, proAvailable: false,
+      extraHighAvailable: false, proAvailable: false, proPlan: false,
     })).toThrow("only available for Luna-only accounts");
   });
 
   test("Zero Risk exposes one generic route independent of account capabilities", () => {
     const manual = {
       solAvailable: false,
-      extraHighAvailable: false, proAvailable: false,
+      extraHighAvailable: false, proAvailable: false, proPlan: false,
       browserInteractionMode: "manual" as const,
     };
     expect(availableChatGptWebModelRoutes(manual)).toEqual([CHATGPT_WEB_ZERO_RISK_MODEL_ROUTE]);
@@ -126,7 +127,7 @@ describe("fixed ChatGPT Web model routes", () => {
   test("Zero Risk always publishes its fixed three-turn compaction interval and rejects multipart Bigger Context", () => {
     const manual = {
       solAvailable: true,
-      extraHighAvailable: true, proAvailable: true,
+      extraHighAvailable: true, proAvailable: true, proPlan: true,
       browserInteractionMode: "manual" as const,
     };
     expect(resolveChatGptWebContextLimits(CHATGPT_WEB_ZERO_RISK_BACKEND_MODEL, "low", manual)).toEqual({
@@ -207,6 +208,19 @@ describe("fixed ChatGPT Web model routes", () => {
     });
   });
 
+  test("a Pro-capable team plan keeps Plus composer boundaries and the Pro message budget", () => {
+    // The Pro effort row can be available while the account's plan keeps the Instant composer
+    // boundary, so the composer follows the proven plan and the token budget takes the context.
+    const team = { solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: false };
+    expect(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, "low", team)).toEqual({
+      browserComposerCharLimit: 211_256,
+    });
+    expect(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, "medium", team)).toEqual({
+      browserComposerCharLimit: 500_000,
+    });
+    expect(resolveChatGptWebMessageTokenBudget(CHATGPT_WEB_BACKEND_MODEL, "medium", team)).toBe(103_000);
+  });
+
   test("GPT-6 Plus expands retained context without enlarging one message or unlocking unavailable efforts", () => {
     const enabled = { ...plus, experimentalBiggerContext: true };
     for (const effort of ["medium", "high"] as const) {
@@ -229,7 +243,7 @@ describe("fixed ChatGPT Web model routes", () => {
   test("publishes Luna's real model window without early native compaction", () => {
     expect(resolveChatGptWebContextLimits(CHATGPT_WEB_LUNA_BACKEND_MODEL, "low", {
       solAvailable: false,
-      extraHighAvailable: false, proAvailable: false,
+      extraHighAvailable: false, proAvailable: false, proPlan: false,
     })).toEqual({
       contextWindow: 1_050_000,
       effectiveContextWindowPercent: 100,
@@ -248,7 +262,7 @@ describe("fixed ChatGPT Web model routes", () => {
     });
     expect(resolveChatGptWebContextLimits(CHATGPT_WEB_LUNA_BACKEND_MODEL, "low", {
       solAvailable: false,
-      extraHighAvailable: false, proAvailable: false,
+      extraHighAvailable: false, proAvailable: false, proPlan: false,
       experimentalBiggerContext: true,
     })).toEqual({
       contextWindow: 84_000,

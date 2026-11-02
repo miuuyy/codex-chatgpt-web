@@ -4,7 +4,7 @@ import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { parseRequest } from "../src/responses/parser";
 import { extractChatGptTurnUserRevision } from "../src/adapters/chatgpt-web/environment";
 
-const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true };
+const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true };
 const turnToken = "turn_12345678901234567890123456789012";
 
 function request() {

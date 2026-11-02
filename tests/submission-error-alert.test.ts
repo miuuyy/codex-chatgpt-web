@@ -3,6 +3,8 @@ import { chromium } from "playwright-core";
 import { ChatGptSubmissionRejectionObserver } from "../src/adapters/chatgpt-web/browser-worker";
 
 const tooLong = "The message you submitted was too long, please edit it and resubmit.";
+const koreanTooLong = "제출한 메시지가 너무 깁니다. 수정 후 다시 제출해 주세요.";
+const koreanTooLongWithoutPunctuation = "제출한 메시지가 너무 깁니다 수정 후 다시 제출해 주세요";
 
 test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("a new service size alert survives removal of the current conversation DOM (#874)", async () => {
   const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
@@ -18,6 +20,25 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("a new service size alert sur
       document.querySelector("main")!.innerHTML = `<aside role="alert">${text}</aside>`;
     }, tooLong);
     expect(await observer.failure()).toMatchObject({ code: "context_length_exceeded", retryable: false });
+  } finally { observer.dispose(); await browser.close(); }
+}, 20_000);
+
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("a localized Korean size alert is classified as a context-length rejection", async () => {
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  const observer = new ChatGptSubmissionRejectionObserver();
+  try {
+    const page = await browser.newPage();
+    await page.route("**/*", route => route.fulfill({ contentType: "text/html", body: "<main><div data-turn-key='current'>Response</div></main>" }));
+    await page.goto("https://chatgpt.com/c/fixture");
+    for (const text of [koreanTooLong, koreanTooLongWithoutPunctuation]) {
+      observer.begin(page);
+      await observer.captureAlertBaseline();
+      await page.evaluate(async () => { await fetch("/backend-api/f/conversation", { method: "POST" }); });
+      await page.evaluate(alert => {
+        document.querySelector("main")!.innerHTML = `<aside role="alert">${alert}</aside>`;
+      }, text);
+      expect(await observer.failure()).toMatchObject({ status: 400, code: "context_length_exceeded", retryable: false });
+    }
   } finally { observer.dispose(); await browser.close(); }
 }, 20_000);
 

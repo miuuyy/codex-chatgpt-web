@@ -94,7 +94,7 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)(`model selection reuses the $
       </script>`);
     const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
     const result = await worker.selectModelAndEffort(page, "gpt-5.6-sol", "xhigh", {
-      localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true,
+      localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true,
     }, undefined, false, "5.6");
     expect(result.selection.label).toBe("5.6 Sol Extra High");
     expect(await page.evaluate(() => (window as any).pickerOpens)).toBe(2);
@@ -150,7 +150,7 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("GPT-6 and GPT-5.6 select eff
         });render();
       </script>`);
     const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
-    const caps = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false };
+    const caps = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false, proPlan: false };
     expect(await page.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).count()).toBe(1);
     for (const [family, effort] of [["5.6", "low"], ["6", "high"], ["5.6", "medium"], ["6", "medium"]] as const) {
       const selected = await worker.selectModelAndEffort(page, "gpt-5.6-sol", effort, caps, undefined, false, family);
@@ -193,7 +193,7 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("dated power and explicit pic
       expect(await page.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).count()).toBe(1);
       const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
       const selected = await worker.selectModelAndEffort(page, "gpt-5.6-sol", effort, {
-        localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true,
+        localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true,
       }, undefined, false, "6");
       expect(selected.selection.label).toBe(label);
       await worker.assertSelectedEffort(page, selected);
@@ -237,7 +237,7 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)(`real slider ${scenario} keep
       const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
       const effort = scenario === "pro-disappears" ? "max" : scenario === "locked" ? "high" : "xhigh";
       const result = worker.selectModelAndEffort(page, "gpt-5.6-sol", effort, {
-        localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true,
+        localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true,
       });
       if (scenario === "shrink") expect((await result).selection.label).toBe("Extra High");
       else {
@@ -298,7 +298,7 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)(`smoke handles a sliderless d
       expect(options.modelFamily).toBe("5.6");
       expect(options.reasoning).toBe("high");
       expect(options.capabilities).toEqual({
-        solAvailable: true, extraHighAvailable: true, proAvailable: true, localToolsEnabled: false,
+        solAvailable: true, extraHighAvailable: true, proAvailable: true, proPlan: true, localToolsEnabled: false,
       });
       expect(await page.locator('[role=menuitemradio][aria-checked=true]').textContent()).toBe("GPT-5.6 Sol");
       expect(await page.locator('#picker').isVisible()).toBe(false);
@@ -340,7 +340,7 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)(`smoke requires positive Luna
       expect(options.modelFamily).toBeUndefined();
       expect(options.reasoning).toBe("low");
       expect(options.capabilities).toEqual({
-        solAvailable: false, extraHighAvailable: false, proAvailable: false, localToolsEnabled: false,
+        solAvailable: false, extraHighAvailable: false, proAvailable: false, proPlan: false, localToolsEnabled: false,
       });
       return "CODEX WEB GPT READY";
     };

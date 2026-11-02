@@ -28,7 +28,7 @@ test.skipIf(!browserPath)("setup reads the October inline control on paid accoun
       const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
       for (const reasoning of ['low', 'medium']) {
         await expect(worker.selectModelAndEffort(page, 'gpt-5.6-luna', reasoning,
-          { localToolsEnabled: false, solAvailable: false, extraHighAvailable: false, proAvailable: false }))
+          { localToolsEnabled: false, solAvailable: false, extraHighAvailable: false, proAvailable: false, proPlan: false }))
           .rejects.toMatchObject({ code: 'chatgpt_capabilities_stale', retryable: false });
       }
       expect(await composer.innerHTML()).toBe(draft);
