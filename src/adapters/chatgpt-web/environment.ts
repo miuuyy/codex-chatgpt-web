@@ -16,6 +16,7 @@ export interface ChatGptTurnEnvironment {
   writableRoots: string[];
   sandboxPolicy: ChatGptSandboxPolicy;
   tools: CodexTool[];
+  imageContextThreadId?: string;
 }
 
 export interface ChatGptTurnIdentity {

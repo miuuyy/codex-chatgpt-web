@@ -1,3 +1,4 @@
+import { prepareImageContext } from "./image-context";
 import { createHash, randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import { isChatGptWebZeroRiskBackendModel } from "../../chatgpt-web-models";
@@ -455,6 +456,10 @@ export function createChatGptWebAdapter(
       ? { localTools: true }
       : resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, turnCapabilities);
     const identity = extractChatGptTurnIdentity(parsed);
+    const imageContext = !manualRequest && mode.localTools && identity.threadId
+      ? prepareImageContext(identity.threadId, parsed.context.messages) : undefined;
+    if (imageContext && environment) environment = { ...environment, imageContextThreadId: imageContext.threadId };
+
     const captureLunaCheckpoint = parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID
       && !experimentalBiggerContext
       && !parsed._compactionRequest
@@ -484,6 +489,7 @@ export function createChatGptWebAdapter(
         ? resolveBiggerContextMultipartParts(input, turnCapabilities, experimentalSkillAttachments, worker.appName)
         : undefined;
       return {
+        ...(imageContext ? { imageContext } : {}),
         appName: worker.appName,
         includeContextTokenBreakdown: true,
         captureLunaCheckpoint,

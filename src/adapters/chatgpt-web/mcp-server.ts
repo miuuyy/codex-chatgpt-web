@@ -1,3 +1,4 @@
+import { accessImageContext } from "./image-context";
 import { createHash, randomBytes } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -959,6 +960,12 @@ export async function runChatGptMcpServer(options: {
       }
       return withClaimedTurn("codex_tool_call", requestId, extra, async claimed => {
         const bound = claimed.environment;
+        if (contract === "native" && wire_name === "codex.image_context") {
+          if (input !== undefined) throw new Error("Image context requires structured arguments");
+          if (!bound.imageContextThreadId) throw new Error("Image archive unavailable for this turn");
+          const imageRequest = z.object({ action: z.enum(["list", "get", "replace", "add"]), ids: z.array(z.string()).max(10).default([]), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(50).default(20) }).strict().parse(args ?? {});
+          return accessImageContext(bound.imageContextThreadId, imageRequest.action, imageRequest.ids, undefined, imageRequest.offset, imageRequest.limit);
+        }
         const tool = safeVisibleTools(bound, contract)
           .find(candidate => wireName(candidate) === wire_name);
         if (!tool) {
