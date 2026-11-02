@@ -161,3 +161,40 @@ domTest("streaming approval timeout and cancellation never click a permission bu
     }
   });
 }, 20_000);
+
+// Russian question/action labels observed in the user-provided ChatGPT screenshot.
+// Like card(), this is a semantic fixture, not a captured live DOM. Wrapper ownership
+// remains separate from localization; an inline card is diagnostic-only below.
+function russianCard(app = "Codex Native2") {
+  return card(app, "Разрешить один раз")
+    .replace(`Allow ChatGPT to use ${app}?`, `Разрешить ChatGPT использовать ${app}?`)
+    .replace(">Deny<", ">Отклонить<")
+    .replace("</section>", '<button>Всегда разрешать</button><button>Allow Codex Native2 for this conversation</button></section>');
+}
+
+domTest("Russian approval selects only the one-time action and matches connector names literally", async () => {
+  await withPage(async page => {
+    for (const app of ["Codex Native2", "Codex (Native)+2"]) {
+      await page.setContent(russianCard(app));
+      expect(await resolveChatGptToolConfirmation(page, app, true)).toBeTrue();
+      expect(await page.locator("body").getAttribute("data-chosen")).toBe("Разрешить один раз");
+    }
+    await page.setContent(russianCard("GitHub"));
+    expect(await resolveChatGptToolConfirmation(page, "Codex Native2", true)).toBeFalse();
+    expect(await page.locator("body").getAttribute("data-chosen")).toBeNull();
+  });
+}, 20_000);
+
+domTest("Russian inline approval is diagnosed without granting an unowned card click authority", async () => {
+  await withPage(async page => {
+    const html = russianCard().replace('data-codex-approval-surface="true"', 'class="inline-card"');
+    await page.setContent(html);
+    expect(await resolveChatGptToolConfirmation(page, "Codex Native2", true)).toBeFalse();
+    await expect(throwIfChatGptToolApprovalRequired(page.locator("body")))
+      .rejects.toMatchObject({ code: "chatgpt_tool_approval_required" });
+    for (const wrapper of ['hidden', 'class="markdown"', 'data-user-message-bubble']) {
+      await page.setContent(`<div ${wrapper}>${html}</div>`);
+      await expect(throwIfChatGptToolApprovalRequired(page.locator("body"))).resolves.toBeUndefined();
+    }
+  });
+}, 20_000);

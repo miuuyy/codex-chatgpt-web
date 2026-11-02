@@ -3174,8 +3174,10 @@ function toolConfirmationPage(options: {
   };
   return {
     page: {
-      getByText: (text: string, options: { exact: boolean }) => {
-        expect(text).toBe("Allow ChatGPT to use Codex Native?");
+      getByText: (text: RegExp, options: { exact: boolean }) => {
+        expect(text.test("Allow ChatGPT to use Codex Native?")).toBeTrue();
+        expect(text.test("Разрешить ChatGPT использовать Codex Native?")).toBeTrue();
+        expect(text.test("Allow ChatGPT to use Codex Native extra?")).toBeFalse();
         expect(options.exact).toBeTrue();
         return {};
       },

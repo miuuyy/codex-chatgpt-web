@@ -641,7 +641,7 @@ export async function throwIfChatGptToolApprovalRequired(scope: Pick<Locator, "l
   // click authority; never use this broader observation to grant permission.
   const question = scope
     .locator('[role="alert"]:not(.markdown, .markdown *, [data-message-author-role="user"] *, [data-user-message-bubble], [data-user-message-bubble] *)')
-    .getByText(/^Allow ChatGPT to use .+\?$/, { exact: true })
+    .getByText(/^(?:Allow ChatGPT to use .+|Разрешить ChatGPT использовать .+)\?$/, { exact: true })
     .filter({ visible: true });
   if (await question.count() > 0) throw chatGptToolApprovalRequiredError();
 }
@@ -655,8 +655,10 @@ export async function resolveChatGptToolConfirmation(
   onVisible?: () => Promise<void>,
   onApprovalPending?: (pending: boolean) => Promise<void>,
 ): Promise<boolean> {
+  const escapedAppName = appName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const question = new RegExp(`^(?:Allow ChatGPT to use ${escapedAppName}|Разрешить ChatGPT использовать ${escapedAppName})\\?$`);
   const dialogs = page.locator('[role="dialog"], [data-testid="tool-approval-card"], [data-codex-approval-surface="true"]')
-    .filter({ has: page.getByText(`Allow ChatGPT to use ${appName}?`, { exact: true }) })
+    .filter({ has: page.getByText(question, { exact: true }) })
     .filter({ visible: true });
   const dialogCount = await dialogs.count();
   if (dialogCount === 0) return false;
@@ -670,9 +672,9 @@ export async function resolveChatGptToolConfirmation(
     // current one-shot approval. Keep the matcher anchored so persistent
     // actions such as "Always allow" cannot match.
     const allowCurrentAction = dialog
-      .getByRole("button", { name: /^Allow(?: once)?$/ })
+      .getByRole("button", { name: /^(?:Allow(?: once)?|Разрешить один раз)$/ })
       .filter({ visible: true });
-    const deny = dialog.getByRole("button", { name: "Deny", exact: true }).filter({ visible: true });
+    const deny = dialog.getByRole("button", { name: /^(?:Deny|Отклонить)$/, exact: true }).filter({ visible: true });
     await allowCurrentAction.waitFor({ state: "visible", timeout: 10_000, signal });
     await deny.waitFor({ state: "visible", timeout: 10_000, signal });
     if (await allowCurrentAction.count() !== 1 || await deny.count() !== 1) {
