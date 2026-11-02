@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, renameSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { atomicWriteFile } from "../../config";
 import { getCodexHome, getTrustedCodexHomes } from "../../codex-integration-shared";
 import type { CodexParsedRequest } from "../../types";
@@ -55,6 +55,18 @@ function pathIdentity(value: string): string {
 function contains(root: string, path: string): boolean {
   const rel = relative(pathIdentity(root), pathIdentity(path));
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function isThreadVisualizationRoot(path: string, codexHomes: readonly string[], threadId: string): boolean {
+  return codexHomes.some(home => {
+    const rel = relative(pathIdentity(resolve(home, "visualizations")), pathIdentity(path));
+    const parts = rel.split(sep);
+    return !isAbsolute(rel) && parts.length === 4
+      && /^\d{4}$/.test(parts[0]!)
+      && /^(?:0[1-9]|1[0-2])$/.test(parts[1]!)
+      && /^(?:0[1-9]|[12]\d|3[01])$/.test(parts[2]!)
+      && parts[3] === (process.platform === "win32" ? threadId.toLowerCase() : threadId);
+  });
 }
 
 function absolutePaths(value: unknown, field: string): string[] {
@@ -245,6 +257,16 @@ export class ChatGptThreadEnvironmentStore {
         });
         if (rollout) {
           let rolloutEnvironment = rollout.environment;
+          let reconciledClaim = currentClaim;
+          // Desktop follow-ups can contain only the current task's visualization
+          // directory, with no cwd. This narrow shape is not a project replacement:
+          // keep the projects proven by this exact native turn, never by the cache.
+          const visualizationOnlyUpdate = currentClaim?.environment.cwd === undefined
+            && rollout.workspaceRootsDeclared
+            && currentClaim !== undefined
+            && currentClaim.environment.roots.length > 0
+            && currentClaim.environment.roots.every(root =>
+              isThreadVisualizationRoot(root, this.codexHomes, rolloutIdentity.threadId));
           // Full Access roots describe workspace context, not a permission boundary.
           // Codex can add output directories after compaction (#933), or omit native
           // roots after a restart (#847). Keep every declared native project; the
@@ -253,14 +275,18 @@ export class ChatGptThreadEnvironmentStore {
             && currentClaim?.environment.sandboxPolicy.type === "dangerFullAccess"
             && (currentClaim.environment.cwd === undefined
               || pathIdentity(currentClaim.environment.cwd) === pathIdentity(rolloutEnvironment.cwd))
-            && currentClaim.environment.roots.some(root => contains(root, rolloutEnvironment.cwd))) {
+            && (visualizationOnlyUpdate
+              || currentClaim.environment.roots.some(root => contains(root, rolloutEnvironment.cwd)))) {
             const nativeRoots = new Set(rolloutEnvironment.roots.map(pathIdentity));
             const claimedRoots = new Set(currentClaim.environment.roots.map(pathIdentity));
-            if (!rollout.workspaceRootsDeclared || [...nativeRoots].every(root => claimedRoots.has(root))) {
+            if (visualizationOnlyUpdate || !rollout.workspaceRootsDeclared || [...nativeRoots].every(root => claimedRoots.has(root))) {
               const roots = rollout.workspaceRootsDeclared
                 ? [...rolloutEnvironment.roots, ...currentClaim.environment.roots.filter(root => !nativeRoots.has(pathIdentity(root)))]
                 : [...currentClaim.environment.roots];
               rolloutEnvironment = { ...rolloutEnvironment, roots, writableRoots: [...roots] };
+              if (visualizationOnlyUpdate) {
+                reconciledClaim = { ...currentClaim, environment: { ...currentClaim.environment, roots } };
+              }
             }
           }
           if (resolvedCalendarDelta) {
@@ -271,7 +297,7 @@ export class ChatGptThreadEnvironmentStore {
               throw new Error("Calendar environment delta conflicts with its current Codex rollout");
             }
           }
-          const conflicts = currentClaim ? conflictingAuthorityFields(currentClaim, rolloutEnvironment) : [];
+          const conflicts = reconciledClaim ? conflictingAuthorityFields(reconciledClaim, rolloutEnvironment) : [];
           if (conflicts.length > 0) {
             const source = currentCompaction || nativeCompaction ? "Compaction continuation" : initialClaim ? "Current" : "Steering";
             // Field names are safe to export; paths, request text and permission

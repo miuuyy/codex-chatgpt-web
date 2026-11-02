@@ -1309,6 +1309,48 @@ describe("trusted Codex task environment continuity", () => {
     });
   });
 
+  function visualizationOnlyFixture() {
+    const fixture = cwdlessRolloutFixture("danger-full-access");
+    const visualizationRoot = join(fixture.codexHome, "visualizations", "2026", "11", "02", rolloutThreadId);
+    fixture.environment.content[0]!.text = `<environment_context><filesystem><workspace_roots><root>${visualizationRoot}</root></workspace_roots>${dangerFullAccessProfileXml}</filesystem></environment_context>`;
+    delete (fixture.nativeContext.payload as Record<string, unknown>).workspace_roots;
+    const projectRoots = [root, join(fixture.codexHome, "second-project")];
+    const writeContext = () => writeFileSync(fixture.rolloutPath, [
+      { type: "session_meta", payload: { id: rolloutThreadId, source: "vscode", cwd: root, runtime_workspace_roots: projectRoots } },
+      fixture.nativeContext,
+    ].map(value => JSON.stringify(value)).join("\n") + "\n");
+    writeContext();
+    return { ...fixture, visualizationRoot, projectRoots, writeContext };
+  }
+
+  test("cwd-less visualization-only updates preserve native projects across store restarts", () => {
+    const fixture = visualizationOnlyFixture();
+    const cache = join(fixture.codexHome, "thread-environments.json");
+    for (let restart = 0; restart < 2; restart++) {
+      expect(new ChatGptThreadEnvironmentStore(cache, Date.now, fixture.codexHome).resolve(fixture.request))
+        .toMatchObject({ cwd: root, roots: [...fixture.projectRoots, fixture.visualizationRoot],
+          writableRoots: [...fixture.projectRoots, fixture.visualizationRoot], sandboxPolicy: { type: "dangerFullAccess" } });
+    }
+  });
+
+  test("visualization-only recovery rejects foreign outputs, explicit cwd, and missing current authority", () => {
+    for (const conflict of ["foreign-thread", "arbitrary-root", "nested-output", "cwd", "turn", "missing-rollout", "restricted"] as const) {
+      const fixture = visualizationOnlyFixture();
+      const original = fixture.environment.content[0]!.text;
+      if (conflict === "foreign-thread") fixture.environment.content[0]!.text = original.replace(rolloutThreadId, rolloutParentId);
+      if (conflict === "arbitrary-root") fixture.environment.content[0]!.text = original.replace(fixture.visualizationRoot, join(fixture.codexHome, "unproven"));
+      if (conflict === "nested-output") fixture.environment.content[0]!.text = original.replace(fixture.visualizationRoot, join(fixture.visualizationRoot, "nested"));
+      if (conflict === "cwd") fixture.environment.content[0]!.text = original.replace("<filesystem>", `<cwd>${root}</cwd><filesystem>`);
+      if (conflict === "turn") {
+        (fixture.nativeContext.payload as Record<string, unknown>).turn_id = "another-turn";
+        fixture.writeContext();
+      }
+      if (conflict === "missing-rollout") rmSync(fixture.rolloutPath);
+      if (conflict === "restricted") fixture.environment.content[0]!.text = original.replace(dangerFullAccessProfileXml, readOnlyProfileXml);
+      expect(() => new ChatGptThreadEnvironmentStore(undefined, Date.now, fixture.codexHome).resolve(fixture.request)).toThrow();
+    }
+  });
+
   test("cwd-less unrestricted updates require current native cwd regardless of root order (#894)", () => {
     const { codexHome, request, environment, roots, nativeContext, writeContext } = cwdlessRolloutFixture("danger-full-access");
     const store = new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome);
