@@ -364,7 +364,7 @@ test("detached worker replaces an installed Linux AppImage and removes the old v
 
 
 // Electron emits redirects before the response and requires synchronous approval.
-function updateTransport({ redirects = [], body = "release metadata", status = 200, stall, error } = {}) {
+function updateTransport({ redirects = [], body = "release metadata", status = 200, headers = {}, stall, error } = {}) {
   const requests = [];
   const createRequest = options => {
     const request = new EventEmitter();
@@ -389,6 +389,7 @@ function updateTransport({ redirects = [], body = "release metadata", status = 2
       if (stall === "headers") return;
       const response = request.response = new PassThrough();
       response.statusCode = status;
+      response.headers = headers;
       request.emit("response", response);
       response.write(Buffer.from(body));
       if (error) request.emit("error", error);
@@ -468,4 +469,82 @@ test("update asset streaming preserves bytes and refuses to overwrite a file", a
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("GitHub rate-limit errors retain only bounded reset headers", async t => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  const url = "https://api.github.com/repos/miuuyy/codex-chatgpt-web/releases/latest";
+  for (const [status, headers, retryAt] of [
+    [403, { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1200" }, 1_201_000],
+    [429, { "retry-after": ["30"] }, 1_031_000],
+    [403, { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "999" }, undefined],
+    [403, { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "999999999999" }, undefined],
+    [403, { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "PRIVATE_IP" }, undefined],
+    [403, {}, undefined],
+    [500, { "retry-after": "30" }, undefined],
+  ]) {
+    const transport = updateTransport({ status, headers, body: "PRIVATE_IP and private proxy response" });
+    await assert.rejects(createUpdateDownloader(transport.createRequest).downloadText(url), error => {
+      assert.equal(error.retryAt, retryAt);
+      assert.equal(error.message.includes("PRIVATE"), false);
+      assert.equal(error.message.includes("GitHub"), status === 429 || headers["x-ratelimit-remaining"] === "0");
+      return true;
+    });
+    assert.equal(transport.requests[0].aborted, true);
+  }
+});
+
+test("update checks wait for GitHub reset and manual rechecks do not duplicate or install", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000_000 });
+  let calls = 0, workers = 0, downloads = 0, finish;
+  const controller = createUpdateController({
+    currentVersion: "6.1.12", platform: "darwin", arch: "arm64", packaged: true,
+    executablePath: "/Applications/Test.app/Contents/MacOS/Test", runtimeExecutable: "/tmp/bun", logsDirectory: "/tmp/logs",
+    retryDelaysMs: [60_000],
+    dependencies: {
+      fetchRelease: async () => {
+        calls++;
+        if (calls === 1) throw Object.assign(new Error("GitHub rate limit"), { retryAt: 1_180_000 });
+        if (calls === 3) return new Promise(resolve => { finish = resolve; });
+        return { tag_name: "v6.1.12" };
+      },
+      downloadFile: async () => { downloads++; }, spawnWorker: () => { workers++; },
+    },
+  });
+  await controller.checkOnce();
+  await controller.checkNow();
+  t.mock.timers.tick(60_000);
+  assert.equal(calls, 1);
+  t.mock.timers.tick(120_000);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls, 2);
+  assert.equal(controller.getState().status, "up-to-date");
+  const first = controller.checkNow();
+  const second = controller.checkNow();
+  assert.equal(first, second);
+  assert.equal(calls, 3);
+  finish({ tag_name: "v6.1.17", assets: ["codex-web-gpt-6.1.17-mac-arm64.zip", "checksums.txt"].map(name => ({
+    name, browser_download_url: `https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.1.17/${name}`,
+  })) });
+  await first;
+  assert.deepEqual(controller.getState(), { status: "available", version: "6.1.17" });
+  assert.equal(downloads, 0);
+  assert.equal(workers, 0);
+});
+
+test("manual retry recovers an exhausted startup check without an extra scheduled request", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let calls = 0;
+  const controller = createUpdateController({
+    currentVersion: "6.1.17", platform: "darwin", arch: "arm64", packaged: true,
+    retryDelaysMs: [1000], dependencies: { fetchRelease: async () => {
+      if (++calls === 1) throw new Error("offline");
+      return { tag_name: "v6.1.17" };
+    } },
+  });
+  await controller.checkOnce();
+  await controller.checkNow();
+  t.mock.timers.tick(2000);
+  assert.equal(calls, 2);
+  assert.equal(controller.getState().status, "up-to-date");
 });

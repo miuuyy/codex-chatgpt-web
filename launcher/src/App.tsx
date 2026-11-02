@@ -14,6 +14,7 @@ import { createPortal } from "react-dom";
 import { copyFor, localizeRuntimeMessage, type Copy } from "./i18n";
 import { Icon, type IconName } from "./icons";
 import { LimitsSurface } from "./LimitsSurface";
+import { UpdateSettings } from "./UpdateSettings";
 import { limitsCopyFor } from "./limits-copy";
 import { useLimits } from "./useLimits";
 import { describeTurnActivity } from "./turn-activity";
@@ -622,6 +623,10 @@ function LauncherShell({
             </nav>
 
             <div className="sidebar-footer">
+              {snapshot.update.status === "error" ? (
+                <SidebarItem active={false} icon="update" label={copy.updateCheckFailed}
+                  onClick={() => navigateSurface("settings")} />
+              ) : null}
               {updateVisible ? (
                 <SidebarItem
                   active={false}
@@ -1836,6 +1841,10 @@ function SettingsSurface({
     <ContentSurface narrow title={devProfile ? copy.devSettingsTitle : copy.settingsTitle}>
       <SectionHeading label={copy.general} />
       <div className="settings-list">
+        {snapshot.packaged && snapshot.update.status !== "disabled" ? (
+          <UpdateSettings copy={copy} language={language} update={snapshot.update}
+            version={snapshot.version} onCheck={() => api!.checkForUpdates()} setError={setError} />
+        ) : null}
         {!devProfile ? <SettingRow body={copy.launchAtLoginBody} flushAfter label={copy.launchAtLogin}>
           <Switch
             checked={snapshot.state.autoStart}
