@@ -61,8 +61,31 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+function canCreateFileSymlink(): boolean {
+  const root = join(tmpdir(), "codex-chatgpt-web-symlink-probe-" + process.pid + "-" + Date.now());
+  mkdirSync(root, { recursive: true });
+  try {
+    const target = join(root, "target.txt");
+    const alias = join(root, "alias.txt");
+    writeFileSync(target, "probe");
+    try {
+      symlinkSync(target, alias);
+      return lstatSync(alias).isSymbolicLink();
+    } catch (error) {
+      if (process.platform === "win32" && (error as NodeJS.ErrnoException).code === "EPERM") return false;
+      throw error;
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// These fixtures check real file-symlink preservation. Do not convert them to copies or hard links.
+// Windows without Developer Mode / SeCreateSymbolicLinkPrivilege cannot construct the fixture.
+const symlinkTest = canCreateFileSymlink() ? test : test.skip;
+
 describe("reversible native Codex route integration", () => {
-  test("route install, update, switching and removal preserve a symlinked shared Codex config", () => {
+  symlinkTest("route install, update, switching and removal preserve a symlinked shared Codex config", () => {
     const { root, codexHome } = fixture();
     const shared = join(root, "shared");
     mkdirSync(shared, { mode: 0o750 });
@@ -96,7 +119,7 @@ describe("reversible native Codex route integration", () => {
     expect(readFileSync(target, "utf8")).toBe(original);
   });
 
-  test("config compensation preserves the link and refuses redirected or invalid targets", () => {
+  symlinkTest("config compensation preserves the link and refuses redirected or invalid targets", () => {
     const { root, codexHome } = fixture();
     const alias = join(codexHome, "config.toml");
     const target = join(root, "shared.toml");
