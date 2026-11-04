@@ -745,6 +745,14 @@ function registerIpc({ logger, stateStore }) {
     try {
       publishOperation({ name: operationName, status: "running", message: "Checking ChatGPT connector" });
       await browserHost.verifyConnector(runtimeHost.mcpConnectorName());
+      if (!IS_DEV_PROFILE) {
+        publishOperation({ name: operationName, status: "running", message: "Testing actual MCP tool execution" });
+      }
+      const proofReport = IS_DEV_PROFILE ? report : await runtimeHost.doctor({ verifyMcp: true });
+      const proofCheck = proofReport.checks.find(check => check.id === "connector");
+      if (!IS_DEV_PROFILE && (!proofReport.ok || proofCheck?.status !== "ok")) {
+        throw new Error(proofCheck?.detail || proofCheck?.message || "MCP tool execution was not verified");
+      }
       const state = stateStore.update({ mcpSetupComplete: true });
       send("launcher:state-changed", state);
       const successMessage = IS_DEV_PROFILE
@@ -752,12 +760,12 @@ function registerIpc({ logger, stateStore }) {
         : "Runtime and connector verified";
       publishOperation({ name: operationName, status: "completed", message: successMessage });
       return {
-        ...report,
-        checks: report.checks.map((check) => check.id === "connector"
+        ...proofReport,
+        checks: proofReport.checks.map((check) => check.id === "connector"
           ? {
-              id: "connector",
+              ...check,
               status: "ok",
-              message: `ChatGPT connector ${JSON.stringify(runtimeHost.mcpConnectorName())} is available`,
+              message: `ChatGPT connector ${JSON.stringify(runtimeHost.mcpConnectorName())} and MCP tool execution verified`,
             }
           : check),
       };

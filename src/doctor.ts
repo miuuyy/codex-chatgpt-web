@@ -3,6 +3,7 @@ import type { AppConfig } from "./config";
 import { getConfigDir, getConfigPath, loadConfig } from "./config";
 import { join } from "node:path";
 import { inspectCodexCompaction } from "./doctor-compaction";
+import { activeMcpConnectorCheck, cachedMcpConnectorCheck } from "./doctor-mcp";
 import { inspectCodexIntegration } from "./codex-integration";
 import { browserLoginStateExists, loginVerificationMarkerPath } from "./browser-login";
 import { getServiceStatus } from "./service";
@@ -120,7 +121,7 @@ async function proxyChecks(config: AppConfig): Promise<DoctorCheck[]> {
   }
 }
 
-export async function runDoctor(): Promise<DoctorReport> {
+export async function runDoctor(options: { verifyMcp?: boolean } = {}): Promise<DoctorReport> {
   const checks: DoctorCheck[] = [];
   let config: AppConfig;
   try {
@@ -233,12 +234,18 @@ export async function runDoctor(): Promise<DoctorReport> {
     checks.push(runtime.ok
       ? { id: "tunnel-runtime", status: "ok", message: "Tunnel runtime reports healthy and ready" }
       : { id: "tunnel-runtime", status: "error", message: "Tunnel runtime is not ready", detail: runtime.detail });
-    checks.push({
-      id: "connector",
-      status: "warning",
-      message: `Local checks cannot prove that ChatGPT connector ${JSON.stringify(config.appName)} is attached to this tunnel`,
-      detail: "Verify it once at https://chatgpt.com/#settings/Plugins while the tunnel is ready.",
-    });
+    let daemonPid: unknown;
+    try {
+      const marker = JSON.parse(readFileSync(join(getConfigDir(), "runtime", "launcher-supervisor.json"), "utf8")) as Record<string, unknown>;
+      if (marker.version === 1 && marker.status === "ready") daemonPid = marker.daemonPid;
+    } catch {
+      // A missing local owner marker is never proof of connector connectivity.
+    }
+    checks.push(options.verifyMcp
+      ? checks.some(check => check.status === "error")
+        ? { id: "connector", status: "error", message: "MCP probe prerequisites are not healthy" }
+        : await activeMcpConnectorCheck(config)
+      : cachedMcpConnectorCheck(config, daemonPid));
   } else {
     checks.push({ id: "tools", status: "warning", message: "Browser-only mode intentionally has no local tools or MCP tunnel" });
   }

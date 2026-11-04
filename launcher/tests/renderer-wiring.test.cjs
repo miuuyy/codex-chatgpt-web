@@ -921,3 +921,11 @@ test("catalog recovery clears its error banner but preserves a newer unrelated f
   callback({ name: "catalog-verification", status: "completed", message: "Loaded" });
   assert.equal(error, "Setup error");
 });
+
+test("MCP verification requires a completed real tool probe after connector selection", () => {
+  const start = electronMain.indexOf('handle("launcher:mcp-verify"');
+  const end = electronMain.indexOf('handle("launcher:doctor"', start);
+  const handler = electronMain.slice(start, end);
+  assert.match(handler, /await browserHost\.verifyConnector\([\s\S]*?await runtimeHost\.doctor\(\{ verifyMcp: true \}\)/);
+  assert.match(handler, /proofCheck\?\.status !== "ok"/);
+});

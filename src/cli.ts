@@ -39,7 +39,7 @@ Usage:
   codex-chatgpt-web setup --browser-only [options]
   codex-chatgpt-web setup --full --tunnel-id ID --runtime-key-file PATH [options]
   codex-chatgpt-web login
-  codex-chatgpt-web doctor [--json]
+  codex-chatgpt-web doctor [--json] [--verify-mcp]
   codex-chatgpt-web route <status|connect|disconnect>
   codex-chatgpt-web subagents <status|compatibility-v1|native>
   codex-chatgpt-web browser check
@@ -391,8 +391,9 @@ async function setupCommand(args: string[]): Promise<void> {
 
 async function doctorCommand(args: string[]): Promise<void> {
   const json = takeFlag(args, "--json");
+  const verifyMcp = takeFlag(args, "--verify-mcp");
   assertNoArgs(args);
-  const report = await runDoctor();
+  const report = await runDoctor({ verifyMcp });
   stdout.write(json ? `${JSON.stringify(report, null, 2)}\n` : formatDoctorReport(report));
   if (!report.ok) process.exitCode = 1;
 }

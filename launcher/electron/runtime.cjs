@@ -771,12 +771,12 @@ class RuntimeHost {
     }
   }
 
-  async doctor() {
+  async doctor({ verifyMcp = false } = {}) {
     this.assertProductionProfile("Runtime doctor");
     try {
-      const result = await this.run("doctor", ["doctor", "--json"], {
+      const result = await this.run("doctor", ["doctor", "--json", ...(verifyMcp ? ["--verify-mcp"] : [])], {
         message: "Checking runtime",
-        timeoutMs: 75_000,
+        timeoutMs: verifyMcp ? 160_000 : 75_000,
         acceptedExitCodes: [0, 1],
       });
       return JSON.parse(result.stdout);
