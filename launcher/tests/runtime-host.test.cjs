@@ -1141,7 +1141,7 @@ test("failed terminal migration verifies the unchanged previous runtime instead 
   ]);
 });
 
-for (const setting of ["setFreshConversationPerTurn", "setTemporaryChats"]) test(`failed ${setting} restores every mutable setup file before restarting the previous runtime`, async () => {
+for (const setting of ["setFreshConversationPerTurn", "setTemporaryChats"]) test(`failed ${setting} restores every mutable setup file before restarting the previous runtime`, async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-setup-checkpoint-"));
   const coreHome = path.join(root, "core");
   const codexHome = path.join(root, "codex");
@@ -1177,7 +1177,16 @@ for (const setting of ["setFreshConversationPerTurn", "setTemporaryChats"]) test
   fs.writeFileSync(profilePath, "old profile\n", { mode: 0o600 });
   fs.mkdirSync(sharedDirectory, { mode: 0o750 });
   fs.writeFileSync(sharedConfigPath, "old codex config\n", { mode: 0o640 });
-  fs.symlinkSync(sharedConfigPath, codexConfigPath);
+  try {
+    fs.symlinkSync(sharedConfigPath, codexConfigPath);
+  } catch (error) {
+    if (process.platform !== "win32" || error?.code !== "EPERM") throw error;
+    // Non-elevated Windows lacks file-symlink permission unless Developer Mode is enabled.
+    // Keep full rollback coverage on hosts where the kernel supports this fixture.
+    fs.rmSync(root, { recursive: true, force: true });
+    t.skip("Windows process cannot create file symbolic links (SeCreateSymbolicLinkPrivilege unavailable)");
+    return;
+  }
   const linkTarget = fs.readlinkSync(codexConfigPath);
   const linkInode = fs.lstatSync(codexConfigPath).ino;
   const directoryMode = fs.statSync(sharedDirectory).mode & 0o777;
