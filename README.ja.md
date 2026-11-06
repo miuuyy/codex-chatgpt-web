@@ -41,6 +41,10 @@ Full ハーネスモードでは、MCP を通じて ChatGPT を現在のタス�
 
 ブラウザーとランタイムはアプリに含まれています。Chrome、Node、Bun の別途インストールは不要です。
 
+### Microsoft 365 Copilot Web（実験的）
+
+このフォークには、Microsoft 365 Copilot Chat 用の独立した `copilot-web` プロバイダーも含まれています。ChatGPT Web アダプターは変更せず、専用の Chrome プロファイルと Codex ツール用のテキストツール呼び出しプロトコルを持つ独自のローカル Responses エンドポイントとして動作します。セットアップ、制限、トラブルシューティングは [docs/copilot-web.md](docs/copilot-web.md) を参照してください。
+
 <details>
 <summary><strong>ターミナルからのインストール・更新・修復</strong></summary>
 

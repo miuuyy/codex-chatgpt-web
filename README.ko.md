@@ -41,6 +41,10 @@ Full harness 모드는 MCP를 통해 ChatGPT를 현재 작업의 파일, 터미�
 
 브라우저와 런타임이 앱에 포함되어 있습니다. Chrome, Node, Bun을 따로 설치할 필요가 없습니다.
 
+### Microsoft 365 Copilot Web (실험적)
+
+이 포크에는 Microsoft 365 Copilot Chat용 별도 `copilot-web` 공급자도 포함되어 있습니다. ChatGPT Web 어댑터는 그대로 유지하고, 전용 Chrome 프로필과 Codex 도구용 텍스트 도구 호출 프로토콜을 사용하는 자체 로컬 Responses 엔드포인트로 실행됩니다. 설정, 제한 사항 및 문제 해결은 [docs/copilot-web.md](docs/copilot-web.md)를 참고하세요.
+
 <details>
 <summary><strong>터미널 설치, 업데이트 및 복구</strong></summary>
 

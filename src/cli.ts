@@ -49,6 +49,7 @@ Usage:
   codex-chatgpt-web dev chat NAME [--model MODEL] [MESSAGE]
   codex-chatgpt-web dev list
   codex-chatgpt-web serve
+  codex-chatgpt-web copilot <init|login|serve|doctor|probe|config|models> [options]
   codex-chatgpt-web mcp [--broker-socket PATH]
   codex-chatgpt-web service <status|install|start|restart|stop|cancel-turns>
   codex-chatgpt-web tunnel <status|start|restart|stop|key-import>
@@ -619,6 +620,9 @@ async function main(): Promise<void> {
     const server = startServer(config);
     stdout.write(`codex-chatgpt-web ${VERSION} listening on http://${config.host}:${server.port}/v1 (${config.mode})\n`);
     await new Promise<void>(() => {});
+  } else if (command === "copilot") {
+    const { runCopilotCli } = await import("./copilot/cli");
+    await runCopilotCli(args);
   } else if (command === "dev") await runDevCommand(args);
   else if (command === "mcp") await runChatGptMcpMain(args);
   else if (command === "service") await serviceCommand(args);

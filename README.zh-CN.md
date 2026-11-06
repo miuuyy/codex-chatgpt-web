@@ -41,6 +41,10 @@
 
 应用已包含浏览器和运行时，无需另外安装 Chrome、Node 或 Bun。
 
+### Microsoft 365 Copilot Web（实验性）
+
+此分支还包含独立的 `copilot-web` 提供商，用于 Microsoft 365 Copilot Chat。它不会改动 ChatGPT Web 适配器，而是使用独立的 Chrome 配置文件和面向 Codex 工具的文本工具调用协议运行自己的本地 Responses 端点。设置、限制和故障排除请参阅 [docs/copilot-web.md](docs/copilot-web.md)。
+
 <details>
 <summary><strong>命令行安装、更新与修复</strong></summary>
 

@@ -41,6 +41,13 @@ Full harness mode connects ChatGPT to the current task’s files, terminal, tool
 
 The app includes its browser and runtime. No separate Chrome, Node, or Bun installation is needed.
 
+### Microsoft 365 Copilot Web (experimental)
+
+This fork also includes a separate `copilot-web` provider for Microsoft 365 Copilot Chat. It keeps
+the ChatGPT Web adapter untouched and runs as its own local Responses endpoint with a dedicated
+Chrome profile and a text tool-call protocol for Codex tools. See
+[docs/copilot-web.md](docs/copilot-web.md) for setup, limitations, and troubleshooting.
+
 <details>
 <summary><strong>Terminal install, updates & repair</strong></summary>
 
