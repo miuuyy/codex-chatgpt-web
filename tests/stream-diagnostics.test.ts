@@ -113,6 +113,36 @@ test("unsupported observation does not fail the browser task or claim a successf
   await observer.dispose();
 });
 
+test("failed owned streams export only recognized network codes, including failures before an assistant appears", async () => {
+  const reports: any[] = [];
+  const session = new EventEmitter() as any;
+  session.send = async (method: string) => method === "Page.getFrameTree"
+    ? { frameTree: { frame: { id: "main" } } }
+    : method === "Network.streamResourceContent" ? { bufferedData: Buffer.from(frame({ message: {
+      ...message(), author: { role: "system" }, status: "finished_successfully", end_turn: true,
+    } })).toString("base64") } : {};
+  session.detach = async () => {};
+  const observer = new ChatGptStreamDiagnostics(value => reports.push(value));
+  await observer.attach({ context: () => ({ newCDPSession: async () => session }) } as any);
+  observer.begin();
+  for (const [index, error] of ["net::ERR_CONNECTION_RESET", "net::ERR_CERT_AUTHORITY_INVALID",
+    "net::ERR_CONNECTION_RESET PRIVATE-url", "net::ERR_PRIVATE_SECRET", "PRIVATE-error"].entries()) {
+    const requestId = String(index);
+    session.emit("Network.requestWillBeSent", { requestId, frameId: "main",
+      request: { method: "POST", url: "https://chatgpt.com/backend-api/f/conversation" } });
+    session.emit("Network.responseReceived", { requestId, response: { status: 200, mimeType: "text/event-stream" } });
+    session.emit("Network.loadingFailed", { requestId, canceled: false, errorText: error });
+  }
+  await new Promise(resolve => setImmediate(resolve));
+  expect(reports.map(report => report.networkError)).toEqual([
+    "net::ERR_CONNECTION_RESET", "net::ERR_CERT_AUTHORITY_INVALID", "unknown", "unknown", "unknown",
+  ]);
+  expect(reports.every(report => report.terminal === "failed" && report.doneMarker === false
+    && report.messages.length === 1 && report.messages[0].role === "system")).toBeTrue();
+  expect(JSON.stringify(reports)).not.toContain("PRIVATE");
+  await observer.dispose();
+});
+
 test("late events from a detached page cannot change a new page's capture with the same request id", async () => {
   const reports: any[] = [];
   const sessions = [0, 1].map(() => {
