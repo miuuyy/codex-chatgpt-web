@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isReadableCompactionSummaryText, OPAQUE_COMPACTION_NOTE } from "../../responses/compaction";
-import { isNativeAgentsMdContext, readNativeThreadDelegation } from "../../responses/native-context";
+import { isNativeAgentsMdContext, isNativeUserGoalUpdate, readNativeThreadDelegation } from "../../responses/native-context";
 import type { CodexContentPart, CodexParsedRequest, CodexTool } from "../../types";
 import { isAcceptedCompactionContinuation, recoverCompactionInstruction } from "./compaction-continuation";
 
@@ -278,18 +278,39 @@ function latestChatGptTurnUserRevision(parsed: CodexParsedRequest, expectedTurnI
   const input = Array.isArray(body?.input) ? body.input : [];
   const metadata = clientTurnMetadata(parsed);
   const recovered = recoverCheckpoint ? recoverCompactionInstruction(parsed, extractChatGptTurnIdentity(parsed)) : undefined;
-  for (let index = input.length - 1; index >= 0; index -= 1) {
-    const revision = userRevision(input[index], expectedTurnId, metadata);
-    if (revision) {
-      // Native compaction retains older human messages but drops goals and delegations. Recover the
-      // actual task only for an exact producer-authenticated retained representation before
-      // our checkpoint. New steering and rewritten history keep their normal validation.
-      return recovered?.sourceWasSyntheticInstruction && index < recovered.summaryIndex
-        && isAcceptedCompactionContinuation(parsed, extractChatGptTurnIdentity(parsed), revision)
-        ? recovered.source : revision;
-    }
+  const latest = nativeUserRevisions(input, expectedTurnId, metadata).at(-1);
+  if (latest) {
+    const { revision, index } = latest;
+    // Native compaction retains older human messages but drops goals and delegations. Recover the
+    // actual task only for an exact producer-authenticated retained representation before
+    // our checkpoint. New steering and rewritten history keep their normal validation.
+    return recovered?.sourceWasSyntheticInstruction && index < recovered.summaryIndex
+      && isAcceptedCompactionContinuation(parsed, extractChatGptTurnIdentity(parsed), revision)
+      ? recovered.source : revision;
   }
   return recovered?.source;
+}
+
+function nativeUserRevisions(input: unknown[], expectedTurnId?: string, metadata?: Record<string, unknown>) {
+  const revisions: Array<{ index: number; revision: ChatGptTurnUserRevision }> = [];
+  let instructionTurnId: string | undefined;
+  for (let index = 0; index < input.length; index += 1) {
+    let revision = userRevision(input[index], expectedTurnId, metadata);
+    if (!revision) continue;
+    const item = record(input[index])!;
+    if (isNativeUserGoalUpdate(item)) {
+      // Goal mutations use an internal history ID, not a task ID. Bind them only after an
+      // instruction owned by this turn. Keep the edit as new steering: existing retirement
+      // rebuilds the browser from canonical history, including any completed tool result.
+      if (expectedTurnId !== undefined && instructionTurnId === expectedTurnId) {
+        revision = { ...revision, turnId: expectedTurnId };
+      }
+    } else {
+      instructionTurnId = revision.turnId;
+    }
+    revisions.push({ index, revision });
+  }
+  return revisions;
 }
 
 function userRevision(value: unknown, expectedTurnId?: string, metadata?: Record<string, unknown>): ChatGptTurnUserRevision | undefined {
@@ -313,14 +334,14 @@ export function chatGptTurnUserRevisionHistory(parsed: CodexParsedRequest): Chat
   const metadata = clientTurnMetadata(parsed);
   const recovered = recoverCompactionInstruction(parsed, extractChatGptTurnIdentity(parsed));
   const input = Array.isArray(body?.input) ? body.input : [];
-  const prefix = recovered?.sourceWasSyntheticInstruction ? input.slice(0, recovered.summaryIndex) : [];
-  const retained = prefix.map(value => userRevision(value, turnId, metadata)).filter(value => value !== undefined).at(-1);
+  const nativeRevisions = nativeUserRevisions(input, turnId, metadata);
+  const retained = recovered?.sourceWasSyntheticInstruction
+    ? nativeRevisions.filter(({ index }) => index < recovered.summaryIndex).at(-1)?.revision : undefined;
   const recoverSyntheticInstruction = recovered?.sourceWasSyntheticInstruction && (!retained
     || isAcceptedCompactionContinuation(parsed, extractChatGptTurnIdentity(parsed), retained));
-  const revisions = input.slice(recoverSyntheticInstruction ? recovered!.summaryIndex + 1 : 0).flatMap(value => {
-    const revision = userRevision(value, turnId, metadata);
-    return revision ? [revision] : [];
-  });
+  const revisions = nativeRevisions
+    .filter(({ index }) => !recoverSyntheticInstruction || index > recovered!.summaryIndex)
+    .map(({ revision }) => revision);
   if (recoverSyntheticInstruction) return [recovered!.source, ...revisions];
   return revisions.length > 0 ? revisions : recovered ? [recovered.source] : [];
 }
@@ -791,6 +812,16 @@ function rawEnvironmentText(parsed: CodexParsedRequest): string | undefined {
     if (isNativeInstruction(item, metadata)) {
       activeUserIndex = index;
       break;
+    }
+  }
+  // Goal edits are appended outside the model step and do not carry its environment.
+  // Use their proven current-turn instruction as the environment anchor only. The edit
+  // remains the task revision, and any later environment update still takes precedence.
+  if (activeUserIndex >= 0 && isNativeUserGoalUpdate(record(input[activeUserIndex])!)) {
+    const turnId = typeof metadata?.turn_id === "string" ? metadata.turn_id : undefined;
+    const revisions = nativeUserRevisions(input, turnId, metadata);
+    if (turnId !== undefined && revisions.at(-1)?.revision.turnId === turnId) {
+      activeUserIndex = revisions.findLast(({ index }) => !isNativeUserGoalUpdate(record(input[index])!))?.index ?? activeUserIndex;
     }
   }
   const checkpoint = activeUserIndex < 0 ? recoverCompactionInstruction(parsed, extractChatGptTurnIdentity(parsed)) : undefined;

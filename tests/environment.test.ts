@@ -82,6 +82,58 @@ function currentWire(
 }
 
 describe("trusted current Codex environment envelope", () => {
+  test("native goal edits belong to the running instruction, including after tool output", () => {
+    const request = currentWire();
+    const body = request._rawBody as { input: Array<Record<string, unknown>> };
+    body.input.at(-1)!.internal_chat_message_metadata_passthrough = { turn_id: "turn_current" };
+    const originalKey = chatGptTurnExecutionKey(request);
+    const edit = {
+      type: "message", role: "user", id: "msg_goal_clear",
+      content: [{ type: "input_text", text: '<codex_internal_context source="user_goal">\nUser cleared the goal.\n</codex_internal_context>' }],
+      internal_chat_message_metadata_passthrough: { turn_id: "auto-compact-3", content_item_kinds: ["user.goal"] },
+    };
+    body.input.push(edit, { type: "function_call_output", call_id: "pending", output: "command finished" });
+    expect(extractChatGptTurnUserRevision(request)).toEqual(edit.content);
+    expect(chatGptTurnExecutionKey(request)).not.toBe(originalKey);
+    expect(chatGptTurnUserRevisionHistory(request).at(-1)).toMatchObject({ turnId: "turn_current", itemId: edit.id });
+    expect(extractChatGptCompactionSourceRevision({ ...request, _compactionRequest: true }).turnId).toBe("turn_current");
+    expect(edit.internal_chat_message_metadata_passthrough.turn_id).toBe("auto-compact-3");
+    expect(extractChatGptTurnEnvironment(request).cwd).toBe(root);
+
+    // A host-proven edit is still an instruction; neither its text nor its meaning is dropped.
+    edit.content[0]!.text = '<codex_internal_context source="user_goal">User set the goal: "inspect only"</codex_internal_context>';
+    edit.internal_chat_message_metadata_passthrough.content_item_kinds = ["user.goal.omitted"];
+    expect(extractChatGptTurnUserRevision(request)).toEqual(edit.content);
+    // A goal edit does not authorize ignoring a newer filesystem update.
+    body.input.push({ type: "message", role: "user", id: "msg_bad_environment",
+      content: [{ type: "input_text", text: "<environment_context><cwd>" }],
+      internal_chat_message_metadata_passthrough: { turn_id: "turn_current", content_item_kinds: ["environments.environment_context"] } });
+    expect(() => extractChatGptTurnEnvironment(request)).toThrow();
+  });
+
+  test("goal text cannot lend the running turn to unproven or historical instructions", () => {
+    const request = currentWire();
+    const body = request._rawBody as { input: Array<Record<string, unknown>> };
+    body.input.at(-1)!.internal_chat_message_metadata_passthrough = { turn_id: "turn_current" };
+    const edit = {
+      type: "message", role: "user", id: "msg_goal_clear",
+      content: [{ type: "input_text", text: '<codex_internal_context source="user_goal">User cleared the goal.</codex_internal_context>' }],
+      internal_chat_message_metadata_passthrough: { turn_id: "auto-compact-3", content_item_kinds: ["user.goal"] },
+    };
+    for (const mutation of [
+      { id: undefined },
+      { internal_chat_message_metadata_passthrough: { turn_id: "auto-compact-3", content_item_kinds: ["user.text"] } },
+      { internal_chat_message_metadata_passthrough: { turn_id: "auto-compact-3", content_item_kinds: ["user.goal", "user.text"] } },
+      { internal_chat_message_metadata_passthrough: { turn_id: "turn_other", content_item_kinds: ["user.goal"] } },
+    ]) {
+      const changed = { ...request, _rawBody: { ...body, input: [...body.input, { ...edit, ...mutation }] } };
+      expect(() => extractChatGptTurnUserRevision(changed)).toThrow("conflicts with native Codex turn_id");
+    }
+    body.input.at(-1)!.internal_chat_message_metadata_passthrough = { turn_id: "turn_previous" };
+    body.input.push(edit);
+    expect(() => extractChatGptTurnUserRevision(request)).toThrow("conflicts with native Codex turn_id");
+  });
+
   describe("native open-page context", () => {
     let originalCodexHome: string | undefined;
     const visualizationRoot = join(homedir(), ".codex", "visualizations", "2026", "10", "12", "thread_current");
