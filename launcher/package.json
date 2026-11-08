@@ -41,6 +41,7 @@
     "fast-uri": "3.1.9",
     "global-agent": "4.1.3",
     "http-cache-semantics": "4.3.0",
+    "minimatch@>=7.0.0 <11.0.1": "11.0.5",
     "source-map-js": "1.2.2"
   },
   "build": {
