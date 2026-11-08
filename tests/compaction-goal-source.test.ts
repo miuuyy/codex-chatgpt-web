@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { parseRequest } from "../src/responses/parser";
 import { buildCompactV1Output, encodeCompactionSummary, extractCompactUserMessages } from "../src/responses/compaction";
 import { canonicalizeCompactionHandoff, LATEST_USER_PROMPT_MARKER } from "../src/adapters/chatgpt-web/compaction-handoff";
-import { rememberCompactionContinuation } from "../src/adapters/chatgpt-web/compaction-continuation";
+import { rememberCompactionContinuation, restoreCompactionTaskMessages } from "../src/adapters/chatgpt-web/compaction-continuation";
 import { chatGptTurnUserRevisionHistory, extractChatGptCompactionSourceRevision, extractChatGptTurnIdentity,
   extractChatGptTurnUserRevision, findChatGptCompactionSourceRevision } from "../src/adapters/chatgpt-web/environment";
 
@@ -10,6 +10,43 @@ type Item = Record<string, any>;
 const text = (content: any): string => typeof content === "string" ? content : content.map((part: any) => part.text).join("\n");
 
 for (const format of ["v1", "v2"] as const) {
+  test(`${format}: a native goal edit survives compaction without reviving the superseded task`, () => {
+    const turnId = `goal_edit_${format}`;
+    const human: Item = { type: "message", role: "user", id: "original_instruction",
+      content: [{ type: "input_text", text: "Continue the original research goal." }],
+      internal_chat_message_metadata_passthrough: { turn_id: turnId, content_item_kinds: ["user.text"] } };
+    const edit: Item = { type: "message", role: "user", id: "clear_goal",
+      content: [{ type: "input_text", text: '<codex_internal_context source="user_goal">User cleared the goal.</codex_internal_context>' }],
+      internal_chat_message_metadata_passthrough: { turn_id: "auto-compact-3", content_item_kinds: ["user.goal"] } };
+    const parse = (input: Item[]) => parseRequest({ model: "gpt-5.6-sol", reasoning: { effort: "high" }, input,
+      client_metadata: { "x-codex-turn-metadata": JSON.stringify({ thread_id: `thread_${turnId}`, turn_id: turnId }) } });
+    let input = [human, edit];
+    for (let n = 1; n <= 3; n++) {
+      const parsed = parse(input);
+      parsed._compactionRequest = true;
+      const source = extractChatGptCompactionSourceRevision(parsed);
+      expect(source.itemId).toBe(edit.id);
+      const summary = canonicalizeCompactionHandoff(parsed, `Goal cleared, checkpoint ${n}.`);
+      const retained = buildCompactV1Output(extractCompactUserMessages(input), summary);
+      const alias = findChatGptCompactionSourceRevision({ ...parsed,
+        _rawBody: { ...parsed._rawBody as Item, input: retained } }, { recoverCheckpoint: false });
+      rememberCompactionContinuation(parsed, extractChatGptTurnIdentity(parsed), alias ? [source, alias] : [source], summary);
+      input = format === "v1" ? retained : [human, { type: "compaction", encrypted_content: encodeCompactionSummary(summary) }];
+      const resumed = parse(input);
+      expect(extractChatGptTurnUserRevision(resumed)).toEqual(edit.content);
+      const restored = restoreCompactionTaskMessages(resumed, extractChatGptTurnIdentity(resumed), chatGptTurnUserRevisionHistory(resumed));
+      expect(restored.filter(message => text(message.content) === text(edit.content))).toHaveLength(1);
+    }
+    const newer: Item = { ...edit, id: "replacement_goal",
+      content: [{ type: "input_text", text: '<codex_internal_context source="user_goal">User set the goal: inspect only.</codex_internal_context>' }],
+      internal_chat_message_metadata_passthrough: { turn_id: "auto-compact-4", content_item_kinds: ["user.goal.omitted"] } };
+    const steered = parse([...input, newer]);
+    expect(extractChatGptTurnUserRevision(steered)).toEqual(newer.content);
+    const restored = restoreCompactionTaskMessages(steered, extractChatGptTurnIdentity(steered), chatGptTurnUserRevisionHistory(steered));
+    expect(restored.filter(message => text(message.content) === text(edit.content))).toHaveLength(0);
+    expect(restored.filter(message => text(message.content) === text(newer.content))).toHaveLength(1);
+  });
+
   test(`${format}: repeated native goal compaction never relabels an obsolete human request as the latest task`, () => {
     const turnId = `goal_source_${format}`;
     const human: Item = { type: "message", role: "user", id: "old_human", content: [{ type: "input_text", text: "Retrieve the already-completed old audit only." }],

@@ -121,6 +121,7 @@ const responseRequest: typeof respond = (request, config, factory, options) =>
 function compactionAdapterFactory(
   seenProviders: CodexProviderConfig[] = [],
   expectedPreviousSummary?: string,
+  answer = summary,
 ) {
   return (provider: CodexProviderConfig): ProviderAdapter => {
     seenProviders.push(structuredClone(provider));
@@ -138,7 +139,7 @@ function compactionAdapterFactory(
           }));
         }
         expect(parsed.context.messages.at(-1)).toMatchObject({ role: "user", content: COMPACT_PROMPT });
-        emit({ type: "text_delta", text: summary, phase: "final_answer" });
+        emit({ type: "text_delta", text: answer, phase: "final_answer" });
         emit({
           type: "done",
           stopReason: "stop",
@@ -331,6 +332,55 @@ for (const format of ["v1", "v2"] as const) test(`${format} pre-turn compaction 
     expect((await send(changed)).status).toBe(400);
   }
   expect(starts).toBe(2);
+});
+
+for (const format of ["v1", "v2"] as const) test(`${format} automatic pre-turn compaction accepts its earlier completed checkpoint without starting the old goal`, async () => {
+  const config = defaultConfig("full");
+  const threadId = `thread_previous_checkpoint_${format}`;
+  const goal = { type: "message", role: "user", id: "msg_previous_goal",
+    content: [{ type: "input_text", text: '<codex_internal_context source="goal">Finish the previous step.</codex_internal_context>' }],
+    internal_chat_message_metadata_passthrough: { turn_id: "turn_previous", content_item_kinds: ["goal.internal_context"] } };
+  const body = (input: unknown[], turnId: string, phase = "pre_turn", owner = threadId) => ({
+    model, stream: false, input, client_metadata: { "x-codex-turn-metadata": JSON.stringify({
+      request_kind: "compaction", thread_id: owner, turn_id: turnId,
+      compaction: { trigger: "auto", phase, implementation: "responses", strategy: "memento", reason: "context_limit" },
+    }) },
+  });
+  const compact = (request: ReturnType<typeof body>) => {
+    const turnId = JSON.parse(request.client_metadata["x-codex-turn-metadata"]).turn_id;
+    const factory = compactionAdapterFactory([], undefined, `${summary} Checkpoint for ${turnId}.`);
+    return format === "v1"
+      ? compactRequest(new Request("http://127.0.0.1/v1/responses/compact", { method: "POST", body: JSON.stringify(request) }), config, factory)
+      : responseRequest(new Request("http://127.0.0.1/v1/responses", { method: "POST", body: JSON.stringify({ ...request, input: [...request.input, { type: "compaction_trigger" }] }) }), config, factory);
+  };
+  const first = await compact(body([goal], "turn_previous"));
+  expect(first.status).toBe(200);
+  const { output } = await first.json() as { output: unknown[] };
+  expect(output).not.toContainEqual(expect.objectContaining({ id: goal.id }));
+  const retained = [...output, { type: "function_call_output", call_id: "old_result", output: "Previous command finished" }];
+  const ordinary = parseRequest(body(retained, "turn_next"));
+  expect(() => extractChatGptTurnUserRevision(ordinary)).toThrow("current-turn user message");
+  // Crossing turns is allowed only for an explicitly identified automatic pre-turn compact.
+  for (const rejected of [
+    body(retained, "turn_next", "mid_turn"),
+    body(retained, "turn_next", "standalone_turn"),
+    body(retained, "turn_next", "pre_turn", "another_thread"),
+    { ...body(retained, "turn_next"), model: "chatgpt-web/medium" },
+    { ...body(retained, "turn_next"), client_metadata: { "x-codex-turn-metadata": JSON.stringify({
+      thread_id: threadId, turn_id: "turn_next", compaction: { trigger: "manual", phase: "pre_turn" },
+    }) } },
+    { ...body(retained, "turn_next"), client_metadata: { "x-codex-turn-metadata": JSON.stringify({ thread_id: threadId, turn_id: "turn_next" }) } },
+    body([{ type: "compaction", encrypted_content: encodeCompactionSummary("Unrecognized checkpoint") }], "turn_next"),
+  ]) await expect(compact(rejected), JSON.stringify({ model: rejected.model, metadata: rejected.client_metadata })).rejects.toThrow("requires a source user message");
+  const next = await compact(body(retained, "turn_next"));
+  expect(next.status).toBe(200);
+  const replacement = await next.json() as { output: unknown[] };
+  const nextGoal = { ...goal, id: "msg_next_goal", content: [{ type: "input_text", text: '<codex_internal_context source="goal">Inspect the next milestone.</codex_internal_context>' }],
+    internal_chat_message_metadata_passthrough: { turn_id: "turn_next", content_item_kinds: ["goal.internal_context"] } };
+  const resumed = parseRequest(body([...replacement.output, nextGoal], "turn_next"));
+  expect(extractChatGptTurnUserRevision(resumed)).toEqual(nextGoal.content);
+  // Once this turn has its own checkpoint, an older checkpoint must not replace it.
+  await expect(compact(body(retained, "turn_next"))).rejects.toThrow("requires a source user message");
 });
 
 for (const format of ["v1", "v2"] as const) test(`${format} native continuation preserves a dropped delegation past an interrupted human turn`, async () => {

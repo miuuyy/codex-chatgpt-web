@@ -3,7 +3,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isReadableCompactionSummaryText, OPAQUE_COMPACTION_NOTE } from "../../responses/compaction";
 import { isNativeAgentsMdContext, isNativeUserGoalUpdate, readNativeThreadDelegation } from "../../responses/native-context";
 import type { CodexContentPart, CodexParsedRequest, CodexTool } from "../../types";
-import { isAcceptedCompactionContinuation, recoverCompactionInstruction } from "./compaction-continuation";
+import { isAcceptedCompactionContinuation, previousCompletedCompactionSource, recoverCompactionInstruction } from "./compaction-continuation";
 
 export type ChatGptSandboxPolicy =
   | { type: "dangerFullAccess" }
@@ -45,6 +45,8 @@ export interface ChatGptTurnUserRevision {
   content: unknown;
   turnId?: string;
   itemId?: string;
+  /** Producer history ID when a native goal edit is bound to its active task. */
+  nativeTurnId?: string;
 }
 
 export const CHATGPT_TURN_REVISION_CONFLICT_MESSAGE =
@@ -303,7 +305,7 @@ function nativeUserRevisions(input: unknown[], expectedTurnId?: string, metadata
       // instruction owned by this turn. Keep the edit as new steering: existing retirement
       // rebuilds the browser from canonical history, including any completed tool result.
       if (expectedTurnId !== undefined && instructionTurnId === expectedTurnId) {
-        revision = { ...revision, turnId: expectedTurnId };
+        revision = { ...revision, nativeTurnId: revision.turnId, turnId: expectedTurnId };
       }
     } else {
       instructionTurnId = revision.turnId;
@@ -362,7 +364,14 @@ export function findChatGptCompactionSourceRevision(
   options: { recoverCheckpoint?: boolean } = {},
 ): ChatGptTurnUserRevision | undefined {
   if (!parsed._compactionRequest) throw new Error("ChatGPT web compaction source requires a compaction request");
-  return latestChatGptTurnUserRevision(parsed, extractChatGptTurnIdentity(parsed).turnId, options.recoverCheckpoint !== false);
+  const identity = extractChatGptTurnIdentity(parsed);
+  const source = latestChatGptTurnUserRevision(parsed, identity.turnId, options.recoverCheckpoint !== false);
+  if (source || options.recoverCheckpoint === false) return source;
+  // Native Codex explicitly marks compaction before the next instruction is recorded.
+  // Do not borrow an older task for a normal response, manual compact or mid-turn compact.
+  const compaction = record(clientTurnMetadata(parsed)?.compaction);
+  return compaction?.trigger === "auto" && compaction.phase === "pre_turn"
+    ? previousCompletedCompactionSource(parsed, identity) : undefined;
 }
 
 /** A completed checkpoint identifies the current turn's rebuilt environment preamble. */
