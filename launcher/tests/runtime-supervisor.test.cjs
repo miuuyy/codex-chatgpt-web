@@ -674,7 +674,9 @@ test("ready inventory cannot replace missing MCP evidence, and local evidence re
   }
 });
 
-test("tunnel readiness accepts the official tmux status without inventing a PID", async () => {
+test("tunnel readiness accepts the official tmux status without inventing a PID", { timeout: 5000 }, async t => {
+  // This checks an already-ready status, so runner scheduling must not consume the polling budget.
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-tunnel-health-tmux-"));
   const supervisor = new RuntimeSupervisor({
     app: { getVersion: () => "0.2.0", isPackaged: false },
