@@ -104,11 +104,11 @@ test("multipart selection accounts for whole-record and composer fit before subm
   ).effort).toBe("max");
 }, 60_000);
 
-test("Bigger Context compaction selects six parts before the legacy inline byte budget", () => {
+test("Bigger Context compaction selects two bounded parts before the legacy inline byte budget", () => {
   const parsed = request("x".repeat(160_000));
   parsed._compactionRequest = true;
   const parts = resolveBiggerContextMultipartParts(parsed, capabilities);
-  expect(parts).toBe(6);
+  expect(parts).toBe(2);
   const compiled = compileChatGptWebPrompt(parsed, capabilities, undefined, { experimentalMultipartParts: parts });
   expect(compiled.trimmedCompactionMessages).toBeUndefined();
   expect(compiled.multipart!.parts.flatMap(part => JSON.parse(part).records).map(record => record.message.content))
@@ -144,8 +144,8 @@ test("GPT-6 compaction respects the selected account and effort", () => {
       const supported = effort !== "low";
       const parts = resolveBiggerContextMultipartParts(parsed, caps);
       if (supported) {
-        expect(parts).toBe(6);
-        expect(compileChatGptWebPrompt(parsed, caps, undefined, { experimentalMultipartParts: parts }).multipart!.parts).toHaveLength(6);
+        expect(parts).toBe(2);
+        expect(compileChatGptWebPrompt(parsed, caps, undefined, { experimentalMultipartParts: parts }).multipart!.parts).toHaveLength(2);
       } else {
         expect(parts).toBeUndefined();
         expect(estimateChatGptWebUsage(parsed, { answer: "summary" }, caps, true))
@@ -157,11 +157,11 @@ test("GPT-6 compaction respects the selected account and effort", () => {
   }
   parsed.options.reasoning = "max";
   const parts = resolveBiggerContextMultipartParts(parsed, capabilities);
-  expect(parts).toBe(6);
-  expect(compileChatGptWebPrompt(parsed, capabilities, undefined, { experimentalMultipartParts: parts }).multipart!.parts).toHaveLength(6);
+  expect(parts).toBe(2);
+  expect(compileChatGptWebPrompt(parsed, capabilities, undefined, { experimentalMultipartParts: parts }).multipart!.parts).toHaveLength(2);
 });
 
-test("Plus history is rebalanced into smaller Instant uploads and a larger selected-mode final message", () => {
+test("Plus multipart stages use Instant for normal turns and the requested effort for compaction", () => {
   const plus = { ...capabilities, proAvailable: false, extraHighAvailable: false };
   const parsed = request("");
   parsed.context.messages = Array.from({ length: 60 }, (_, index) => ({
@@ -175,12 +175,12 @@ test("Plus history is rebalanced into smaller Instant uploads and a larger selec
     expect(compiled.trimmedCompactionMessages).toBeUndefined();
     const messages = compiledChatGptWebMessages(compiled);
     const stagingTokens = messages.slice(0, -1).map(text => estimateTokens(text));
-    const stagingBudget = resolveChatGptWebStagingTokenBudget("gpt-5.6-sol", "low", plus);
+    const stagingBudget = resolveChatGptWebStagingTokenBudget("gpt-5.6-sol", compaction ? "high" : "low", plus);
     expect(Math.max(...stagingTokens)).toBeLessThanOrEqual(stagingBudget);
-    expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus,
+    if (!compaction) expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus,
       Math.max(...stagingTokens), Math.max(...messages.slice(0, -1).map(text => text.length))).effort).toBe("low");
     const finalTokens = estimateTokens(messages.at(-1)!);
-    expect(finalTokens).toBeGreaterThan(Math.max(...stagingTokens));
+    if (!compaction) expect(finalTokens).toBeGreaterThan(Math.max(...stagingTokens));
     expect(finalTokens).toBeLessThanOrEqual(resolveChatGptWebMessageTokenBudget("gpt-5.6-sol", "high", plus));
   }
 }, 30_000);

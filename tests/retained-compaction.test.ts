@@ -1430,7 +1430,7 @@ test.each([false, true])("structured compact rebuilds canonical context when its
     expect(contextText).toContain("Original task");
     expect(contextText).toContain("Continue with the next step");
     if (experimentalBiggerContext) {
-      expect(prepared.multipart!.parts).toHaveLength(6);
+      expect(prepared.multipart!.parts).toHaveLength(2);
       expect(prepared.trimmedCompactionMessages).toBeUndefined();
       const lastRecord = prepared.multipart!.parts.flatMap(part => JSON.parse(part).records).at(-1);
       expect(lastRecord.message.content).toBe(compact.context.messages.at(-1)!.content);
@@ -1532,7 +1532,7 @@ test.each([false, true])("fresh multipart compaction preserves phase budgets wit
     expect(turn.traceId.endsWith(freshConversation ? "_fresh" : "_fallback")).toBeTrue();
     expect(turn.onMultipartStageAcknowledged).toBeDefined();
     expect(turn.onSubmitted).toBeDefined();
-    for (let part = 1; part <= 5; part++) {
+    for (let part = 1; part <= 1; part++) {
       mock.timers.tick(25);
       expect(turn.abortSignal?.aborted).toBeFalse();
       await turn.onMultipartStageAcknowledged!(part);
