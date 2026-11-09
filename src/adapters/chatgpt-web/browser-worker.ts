@@ -4940,7 +4940,7 @@ export class ChatGptBrowserWorker {
       const maxStageChars = multipartStages
         ? Math.max(...multipartStages.map(stage => stage.text.length))
         : undefined;
-      const stagingMode = multipartStages
+      const stagingMode = turn.compaction ? requestedMode : multipartStages
         ? resolveChatGptWebMultipartStagingMode(
           turn.modelId,
           browserCapabilities,
@@ -4951,7 +4951,7 @@ export class ChatGptBrowserWorker {
       // Pro's inert context uploads have always used 5.6 Sol. Pin that existing
       // transport explicitly now that Latest/GPT-6 uses 6 Sol at lower efforts.
       // The final answer still selects and verifies the requested Pro family.
-      const stagingFamily = multipartStages && turn.modelFamily === "6"
+      const stagingFamily = !turn.compaction && multipartStages && turn.modelFamily === "6"
         && requestedMode.effort === "max" && stagingMode.effort !== "max"
         ? "5.6" : turn.modelFamily;
       if (prepared.multipart) {

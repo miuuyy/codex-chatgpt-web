@@ -164,12 +164,12 @@ test.each([
     );
     expect(actions).toEqual([
       ...(multipart ? [
-        "effort:low",
+        `effort:${tools ? "low" : effort}`,
         ...Array.from({ length: 5 }, (_, index) => [
-          ...(index > 0 ? ["effort:low"] : []), "attach:plain", "send", "observe", "ack",
+          ...(index > 0 ? [`effort:${tools ? "low" : effort}`] : []), "attach:plain", "send", "observe", "ack",
         ]).flat(),
       ] : []),
-      `effort:${effort}`,
+      ...(!tools && multipart ? [] : [`effort:${effort}`]),
       tools ? "attach:tools" : "attach:plain", "files", "send", "observe",
     ]);
     expect(sendBudgets).toEqual(Array(multipart ? 6 : 1).fill(180_000));
