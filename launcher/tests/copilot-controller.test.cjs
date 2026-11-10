@@ -111,6 +111,9 @@ test("Copilot profile install writes a managed Codex profile and removes it", as
     assert.ok(profile.includes('base_url = "http://127.0.0.1:18321/v1"'));
     assert.ok(profile.includes('wire_api = "responses"'));
     assert.ok(profile.includes("requires_openai_auth = false"));
+    assert.ok(profile.includes("[features]"));
+    assert.ok(profile.includes("apps = false"));
+    assert.ok(profile.includes("plugins = false"));
 
     const removed = await controller.removeProfile();
     assert.equal(removed.profileInstalled, false);

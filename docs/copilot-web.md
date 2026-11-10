@@ -66,7 +66,10 @@ commands without touching your ChatGPT setup or your default `config.toml`:
    Start Codex with `codex --profile copilot`.
 
 The managed profile omits `env_key` and sets `requires_openai_auth = false`, because the local
-bridge does not need an API key. Your default model, provider, and ChatGPT integration remain
+bridge does not need an API key. It also disables the `apps` and `plugins` feature flags: their
+tool schemas are large enough to push a fresh Codex session past Copilot's ~128k-character composer
+limit. The core Codex tool surface (shell, patch, plan, MCP resources, and your configured MCP
+servers) remains available. Your default model, provider, and ChatGPT integration remain
 unchanged. Use **Remove profile** to delete only the launcher-managed file; a
 `copilot.config.toml` that lacks the launcher marker is never overwritten or removed.
 
@@ -104,6 +107,11 @@ export COPILOT_WEB_API_KEY=local
 ```
 
 The local server ignores the key unless `controlToken` is set in the Copilot config.
+
+Current Codex releases enable app and plugin tool catalogs that can add hundreds of thousands of
+characters to the prompt before the first turn. The launcher-managed profile disables those
+features with `apps = false` and `plugins = false` under `[features]`. If you connect manually and
+see the prompt-size error, add the same settings to the profile you use for Copilot.
 
 ## Models
 

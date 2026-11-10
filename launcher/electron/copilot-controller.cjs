@@ -473,6 +473,12 @@ class CopilotController {
       "requires_openai_auth = false",
       "supports_websockets = false",
       "",
+      "[features]",
+      "# Copilot's composer has a ~128k-character limit. App and plugin tool schemas alone can",
+      "# exceed it, so the Copilot profile keeps the core Codex tool surface.",
+      "apps = false",
+      "plugins = false",
+      "",
     ].join("\n");
   }
 
