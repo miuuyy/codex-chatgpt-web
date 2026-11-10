@@ -20,6 +20,7 @@ import { describeTurnActivity } from "./turn-activity";
 import type {
   BrowserInteractionMode,
   BrowserState,
+  CopilotStatus,
   DoctorReport,
   Language,
   LauncherSnapshot,
@@ -585,6 +586,12 @@ function LauncherShell({
                   label={copy.browser}
                   onClick={() => navigateSurface("browser")}
                 />
+                <SidebarItem
+                  active={surface === "copilot"}
+                  icon="copilot"
+                  label={copy.copilot}
+                  onClick={() => navigateSurface("copilot")}
+                />
               </SidebarGroup>
               <SidebarGroup label={copy.configuration}>
                 <SidebarItem
@@ -678,6 +685,9 @@ function LauncherShell({
                 platform={snapshot.platform}
                 setError={setError}
               />
+            ) : null}
+            {surface === "copilot" ? (
+              <CopilotSurface copy={copy} setError={setError} />
             ) : null}
             {surface === "setup" ? (
               <SetupSurface
@@ -1662,6 +1672,227 @@ function ActivitySurface({
         ))}
       </div>
     </ContentSurface>
+  );
+}
+
+function CopilotSurface({
+  copy,
+  setError,
+}: {
+  copy: Copy;
+  setError: (error: string | null) => void;
+}) {
+  const [status, setStatus] = useState<CopilotStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async (report: boolean) => {
+      try {
+        const next = await api!.copilotStatus();
+        if (!cancelled) setStatus(next);
+      } catch (cause) {
+        if (!cancelled && report) setError(messageOf(cause));
+      }
+    };
+    void load(true);
+    const timer = window.setInterval(() => { void load(false); }, 3_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [setError]);
+
+  const run = async (action: () => Promise<CopilotStatus>) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setStatus(await action());
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const bridge = status?.bridge;
+  const loginRunning = status?.login.status === "running";
+  const bridgeRunning = bridge?.status === "running";
+  const bridgeBusy = bridge?.status === "starting" || bridge?.status === "stopping";
+  const configReady = status?.configExists === true && status.configError === null;
+  const profileInstalled = status?.profileInstalled === true;
+  const profileManaged = status?.profileManaged === true;
+  const signInDetail = status?.signedIn === true
+    ? copy.copilotSignedIn
+    : status?.signedIn === false
+      ? copy.copilotSignInRequired
+      : copy.copilotSignInUnknown;
+  const bridgeDetail = bridge?.status === "running"
+    ? copy.copilotBridgeRunning.replace("{endpoint}", status?.endpoint ?? "")
+    : bridge?.status === "failed" && bridge.message
+      ? `${copy.copilotBridgeStopped}. ${bridge.message}`
+      : copy.copilotBridgeStopped;
+  const configDetail = status?.configError ?? (configReady ? copy.copilotConfigReady : null);
+  const profileDetail = profileInstalled
+    ? copy.copilotProfileInstalled.replace("{path}", status?.profilePath ?? "")
+    : copy.copilotProfileMissing;
+
+  return (
+    <ContentSurface subtitle={copy.copilotSubtitle} title={copy.copilotTitle}>
+      <SectionHeading label={copy.copilotSetup} />
+      <div className="setup-list">
+        <CopilotStepRow
+          actions={
+            <SecondaryButton
+              disabled={busy || loginRunning || bridgeRunning || bridgeBusy}
+              onClick={() => void run(() => api!.copilotInit())}
+            >
+              {status?.configExists ? copy.copilotRefreshConfig : copy.copilotInitialize}
+            </SecondaryButton>
+          }
+          body={copy.copilotConfigBody.replace("{path}", status?.home ?? "")}
+          complete={configReady}
+          detail={configDetail}
+          index={1}
+          title={copy.copilotConfig}
+        />
+        <CopilotStepRow
+          actions={<>
+            <SecondaryButton
+              disabled={busy || loginRunning || bridgeRunning || bridgeBusy}
+              onClick={() => void run(() => api!.copilotLogin())}
+            >
+              {status?.signedIn ? copy.copilotSignInAgain : copy.copilotSignInAction}
+            </SecondaryButton>
+            <SecondaryButton
+              disabled={busy || loginRunning || bridgeRunning || bridgeBusy || !status?.configExists}
+              onClick={() => void run(() => api!.copilotCheckSignIn())}
+            >
+              {copy.copilotCheckSignIn}
+            </SecondaryButton>
+          </>}
+          body={copy.copilotSignInBody}
+          complete={status?.signedIn === true}
+          detail={signInDetail}
+          index={2}
+          title={copy.copilotSignIn}
+        />
+        <CopilotStepRow
+          actions={bridgeRunning && bridge?.owned ? (
+            <SecondaryButton
+              disabled={busy || loginRunning}
+              onClick={() => void run(() => api!.copilotStop())}
+            >
+              {copy.copilotStop}
+            </SecondaryButton>
+          ) : (
+            <SecondaryButton
+              disabled={busy || loginRunning || bridgeRunning || bridgeBusy}
+              onClick={() => void run(() => api!.copilotStart())}
+            >
+              {copy.copilotStart}
+            </SecondaryButton>
+          )}
+          body={copy.copilotBridgeBody.replace("{endpoint}", status?.endpoint ?? "")}
+          complete={bridgeRunning}
+          detail={bridgeDetail}
+          index={3}
+          title={copy.copilotBridge}
+        />
+        <CopilotStepRow
+          actions={<>
+            <SecondaryButton
+              disabled={busy || loginRunning || profileInstalled || !configReady}
+              onClick={() => void run(() => api!.copilotInstallProfile())}
+            >
+              {copy.copilotInstallProfile}
+            </SecondaryButton>
+            <SecondaryButton
+              disabled={busy || loginRunning || !profileInstalled || !profileManaged}
+              onClick={() => void run(() => api!.copilotRemoveProfile())}
+            >
+              {copy.copilotRemoveProfile}
+            </SecondaryButton>
+          </>}
+          body={copy.copilotProfileBody}
+          complete={profileInstalled}
+          detail={profileDetail}
+          index={4}
+          title={copy.copilotProfile}
+        />
+      </div>
+
+      {loginRunning ? <NoticeRow icon="info" tone="warning">{copy.copilotLoginWaiting}</NoticeRow> : null}
+      {status?.login.status === "failed" ? (
+        <NoticeRow icon="alert" tone="warning">
+          {copy.copilotLoginFailed}{status.login.message ? ` ${status.login.message}` : ""}
+        </NoticeRow>
+      ) : null}
+      {profileInstalled && !profileManaged ? (
+        <NoticeRow icon="alert" tone="warning">{copy.copilotProfileConflict}</NoticeRow>
+      ) : null}
+      {profileInstalled && !bridgeRunning ? (
+        <NoticeRow icon="alert" tone="warning">{copy.copilotProfileNeedsBridge}</NoticeRow>
+      ) : null}
+      {bridgeRunning && bridge?.owned === false ? (
+        <NoticeRow icon="alert" tone="warning">{copy.copilotExternal}</NoticeRow>
+      ) : null}
+
+      {profileInstalled ? (
+        <>
+          <div className="copilot-command-block">
+            <span>{copy.copilotCommand}</span>
+            <code>codex --profile copilot</code>
+          </div>
+          <NoticeRow icon="info" tone="warning">{copy.copilotRestart}</NoticeRow>
+        </>
+      ) : null}
+
+      {status && status.models.length > 0 ? (
+        <>
+          <SectionHeading label={copy.copilotModels} spaced />
+          <div className="copilot-models">
+            {status.models.map(model => (
+              <div className="copilot-model" key={model.id}>
+                <strong>{model.displayName}</strong>
+                <code>{model.id}</code>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : null}
+
+      {busy || !status ? <NoticeRow icon="info" tone="warning">{copy.copilotBusy}</NoticeRow> : null}
+    </ContentSurface>
+  );
+}
+
+function CopilotStepRow({
+  actions,
+  body,
+  complete,
+  detail,
+  index,
+  title,
+}: {
+  actions: ReactNode;
+  body: string;
+  complete: boolean;
+  detail?: string | null;
+  index: number;
+  title: string;
+}) {
+  return (
+    <div className={`setup-row${complete ? " is-complete" : ""}`}>
+      <span className="setup-index">{complete ? <Icon name="check" /> : index}</span>
+      <div className="setup-row-copy">
+        <div className="setup-row-heading"><strong>{title}</strong></div>
+        <p>{body}</p>
+        {detail ? <small className="copilot-step-detail">{detail}</small> : null}
+      </div>
+      <div className="setup-actions">{actions}</div>
+    </div>
   );
 }
 

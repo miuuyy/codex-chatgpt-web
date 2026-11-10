@@ -921,3 +921,31 @@ test("catalog recovery clears its error banner but preserves a newer unrelated f
   callback({ name: "catalog-verification", status: "completed", message: "Loaded" });
   assert.equal(error, "Setup error");
 });
+
+test("Copilot surface is wired through renderer, preload, and main-process handlers", () => {
+  const typeSource = fs.readFileSync(path.join(launcherRoot, "src", "types.ts"), "utf8");
+  assert.match(typeSource, /export type Surface = "browser" \| "copilot"/);
+  for (const method of [
+    "copilotStatus", "copilotInit", "copilotLogin", "copilotCheckSignIn",
+    "copilotStart", "copilotStop", "copilotInstallProfile", "copilotRemoveProfile",
+  ]) {
+    assert.match(typeSource, new RegExp(`${method}\\(\\): Promise<CopilotStatus>`));
+  }
+  assert.match(appSource, /active=\{surface === "copilot"\}[\s\S]*?icon="copilot"[\s\S]*?navigateSurface\("copilot"\)/);
+  assert.match(appSource, /surface === "copilot" \? \([\s\S]*?<CopilotSurface copy=\{copy\} setError=\{setError\} \/>/);
+  for (const method of [
+    "copilotStatus", "copilotInit", "copilotLogin", "copilotCheckSignIn",
+    "copilotStart", "copilotStop", "copilotInstallProfile", "copilotRemoveProfile",
+  ]) {
+    assert.match(appSource, new RegExp(`api!\\.${method}\\(\\)`));
+    assert.match(preloadSource, new RegExp(`${method}: \\(\\) => ipcRenderer\\.invoke\\("launcher:`));
+  }
+  for (const channel of [
+    "copilot-status", "copilot-init", "copilot-login", "copilot-check-sign-in",
+    "copilot-start", "copilot-stop", "copilot-profile-install", "copilot-profile-remove",
+  ]) {
+    assert.match(electronMain, new RegExp(`handle\\("launcher:${channel}"`));
+  }
+  assert.match(electronMain, /new CopilotController\(\{[\s\S]*?codexHome: LAUNCHER_PROFILE\.codexHome/);
+  assert.match(electronMain, /await copilotController\?\.shutdown\(\)/);
+});

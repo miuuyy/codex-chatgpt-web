@@ -50,6 +50,30 @@ bun run copilot:serve
 It listens on `http://127.0.0.1:17842/v1` by default. The Copilot browser opens lazily on the first
 turn.
 
+## Use the macOS launcher
+
+The launcher exposes Copilot as a separate **Copilot** item in its sidebar. It drives the same
+commands without touching your ChatGPT setup or your default `config.toml`:
+
+1. Open **Copilot** and choose **Initialize**. This creates
+   `~/.codex-copilot-web/config.json`; nothing under `~/.codex` is changed yet.
+2. Choose **Sign in** and complete the Microsoft sign-in in the Chrome window that opens. The
+   launcher only marks the session as verified after `copilot login` exits successfully.
+3. Choose **Start bridge**. The local Responses server starts on the configured endpoint, and the
+   status row polls `/healthz`. Stop it from the same row when you are done.
+4. Choose **Install profile**. This writes a separate `$CODEX_HOME/copilot.config.toml` (by default
+   `~/.codex/copilot.config.toml`) and generates the model catalog next to the Copilot config.
+   Start Codex with `codex --profile copilot`.
+
+The managed profile omits `env_key` and sets `requires_openai_auth = false`, because the local
+bridge does not need an API key. Your default model, provider, and ChatGPT integration remain
+unchanged. Use **Remove profile** to delete only the launcher-managed file; a
+`copilot.config.toml` that lacks the launcher marker is never overwritten or removed.
+
+Sign-in and sign-in checks are disabled while the bridge is running, because both use the same
+dedicated Chrome profile. If the bridge was started outside the launcher, the panel marks it as
+external and will not stop it.
+
 ## Connect Codex
 
 Generate a catalog and a config snippet:

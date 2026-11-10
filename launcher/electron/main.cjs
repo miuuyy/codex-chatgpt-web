@@ -22,6 +22,7 @@ const {
 const { BrowserHost, navigationErrorForLog } = require("./browser-host.cjs");
 const { SessionReminderView } = require("./session-reminder-view.cjs");
 const { BrowserControlServer } = require("./control-server.cjs");
+const { CopilotController } = require("./copilot-controller.cjs");
 const { LimitsController } = require("./limits-controller.cjs");
 const { SOURCE_URL: LIMITS_SOURCE_URL } = require("./limits-store.cjs");
 const { releaseRetainedConversation } = require("./retained-turn-release.cjs");
@@ -99,6 +100,7 @@ let finishRuntimeStartup;
 const runtimeStartup = new Promise(resolve => { finishRuntimeStartup = resolve; });
 let browserControl = null;
 let runtimeSupervisor = null;
+let copilotController = null;
 let tray = null;
 let quitting = false;
 let shutdownInProgress = false;
@@ -778,6 +780,18 @@ function registerIpc({ logger, stateStore }) {
   });
 
   handle("launcher:doctor", () => IS_DEV_PROFILE ? runtimeHost.devDoctor() : runtimeHost.doctor());
+  const copilot = () => {
+    if (!copilotController) throw new Error("Copilot is unavailable in this launcher session");
+    return copilotController;
+  };
+  handle("launcher:copilot-status", () => copilot().status());
+  handle("launcher:copilot-init", () => copilot().init());
+  handle("launcher:copilot-login", () => copilot().login());
+  handle("launcher:copilot-check-sign-in", () => copilot().checkSignIn());
+  handle("launcher:copilot-start", () => copilot().start());
+  handle("launcher:copilot-stop", () => copilot().stop());
+  handle("launcher:copilot-profile-install", () => copilot().installProfile());
+  handle("launcher:copilot-profile-remove", () => copilot().removeProfile());
   handle("launcher:cancel-turns", () => {
     if (IS_DEV_PROFILE) throw new Error("DEV chat turns are owned by the repository CLI process");
     return runtimeHost.cancelActiveTurns();
@@ -1100,6 +1114,7 @@ async function requestQuit() {
       throw new Error(`Wait for ${activeOperation} to finish before quitting Codex Web GPT`);
     }
     await runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true });
+    await copilotController?.shutdown();
     stopCatalogVerificationMonitor();
     quitting = true;
     await browserHost?.persistSession();
@@ -1238,6 +1253,13 @@ async function start() {
     publishOperation,
     supervisor: runtimeSupervisor,
     getBrowserInteractionMode: () => stateStore.read().browserInteractionMode,
+  });
+  copilotController = new CopilotController({
+    app,
+    logger,
+    sourceRoot: SOURCE_ROOT,
+    runtimeRootProvider,
+    codexHome: LAUNCHER_PROFILE.codexHome,
   });
   const configuredInteractionMode = runtimeHost.runtimeConfigSnapshot().config?.browserInteractionMode;
   if ((configuredInteractionMode === "automatic" || configuredInteractionMode === "manual")

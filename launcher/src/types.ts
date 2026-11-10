@@ -4,7 +4,7 @@ import type { LimitsSnapshot } from "./limits-types";
 export type Language = keyof typeof languages;
 export type LauncherProfile = "production" | "development";
 export type BrowserInteractionMode = "automatic" | "manual";
-export type Surface = "browser" | "setup" | "mcp" | "activity" | "limits" | "settings";
+export type Surface = "browser" | "copilot" | "setup" | "mcp" | "activity" | "limits" | "settings";
 
 export interface LauncherState {
   version: 1;
@@ -98,6 +98,31 @@ export interface DoctorReport {
   checks: DoctorCheck[];
 }
 
+export interface CopilotStatus {
+  home: string;
+  configPath: string;
+  configExists: boolean;
+  configError: string | null;
+  catalogPath: string;
+  profilePath: string;
+  profileInstalled: boolean;
+  profileManaged: boolean;
+  port: number;
+  endpoint: string;
+  models: Array<{ id: string; displayName: string }>;
+  bridge: {
+    status: "stopped" | "starting" | "running" | "stopping" | "failed";
+    owned: boolean;
+    pid: number | null;
+    message: string | null;
+  };
+  login: {
+    status: "idle" | "running" | "succeeded" | "failed";
+    message: string | null;
+  };
+  signedIn: boolean | null;
+}
+
 export interface OperationState {
   name: string;
   status: "running" | "completed" | "failed";
@@ -165,6 +190,14 @@ export interface LauncherApi {
   smokeTest(): Promise<{ ok: boolean; effort: string; response: string }>;
   verifyMcp(): Promise<DoctorReport>;
   doctor(): Promise<DoctorReport>;
+  copilotStatus(): Promise<CopilotStatus>;
+  copilotInit(): Promise<CopilotStatus>;
+  copilotLogin(): Promise<CopilotStatus>;
+  copilotCheckSignIn(): Promise<CopilotStatus>;
+  copilotStart(): Promise<CopilotStatus>;
+  copilotStop(): Promise<CopilotStatus>;
+  copilotInstallProfile(): Promise<CopilotStatus>;
+  copilotRemoveProfile(): Promise<CopilotStatus>;
   cancelTurns(): Promise<{ stdout: string }>;
   uninstallIntegration(): Promise<{ cancelled: true } | { cancelled: false; state: LauncherState }>;
   setupCore(): Promise<{ ok: boolean; stdout: string; restartRequired: boolean }>;

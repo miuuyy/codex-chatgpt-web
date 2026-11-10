@@ -45,7 +45,9 @@ The app includes its browser and runtime. No separate Chrome, Node, or Bun insta
 
 This fork also includes a separate `copilot-web` provider for Microsoft 365 Copilot Chat. It keeps
 the ChatGPT Web adapter untouched and runs as its own local Responses endpoint with a dedicated
-Chrome profile and a text tool-call protocol for Codex tools. See
+Chrome profile and a text tool-call protocol for Codex tools. In the macOS launcher, open
+**Copilot** in the sidebar to initialize it, sign in, run the bridge, and install the separate
+`codex --profile copilot` profile. See
 [docs/copilot-web.md](docs/copilot-web.md) for setup, limitations, and troubleshooting.
 
 <details>

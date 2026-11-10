@@ -205,3 +205,32 @@ test("plugin setup and Zero Risk instructions show configured names in every lan
     assert.equal(copyFor(language).manualPromptInstruction.includes("Codex Manual"), false);
   }
 });
+
+test("every locale ships complete Copilot launcher copy with intact placeholders", () => {
+  const { copyFor } = loadI18nModule();
+  const english = copyFor("en");
+  const copilotKeys = Object.keys(english).filter(key => key.startsWith("copilot"));
+  for (const key of [
+    "copilot", "copilotTitle", "copilotSubtitle", "copilotSetup", "copilotConfig",
+    "copilotSignIn", "copilotBridge", "copilotProfile", "copilotModels", "copilotBusy",
+  ]) {
+    assert.ok(copilotKeys.includes(key), `missing Copilot copy key ${key}`);
+  }
+  for (const language of Object.keys(languages)) {
+    const copy = copyFor(language);
+    for (const key of copilotKeys) {
+      assert.ok(typeof copy[key] === "string" && copy[key].trim(), `${language} ${key} must be non-empty`);
+      for (const placeholder of ["{path}", "{endpoint}"]) {
+        if (english[key].includes(placeholder)) {
+          assert.ok(copy[key].includes(placeholder), `${language} ${key} must keep ${placeholder}`);
+        }
+      }
+    }
+  }
+  for (const language of ["zh-CN", "zh-TW", "ja", "ko"]) {
+    const copy = copyFor(language);
+    for (const key of ["copilotSubtitle", "copilotSignInBody", "copilotBridge", "copilotStart"]) {
+      assert.notEqual(copy[key], english[key], `${language} ${key} should be translated`);
+    }
+  }
+});

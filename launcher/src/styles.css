@@ -2825,3 +2825,85 @@ code {
   .activity-task-detail { flex-basis: calc(100% - 30px); }
   .activity-task > button { margin-left: 22px; }
 }
+
+.copilot-step-detail {
+  display: block;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+  color: var(--color-text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.copilot-command-block {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-background-control);
+}
+
+.copilot-command-block span {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.copilot-command-block code {
+  overflow-wrap: anywhere;
+  color: var(--color-text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  user-select: text;
+}
+
+.copilot-models {
+  border-top: 1px solid var(--color-border);
+}
+
+.copilot-model {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--color-border-light);
+}
+
+.copilot-model strong {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+
+.copilot-model code {
+  overflow-wrap: anywhere;
+  color: var(--color-text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-align: right;
+}
+
+@media (max-width: 540px) {
+  .copilot-command-block {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .copilot-model {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+    padding: 9px 0;
+  }
+
+  .copilot-model code {
+    text-align: left;
+  }
+}

@@ -43,7 +43,7 @@ Full harness 모드는 MCP를 통해 ChatGPT를 현재 작업의 파일, 터미�
 
 ### Microsoft 365 Copilot Web (실험적)
 
-이 포크에는 Microsoft 365 Copilot Chat용 별도 `copilot-web` 공급자도 포함되어 있습니다. ChatGPT Web 어댑터는 그대로 유지하고, 전용 Chrome 프로필과 Codex 도구용 텍스트 도구 호출 프로토콜을 사용하는 자체 로컬 Responses 엔드포인트로 실행됩니다. 설정, 제한 사항 및 문제 해결은 [docs/copilot-web.md](docs/copilot-web.md)를 참고하세요.
+이 포크에는 Microsoft 365 Copilot Chat용 별도 `copilot-web` 공급자도 포함되어 있습니다. ChatGPT Web 어댑터는 그대로 유지하고, 전용 Chrome 프로필과 Codex 도구용 텍스트 도구 호출 프로토콜을 사용하는 자체 로컬 Responses 엔드포인트로 실행됩니다. macOS 런처에서는 사이드바의 **Copilot**을 열어 초기화, 로그인, 브리지 실행, 별도 `codex --profile copilot` 프로필 설치를 진행할 수 있습니다. 설정, 제한 사항 및 문제 해결은 [docs/copilot-web.md](docs/copilot-web.md)를 참고하세요.
 
 <details>
 <summary><strong>터미널 설치, 업데이트 및 복구</strong></summary>
