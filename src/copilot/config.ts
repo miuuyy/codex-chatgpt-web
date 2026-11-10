@@ -32,6 +32,10 @@ export interface CopilotModelConfig {
   displayName: string;
   /** Exact label in Copilot's model picker. */
   menuLabel: string;
+  /** Optional exact label inside the submenu opened by menuLabel (for example a concrete GPT model). */
+  submenuLabel?: string;
+  /** Optional label Copilot shows on the picker button after selection, when it truncates the submenu label. */
+  selectionLabel?: string;
   description: string;
   contextWindow: number;
   autoCompactTokenLimit: number;
@@ -122,6 +126,30 @@ export function defaultCopilotModels(): CopilotModelConfig[] {
       defaultReasoningLevel: "medium",
       supportedReasoningLevels: [{ effort: "medium", description: "GPT (tenant-specific)" }],
     },
+    {
+      id: "copilot-web/gpt-quick",
+      displayName: "Copilot GPT Quick response",
+      menuLabel: "GPT",
+      submenuLabel: "GPT-5.6 Sol Quick response",
+      selectionLabel: "GPT-5.6 Sol Quick",
+      description: "OpenAI GPT-5.6 Sol with fast answers. The concrete submenu name varies by tenant.",
+      contextWindow: COPILOT_CONTEXT_WINDOW,
+      autoCompactTokenLimit: COPILOT_AUTO_COMPACT_TOKEN_LIMIT,
+      defaultReasoningLevel: "low",
+      supportedReasoningLevels: [{ effort: "low", description: "Quick response" }],
+    },
+    {
+      id: "copilot-web/gpt-think-deeper",
+      displayName: "Copilot GPT Think deeper",
+      menuLabel: "GPT",
+      submenuLabel: "GPT-5.6 Sol Think deeper",
+      selectionLabel: "GPT-5.6 Sol Think",
+      description: "OpenAI GPT-5.6 Sol with extended reasoning. The concrete submenu name varies by tenant.",
+      contextWindow: COPILOT_CONTEXT_WINDOW,
+      autoCompactTokenLimit: COPILOT_AUTO_COMPACT_TOKEN_LIMIT,
+      defaultReasoningLevel: "high",
+      supportedReasoningLevels: [{ effort: "high", description: "Think deeper" }],
+    },
   ];
 }
 
@@ -178,6 +206,15 @@ function stringValue(value: unknown, fallback: string, label: string): string {
   return value;
 }
 
+function optionalString(value: unknown, fallback: string | undefined, label: string): string | undefined {
+  if (value === undefined) return fallback;
+  if (value === null) return undefined;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`${label} must be a non-empty string`);
+  }
+  return value;
+}
+
 function reasoningLevel(value: unknown, fallback: CopilotReasoningLevel, label: string): CopilotReasoningLevel {
   if (value === undefined) return fallback;
   if (value !== "low" && value !== "medium" && value !== "high") {
@@ -215,6 +252,8 @@ function parseModel(value: unknown, index: number, defaults: CopilotModelConfig[
     id,
     displayName: stringValue(model.displayName, fallback.displayName, `models[${index}].displayName`),
     menuLabel: stringValue(model.menuLabel, fallback.menuLabel, `models[${index}].menuLabel`),
+    submenuLabel: optionalString(model.submenuLabel, fallback.submenuLabel, `models[${index}].submenuLabel`),
+    selectionLabel: optionalString(model.selectionLabel, fallback.selectionLabel, `models[${index}].selectionLabel`),
     description: stringValue(model.description, fallback.description, `models[${index}].description`),
     contextWindow: positiveInteger(model.contextWindow, fallback.contextWindow, `models[${index}].contextWindow`),
     autoCompactTokenLimit: positiveInteger(

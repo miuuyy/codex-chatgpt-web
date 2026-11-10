@@ -496,8 +496,11 @@ export class CopilotBrowser {
     return undefined;
   }
 
-  /** Pick the first concrete model in an open submenu, ignoring further nested triggers. */
-  private async selectFirstSubmenuOption(page: Page): Promise<boolean> {
+  /**
+   * Pick a concrete model in an open submenu. Without a label, pick the first concrete option;
+   * with a label, match its visible text (option descriptions are ignored).
+   */
+  private async selectSubmenuOption(page: Page, label?: string): Promise<boolean> {
     const menu = await this.lastVisibleMenu(page);
     if (!menu) return false;
     const options = menu.locator('[role="menuitemradio"], [role="menuitem"], [role="option"]');
@@ -506,6 +509,10 @@ export class CopilotBrowser {
       const option = options.nth(index);
       if (!(await option.isVisible().catch(() => false))) continue;
       if ((await option.getAttribute("aria-haspopup").catch(() => null)) === "menu") continue;
+      if (label) {
+        const text = normalizeText(await option.innerText().catch(() => ""));
+        if (!this.modelMatches(text, label)) continue;
+      }
       await option.click({ timeout: 10_000 });
       await sleep(750);
       return true;
@@ -523,7 +530,9 @@ export class CopilotBrowser {
       );
     }
     const current = await this.modelSelectionLabel(page);
-    if (this.modelMatches(current, model.menuLabel)) return;
+    const targetLabel = model.submenuLabel ?? model.menuLabel;
+    const selectedLabel = model.selectionLabel ?? targetLabel;
+    if (this.modelMatches(current, selectedLabel)) return;
     await button.click({ timeout: 10_000 });
     await sleep(500);
 
@@ -547,13 +556,18 @@ export class CopilotBrowser {
         await item.click({ timeout: 10_000 });
         await sleep(750);
         let updated = await this.modelSelectionLabel(page);
-        if (this.modelMatches(updated, model.menuLabel)) return;
-        if (opensSubmenu && await this.selectFirstSubmenuOption(page)) {
+        if (!model.submenuLabel && this.modelMatches(updated, model.menuLabel)) return;
+        if (opensSubmenu && await this.selectSubmenuOption(page, model.submenuLabel)) {
           updated = await this.modelSelectionLabel(page);
-          if (this.modelMatches(updated, model.menuLabel)) return;
+          if (this.modelMatches(updated, selectedLabel)) return;
         }
+        const menuText = await page.locator('[role="menu"], [role="listbox"]').last()
+          .innerText({ timeout: 2_000 }).catch(() => "");
         throw new Error(
-          `Copilot did not retain model ${JSON.stringify(model.menuLabel)}; the selector now shows ${JSON.stringify(updated)}.`,
+          `Copilot did not retain model ${JSON.stringify(targetLabel)}; the selector now shows `
+            + `${JSON.stringify(updated)}.${menuText
+              ? ` Visible options: ${JSON.stringify(normalizeText(menuText).slice(0, 500))}`
+              : ""}`,
         );
       }
     }

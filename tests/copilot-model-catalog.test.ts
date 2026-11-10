@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { defaultCopilotConfig } from "../src/copilot/config";
+import { defaultCopilotConfig, parseCopilotConfig } from "../src/copilot/config";
 import { copilotCatalog } from "../src/copilot/models";
 
 describe("Copilot model catalog", () => {
@@ -44,5 +44,40 @@ describe("Copilot model catalog", () => {
       expect(model.autoCompactTokenLimit).toBeLessThan(model.contextWindow);
     }
     expect(config.models.find(model => model.id === "copilot-web/gpt")?.menuLabel).toBe("GPT");
+  });
+
+  test("includes the concrete GPT submenu choices offered by Copilot", () => {
+    const config = defaultCopilotConfig();
+    expect(config.models.find(model => model.id === "copilot-web/gpt-quick")).toMatchObject({
+      menuLabel: "GPT",
+      submenuLabel: "GPT-5.6 Sol Quick response",
+      selectionLabel: "GPT-5.6 Sol Quick",
+      defaultReasoningLevel: "low",
+    });
+    expect(config.models.find(model => model.id === "copilot-web/gpt-think-deeper")).toMatchObject({
+      menuLabel: "GPT",
+      submenuLabel: "GPT-5.6 Sol Think deeper",
+      selectionLabel: "GPT-5.6 Sol Think",
+      defaultReasoningLevel: "high",
+    });
+  });
+
+  test("round-trips a tenant-specific submenu label and allows clearing it", () => {
+    const parsed = parseCopilotConfig({
+      models: [{
+        id: "copilot-web/gpt-quick",
+        menuLabel: "GPT",
+        submenuLabel: "GPT-6 Sol Quick response",
+        selectionLabel: "GPT-6 Sol Quick",
+      }],
+    });
+    expect(parsed.models[0]?.submenuLabel).toBe("GPT-6 Sol Quick response");
+    expect(parsed.models[0]?.selectionLabel).toBe("GPT-6 Sol Quick");
+
+    const cleared = parseCopilotConfig({
+      models: [{ id: "copilot-web/gpt-quick", menuLabel: "GPT", submenuLabel: null, selectionLabel: null }],
+    });
+    expect(cleared.models[0]?.submenuLabel).toBeUndefined();
+    expect(cleared.models[0]?.selectionLabel).toBeUndefined();
   });
 });

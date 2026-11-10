@@ -16,7 +16,8 @@ ChatGPT Web route.
   runtime.
 - The dedicated Codex compaction endpoint (`POST /v1/responses/compact`).
 - A static model catalog for `copilot-web/auto`, `copilot-web/quick`,
-  `copilot-web/think-deeper`, and `copilot-web/gpt`.
+  `copilot-web/think-deeper`, `copilot-web/gpt`, `copilot-web/gpt-quick`, and
+  `copilot-web/gpt-think-deeper`.
 - A local health endpoint, optional bearer control token, and rejection of browser-originated
   POSTs.
 
@@ -121,11 +122,29 @@ see the prompt-size error, add the same settings to the profile you use for Copi
 | `copilot-web/quick` | Quick response | Lower effort for small edits. |
 | `copilot-web/think-deeper` | Think deeper | Extended reasoning for difficult tasks. |
 | `copilot-web/gpt` | GPT | Opens Copilot's GPT (OpenAI) submenu and picks its first model. The concrete names are tenant-specific (for example, `GPT-5.6 Sol Quick response`). |
+| `copilot-web/gpt-quick` | GPT → `GPT-5.6 Sol Quick response` | A specific GPT submenu choice for fast answers. Edit `submenuLabel` when the tenant uses a different name. |
+| `copilot-web/gpt-think-deeper` | GPT → `GPT-5.6 Sol Think deeper` | A specific GPT submenu choice with extended reasoning. Edit `submenuLabel` when the tenant uses a different name. |
 
-The picker labels are configurable in `~/.codex-copilot-web/config.json`. `copilot:doctor` prints
-the currently selected label, and `copilot:probe` records the visible menu and DOM if a label does
-not match. When a picker entry opens a submenu, the bridge selects the first concrete model in that
-submenu; move specific submenu names into `menuLabel` only if the tenant exposes a stable name.
+The picker labels are configurable in `~/.codex-copilot-web/config.json`. A model can set
+`menuLabel` for the top-level picker entry and `submenuLabel` for the concrete entry inside that
+submenu. For example, to track a renamed GPT model:
+
+```json
+{
+  "id": "copilot-web/gpt-quick",
+  "menuLabel": "GPT",
+  "submenuLabel": "GPT-6 Sol Quick response",
+  "selectionLabel": "GPT-6 Sol Quick"
+}
+```
+
+Copilot truncates long submenu names on the picker button (`GPT-5.6 Sol Quick response` becomes
+`GPT-5.6 Sol Quick`). Set `selectionLabel` to the truncated text Copilot shows after selection;
+when omitted, the bridge expects the button to show `submenuLabel` or `menuLabel` unchanged.
+
+`copilot:doctor` prints the currently selected label, and `copilot:probe` records the visible menu
+and DOM if a label does not match. When a model has no `submenuLabel`, the bridge picks the first
+concrete model in the submenu. Add `submenuLabel` when you want a specific entry.
 
 ## How the tool protocol works
 
