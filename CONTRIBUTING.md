@@ -40,8 +40,8 @@ work went into it.
 1. Run `bun install --frozen-lockfile` in the repository root and in `launcher/`.
 2. Run `bun run verify`.
 3. Add a focused regression test for behavior changes.
-4. For browser UI changes, include the observed DOM evidence and a reproducible fixture. Do not
-   broaden selectors speculatively.
+4. For DOM handling or error/state detection, include a screenshot of the real affected UI state and the matching sanitized DOM or diagnostic excerpt, showing exactly what the change detects.
+   Add a reproducible fixture; a synthetic test does not replace evidence from the real case. Do not broaden selectors speculatively.
 5. Keep Terms and trademark claims factual. Do not market the project as a quota or rate-limit
    bypass.
 6. Manually test the affected behavior. DEV mode is sufficient only when the change does not affect

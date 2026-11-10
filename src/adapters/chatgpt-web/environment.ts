@@ -1,9 +1,9 @@
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isReadableCompactionSummaryText, OPAQUE_COMPACTION_NOTE } from "../../responses/compaction";
-import { isNativeAgentsMdContext, readNativeThreadDelegation } from "../../responses/native-context";
+import { isNativeAgentsMdContext, isNativeUserGoalUpdate, readNativeThreadDelegation } from "../../responses/native-context";
 import type { CodexContentPart, CodexParsedRequest, CodexTool } from "../../types";
-import { isAcceptedCompactionContinuation, recoverCompactionInstruction } from "./compaction-continuation";
+import { isAcceptedCompactionContinuation, previousCompletedCompactionSource, recoverCompactionInstruction } from "./compaction-continuation";
 
 export type ChatGptSandboxPolicy =
   | { type: "dangerFullAccess" }
@@ -45,6 +45,8 @@ export interface ChatGptTurnUserRevision {
   content: unknown;
   turnId?: string;
   itemId?: string;
+  /** Producer history ID when a native goal edit is bound to its active task. */
+  nativeTurnId?: string;
 }
 
 export const CHATGPT_TURN_REVISION_CONFLICT_MESSAGE =
@@ -278,18 +280,39 @@ function latestChatGptTurnUserRevision(parsed: CodexParsedRequest, expectedTurnI
   const input = Array.isArray(body?.input) ? body.input : [];
   const metadata = clientTurnMetadata(parsed);
   const recovered = recoverCheckpoint ? recoverCompactionInstruction(parsed, extractChatGptTurnIdentity(parsed)) : undefined;
-  for (let index = input.length - 1; index >= 0; index -= 1) {
-    const revision = userRevision(input[index], expectedTurnId, metadata);
-    if (revision) {
-      // Native compaction retains older human messages but drops goals and delegations. Recover the
-      // actual task only for an exact producer-authenticated retained representation before
-      // our checkpoint. New steering and rewritten history keep their normal validation.
-      return recovered?.sourceWasSyntheticInstruction && index < recovered.summaryIndex
-        && isAcceptedCompactionContinuation(parsed, extractChatGptTurnIdentity(parsed), revision)
-        ? recovered.source : revision;
-    }
+  const latest = nativeUserRevisions(input, expectedTurnId, metadata).at(-1);
+  if (latest) {
+    const { revision, index } = latest;
+    // Native compaction retains older human messages but drops goals and delegations. Recover the
+    // actual task only for an exact producer-authenticated retained representation before
+    // our checkpoint. New steering and rewritten history keep their normal validation.
+    return recovered?.sourceWasSyntheticInstruction && index < recovered.summaryIndex
+      && isAcceptedCompactionContinuation(parsed, extractChatGptTurnIdentity(parsed), revision)
+      ? recovered.source : revision;
   }
   return recovered?.source;
+}
+
+function nativeUserRevisions(input: unknown[], expectedTurnId?: string, metadata?: Record<string, unknown>) {
+  const revisions: Array<{ index: number; revision: ChatGptTurnUserRevision }> = [];
+  let instructionTurnId: string | undefined;
+  for (let index = 0; index < input.length; index += 1) {
+    let revision = userRevision(input[index], expectedTurnId, metadata);
+    if (!revision) continue;
+    const item = record(input[index])!;
+    if (isNativeUserGoalUpdate(item)) {
+      // Goal mutations use an internal history ID, not a task ID. Bind them only after an
+      // instruction owned by this turn. Keep the edit as new steering: existing retirement
+      // rebuilds the browser from canonical history, including any completed tool result.
+      if (expectedTurnId !== undefined && instructionTurnId === expectedTurnId) {
+        revision = { ...revision, nativeTurnId: revision.turnId, turnId: expectedTurnId };
+      }
+    } else {
+      instructionTurnId = revision.turnId;
+    }
+    revisions.push({ index, revision });
+  }
+  return revisions;
 }
 
 function userRevision(value: unknown, expectedTurnId?: string, metadata?: Record<string, unknown>): ChatGptTurnUserRevision | undefined {
@@ -313,14 +336,14 @@ export function chatGptTurnUserRevisionHistory(parsed: CodexParsedRequest): Chat
   const metadata = clientTurnMetadata(parsed);
   const recovered = recoverCompactionInstruction(parsed, extractChatGptTurnIdentity(parsed));
   const input = Array.isArray(body?.input) ? body.input : [];
-  const prefix = recovered?.sourceWasSyntheticInstruction ? input.slice(0, recovered.summaryIndex) : [];
-  const retained = prefix.map(value => userRevision(value, turnId, metadata)).filter(value => value !== undefined).at(-1);
+  const nativeRevisions = nativeUserRevisions(input, turnId, metadata);
+  const retained = recovered?.sourceWasSyntheticInstruction
+    ? nativeRevisions.filter(({ index }) => index < recovered.summaryIndex).at(-1)?.revision : undefined;
   const recoverSyntheticInstruction = recovered?.sourceWasSyntheticInstruction && (!retained
     || isAcceptedCompactionContinuation(parsed, extractChatGptTurnIdentity(parsed), retained));
-  const revisions = input.slice(recoverSyntheticInstruction ? recovered!.summaryIndex + 1 : 0).flatMap(value => {
-    const revision = userRevision(value, turnId, metadata);
-    return revision ? [revision] : [];
-  });
+  const revisions = nativeRevisions
+    .filter(({ index }) => !recoverSyntheticInstruction || index > recovered!.summaryIndex)
+    .map(({ revision }) => revision);
   if (recoverSyntheticInstruction) return [recovered!.source, ...revisions];
   return revisions.length > 0 ? revisions : recovered ? [recovered.source] : [];
 }
@@ -341,7 +364,14 @@ export function findChatGptCompactionSourceRevision(
   options: { recoverCheckpoint?: boolean } = {},
 ): ChatGptTurnUserRevision | undefined {
   if (!parsed._compactionRequest) throw new Error("ChatGPT web compaction source requires a compaction request");
-  return latestChatGptTurnUserRevision(parsed, extractChatGptTurnIdentity(parsed).turnId, options.recoverCheckpoint !== false);
+  const identity = extractChatGptTurnIdentity(parsed);
+  const source = latestChatGptTurnUserRevision(parsed, identity.turnId, options.recoverCheckpoint !== false);
+  if (source || options.recoverCheckpoint === false) return source;
+  // Native Codex explicitly marks compaction before the next instruction is recorded.
+  // Do not borrow an older task for a normal response, manual compact or mid-turn compact.
+  const compaction = record(clientTurnMetadata(parsed)?.compaction);
+  return compaction?.trigger === "auto" && compaction.phase === "pre_turn"
+    ? previousCompletedCompactionSource(parsed, identity) : undefined;
 }
 
 /** A completed checkpoint identifies the current turn's rebuilt environment preamble. */
@@ -373,12 +403,16 @@ export interface ChatGptEnvironmentClaim {
   statesNetworkAccess: boolean;
   /** Later calendar fragments remain claims until the current rollout corroborates them. */
   calendarDelta?: ChatGptCalendarEnvironmentDelta;
+  /** The exact rendered element, comparable only with Codex's own current world state. */
+  filesystemXml?: string;
 }
 
 function environmentClaim(parsed: CodexParsedRequest, text: string): ChatGptEnvironmentClaim {
+  const filesystem = text.match(/<filesystem>[\s\S]*?<\/filesystem>/g);
   return {
     environment: parseChatGptEnvironmentText(parsed, text),
     statesNetworkAccess: /<network_access\b/i.test(text) || /network access is /i.test(text),
+    ...(filesystem?.length === 1 ? { filesystemXml: filesystem[0] } : {}),
   };
 }
 
@@ -515,19 +549,29 @@ export function extractChatGptCalendarEnvironmentDelta(
       || !kinds.includes("environments.environment_context")) return undefined;
   }
 
-  let deltas = 0;
-  const workspaceRoots: string[][] = [];
-  const filesystemProfiles: string[] = [];
+  // Match the whole native fragment, not just the presence of a permission profile: another
+  // profile, a malformed cwd, or any additional permission declaration must fail closed.
+  // Native midnight updates can also repeat a worker inventory. Its exact name-only
+  // shape is contextual; it grants neither filesystem authority nor child ownership.
+  const calendarFragment = (text: string) => /^<environment_context>\s*<current_date>\d{4}-\d{2}-\d{2}<\/current_date>\s*(?:<timezone>[^<>]+<\/timezone>\s*)?<filesystem>\s*(?:<workspace_roots>((?:\s*<root>[^<>]+<\/root>\s*)+)<\/workspace_roots>\s*)?(<permission_profile type="(?:disabled|managed)">[\s\S]*?<\/permission_profile>)\s*<\/filesystem>\s*(?:<subagents>\s*(?:<agent name="[^<>"\r\n]+"\s*\/>\s*)*<\/subagents>\s*)?<\/environment_context>$/.exec(text);
+  const fragments: string[] = [];
+  // Codex renders no workspace_roots for a turn that has none (#936). Such a fragment names
+  // no root and no cwd, so it can precede the instruction; with roots it is an ordinary claim.
+  const leading = options ? undefined : environmentBeforeUser(input, activeIndex, turnId, metadata);
+  const leadingMatch = leading ? calendarFragment(leading) : null;
+  if (leading && leadingMatch && leadingMatch[1] === undefined) fragments.push(leading);
   for (let index = activeIndex + 1; index < input.length; index += 1) {
     const item = record(input[index]);
     if (!hasEnvironmentContextFragment(item)) continue;
     if (item.role !== "user" || itemTurnId(item) !== turnId || typeof item.id !== "string" || !item.id) return undefined;
-    const text = rawMessageText(item).trim();
-    // Match the whole native fragment, not just the presence of a permission profile: another
-    // profile, a malformed cwd, or any additional permission declaration must fail closed.
-    // Native midnight updates can also repeat a worker inventory. Its exact name-only
-    // shape is contextual; it grants neither filesystem authority nor child ownership.
-    const match = /^<environment_context>\s*<current_date>\d{4}-\d{2}-\d{2}<\/current_date>\s*(?:<timezone>[^<>]+<\/timezone>\s*)?<filesystem>\s*(?:<workspace_roots>((?:\s*<root>[^<>]+<\/root>\s*)+)<\/workspace_roots>\s*)?(<permission_profile type="(?:disabled|managed)">[\s\S]*?<\/permission_profile>)\s*<\/filesystem>\s*(?:<subagents>\s*(?:<agent name="[^<>"\r\n]+"\s*\/>\s*)*<\/subagents>\s*)?<\/environment_context>$/.exec(text);
+    fragments.push(rawMessageText(item).trim());
+  }
+
+  let deltas = 0;
+  const workspaceRoots: string[][] = [];
+  const filesystemProfiles: string[] = [];
+  for (const text of fragments) {
+    const match = calendarFragment(text);
     if (!match
       || !sandboxMetadataMatchesEnvironment(canonicalSandboxMetadata(metadata), text)
       || [metadata.sandbox_mode, metadata.sandbox].some(value => (
@@ -777,6 +821,16 @@ function rawEnvironmentText(parsed: CodexParsedRequest): string | undefined {
     if (isNativeInstruction(item, metadata)) {
       activeUserIndex = index;
       break;
+    }
+  }
+  // Goal edits are appended outside the model step and do not carry its environment.
+  // Use their proven current-turn instruction as the environment anchor only. The edit
+  // remains the task revision, and any later environment update still takes precedence.
+  if (activeUserIndex >= 0 && isNativeUserGoalUpdate(record(input[activeUserIndex])!)) {
+    const turnId = typeof metadata?.turn_id === "string" ? metadata.turn_id : undefined;
+    const revisions = nativeUserRevisions(input, turnId, metadata);
+    if (turnId !== undefined && revisions.at(-1)?.revision.turnId === turnId) {
+      activeUserIndex = revisions.findLast(({ index }) => !isNativeUserGoalUpdate(record(input[index])!))?.index ?? activeUserIndex;
     }
   }
   const checkpoint = activeUserIndex < 0 ? recoverCompactionInstruction(parsed, extractChatGptTurnIdentity(parsed)) : undefined;

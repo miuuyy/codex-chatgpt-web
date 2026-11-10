@@ -8,7 +8,7 @@ Fixes #
 
 ## Evidence
 
-<!-- Give the reproduction before the change and the exact result afterward. Browser UI changes need observed DOM evidence, not guessed selectors. -->
+<!-- Give the reproduction before the change and the exact result afterward. For DOM handling or error/state detection, show a screenshot of the real affected UI state and the matching sanitized DOM or diagnostic excerpt. -->
 
 ## Scope and invariants
 
@@ -26,7 +26,7 @@ Fixes #
 - [ ] I added or updated a focused regression test for behavior changes.
 - [ ] I manually tested the affected behavior.
 - [ ] If this changes local tools, MCP execution, or the outer Codex agent loop, I tested it through a real installed Codex integration; DEV mode alone is acceptable only when execution is not affected.
-- [ ] If this changes ChatGPT browser UI handling, I included observed DOM evidence and a reproducible fixture instead of broadening selectors speculatively.
+- [ ] If this changes DOM handling or error/state detection, I included a real-case screenshot, matching sanitized DOM or diagnostics, and a reproducible fixture instead of guessing selectors or states.
 - [ ] If this changes the launcher, I preserved macOS, Windows, and Linux packaging and named the platform packages actually built below.
 - [ ] I did not commit browser state, credentials, Tunnel IDs, raw logs, generated artifacts, or private paths.
 - [ ] I did not include an unrelated dependency update, release artifact, or version change.

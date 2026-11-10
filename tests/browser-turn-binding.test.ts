@@ -4,6 +4,43 @@ import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker
 import { chatGptHtmlToMarkdown, ChatGptMarkdownBuffer } from "../src/adapters/chatgpt-web/markdown";
 import { readFileSync } from "node:fs";
 
+// 2026-11-08, #948: scrolling a real retained ChatGPT conversation removed whole
+// data-turn-key groups. Returning to them reported three new user turns without Send.
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("scrolling previously observed history cannot acknowledge Send after helper replacement", async () => {
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  try {
+    const page = await browser.newPage();
+    const group = (id: string) => `<div data-turn-key="${id}"><div data-user-message-bubble>${id}</div><div data-conversation-role="assistant">Answer</div></div>`;
+    const old = ["old-top", "old-middle", "old-bottom"].map(group).join("");
+    await page.setContent(`<main>${old}</main>`);
+    const first = Object.create(ChatGptBrowserWorker.prototype) as any;
+    await first.submissionDomState(page);
+    // The old groups were observed by a previous helper, then scrolled out of the DOM.
+    await page.locator("main").evaluate(node => { node.replaceChildren(); });
+    const second = Object.create(ChatGptBrowserWorker.prototype) as any;
+    const baseline = await second.captureSubmissionBaseline(page, "Next request");
+    await page.locator("main").evaluate((node, html) => { node.innerHTML = html; }, old);
+    expect(await second.currentSubmissionEvidence(page, baseline)).toBeUndefined();
+    // The same unchanged observation must also work through the DOM cache.
+    expect(await second.currentSubmissionEvidence(page, baseline)).toBeUndefined();
+
+    await page.locator("main").evaluate((node, html) => node.insertAdjacentHTML("beforeend", html), group("new-request"));
+    expect(await second.currentSubmissionEvidence(page, baseline)).toBe("user_turn");
+    expect(baseline.acceptedUserIdentity).toBe("group:user:new-request");
+    const binding = await second.waitForNewAssistantTurn(page, baseline, Date.now() + 2000);
+    expect(binding.identity).toBe("group:assistant:new-request");
+    // Observing a competing post-baseline turn must never add it to that baseline.
+    await page.locator("main").evaluate((node, html) => node.insertAdjacentHTML("beforeend", html), group("competing-request"));
+    await expect(second.currentSubmissionEvidence(page, baseline)).rejects.toThrow("2 new conversation turns");
+
+    await page.goto("about:blank");
+    await page.setContent("<main></main>");
+    const fresh = await second.captureSubmissionBaseline(page, "Next request");
+    await page.locator("main").evaluate((node, html) => { node.innerHTML = html; }, old);
+    await expect(second.currentSubmissionEvidence(page, fresh)).rejects.toThrow("3 new conversation turns");
+  } finally { await browser.close(); }
+}, 15_000);
+
 test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("CodeMirror language invalidates the response cache and incomplete code is not delivered", async () => {
   const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
   try {

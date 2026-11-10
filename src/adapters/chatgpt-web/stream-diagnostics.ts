@@ -5,6 +5,15 @@ const MAX_MESSAGES = 32;
 const ROLES = new Set(["assistant", "user", "tool", "system"]);
 const CHANNELS = new Set(["analysis", "commentary", "final", "summary", "notification", "justify", "confidence"]);
 const STATUSES = new Set(["in_progress", "finished_successfully", "finished_partial", "error"]);
+// CDP errorText is free text. Export only recognized Chromium network codes,
+// never arbitrary messages, URLs, certificate subjects or proxy details.
+const NETWORK_ERRORS = new Set([
+  "net::ERR_FAILED", "net::ERR_ABORTED", "net::ERR_CONNECTION_RESET", "net::ERR_CONNECTION_CLOSED",
+  "net::ERR_CONNECTION_REFUSED", "net::ERR_CONNECTION_TIMED_OUT", "net::ERR_TIMED_OUT",
+  "net::ERR_NETWORK_CHANGED", "net::ERR_INTERNET_DISCONNECTED", "net::ERR_NAME_NOT_RESOLVED",
+  "net::ERR_CERT_AUTHORITY_INVALID", "net::ERR_CERT_DATE_INVALID", "net::ERR_CERT_COMMON_NAME_INVALID",
+  "net::ERR_SSL_PROTOCOL_ERROR", "net::ERR_HTTP2_PROTOCOL_ERROR", "net::ERR_QUIC_PROTOCOL_ERROR",
+]);
 type MessageState = { message: number; role?: string; channel?: string; status?: string; endTurn?: boolean };
 const object = (value: unknown): Record<string, unknown> | undefined =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
@@ -173,6 +182,7 @@ type Capture = {
   request: number; submission: number; projection: ChatGptStreamProjection; status?: number;
   pending: Uint8Array[]; pendingBytes: number; streaming: boolean; unavailable: boolean;
   enabling?: Promise<void>; terminal?: "finished" | "aborted" | "failed" | "detached";
+  networkError?: string;
 };
 
 /** Passive CDP observation of only the owned page's submissions after Send. */
@@ -233,18 +243,20 @@ export class ChatGptStreamDiagnostics {
           capture.pending.push(bytes); capture.pendingBytes += bytes.length;
         } else capture.unavailable = true;
       });
-      const finish = (id: string, terminal: Capture["terminal"]) => {
+      const finish = (id: string, terminal: Capture["terminal"], networkError?: string) => {
         if (generation !== this.generation) return;
         const capture = this.captures.get(id);
         if (!capture) return;
         capture.terminal = terminal;
+        capture.networkError = networkError;
         void Promise.resolve(capture.enabling).then(() => {
           if (generation !== this.generation || this.captures.get(id) !== capture) return;
           this.emit(capture); this.captures.delete(id);
         });
       };
       session.on("Network.loadingFinished", event => finish(event.requestId, "finished"));
-      session.on("Network.loadingFailed", event => finish(event.requestId, event.canceled ? "aborted" : "failed"));
+      session.on("Network.loadingFailed", event => finish(event.requestId, event.canceled ? "aborted" : "failed",
+        NETWORK_ERRORS.has(event.errorText) ? event.errorText : "unknown"));
       await bounded(session.send("Network.enable", { maxTotalBufferSize: 1_000_000, maxResourceBufferSize: 512_000, maxPostDataSize: 0 }));
     } catch {
       if (generation === this.generation) this.generation += 1;
@@ -257,6 +269,7 @@ export class ChatGptStreamDiagnostics {
   private emit(capture: Capture): void {
     this.report({ request: capture.request, submission: capture.submission, status: capture.status,
       terminal: capture.terminal, unavailable: capture.unavailable || !capture.streaming,
+      ...(capture.networkError ? { networkError: capture.networkError } : {}),
       ...capture.projection.snapshot() });
   }
 

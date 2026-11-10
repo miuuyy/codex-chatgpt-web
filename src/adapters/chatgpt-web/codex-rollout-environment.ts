@@ -29,6 +29,7 @@ export interface CodexRolloutEnvironment {
   workspaceRootsDeclared: boolean;
   /** Native model-visible projection; never used to grant execution permissions. */
   filesystemProfileXml?: string;
+  rolloutPath: string;
 }
 
 const CODEX_ID_SOURCE = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
@@ -201,7 +202,12 @@ function firstRolloutRecord(fd: number, size: number): Record<string, unknown> {
   throw new Error("Codex rollout has no complete session metadata record");
 }
 
-function latestRolloutPayload(fd: number, size: number, type: "turn_context" | "compacted"): Record<string, unknown> | undefined {
+function latestRolloutPayload(
+  fd: number,
+  size: number,
+  type: "turn_context" | "compacted" | "world_state",
+  matches: (payload: Record<string, unknown> | undefined) => boolean = () => true,
+): Record<string, unknown> | undefined {
   let position = size;
   let carry = Buffer.alloc(0);
   let firstSegmentAtEof = true;
@@ -230,7 +236,7 @@ function latestRolloutPayload(fd: number, size: number, type: "turn_context" | "
         throw new Error("Codex rollout JSONL record exceeds the bounded record size");
       }
       const item = parseJsonLine(line);
-      if (item.type === type) return record(item.payload);
+      if (item.type === type && matches(record(item.payload))) return record(item.payload);
     }
     carry = Buffer.from(data.subarray(0, lineEnd));
     if (carry.length > MAX_ROLLOUT_JSON_LINE_BYTES) {
@@ -239,7 +245,29 @@ function latestRolloutPayload(fd: number, size: number, type: "turn_context" | "
   }
   if (carry.length === 0) return undefined;
   const item = parseJsonLine(carry);
-  return item.type === type ? record(item.payload) : undefined;
+  return item.type === type && matches(record(item.payload)) ? record(item.payload) : undefined;
+}
+
+/**
+ * The rendered filesystem of the primary environment, which holds its current workspace roots.
+ * Desktop rollouts record those roots nowhere else: turn_context omits them and session_meta keeps
+ * the ones the task started with. Codex renders the whole element into both the model-visible
+ * envelope and world_state, whose partial records are JSON merge patches; see
+ * codex-rs/core/src/context/world_state/environment.rs (rust-v0.166.0). Compared only, never parsed.
+ */
+export function latestCodexRolloutFilesystem(rolloutPath: string): string | undefined {
+  const fd = openSync(rolloutPath, "r");
+  try {
+    const latest = latestRolloutPayload(fd, fstatSync(fd).size, "world_state", payload => {
+      const environments = record(payload?.state)?.environments;
+      return payload?.full === true || environments === null
+        || (record(environments) !== undefined && "filesystem" in record(environments)!);
+    });
+    const filesystem = record(record(latest?.state)?.environments)?.filesystem;
+    return typeof filesystem === "string" ? filesystem : undefined;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function verifyCompactedEnvironmentItems(fd: number, size: number, items: Record<string, unknown>[]): void {
@@ -743,7 +771,7 @@ export function resolveCurrentCodexRolloutEnvironment(options: {
         verifyCompactedEnvironmentItems(fd, size, options.compactedEnvironmentItems);
       }
       const filesystemProfileXml = renderFilesystemProfile(latest.permission_profile, environment.roots);
-      matching.push({ environment, workspaceRootsDeclared, filesystemProfileXml });
+      matching.push({ environment, workspaceRootsDeclared, filesystemProfileXml, rolloutPath });
     } finally {
       closeSync(fd);
     }

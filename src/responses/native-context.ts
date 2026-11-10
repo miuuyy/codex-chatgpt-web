@@ -9,6 +9,22 @@ export function isNativeAgentsMdContext(item: Record<string, unknown>): boolean 
     && Array.isArray(kinds) && kinds.length > 0 && kinds.every(kind => kind === "agents_md.instructions");
 }
 
+/** #957: Codex 0.166 records user goal edits outside the running turn (core/context/user_goal.rs).
+ * Host annotations establish their origin; a literal XML wrapper is not sufficient. */
+export function isNativeUserGoalUpdate(item: Record<string, unknown>): boolean {
+  if (item.type !== "message" || item.role !== "user" || typeof item.id !== "string" || !item.id) return false;
+  const metadata = item.internal_chat_message_metadata_passthrough as {
+    turn_id?: unknown; content_item_kinds?: unknown;
+  } | undefined;
+  const kinds = metadata?.content_item_kinds;
+  if (typeof metadata?.turn_id !== "string" || !/^auto-compact-\d+$/.test(metadata.turn_id)
+    || !Array.isArray(kinds) || kinds.length !== 1
+    || (kinds[0] !== "user.goal" && kinds[0] !== "user.goal.omitted")) return false;
+  if (!Array.isArray(item.content) || item.content.length !== 1) return false;
+  const part = item.content[0];
+  return part?.type === "input_text" && typeof part.text === "string";
+}
+
 /** The desktop injects cross-chat input without a matching model tool call. */
 export function readNativeThreadDelegation(item: Record<string, unknown>): {
   sourceThreadId: string; output: string;
