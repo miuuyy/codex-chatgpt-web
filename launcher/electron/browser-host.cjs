@@ -2928,6 +2928,32 @@ class BrowserHost {
     });
   }
 
+  async resetEmbeddedBrowserData() {
+    return await this.withManualOperation("embedded browser data reset", async () => {
+      if (this.authView) this.closeAuthView(this.authView, true, false);
+      const contents = this.view?.webContents;
+      if (!contents || contents.isDestroyed()) throw new Error("Embedded ChatGPT browser is unavailable");
+      for (const tab of [...this.turnTabs.values()]) this.removeTurnTab(tab, true);
+      await contents.loadURL(IDLE_BROWSER_URL);
+      await contents.session.clearStorageData();
+      await contents.session.clearCache();
+      contents.session.flushStorageData();
+      await contents.session.cookies.flushStore();
+      this.primaryNavigationError = null;
+      this.authNavigationError = null;
+      this.reauthenticationRequired = false;
+      this.setState({
+        authenticated: false,
+        loading: false,
+        message: "Embedded browser data was reset. Sign in to ChatGPT",
+        status: "signed-out",
+        url: IDLE_BROWSER_URL,
+      });
+      this.logger.info("browser.session_reset");
+      return this.snapshot();
+    });
+  }
+
   refreshAuthentication() {
     requireAutomaticBrowserInspection(this, "ChatGPT authentication refresh");
     if (this.sessionRefreshOperation) return this.sessionRefreshOperation;

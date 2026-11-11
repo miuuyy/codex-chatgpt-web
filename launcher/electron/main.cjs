@@ -673,6 +673,7 @@ function registerIpc({ logger, stateStore }) {
     }
     return browser;
   });
+  handle("launcher:browser-reset-data", () => browserHost.resetEmbeddedBrowserData());
   handle("launcher:browser-passkey-login", async () => {
     const browser = await browserHost.openPasskeyLogin();
     if (browser.authenticated) {

@@ -10,6 +10,13 @@ const electronMain = fs.readFileSync(path.join(launcherRoot, "electron", "main.c
 const browserHostSource = fs.readFileSync(path.join(launcherRoot, "electron", "browser-host.cjs"), "utf8");
 const preloadSource = fs.readFileSync(path.join(launcherRoot, "electron", "preload.cjs"), "utf8");
 
+test("browser data reset is explicitly confirmed and exposed through launcher IPC", () => {
+  assert.match(appSource, /confirmBrowserReset \? \(/);
+  assert.match(appSource, /await api!\.resetEmbeddedBrowserData\(\)/);
+  assert.match(preloadSource, /launcher:browser-reset-data/);
+  assert.match(electronMain, /handle\("launcher:browser-reset-data", \(\) => browserHost\.resetEmbeddedBrowserData\(\)\)/);
+});
+
 test("Bigger Context waits for startup and route recovery without invalidating healthy setup", async () => {
   const vm = require("node:vm");
   for (const fails of [false, true]) {
