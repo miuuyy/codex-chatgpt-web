@@ -131,6 +131,26 @@ test("launcher UI localizes MCP verification progress and doctor check messages"
   );
 });
 
+test("first-time language selection and Settings explain the embedded browser restart", () => {
+  const { copyFor } = loadI18nModule();
+  assert.match(appSource, /isLanguage\s*\? localized\.chooseLanguageHint/);
+  assert.match(appSource, /<SettingRow body=\{copy\.embeddedBrowserLanguageHint\} label=\{copy\.language\}>/);
+  const english = copyFor("en");
+  assert.match(english.chooseLanguageHint, /first-time setup/);
+  assert.match(english.embeddedBrowserLanguageHint, /Restart required/);
+  assert.match(english.embeddedBrowserLanguageHint, /ChatGPT may use its own saved language setting/);
+  for (const language of Object.keys(languages)) {
+    const copy = copyFor(language);
+    assert.ok(copy.chooseLanguageHint.includes("Codex Web GPT"), language);
+    assert.ok(copy.embeddedBrowserLanguageHint.includes("Codex Web GPT"), language);
+    assert.ok(copy.embeddedBrowserLanguageHint.includes("ChatGPT"), language);
+    if (language !== "en") {
+      assert.notEqual(copy.chooseLanguageHint, english.chooseLanguageHint);
+      assert.notEqual(copy.embeddedBrowserLanguageHint, english.embeddedBrowserLanguageHint);
+    }
+  }
+});
+
 
 
 test("native dialogs and IPC accept exactly the renderer's supported languages", () => {

@@ -1954,7 +1954,7 @@ function SettingsSurface({
             onChange={(checked) => void setTemporaryChats(checked)}
           />
         </SettingRow>
-        <SettingRow body={copy.chooseLanguageHint} label={copy.language}>
+        <SettingRow body={copy.embeddedBrowserLanguageHint} label={copy.language}>
           <LanguageMenu copy={copy} language={language} onChange={(next) => void updateLanguage(next)} />
         </SettingRow>
       </div>
