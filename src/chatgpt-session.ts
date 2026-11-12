@@ -1,8 +1,7 @@
 import { CHATGPT_COMPOSER_SELECTOR, chatGptThinkButtons } from "./chatgpt-ui/composer";
 import {
   CHATGPT_EFFORT_CONTROL_SELECTOR,
-  CHATGPT_EFFORT_MENU_SELECTOR,
-  chatGptEffortSlider,
+  activateChatGptEffortMenu,
   readChatGptEffortSnapshot,
   type ChatGptEffortActivation,
 } from "./chatgpt-ui/model-picker";
@@ -43,7 +42,9 @@ export async function assertNewChatPage(page: Page, useTemporaryChats = false): 
 type ChatGptCapabilityProbeOptions = {
   selectorTimeoutMs?: number;
   stableAbsenceMs?: number;
+  settleMs?: number;
   signal?: AbortSignal;
+  onFailureBeforeCleanup?: (error: unknown) => Promise<void>;
 };
 
 /** Undefined means the known Luna/Think control was verified, not merely a missing picker. */
@@ -121,14 +122,21 @@ export async function detectChatGptAccountCapabilities(
   page: Page,
   options: ChatGptCapabilityProbeOptions = {},
 ): Promise<ChatGptWebAccountCapabilities & { extraHighAvailable: boolean }> {
-  const effortButton = await waitForChatGptEffortControl(page, options);
+  let effortButton: Locator | undefined;
+  try {
+    effortButton = await waitForChatGptEffortControl(page, options);
+  } catch (error) {
+    await options.onFailureBeforeCleanup?.(error);
+    throw error;
+  }
   if (!effortButton) return { solAvailable: false, extraHighAvailable: false, proAvailable: false };
   try {
-    const menu = page.locator(CHATGPT_EFFORT_MENU_SELECTOR).last();
-    const menuVisible = await menu.isVisible().catch(() => false);
-    const menuExpanded = await effortButton.getAttribute("aria-expanded").catch(() => null);
-    if (!menuVisible && menuExpanded !== "true") await effortButton.press("Enter");
-    return await readChatGptEffortCapabilities(chatGptEffortSlider(page), options);
+    const activation = await activateChatGptEffortMenu(page, effortButton, { settleMs: options.settleMs });
+    options.signal?.throwIfAborted();
+    return await readChatGptEffortCapabilities(activation, options);
+  } catch (error) {
+    await options.onFailureBeforeCleanup?.(error);
+    throw error;
   } finally {
     await page.keyboard.press("Escape").catch(() => {});
   }

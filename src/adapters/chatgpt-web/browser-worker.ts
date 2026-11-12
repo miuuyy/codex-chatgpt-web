@@ -1632,7 +1632,7 @@ class ChatGptBrowserDiagnostics {
       const sequence = String(++this.sequence).padStart(2, "0");
       const stem = `${sequence}-${browserDiagnosticCheckpoint(checkpoint)}`;
       const includeScreenshot = process.env.CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS === "1";
-      const failed = /turn-failed|response-stalled/.test(checkpoint);
+      const failed = /turn-failed|response-stalled|capability-inspection-failed/.test(checkpoint);
       const [screenshotResult, stateResult, structureResult, interactionResult, variantsResult] = await Promise.allSettled([
         includeScreenshot
           ? page.screenshot({ animations: "disabled", caret: "hide", timeout: 5_000, type: "png" })
@@ -2157,7 +2157,7 @@ export class ChatGptBrowserWorker {
     return this.enqueueMaintenance("connector verification", () => this.verifyConnectorExclusive(traceId));
   }
 
-  inspectSession(detectCapabilities: boolean): Promise<{
+  inspectSession(detectCapabilities: boolean, traceId?: string): Promise<{
     authenticated: true;
     newChat: true;
     url: string;
@@ -2165,7 +2165,10 @@ export class ChatGptBrowserWorker {
     extraHighAvailable?: boolean;
     proAvailable?: boolean;
   }> {
-    return this.enqueueMaintenance("session inspection", () => this.inspectSessionExclusive(detectCapabilities));
+    if (traceId !== undefined && !/^[A-Za-z0-9_-]{6,128}$/.test(traceId)) {
+      return Promise.reject(new Error("ChatGPT session inspection trace id is invalid"));
+    }
+    return this.enqueueMaintenance("session inspection", () => this.inspectSessionExclusive(detectCapabilities, traceId));
   }
 
   smokeTest(abortSignal?: AbortSignal): Promise<{ effort: string; response: string }> {
@@ -3964,7 +3967,10 @@ export class ChatGptBrowserWorker {
     }
   }
 
-  private async inspectSessionExclusive(detectCapabilities: boolean): Promise<{
+  private async inspectSessionExclusive(
+    detectCapabilities: boolean,
+    traceId = `inspect_${randomUUID().replaceAll("-", "")}`,
+  ): Promise<{
     authenticated: true;
     newChat: true;
     url: string;
@@ -3973,11 +3979,39 @@ export class ChatGptBrowserWorker {
     proAvailable?: boolean;
   }> {
     const page = await this.ensurePage();
-    await this.prepareChatSurface(page);
-    const url = page.url();
-    if (!detectCapabilities) return { authenticated: true, newChat: true, url };
-    const capabilities = await detectChatGptAccountCapabilities(page);
-    return { authenticated: true, newChat: true, url, ...capabilities };
+    if (!detectCapabilities) {
+      await this.prepareChatSurface(page);
+      return { authenticated: true, newChat: true, url: page.url() };
+    }
+    const diagnostics = new ChatGptBrowserDiagnostics(
+      traceId,
+      this.config.browserDiagnosticsPath ?? join(getConfigDir(), "diagnostics", "browser-turns"),
+      this.config.appName,
+    );
+    const captureDiagnostic = (checkpoint: string): Promise<void> => diagnostics.capture(page, checkpoint);
+    let completed = false;
+    let failureCaptured = false;
+    const captureFailure = async (error: unknown): Promise<void> => {
+      if (failureCaptured) return;
+      failureCaptured = true;
+      await diagnostics.capture(page, "capability-inspection-failed", error);
+    };
+    try {
+      await captureDiagnostic("capability-inspection-started");
+      await this.prepareChatSurface(page, captureDiagnostic);
+      const url = page.url();
+      const capabilities = await detectChatGptAccountCapabilities(page, {
+        onFailureBeforeCleanup: captureFailure,
+      });
+      await captureDiagnostic("capability-inspection-succeeded");
+      completed = true;
+      return { authenticated: true, newChat: true, url, ...capabilities };
+    } catch (error) {
+      await captureFailure(error);
+      throw error;
+    } finally {
+      diagnostics.finish(completed ? "completed" : "failed");
+    }
   }
 
   private async smokeTestExclusive(abortSignal?: AbortSignal): Promise<{ effort: string; response: string }> {

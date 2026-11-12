@@ -382,7 +382,7 @@ async function maintain(message: InspectMessage | SmokeMessage | LimitsMessage):
   try {
     const worker = maintenanceWorker(message);
     const value = message.type === "inspect"
-      ? await worker.inspectSession(message.detectCapabilities)
+      ? await worker.inspectSession(message.detectCapabilities, message.id)
       : message.type === "limits" ? await worker.inspectLimitsPlan()
       : await worker.smokeTest(abortController.signal);
     writeProtocol({ type: "result", id: message.id, value });
