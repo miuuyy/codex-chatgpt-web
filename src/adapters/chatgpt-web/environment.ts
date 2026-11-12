@@ -553,7 +553,10 @@ export function extractChatGptCalendarEnvironmentDelta(
   // profile, a malformed cwd, or any additional permission declaration must fail closed.
   // Native midnight updates can also repeat a worker inventory. Its exact name-only
   // shape is contextual; it grants neither filesystem authority nor child ownership.
-  const calendarFragment = (text: string) => /^<environment_context>\s*<current_date>\d{4}-\d{2}-\d{2}<\/current_date>\s*(?:<timezone>[^<>]+<\/timezone>\s*)?<filesystem>\s*(?:<workspace_roots>((?:\s*<root>[^<>]+<\/root>\s*)+)<\/workspace_roots>\s*)?(<permission_profile type="(?:disabled|managed)">[\s\S]*?<\/permission_profile>)\s*<\/filesystem>\s*(?:<subagents>\s*(?:<agent name="[^<>"\r\n]+"\s*\/>\s*)*<\/subagents>\s*)?<\/environment_context>$/.exec(text);
+  const subagentUuidLine = String.raw`-[ \t]+[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}(?::[ \t]*[^<>\r\n]+)?`;
+  const calendarFragment = (text: string) => new RegExp(
+    String.raw`^<environment_context>\s*<current_date>\d{4}-\d{2}-\d{2}<\/current_date>\s*(?:<timezone>[^<>]+<\/timezone>\s*)?<filesystem>\s*(?:<workspace_roots>((?:\s*<root>[^<>]+<\/root>\s*)+)<\/workspace_roots>\s*)?(<permission_profile type="(?:disabled|managed)">[\s\S]*?<\/permission_profile>)\s*<\/filesystem>\s*(?:<subagents>\s*(?:(?:<agent name="[^<>"\r\n]+"\s*\/>\s*)*|${subagentUuidLine}(?:[ \t]*\r?\n[ \t]*${subagentUuidLine})*\s*)<\/subagents>\s*)?<\/environment_context>$`,
+  ).exec(text);
   const fragments: string[] = [];
   // Codex renders no workspace_roots for a turn that has none (#936). Such a fragment names
   // no root and no cwd, so it can precede the instruction; with roots it is an ordinary claim.

@@ -2327,11 +2327,21 @@ describe("trusted Codex task environment continuity", () => {
     }
     expect(store.resolve(request).cwd).toBe(root);
     const valid = delta.content[0]!.text;
+    for (const subagents of [
+      "<subagents>\n    - 00000000-0000-0000-0000-000000000001\n    - 00000000-0000-0000-0000-000000000002: Worker\n  </subagents>",
+      "<subagents>- 00000000-0000-0000-0000-000000000001</subagents>",
+      "<subagents></subagents>",
+    ]) {
+      delta.content[0]!.text = valid.replace(/<subagents>[\s\S]*?<\/subagents>/, subagents);
+      expect(store.resolve(request).cwd).toBe(root);
+    }
     for (const malformed of [
       valid.replaceAll(root, resolve(root, "ungranted")),
       valid.replace(dangerFullAccessProfileXml, readOnlyProfileXml),
       valid.replace("</environment_context>", "<cwd>/unexpected</cwd></environment_context>"),
       valid.replace("</subagents>", '<agent name="bad" cwd="/unexpected" /></subagents>'),
+      valid.replace(/<subagents>[\s\S]*?<\/subagents>/, "<subagents>\n    - not-a-uuid: Worker\n  </subagents>"),
+      valid.replace(/<subagents>[\s\S]*?<\/subagents>/, "<subagents>\n    - 00000000-0000-0000-0000-000000000001 <cwd>/unexpected</cwd>\n  </subagents>"),
     ]) {
       delta.content[0]!.text = malformed;
       expect(() => store.resolve(request)).toThrow();
