@@ -90,6 +90,27 @@ const followupFixture = (root = 'data-markdown-text-style="assistant-message"') 
 <div><span>Clarify the result</span><span>Shorten the report</span></div>
 </div></div></div></div><button data-testid="copy-turn-action-button" aria-label="Copy"></button></section>`;
 
+test("#974 remounting captured Mermaid previews cannot interrupt the surrounding answer", async () => {
+  const captured = readFileSync(new URL("./fixtures/chatgpt-mermaid-preview-2026-11-10.html", import.meta.url), "utf8");
+  const code = '<pre><code class="language-mermaid">flowchart TD\n  A --&gt; B</code></pre>';
+  const html = `<section id="turn"><div class="markdown">${captured}${code}<p id="tail">Final text.</p></div></section>`;
+  const frames = await snapshots(html, [doc => {
+    // A new node has no source offsets; its empty rendered shell must not become answer text.
+    for (const preview of Array.from(doc.querySelectorAll('[data-chatgpt-mermaid-preview]'))) {
+      preview.outerHTML = preview.outerHTML;
+    }
+  }, doc => { doc.querySelector("h2")!.textContent = "Changed answer heading."; }]);
+  const buffer = new ChatGptMarkdownBuffer(undefined, 0);
+  const delivered = buffer.observe(frames[0]!.markdownSegments, 0);
+  expect(delivered).toContain("## 1\\. Architecture");
+  expect(delivered).toContain("```mermaid\nflowchart TD\n  A --> B\n```");
+  expect(buffer.observe(frames[1]!.markdownSegments, 1)).toBe("");
+  expect(buffer.finish()).toEqual({ markdown: `${delivered}\n\nFinal text.`, delta: "\n\nFinal text." });
+  expect(frames[1]!.fullHtml).not.toContain("data-chatgpt-mermaid-preview");
+  buffer.observe(frames[2]!.markdownSegments, 2);
+  expect(() => buffer.finish()).toThrow(ChatGptMarkdownConsistencyError);
+});
+
 test("suggested follow-up sizing copies stay out of the answer", async () => {
   for (const root of ['class="markdown"', 'data-markdown-text-style="assistant-message"']) {
     const result = await snapshot(followupFixture(root));

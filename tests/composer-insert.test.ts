@@ -129,6 +129,36 @@ test("refuses plain replacement when focus cannot enter the composer (#977)", ()
   expect(calls).toEqual([]);
 });
 
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("multipart attachment replaces a draft restored after the initial clear", async () => {
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  try {
+    const page = await browser.newPage();
+    const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+      config: { appName: "Codex Native2" },
+    });
+    await page.setContent('<form><div id="prompt-textarea" contenteditable="true" style="min-height:40px">old draft</div></form>');
+    await page.locator("#prompt-textarea").evaluate(element => {
+      element.addEventListener("input", () => {
+        if (!element.textContent) queueMicrotask(() => {
+          element.textContent = "restored old draft ".repeat(3_000);
+          element.setAttribute("data-draft-restored", "true");
+          const range = document.createRange();
+          range.selectNodeContents(element);
+          range.collapse(false);
+          window.getSelection()!.removeAllRanges();
+          window.getSelection()!.addRange(range);
+        });
+      }, { once: true });
+    });
+    const prompt = "Current stage\n```json\n{\"text\": \"keep literal Markdown\"}\n```\n" + "context ".repeat(24_000) + "END";
+    await worker.attachPrompt(page, prompt, false);
+    expect(await page.locator("#prompt-textarea").getAttribute("data-draft-restored")).toBe("true");
+    expect(await worker.attachedPromptText(page)).toBe(prompt);
+    await worker.attachPrompt(page, "Next stage\nwith a different request", false);
+    expect(await worker.attachedPromptText(page)).toBe("Next stage\nwith a different request");
+  } finally { await browser.close(); }
+}, 30_000);
+
 test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("a selected connector never appends a new request to an old draft", async () => {
   const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
   try {
