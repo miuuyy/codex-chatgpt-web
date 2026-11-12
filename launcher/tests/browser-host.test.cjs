@@ -1801,10 +1801,17 @@ test("logout clears only the owned ChatGPT session and returns to the sign-in su
 
 test("embedded browser reset discards only its session and closes its tabs", async () => {
   const calls = [];
-  const tab = { id: "active-tab" };
+  const tab = { id: "active-tab", view: { webContents: {
+    isDestroyed: () => false,
+    loadURL: async url => calls.push(["load-tab", url]),
+  } } };
+  const otherTab = { id: "other-tab", view: { webContents: {
+    isDestroyed: () => false,
+    loadURL: async url => calls.push(["load-other-tab", url]),
+  } } };
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {
     authView: { id: "auth-view" },
-    turnTabs: new Map([[tab.id, tab]]),
+    turnTabs: new Map([[tab.id, tab], [otherTab.id, otherTab]]),
     view: { webContents: {
       isDestroyed: () => false,
       loadURL: async url => calls.push(["load", url]),
@@ -1827,6 +1834,7 @@ test("embedded browser reset discards only its session and closes its tabs", asy
       calls.push(["close-tab", item.id, force]);
       this.turnTabs.delete(item.id);
     },
+    writeDescriptor() { calls.push("write-descriptor"); },
     withManualOperation: async (_operation, run) => run(),
     setState(patch) { Object.assign(this.state, patch); },
     snapshot() { return { ...this.state }; },
@@ -1836,9 +1844,13 @@ test("embedded browser reset discards only its session and closes its tabs", asy
   const result = await fixture.resetEmbeddedBrowserData();
   assert.deepEqual(calls, [
     ["close-auth", true, false],
-    ["close-tab", tab.id, true],
     ["load", IDLE_BROWSER_URL],
+    ["load-tab", IDLE_BROWSER_URL],
+    ["load-other-tab", IDLE_BROWSER_URL],
     "clear-storage", "clear-cache", "flush-storage", "flush-cookies",
+    ["close-tab", tab.id, true],
+    ["close-tab", otherTab.id, true],
+    "write-descriptor",
     ["log", "browser.session_reset"],
   ]);
   assert.equal(fixture.turnTabs.size, 0);

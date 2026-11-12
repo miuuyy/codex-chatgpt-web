@@ -577,7 +577,7 @@ function registerIpc({ logger, stateStore }) {
     "launcher:zero-risk-pro", "launcher:browser-interaction-mode",
     "launcher:auto-approve-tool-calls",
     "launcher:connector-name", "launcher:mcp-verify", "launcher:doctor", "launcher:cancel-turns",
-    "launcher:browser-passkey-login", "launcher:browser-logout", "launcher:browser-smoke",
+    "launcher:browser-passkey-login", "launcher:browser-logout", "launcher:browser-reset-data", "launcher:browser-smoke",
     "launcher:limits-setup", "launcher:update-install", "launcher:complete-onboarding",
   ]);
   const handle = (channel, handler) => registerLoggedIpc(ipcMain, logger, channel, async (...args) => {
@@ -673,7 +673,11 @@ function registerIpc({ logger, stateStore }) {
     }
     return browser;
   });
-  handle("launcher:browser-reset-data", () => browserHost.resetEmbeddedBrowserData());
+  handle("launcher:browser-reset-data", async () => {
+    const browser = await browserHost.resetEmbeddedBrowserData();
+    dismissSessionReminder();
+    return browser;
+  });
   handle("launcher:browser-passkey-login", async () => {
     const browser = await browserHost.openPasskeyLogin();
     if (browser.authenticated) {
