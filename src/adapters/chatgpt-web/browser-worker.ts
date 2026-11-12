@@ -4239,6 +4239,19 @@ export class ChatGptBrowserWorker {
         for (const widget of Array.from(content.querySelectorAll(
           ".chart-widget-container, [data-code-block-preview-pane], script, style, svg, img, picture, source",
         ))) widget.remove();
+        // #974: Mermaid previews mount as top-level `[data-chatgpt-mermaid-preview]` DIVs without
+        // source ranges and can remount after later prose has already streamed. Remove preview-only
+        // shells so remounts do not create empty unanchored DIV blocks, while keeping any code view.
+        for (const preview of Array.from(content.querySelectorAll("[data-chatgpt-mermaid-preview]"))) {
+          if (preview.closest("pre, code")) continue;
+          if (!preview.querySelector('pre, code, [data-markdown-copy="code-block"], .cm-content[data-language]')) {
+            preview.remove();
+          } else {
+            for (const chrome of Array.from(preview.querySelectorAll('[data-block-actions="true"][data-markdown-copy="exclude"]'))) {
+              if (!chrome.closest("pre, code")) chrome.remove();
+            }
+          }
+        }
         for (const button of Array.from(content.querySelectorAll("button"))) {
           // Follow-up labels also live in hidden sizing siblings; removing only buttons leaks them.
           if (button.classList.contains("group/suggested-followup")) {

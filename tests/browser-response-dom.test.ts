@@ -709,6 +709,53 @@ test("a known answer node cannot move its source range and be emitted again", as
   expect(() => buffer.finish()).toThrow(ChatGptMarkdownConsistencyError);
 });
 
+test("remounted Mermaid preview shells do not break alignment while separate Mermaid code stays intact (#974)", async () => {
+  const mermaidPreview = `<div class="group/app-widget relative" data-chatgpt-mermaid-preview="" data-search-result-target="">
+    <div data-block-actions="true" data-markdown-copy="exclude">
+      <button type="button" aria-label="Diagram options"></button>
+      <button type="button" aria-label="Expand diagram"></button>
+    </div>
+    <div data-code-block-preview-pane="mermaid"><div><svg><text>Node A</text></svg></div></div>
+  </div>`;
+  const html = `<section id="turn"><div class="markdown">
+    <p>It keeps each worker within its context window.</p>
+    <h2>1. Architecture</h2>
+    ${mermaidPreview}
+    <pre><code class="language-mermaid">graph TD;\nA--&gt;B;</code></pre>
+    <h2>2. Recursive task decomposition</h2>
+    <p>Committed explanation.</p>
+    <p>Final paragraph.</p>
+  </div></section>`;
+  const [initial, remounted] = await snapshots(html, [doc => {
+    const existing = doc.querySelector("[data-chatgpt-mermaid-preview]")!;
+    const replacement = existing.cloneNode(true);
+    const duplicate = existing.cloneNode(true);
+    existing.replaceWith(replacement, duplicate);
+  }]);
+  const buffer = new ChatGptMarkdownBuffer(undefined, 0);
+  const streamed = buffer.observe(initial!.markdownSegments, 0);
+  expect(streamed).toContain(String.raw`## 1\. Architecture`);
+  expect(streamed).toContain("```mermaid\ngraph TD;\nA-->B;\n```");
+  expect(streamed).toContain(String.raw`## 2\. Recursive task decomposition` + "\n\nCommitted explanation.");
+  expect(buffer.observe(remounted!.markdownSegments, 1)).toBe("");
+  expect(buffer.finish().markdown).toBe(
+    "It keeps each worker within its context window.\n\n"
+    + String.raw`## 1\. Architecture` + "\n\n"
+    + "```mermaid\ngraph TD;\nA-->B;\n```\n\n"
+    + String.raw`## 2\. Recursive task decomposition` + "\n\n"
+    + "Committed explanation.\n\n"
+    + "Final paragraph.",
+  );
+
+  const codeView = await snapshot(`<section id="turn"><div class="markdown">
+    <div data-chatgpt-mermaid-preview="">
+      <div data-block-actions="true" data-markdown-copy="exclude">Diagram options</div>
+      <div data-markdown-copy="code-block"><code class="language-mermaid">flowchart LR\nX--&gt;Y</code></div>
+    </div>
+  </div></section>`);
+  expect(chatGptHtmlToMarkdown(codeView.fullHtml)).toBe("```mermaid\nflowchart LR\nX-->Y\n```");
+});
+
 test("repeated text cannot rebind a known node to another committed source range", async () => {
   const [before, shifted] = await snapshots(`<section id="turn"><div class="markdown">
     <p id="first" data-start="0" data-end="8">Repeated.</p>
