@@ -726,10 +726,8 @@ export function compileChatGptWebPrompt(
       };
       const imageTokens = images.reduce((sum, image) => sum + chatGptWebImageTokenReserve(image.detail), 0);
       const transactionId = `ctx_${"0".repeat(32)}`;
-      // First try Instant-sized stages and give the final selected mode its own larger share.
-      // Equal parts near Instant's maximum can be accepted once and rejected on the next Send.
-      // If complete records cannot fit that allocation, plan with the wider available stage mode
-      // before submitting anything; no context is truncated and no failed upload is replayed.
+      // Retain the existing model/effort staging policy. Adjusting the staging mode
+      // is a separate change, so this patch isolates only transport and history limits.
       const stagingEfforts = backendModel === CHATGPT_WEB_LUNA_MODEL_ID ? ["low"] as const
         : capabilities.proAvailable ? ["max"] as const : ["low", "medium"] as const;
       const emptyParts = multipart.parts;
@@ -805,8 +803,32 @@ export function compileChatGptWebPrompt(
     (resolveChatGptWebMessageTokenBudget(backendModel, mode.effort, capabilities)
       + CHATGPT_WEB_PLATFORM_RESERVE_TOKENS + 1) * compiled.multipart.parts.length,
   ) : undefined;
+  // A compaction checkpoint is planned as a two-part transaction, bounded by the
+  // ordinary context estimate and per-message limits. This limits the retained history
+  // sent with the checkpoint. Whether it resolves observed browser timeouts needs
+  // independent live testing; a timeout does not prove a size rejection.
+  const safeCompactionTokenBudget = compiled.multipart?.parts.length === 2 ? Math.min(
+    multipartTokenBudget!,
+    resolveChatGptWebContextLimits(backendModel, mode.effort, capabilities).autoCompactTokenLimit,
+    resolveChatGptWebMessageTokenBudget(backendModel, mode.effort, capabilities),
+  ) : multipartTokenBudget;
+  const multipartMessageExceedsLimits = (): boolean => {
+    if (compiled.multipart?.parts.length !== 2) return false;
+    const messages = compiled.multipart.parts.map((payload, index) => index === 0
+      ? formatChatGptWebMultipartStage(payload, `ctx_${"0".repeat(32)}`, 1, 2).text
+      : formatChatGptWebMultipartCommit(compiled.multipart!, `ctx_${"0".repeat(32)}`));
+    return messages.some((text, index) => {
+      const limits = resolveChatGptWebTransportLimits(backendModel, mode.effort, capabilities);
+      const budget = index === 0
+        ? resolveChatGptWebStagingTokenBudget(backendModel, mode.effort, capabilities)
+        : resolveChatGptWebMessageTokenBudget(backendModel, mode.effort, capabilities);
+      return (limits.browserComposerCharLimit !== undefined && text.length > limits.browserComposerCharLimit)
+        || estimateTokens(text, parsed.modelId) > budget;
+    });
+  };
   const exceedsCompactionBudget = (): boolean => compiled.multipart
-    ? estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId) >= multipartTokenBudget!
+    ? estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId) >= safeCompactionTokenBudget!
+      || multipartMessageExceedsLimits()
     : chatGptPromptJsonBytes(compiled.text) > CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET;
 
   // A cumulative checkpoint may be the only remaining account of earlier work. Preserve the
@@ -826,7 +848,7 @@ export function compileChatGptWebPrompt(
     if (compiled.multipart) {
       const inputTokens = estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId);
       throw new ChatGptWebAdapterError(
-        `ChatGPT Web compaction still requires ${inputTokens.toLocaleString("en-US")} input tokens after other history was trimmed; the required system context, ${checkpointIndex >= 0 ? "cumulative checkpoint, and " : ""}final compaction instruction cannot fit below the ${multipartTokenBudget!.toLocaleString("en-US")}-token ${compiled.multipart.parts.length === 2 ? "two-part" : "six-part"} ceiling. Reduce the required context before retrying.`,
+        `ChatGPT Web compaction still requires ${inputTokens.toLocaleString("en-US")} input tokens after other history was trimmed; the required system context, ${checkpointIndex >= 0 ? "cumulative checkpoint, and " : ""}final compaction instruction cannot fit below the ${safeCompactionTokenBudget!.toLocaleString("en-US")}-token ${compiled.multipart.parts.length === 2 ? "two-part" : "six-part"} ceiling and its per-message limits. Reduce the required context before retrying.`,
         { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
       );
     }

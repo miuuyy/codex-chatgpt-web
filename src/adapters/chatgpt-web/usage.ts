@@ -65,7 +65,8 @@ export function estimateChatGptWebInputTokens(
 /**
  * The compaction threshold chooses the initial part count. Whole records and composer limits
  * can require more parts even when the total token estimate is small. Plan before submission;
- * compaction always receives all six parts without passing through the legacy inline budget.
+ * Compaction uses a short, bounded two-part handoff. Six full-history uploads can exceed
+ * ChatGPT's cumulative context on the fourth Send even though each stage fits by itself.
  */
 export function resolveBiggerContextMultipartParts(
   parsed: CodexParsedRequest,
@@ -78,7 +79,7 @@ export function resolveBiggerContextMultipartParts(
   }
   const mode = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
   if (!supportsChatGptWebBiggerContext(parsed.modelId, mode.effort, parsed._chatgptModelFamily)) return undefined;
-  if (parsed._compactionRequest) return CHATGPT_BIGGER_CONTEXT_PARTS;
+  if (parsed._compactionRequest) return 2;
   const backendModel = parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID ? CHATGPT_WEB_LUNA_MODEL_ID : CHATGPT_WEB_BACKEND_MODEL;
   const { autoCompactTokenLimit } = resolveChatGptWebContextLimits(
     backendModel,
@@ -123,7 +124,7 @@ export function biggerContextPartCount(
   onePartLimit: number,
   compaction: boolean,
 ): ChatGptWebMultipartPartCount | undefined {
-  if (compaction) return CHATGPT_BIGGER_CONTEXT_PARTS;
+  if (compaction) return 2;
   if (inputTokens < onePartLimit) return undefined;
   if (inputTokens < onePartLimit * 2) return 2;
   return CHATGPT_BIGGER_CONTEXT_PARTS;

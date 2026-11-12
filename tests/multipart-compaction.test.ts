@@ -3,6 +3,7 @@ import {
   compileChatGptWebPrompt,
   type CompiledChatGptWebPrompt,
 } from "../src/adapters/chatgpt-web/prompt";
+import { resolveBiggerContextMultipartParts } from "../src/adapters/chatgpt-web/usage";
 import {
   compiledChatGptWebMessages,
   estimateChatGptWebImageTokens,
@@ -56,6 +57,31 @@ function assertMultipartFits(
     parsed._chatgptModelFamily,
   );
 }
+
+test("6.1.18: a long compaction is reduced before any fourth-stage upload", () => {
+  const parsed = request();
+  const checkpoint = `${SUMMARY_PREFIX}\nCumulative decisions and unfinished actions`;
+  parsed.context.messages = [
+    { role: "user", content: checkpoint, timestamp: 1 },
+    ...Array.from({ length: 18 }, (_, index) => ({
+      role: "toolResult" as const, toolCallId: `prior-${index}`, toolName: "exec_command",
+      content: `previous output ${index} ${"word ".repeat(8_000)}`, isError: false, timestamp: index + 2,
+    })),
+    { role: "user", content: "Continue the original implementation", timestamp: 21 },
+  ];
+  const snapshot = structuredClone(parsed);
+  const parts = resolveBiggerContextMultipartParts(parsed, capabilities);
+  expect(parts).toBe(2);
+  const compiled = compileChatGptWebPrompt(parsed, capabilities, turnToken, { experimentalMultipartParts: parts });
+  expect(compiled.multipart!.parts).toHaveLength(2);
+  expect(compiled.trimmedCompactionMessages).toBeGreaterThan(0);
+  const records = compiled.multipart!.parts.flatMap(payload => JSON.parse(payload).records);
+  expect(records.filter(record => record.kind === "message")[0]!.message.content).toBe(checkpoint);
+  expect(records.at(-1)!.message.content).toBe("Continue the original implementation");
+  expect(() => assertMultipartFits(compiled, parsed)).not.toThrow();
+  expect(estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId)).toBeLessThan(95_000);
+  expect(parsed).toEqual(snapshot);
+}, 30_000);
 
 test.each(["string", "text parts"] as const)("#930: GPT-6 Pro compaction recovers above the six-part ceiling (%s checkpoint)", checkpointFormat => {
   const parsed = request();
