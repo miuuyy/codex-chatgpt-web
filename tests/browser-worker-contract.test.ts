@@ -1258,6 +1258,7 @@ test("large Markdown-rich context uses one plain-text editing command before exa
     fill: async (value: string) => { calls.push(["fill", value]); },
     focus: async () => { calls.push(["focus"]); },
     evaluate: async (fn: unknown, value: string, options: unknown) => {
+      calls.push(["evaluateFn", (fn as { name?: string })?.name]);
       calls.push(["evaluate", value]);
       calls.push(["evaluateOptions", options]);
       expect(typeof fn).toBe("function");
@@ -1278,6 +1279,7 @@ test("large Markdown-rich context uses one plain-text editing command before exa
   }, dialogPage("").page, prompt, false);
 
   expect(calls[0]).toEqual(["fill", ""]);
+  expect(calls.filter(call => call[0] === "evaluateFn")).toEqual([["evaluateFn", "replacePlainTextInComposer"]]);
   expect(calls.filter(call => call[0] === "evaluate")).toEqual([["evaluate", prompt]]);
   expect(calls.filter(call => call[0] === "evaluateOptions")).toEqual([
     ["evaluateOptions", { timeout: 20_000 }],
