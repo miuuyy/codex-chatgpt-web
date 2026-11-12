@@ -1799,6 +1799,70 @@ test("logout clears only the owned ChatGPT session and returns to the sign-in su
   assert.ok(calls.some(([name]) => name === "show"));
 });
 
+test("embedded browser reset discards only its session and closes its tabs", async () => {
+  const calls = [];
+  const tab = { id: "active-tab", view: { webContents: {
+    isDestroyed: () => false,
+    loadURL: async url => calls.push(["load-tab", url]),
+  } } };
+  const otherTab = { id: "other-tab", view: { webContents: {
+    isDestroyed: () => false,
+    loadURL: async url => calls.push(["load-other-tab", url]),
+  } } };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    authView: { id: "auth-view" },
+    turnTabs: new Map([[tab.id, tab], [otherTab.id, otherTab]]),
+    view: { webContents: {
+      isDestroyed: () => false,
+      loadURL: async url => calls.push(["load", url]),
+      session: {
+        clearStorageData: async () => calls.push("clear-storage"),
+        clearCache: async () => calls.push("clear-cache"),
+        flushStorageData: () => calls.push("flush-storage"),
+        cookies: { flushStore: async () => calls.push("flush-cookies") },
+      },
+    } },
+    state: { authenticated: true, status: "ready" },
+    primaryNavigationError: new Error("previous navigation"),
+    authNavigationError: new Error("previous auth"),
+    reauthenticationRequired: true,
+    closeAuthView(_view, destroy, refresh) {
+      calls.push(["close-auth", destroy, refresh]);
+      this.authView = null;
+    },
+    removeTurnTab(item, force) {
+      calls.push(["close-tab", item.id, force]);
+      this.turnTabs.delete(item.id);
+    },
+    writeDescriptor() { calls.push("write-descriptor"); },
+    withManualOperation: async (_operation, run) => run(),
+    setState(patch) { Object.assign(this.state, patch); },
+    snapshot() { return { ...this.state }; },
+    logger: { info(event) { calls.push(["log", event]); } },
+  });
+
+  const result = await fixture.resetEmbeddedBrowserData();
+  assert.deepEqual(calls, [
+    ["close-auth", true, false],
+    ["load", IDLE_BROWSER_URL],
+    ["load-tab", IDLE_BROWSER_URL],
+    ["load-other-tab", IDLE_BROWSER_URL],
+    "clear-storage", "clear-cache", "flush-storage", "flush-cookies",
+    ["close-tab", tab.id, true],
+    ["close-tab", otherTab.id, true],
+    "write-descriptor",
+    ["log", "browser.session_reset"],
+  ]);
+  assert.equal(fixture.turnTabs.size, 0);
+  assert.equal(fixture.authView, null);
+  assert.equal(fixture.primaryNavigationError, null);
+  assert.equal(fixture.authNavigationError, null);
+  assert.equal(fixture.reauthenticationRequired, false);
+  assert.equal(result.authenticated, false);
+  assert.equal(result.status, "signed-out");
+  assert.equal(result.url, IDLE_BROWSER_URL);
+});
+
 test("launcher shutdown persists ChatGPT DOM storage and cookies before browser destruction", async () => {
   const calls = [];
   const fixture = {

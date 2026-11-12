@@ -10,6 +10,62 @@ const electronMain = fs.readFileSync(path.join(launcherRoot, "electron", "main.c
 const browserHostSource = fs.readFileSync(path.join(launcherRoot, "electron", "browser-host.cjs"), "utf8");
 const preloadSource = fs.readFileSync(path.join(launcherRoot, "electron", "preload.cjs"), "utf8");
 
+test("browser data reset is explicitly confirmed and exposed through launcher IPC", () => {
+  assert.match(appSource, /confirmBrowserReset \? \(/);
+  assert.match(appSource, /await api!\.resetEmbeddedBrowserData\(\)/);
+  assert.match(preloadSource, /launcher:browser-reset-data/);
+  assert.match(electronMain, /"launcher:browser-logout", "launcher:browser-reset-data"/);
+  assert.match(electronMain, /handle\("launcher:browser-reset-data", async \(\) => \{\s*const browser = await browserHost\.resetEmbeddedBrowserData\(\);\s*dismissSessionReminder\(\);\s*return browser;/);
+});
+
+test("browser reset waits for runtime startup and dismisses the reminder after success", async () => {
+  const vm = require("node:vm");
+  for (const fails of [false, true]) {
+    let finishStartup;
+    let finishReset;
+    let resetStarted;
+    const runtimeStartup = new Promise(resolve => { finishStartup = resolve; });
+    const resetReady = new Promise(resolve => { finishReset = resolve; });
+    const started = new Promise(resolve => { resetStarted = resolve; });
+    const calls = [];
+    const handlers = new Map();
+    const state = { sessionRefreshReminderAt: "stale" };
+    const stateStore = { read: () => state, update: patch => Object.assign(state, patch) };
+    const context = vm.createContext({
+      runtimeStartup, stateStore, logger: {},
+      SessionReminderView: class {}, mainWindow: {}, loadRenderer() {},
+      ipcMain: { on() {} }, registerLoggedIpc: (_ipc, _logger, channel, handler) => handlers.set(channel, handler),
+      browserHost: { resetEmbeddedBrowserData: async () => {
+        calls.push("reset");
+        resetStarted();
+        await resetReady;
+        if (fails) throw new Error("reset failed");
+        return { status: "signed-out" };
+      } },
+      nextSessionRefreshReminderAt: () => "next",
+      send: (channel) => calls.push(channel),
+    });
+    vm.runInContext(electronMain.slice(electronMain.indexOf("function registerIpc("),
+      electronMain.indexOf("async function requestQuit(")) + "\nregisterIpc({ logger, stateStore });", context);
+    const reset = handlers.get("launcher:browser-reset-data")();
+    await Promise.resolve();
+    assert.deepEqual(calls, [], "reset must wait for runtime startup");
+    finishStartup();
+    await started;
+    assert.deepEqual(calls, ["reset"], "reminder must remain until storage reset finishes");
+    finishReset();
+    if (fails) {
+      await assert.rejects(reset, /reset failed/);
+      assert.equal(state.sessionRefreshReminderAt, "stale");
+      assert.deepEqual(calls, ["reset"]);
+    } else {
+      assert.equal((await reset).status, "signed-out");
+      assert.equal(state.sessionRefreshReminderAt, "next");
+      assert.deepEqual(calls, ["reset", "launcher:state-changed"]);
+    }
+  }
+});
+
 test("Bigger Context waits for startup and route recovery without invalidating healthy setup", async () => {
   const vm = require("node:vm");
   for (const fails of [false, true]) {
