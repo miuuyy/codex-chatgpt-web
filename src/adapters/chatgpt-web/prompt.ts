@@ -726,12 +726,13 @@ export function compileChatGptWebPrompt(
       };
       const imageTokens = images.reduce((sum, image) => sum + chatGptWebImageTokenReserve(image.detail), 0);
       const transactionId = `ctx_${"0".repeat(32)}`;
-      // First try Instant-sized stages and give the final selected mode its own larger share.
-      // Equal parts near Instant's maximum can be accepted once and rejected on the next Send.
-      // If complete records cannot fit that allocation, plan with the wider available stage mode
-      // before submitting anything; no context is truncated and no failed upload is replayed.
-      const stagingEfforts = backendModel === CHATGPT_WEB_LUNA_MODEL_ID ? ["low"] as const
-        : capabilities.proAvailable ? ["max"] as const : ["low", "medium"] as const;
+      // Compaction must stage with the selected effort and model family. Staging
+      // at a different effort can change the browser's available context budget.
+      // Keep the pre-existing multipart part count and history budget here;
+      // transport sizing is an independent concern.
+      const stagingEfforts = parsed._compactionRequest ? [mode.effort]
+        : backendModel === CHATGPT_WEB_LUNA_MODEL_ID ? ["low"] as const
+          : capabilities.proAvailable ? ["max"] as const : ["low", "medium"] as const;
       const emptyParts = multipart.parts;
       for (const stagingEffort of stagingEfforts) {
         multipart.parts = emptyParts;

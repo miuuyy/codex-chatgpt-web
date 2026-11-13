@@ -161,7 +161,7 @@ test("GPT-6 compaction respects the selected account and effort", () => {
   expect(compileChatGptWebPrompt(parsed, capabilities, undefined, { experimentalMultipartParts: parts }).multipart!.parts).toHaveLength(6);
 });
 
-test("Plus history is rebalanced into smaller Instant uploads and a larger selected-mode final message", () => {
+test("Plus multipart stages use Instant for normal turns and the requested effort for compaction", () => {
   const plus = { ...capabilities, proAvailable: false, extraHighAvailable: false };
   const parsed = request("");
   parsed.context.messages = Array.from({ length: 60 }, (_, index) => ({
@@ -175,12 +175,12 @@ test("Plus history is rebalanced into smaller Instant uploads and a larger selec
     expect(compiled.trimmedCompactionMessages).toBeUndefined();
     const messages = compiledChatGptWebMessages(compiled);
     const stagingTokens = messages.slice(0, -1).map(text => estimateTokens(text));
-    const stagingBudget = resolveChatGptWebStagingTokenBudget("gpt-5.6-sol", "low", plus);
+    const stagingBudget = resolveChatGptWebStagingTokenBudget("gpt-5.6-sol", compaction ? "high" : "low", plus);
     expect(Math.max(...stagingTokens)).toBeLessThanOrEqual(stagingBudget);
-    expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus,
+    if (!compaction) expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus,
       Math.max(...stagingTokens), Math.max(...messages.slice(0, -1).map(text => text.length))).effort).toBe("low");
     const finalTokens = estimateTokens(messages.at(-1)!);
-    expect(finalTokens).toBeGreaterThan(Math.max(...stagingTokens));
+    if (!compaction) expect(finalTokens).toBeGreaterThan(Math.max(...stagingTokens));
     expect(finalTokens).toBeLessThanOrEqual(resolveChatGptWebMessageTokenBudget("gpt-5.6-sol", "high", plus));
   }
 }, 30_000);
