@@ -9,18 +9,21 @@ import { resolveChatGptWebModelMode } from "../src/adapters/chatgpt-web/model";
 import { ChatGptExternalTurnProgress } from "../src/adapters/chatgpt-web/turn-progress";
 
 test.each([
-  [true, false, true, false, false, false, false],
-  [false, false, true, false, false, false, false],
-  [true, true, true, false, false, false, false],
-  [true, false, false, false, false, false, false],
-  [true, false, true, true, false, false, false],
-  [true, true, false, false, true, false, false],
-  [true, false, true, true, false, true, false],
-  [true, false, true, false, false, false, true],
-])("browser turns preserve recovery, ordering and final-only tools (owned=%s, tools=%s, multipart=%s, size rejected=%s, retained=%s, SSE=%s, GPT-6 Pro=%s)", async (owned, tools, multipart, sizeRejected, retained, sseRejection, gpt6Pro) => {
+  [true, false, true, false, false, false, false, false],
+  [false, false, true, false, false, false, false, false],
+  [true, true, true, false, false, false, false, false],
+  [true, false, false, false, false, false, false, false],
+  [true, false, true, true, false, false, false, false],
+  [true, true, false, false, true, false, false, false],
+  [true, false, true, true, false, true, false, false],
+  [true, false, true, false, false, false, true, false],
+  // Independent effort-preservation case: retain the original six-part budget,
+  // and verify that every GPT-6 Extra High stage uses the selected effort.
+  [true, false, true, false, false, false, false, true],
+])("browser turns preserve recovery, ordering and final-only tools (owned=%s, tools=%s, multipart=%s, size rejected=%s, retained=%s, SSE=%s, GPT-6 Pro=%s, GPT-6 Extra High=%s)", async (owned, tools, multipart, sizeRejected, retained, sseRejection, gpt6Pro, gpt6ExtraHigh) => {
   const diagnostics = mkdtempSync(join(tmpdir(), "compaction-observation-"));
   const cancellationCase = owned && !tools && !multipart;
-  const effort = gpt6Pro ? "max" : tools ? "xhigh" : "high";
+  const effort = gpt6Pro ? "max" : gpt6ExtraHigh || tools ? "xhigh" : "high";
   const finalResponse = cancellationCase ? chatGptBrowserTabClosedError() : new Error("fixture reached final response observation");
   const capabilities = { localToolsEnabled: tools, solAvailable: true, extraHighAvailable: true, proAvailable: true };
   const progress = tools ? new ChatGptExternalTurnProgress() : undefined;
@@ -50,7 +53,7 @@ test.each([
     selectModelAndEffort: async (_page: unknown, model: string, effort: string, _capabilities: unknown,
       _diagnostic: unknown, trackUsage: boolean, family: string) => {
       expect(trackUsage).toBe(false);
-      expect(family).toBe(gpt6Pro && effort === "max" ? "6" : "5.6");
+      expect(family).toBe(gpt6Pro || gpt6ExtraHigh ? "6" : "5.6");
       actions.push(`effort:${effort}`);
       return resolveChatGptWebModelMode(model, effort, capabilities);
     },
@@ -132,7 +135,7 @@ test.each([
     const run = worker.runBrowserTurn({
       traceId: "compaction_recovery_fixture",
       modelId: "gpt-5.6-sol",
-      modelFamily: gpt6Pro ? "6" : "5.6",
+      modelFamily: gpt6Pro || gpt6ExtraHigh ? "6" : "5.6",
       reasoning: effort,
       onSendActivated: () => { activated += 1; },
       capabilities,
