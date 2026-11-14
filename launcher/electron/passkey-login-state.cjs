@@ -3,12 +3,15 @@ const MAX_COOKIES = 4_096;
 const MAX_ORIGINS = 128;
 const MAX_LOCAL_STORAGE_ENTRIES = 4_096;
 const MAX_STRING_CHARS = 2 * 1024 * 1024;
+// Chrome's per-origin quota counts both keys and values as UTF-16 bytes.
+// components/services/storage/dom_storage/dom_storage_constants.h (#991)
+const MAX_LOCAL_STORAGE_BYTES = 10 * 1024 * 1024;
 
-function boundedString(value, label, { allowEmpty = true } = {}) {
+function boundedString(value, label, { allowEmpty = true, maxChars = MAX_STRING_CHARS } = {}) {
   if (typeof value !== "string" || (!allowEmpty && !value)) {
     throw new Error(`Passkey login state has an invalid ${label}`);
   }
-  if (value.length > MAX_STRING_CHARS) {
+  if (value.length > maxChars) {
     throw new Error(`Passkey login state ${label} is too large`);
   }
   return value;
@@ -94,6 +97,7 @@ function validatePasskeyLoginState(value) {
   if (cookies.length === 0) throw new Error("Passkey login state contains no ChatGPT/OpenAI cookies");
 
   const localStorage = [];
+  let localStorageBytes = 0;
   for (const raw of value.origins) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw) || typeof raw.origin !== "string") {
       throw new Error("Passkey login returned an invalid origin state");
@@ -106,10 +110,15 @@ function validatePasskeyLoginState(value) {
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
         throw new Error("Passkey login returned an invalid ChatGPT local-storage entry");
       }
-      localStorage.push({
-        name: boundedString(entry.name, "local-storage name"),
-        value: boundedString(entry.value, "local-storage value"),
+      const name = boundedString(entry.name, "local-storage name");
+      const storageValue = boundedString(entry.value, "local-storage value", {
+        maxChars: MAX_LOCAL_STORAGE_BYTES / 2,
       });
+      localStorageBytes += 2 * (name.length + storageValue.length);
+      if (localStorageBytes > MAX_LOCAL_STORAGE_BYTES) {
+        throw new Error("Passkey login state local-storage total is too large");
+      }
+      localStorage.push({ name, value: storageValue });
     }
   }
   if (localStorage.length > MAX_LOCAL_STORAGE_ENTRIES) {

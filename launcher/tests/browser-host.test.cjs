@@ -1661,7 +1661,17 @@ test("passkey login imports only validated state and re-proves the Launcher sess
   assert.ok(calls.some(value => Array.isArray(value) && value[0] === "inspect" && value[1] === false));
 });
 
-test("invalid passkey transfer is removed without mutating the embedded session", async () => {
+for (const { domain, origins, error } of [
+  { domain: ".accounts.google.com", origins: [], error: /no ChatGPT\/OpenAI cookies/ },
+  {
+    domain: ".chatgpt.com",
+    origins: [{ origin: "https://chatgpt.com", localStorage: [
+      { name: "first", value: "x".repeat(3 * 1024 * 1024) },
+      { name: "second", value: "x".repeat(3 * 1024 * 1024) },
+    ] }],
+    error: /local-storage total is too large/,
+  },
+]) test(`invalid passkey transfer is removed without mutating the embedded session (${error.source})`, async () => {
   let cleared = false;
   let cleaned = false;
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {
@@ -1677,18 +1687,18 @@ test("invalid passkey transfer is removed without mutating the embedded session"
         cookies: [{
           name: "identity-provider",
           value: "private",
-          domain: ".accounts.google.com",
+          domain,
           path: "/",
           expires: -1,
           httpOnly: true,
           secure: true,
           sameSite: "Lax",
         }],
-        origins: [],
+        origins,
       },
       cleanup: async () => { cleaned = true; },
     }),
-    /no ChatGPT\/OpenAI cookies/,
+    error,
   );
   assert.equal(cleared, false);
   assert.equal(cleaned, true);
