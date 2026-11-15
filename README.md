@@ -72,10 +72,43 @@ Automatic modes offer Luna/Think when the account has no reasoning selector; oth
 | **Browser-only** | Automatic | No |
 | **Full harness (With Automation)** | Automatic | Yes, through MCP |
 | **Zero Risk** | Paste and send manually | Yes, through a separate MCP connector |
+| **Browser Relay (experimental)** | Automatic | Yes, through validated JSON → native Codex tool events; no MCP |
 
 Zero Risk does not read or operate the ChatGPT page. Choose the model and `Codex Zero Risk` connector yourself, paste and send the prepared prompt, then confirm **Sent** in the launcher. Automatic models ending in **(Web)** expose their supported Effort choices in Codex. Instant and each Pro version have separate entries to preserve their context budgets; older saved model entries keep their original fixed mode.
 
 <a id="full-harness"></a>
+
+### Browser Relay (experimental, no MCP)
+
+Browser Relay is a separate, opt-in transport for users whose ChatGPT custom connector is
+unavailable. It runs the Web model in automatic browser mode, captures a complete JSON envelope,
+validates every requested tool against the native Codex tool catalog and emits Responses tool-call
+events back to Codex. Codex itself executes the tool, including its sandbox and approval flow.
+The adapter never runs shell commands directly.
+
+From a source checkout with Bun 1.4.0 installed, stop active tasks and configure:
+
+```bash
+bun run src/cli.ts setup --browser-only --browser-relay --acknowledge-unofficial
+```
+
+Restart the launcher/daemon and Codex, then select a Web model. For a read-only command
+verification, ask Codex to list files in the current working directory. The local tool name
+must appear in the model's response envelope, and the Codex tool result must arrive in the
+next request before the model claims completion.
+
+To turn off the experiment, run
+`bun run src/cli.ts setup --browser-only --no-browser-relay --acknowledge-unofficial`.
+Browser Relay is incompatible with Full/MCP and Zero Risk modes. The original Full
+harness remains available after configuring it again. Legacy installations need a new
+build from this fork; the upstream launcher binary does not contain Browser Relay.
+
+**Limitations:** This mode is experimental and is not validated end-to-end with the
+authenticated browser or Codex on Windows. ChatGPT Web is a text UI rather than an
+official function-calling API; non-JSON replies fail closed. Each tool round may require
+another Web message, making multi-step work slower. A ChatGPT outage, UI change, or
+account limit can still stop the session. There is no guaranteed availability or
+automatic fallback after an ambiguous submitted turn.
 
 ### Full harness
 
