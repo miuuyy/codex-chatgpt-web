@@ -74,7 +74,6 @@ test("relay emits a native function call, then Codex can supply its result in ne
   expect(text).toContain("event: response.function_call_arguments.done");
   expect(text).toContain(`"call_id":"${id}"`);
   expect(text).toContain("event: response.completed");
-  expect(text).toContain('"endTurn"'.slice(0,0)); // Check the response via output-item semantics above.
   const replay = request();
   replay.context.messages.push({
     role: "toolResult", toolCallId: id, toolName: "exec_command", content: "src/app.ts", isError: false, timestamp: 2,
