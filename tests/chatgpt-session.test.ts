@@ -294,7 +294,7 @@ function reasoningPicker(options: { max?: string; locks?: Array<string | null>; 
     locator: () => sliderControl,
   };
   const container = {
-    filter() { return this; }, last() { return this; },
+    filter() { return this; }, first() { return this; }, last() { return this; },
     locator: () => slider,
     evaluate: async (read: (element: Element) => unknown) => {
       const { createDocument } = require("@mixmark-io/domino") as { createDocument(html: string): Document };
@@ -324,7 +324,7 @@ function reasoningPicker(options: { max?: string; locks?: Array<string | null>; 
   };
   const composer = { filter() { return this; }, last() { return this; }, count: async () => 1, isEditable: async () => true, locator: () => ({ count: async () => 1, locator: () => control }) };
   const modelRows = { count: async () => 3, first() { return this; }, waitFor: async () => {}, nth: () => { throw new Error("Model rows are not effort choices"); } };
-  const menu = { filter() { return this; }, last() { return this; }, isVisible: async () => true, locator: () => modelRows };
+  const menu = { filter() { return this; }, last() { return this; }, isVisible: async () => true, page: () => page, locator: () => modelRows };
   const page = {
     url: () => "https://chatgpt.com/",
     evaluate: async () => true,

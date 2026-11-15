@@ -84,6 +84,7 @@ import {
   CHATGPT_EFFORT_ITEM_SELECTOR,
   CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
   activateChatGptEffortMenu,
+  chatGptEffortLocked,
   readChatGptEffortSnapshot,
 } from "../../chatgpt-ui/model-picker";
 import { loginVerificationMarkerPath } from "../../browser-login";
@@ -108,7 +109,12 @@ import {
   type ChatGptWebModelFamily,
 } from "../../chatgpt-web-models";
 import { LauncherBrowserHelperClient } from "./launcher-helper-client";
-import { assertChatGptModelFamily, selectChatGptModelFamily } from "./model-selection";
+import {
+  assertChatGptInstantLocked,
+  assertChatGptModelFamily,
+  selectChatGptInstantWhenEffortLocked,
+  selectChatGptModelFamily,
+} from "./model-selection";
 import { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 import {
   ChatGptCompactionHandoffAccepted,
@@ -258,7 +264,10 @@ function chatGptModelControlUnavailableAdapterError(diagnostic: string, detail?:
 export async function chatGptUnavailableProDetail(menu: Locator): Promise<string | undefined> {
   // Pro is the product label in the picker. Its linked tooltip supplies the site's own
   // localized explanation/date; do not search the conversation or infer a reset time.
-  const rows = menu.getByRole("menuitemradio", { name: "Pro", exact: true }).filter({ visible: true });
+  return chatGptDisabledRowDetail(menu.getByRole("menuitemradio", { name: "Pro", exact: true }).filter({ visible: true }));
+}
+
+async function chatGptDisabledRowDetail(rows: Locator): Promise<string | undefined> {
   try {
     if (await rows.count() !== 1 || await rows.getAttribute("aria-disabled") !== "true") return undefined;
     await rows.hover({ timeout: 1_500 });
@@ -593,6 +602,7 @@ type SelectedChatGptWebModelMode = ChatGptWebModelMode & {
   modelFamily?: "5.6" | "6";
   selection?: { url: string; label: string };
   usageModel?: ChatGptUsageModel;
+  effortLocked?: true;
 };
 
 export async function throwIfChatGptTerminalErrorAlert(scope: ChatGptTextScope): Promise<void> {
@@ -2336,6 +2346,45 @@ export class ChatGptBrowserWorker {
     return await context.newPage();
   }
 
+  /** ChatGPT disabled every effort: only an explicit Instant request can be satisfied and proven. */
+  private async selectInstantWhenEffortLocked(
+    page: Page,
+    mode: ChatGptWebModelMode,
+    activation: Awaited<ReturnType<typeof activateChatGptEffortMenu>>,
+    control: Locator,
+    modelFamily: "5.6" | "6" | undefined,
+    captureDiagnostic?: (checkpoint: string) => Promise<void>,
+    trackUsage = false,
+  ): Promise<SelectedChatGptWebModelMode> {
+    if (mode.effort !== "low") {
+      const detail = await chatGptDisabledRowDetail(
+        activation.menu.locator('[role="menuitemradio"][aria-disabled="true"]').first(),
+      );
+      throw new ChatGptWebAdapterError(
+        `ChatGPT disabled the effort options for this model, so ${mode.displayLabel} cannot be selected. `
+        + "The message was not sent. Choose Instant or wait until ChatGPT unlocks the efforts."
+        + (detail ? ` ChatGPT: ${detail}` : ""),
+        { status: 400, errorType: "invalid_request_error", code: "chatgpt_effort_locked", retryable: false },
+      );
+    }
+    await selectChatGptInstantWhenEffortLocked(
+      activation, modelFamily, () => activateChatGptEffortMenu(page, control),
+    );
+    await captureDiagnostic?.("effort-locked-instant-selected");
+    await page.keyboard.press("Escape");
+    await settleChatGptUi();
+    const selectedMode: SelectedChatGptWebModelMode = {
+      ...mode,
+      ...(modelFamily ? { modelFamily } : {}),
+      effortLocked: true,
+      selection: { url: page.url(), label: (await control.innerText()).trim() },
+    };
+    await this.assertSelectedEffort(page, selectedMode, false);
+    if (trackUsage) selectedMode.usageModel = "other";
+    await captureDiagnostic?.("effort-selection-confirmed");
+    return selectedMode;
+  }
+
   private async selectModelAndEffort(
     page: Page,
     modelId: string,
@@ -2392,6 +2441,12 @@ export class ChatGptBrowserWorker {
     if (modelFamily) activation = await selectChatGptModelFamily(
       activation, modelFamily, () => activateChatGptEffortMenu(page, currentEffort), mode.effort,
     );
+    // Judge the lock only after the requested family is selected: another family can have a usable slider.
+    if (await chatGptEffortLocked(activation)) {
+      return await this.selectInstantWhenEffortLocked(
+        page, mode, activation, currentEffort, modelFamily, captureDiagnostic, trackUsage,
+      );
+    }
     if (activation.method === "pointerdown") {
       await captureDiagnostic?.("effort-menu-pointerdown-fallback");
     }
@@ -2522,7 +2577,8 @@ export class ChatGptBrowserWorker {
     if (verifyFamily && mode.modelFamily && mode.uiEffortIndex !== null) {
       const menu = await activateChatGptEffortMenu(page, control);
       try {
-        await assertChatGptModelFamily(menu, mode.modelFamily, mode.effort, mode.uiEffortIndex);
+        if (mode.effortLocked) await assertChatGptInstantLocked(menu, mode.modelFamily, 1_000);
+        else await assertChatGptModelFamily(menu, mode.modelFamily, mode.effort, mode.uiEffortIndex);
       } finally {
         await page.keyboard.press("Escape");
       }

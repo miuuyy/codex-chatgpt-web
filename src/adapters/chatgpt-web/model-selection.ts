@@ -56,6 +56,68 @@ export async function selectChatGptModelFamily(
   }
 }
 
+function instantError(cause?: unknown): ChatGptWebAdapterError {
+  return new ChatGptWebAdapterError(
+    "ChatGPT Instant could not be verified while its efforts are locked. The pending message was not sent. Check the model in the browser; if ChatGPT uses an unsupported language, select English in Settings \u2192 General \u2192 Language and reload it.",
+    { status: 400, errorType: "invalid_request_error", code: "model_version_unavailable", retryable: false, cause },
+  );
+}
+
+/**
+ * With every effort locked, Instant is the only state ChatGPT can be in. Prove it from the picker's
+ * own announcement ("6 Instant, 1 of 1") rather than from the trigger label.
+ */
+export async function assertChatGptInstantLocked(
+  menu: EffortMenu,
+  family: ChatGptWebModelFamily | undefined,
+  settleMs = 0,
+): Promise<void> {
+  const deadline = Date.now() + settleMs;
+  do {
+    const option = family ? await familyOption(menu, family, "low") : undefined;
+    const familyChecked = !option || (await option.count() === 1 && await option.getAttribute("aria-checked") === "true");
+    // A missing slider must not make evaluate() wait out Playwright's default 30 s timeout.
+    const announcements = await menu.slider.count() === 1
+      ? await readChatGptModelAnnouncements(menu.slider).catch(() => [])
+      : [];
+    const states = announcements
+      .flatMap(text => {
+        const state = parseChatGptModelAnnouncement(text);
+        return state ? [state] : [];
+      });
+    if (familyChecked && states.length > 0
+      && states.every(state => state.mode.toLowerCase() === "instant" && (!family || state.version === family))) return;
+    if (Date.now() >= deadline) break;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  } while (true);
+  throw instantError();
+}
+
+/** Choosing the model row applies Instant while the efforts are locked; the result is verified, never assumed. */
+export async function selectChatGptInstantWhenEffortLocked(
+  menu: EffortMenu,
+  family: ChatGptWebModelFamily | undefined,
+  activate: () => Promise<EffortMenu>,
+): Promise<void> {
+  try {
+    await assertChatGptInstantLocked(menu, family);
+    return;
+  } catch {
+    // Not Instant yet: select the requested model row below, then verify.
+  }
+  if (!family) throw instantError();
+  try {
+    const option = await familyOption(menu, family, "low");
+    if (await option.count() !== 1) throw familyError(family);
+    await option.waitFor({ state: "visible", timeout: 5_000 });
+    await option.click({ timeout: 5_000 });
+    await assertChatGptInstantLocked(await activate(), family, 2_000);
+  } catch (cause) {
+    if (cause instanceof ChatGptWebAdapterError) throw cause;
+    throw familyError(family, cause);
+  }
+}
+
 export function chatGptModelFamilyMatches(
   descriptions: readonly string[],
   family: ChatGptWebModelFamily,

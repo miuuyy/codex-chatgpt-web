@@ -3152,12 +3152,15 @@ test("effort menu waiting stops when ChatGPT reports an expired session", async 
   const effortMenu = {
     last() { return this; },
     isVisible: async () => true,
-    locator: () => effortChoices,
+    page: () => ({ locator: () => ({}) }),
+    locator: (selector: string) => selector.includes("aria-disabled") ? { count: async () => 0 } : effortChoices,
   };
   const effortSlider = {
     filter() { return this; },
+    first() { return this; },
     last() { return this; },
     locator() { return this; },
+    isVisible: async () => false,
     waitFor: async () => await neverVisible,
   };
   const sessionAlert = {
@@ -3199,7 +3202,7 @@ test("effort menu waiting stops when ChatGPT reports an expired session", async 
   });
   const result = await Promise.race([
     selection.catch(error => error),
-    new Promise(resolve => setTimeout(() => resolve("still waiting"), 400)),
+    new Promise(resolve => setTimeout(() => resolve("still waiting"), 3_500)),
   ]);
 
   expect(result).toMatchObject({

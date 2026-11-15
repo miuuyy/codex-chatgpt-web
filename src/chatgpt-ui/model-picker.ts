@@ -285,3 +285,21 @@ export async function readChatGptEffortSnapshot(
   } while (true);
   throw new Error("ChatGPT effort availability could not be verified from its slider ticks");
 }
+
+/**
+ * When ChatGPT disables every effort row (observed after a usage limit was reached) it shows the
+ * model rows and either no slider or a single-position slider whose track is aria-disabled.
+ * No effort can be chosen then; the model runs as Instant.
+ */
+export async function chatGptEffortLocked(activation: ChatGptEffortActivation, waitMs = 2_000): Promise<boolean> {
+  const usableSlider = activation.sliderContainer.filter({
+    hasNot: activation.menu.page().locator('[data-orientation="horizontal"][aria-disabled="true"]'),
+  });
+  const deadline = Date.now() + waitMs;
+  do {
+    if (await usableSlider.first().isVisible().catch(() => false)) return false;
+    if (Date.now() >= deadline) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  } while (true);
+  return await activation.menu.locator('[role="menuitemradio"][aria-disabled="true"]').count() > 0;
+}
