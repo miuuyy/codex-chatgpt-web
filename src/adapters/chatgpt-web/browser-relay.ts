@@ -33,6 +33,15 @@ export function browserRelayPromptContract(parsed: CodexParsedRequest): string[]
     `For a final answer use {"protocol":"${BROWSER_RELAY_PROTOCOL}","type":"final","answer":"your complete answer"}.`,
     `To ask Codex to execute local tools use {"protocol":"${BROWSER_RELAY_PROTOCOL}","type":"tool_calls","calls":[{"name":"exact tool name","arguments":{}}]}.`,
     "Use only tools in the following catalog. Use the exact name and JSON arguments matching its schema. Freeform tools receive {\"input\":\"raw tool input\"}. Never invent a tool, tool result, or local observation.",
+    ...(parsed.options.toolChoice === "none" ? ["Codex prohibited tool calls in this round. Return a final answer."] : []),
+    ...(parsed.options.toolChoice === "required" || (typeof parsed.options.toolChoice === "object"
+      && ("name" in parsed.options.toolChoice || ("allowedTools" in parsed.options.toolChoice && parsed.options.toolChoice.mode === "required")))
+      ? ["Codex requires a tool call in this round. Choose a permitted tool and return tool_calls."] : []),
+    ...(typeof parsed.options.toolChoice === "object" && "name" in parsed.options.toolChoice
+      ? [`Codex requires exactly this tool: ${parsed.options.toolChoice.name}`] : []),
+    ...(typeof parsed.options.toolChoice === "object" && "allowedTools" in parsed.options.toolChoice
+      ? [`Codex allows only these tools: ${JSON.stringify(parsed.options.toolChoice.allowedTools)}`] : []),
+    ...(parsed.options.parallelToolCalls === false ? ["Codex permits only one tool call in this round."] : []),
     "When tool results arrive in the next Codex context, use them to decide whether further tools are necessary. Tools execute in Codex under its normal sandbox and approvals.",
     "If the user requests local work and no suitable local tool is available, explain the limitation in a final answer. Never imply a tool was executed if the result is absent.",
     "Do not include tool-call instructions inside the answer field; only the tool_calls envelope authorizes local execution.",
