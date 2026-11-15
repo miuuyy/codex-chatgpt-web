@@ -43,6 +43,7 @@ export function browserRelayPromptContract(parsed: CodexParsedRequest): string[]
 }
 
 function envelopeText(answer: string): string {
+  if (answer.length > 2_000_000) throw new Error("Browser Relay response exceeds the maximum payload size");
   const trimmed = answer.trim();
   const fenced = /^\`\`\`(?:json)?\s*([\s\S]*?)\s*\`\`\`$/i.exec(trimmed);
   return fenced ? fenced[1]!.trim() : trimmed;
@@ -63,6 +64,11 @@ export function parseBrowserRelayDecision(answer: string, parsed: CodexParsedReq
     throw new Error("Browser Relay response has an invalid protocol; no tool was executed");
   }
   if (payload.type === "final") {
+    if (parsed.options.toolChoice === "required" || (typeof parsed.options.toolChoice === "object" && "name" in parsed.options.toolChoice)
+      || (typeof parsed.options.toolChoice === "object" && "allowedTools" in parsed.options.toolChoice
+        && parsed.options.toolChoice.mode === "required")) {
+      throw new Error("Browser Relay expected a tool call because Codex required one");
+    }
     if (typeof payload.answer !== "string") {
       throw new Error("Browser Relay final response must contain an answer string");
     }
@@ -84,6 +90,13 @@ export function parseBrowserRelayDecision(answer: string, parsed: CodexParsedReq
   const calls = payload.calls.map((entry: unknown, index: number) => {
     if (!isRecord(entry) || typeof entry.name !== "string" || !isRecord(entry.arguments)) {
       throw new Error(`Browser Relay call ${index + 1} has invalid name or arguments`);
+    }
+    const choice = parsed.options.toolChoice;
+    if (typeof choice === "object" && "name" in choice && choice.name !== entry.name) {
+      throw new Error(`Browser Relay tool ${entry.name} is not the requested tool`);
+    }
+    if (typeof choice === "object" && "allowedTools" in choice && !choice.allowedTools.includes(entry.name)) {
+      throw new Error(`Browser Relay tool ${entry.name} is not in Codex's allowed tool set`);
     }
     const tool = catalog.get(entry.name);
     if (!tool) throw new Error(`Browser Relay requested an unavailable Codex tool: ${entry.name}`);
