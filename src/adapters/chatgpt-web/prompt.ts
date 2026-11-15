@@ -574,6 +574,13 @@ export function compileChatGptWebPrompt(
       "Do not call local or ChatGPT-native tools. Summarize only the supplied task context according to the final compaction instruction.",
       "Return only the checkpoint summary that the next model needs to resume the task.",
       ]
+    : options?.browserRelay
+    ? [
+      "For local work, request native Codex tool calls through the Browser Relay JSON protocol included above.",
+      "Codex alone executes each requested tool under its sandbox and approval flow. Never claim an action succeeded until its result appears in task history.",
+      "Tool results arrive in a subsequent Codex request. Respond with a fresh valid Browser Relay JSON envelope for the next action or final answer.",
+      "Do not request an MCP connection or call a ChatGPT plugin. Emit exactly one JSON object.",
+    ]
     : mode.localTools
     ? [
       "For local work required by the task, use the selected plugin's tools directly according to their declared descriptions and schemas.",
