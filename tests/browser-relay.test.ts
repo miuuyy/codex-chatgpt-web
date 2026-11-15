@@ -138,3 +138,32 @@ test("relay accepts JSON fenced by ChatGPT and preserves freeform content", () =
   expect(decision.type).toBe("tool_calls");
   if (decision.type === "tool_calls") expect(decision.calls[0]!.arguments.input).toBe(patch);
 });
+
+
+test("relay tells ChatGPT the same tool restrictions enforced by Codex", () => {
+  const parsed = request();
+  parsed.options.toolChoice = { allowedTools: ["exec_command"], mode: "required" };
+  parsed.options.parallelToolCalls = false;
+  const contract = browserRelayPromptContract(parsed).join("\n");
+  expect(contract).toContain("requires a tool call");
+  expect(contract).toContain('["exec_command"]');
+  expect(contract).toContain("only one tool call");
+  expect(() => parseBrowserRelayDecision(envelope("final", { answer: "Done" }), parsed))
+    .toThrow("required one");
+  expect(() => parseBrowserRelayDecision(toolAnswer([
+    { name: "mcp__docs__lookup", arguments: { query: "test" } },
+  ]), parsed)).toThrow("allowed tool set");
+});
+
+test("relay honors a forced named tool and a disabled-tool turn", () => {
+  const parsed = request();
+  parsed.options.toolChoice = { name: "exec_command" };
+  expect(browserRelayPromptContract(parsed).join("\n")).toContain("requires exactly this tool: exec_command");
+  expect(() => parseBrowserRelayDecision(toolAnswer([
+    { name: "apply_patch", arguments: { input: "content" } },
+  ]), parsed)).toThrow("requested tool");
+  parsed.options.toolChoice = "none";
+  expect(browserRelayPromptContract(parsed).join("\n")).toContain("prohibited tool calls");
+  expect(parseBrowserRelayDecision(envelope("final", { answer: "No action required" }), parsed))
+    .toEqual({ type: "final", answer: "No action required" });
+});
