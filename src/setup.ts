@@ -56,6 +56,7 @@ export interface SetupOptions {
   experimentalBiggerContext?: boolean;
   composerPredictionsEnabled?: boolean;
   experimentalSkillAttachments?: boolean;
+  experimentalBrowserRelay?: boolean;
   experimentalFreshConversationPerTurn?: boolean;
   useTemporaryChats?: boolean;
   zeroRiskProEnabled?: boolean;
@@ -152,6 +153,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     experimentalBiggerContext: before.experimentalBiggerContext,
     composerPredictionsEnabled: before.composerPredictionsEnabled,
     experimentalSkillAttachments: before.experimentalSkillAttachments,
+    experimentalBrowserRelay: before.experimentalBrowserRelay,
     experimentalFreshConversationPerTurn: before.experimentalFreshConversationPerTurn,
     useTemporaryChats: before.useTemporaryChats,
     zeroRiskProEnabled: before.zeroRiskProEnabled,
@@ -184,6 +186,7 @@ function meaningfulRuntimeChange(before: AppConfig, after: AppConfig): boolean {
     experimentalBiggerContext: after.experimentalBiggerContext,
     composerPredictionsEnabled: after.composerPredictionsEnabled,
     experimentalSkillAttachments: after.experimentalSkillAttachments,
+    experimentalBrowserRelay: after.experimentalBrowserRelay,
     experimentalFreshConversationPerTurn: after.experimentalFreshConversationPerTurn,
     useTemporaryChats: after.useTemporaryChats,
     zeroRiskProEnabled: after.zeroRiskProEnabled,
@@ -304,6 +307,12 @@ function baseConfig(
   }
   if (options.experimentalSkillAttachments !== undefined) {
     config.experimentalSkillAttachments = options.experimentalSkillAttachments;
+  }
+  if (options.experimentalBrowserRelay !== undefined) {
+    config.experimentalBrowserRelay = options.experimentalBrowserRelay;
+  }
+  if (config.experimentalBrowserRelay && (config.mode !== "browser-only" || config.browserInteractionMode !== "automatic")) {
+    throw new Error("Browser Relay requires browser-only mode and automatic browser interaction");
   }
   if (options.useTemporaryChats !== undefined) config.useTemporaryChats = options.useTemporaryChats;
   if (options.experimentalFreshConversationPerTurn !== undefined) {
