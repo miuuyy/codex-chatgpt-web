@@ -309,6 +309,8 @@ export interface CodexProviderConfig {
     /** Experimental transport: adapt one context across one, two, or six ChatGPT messages. */
     experimentalBiggerContext?: boolean;
     experimentalSkillAttachments?: boolean;
+    /** Experimental native-tool transport using structured browser replies without MCP. */
+    experimentalBrowserRelay?: boolean;
     /** Explicitly rebuild each automatic turn in a fresh browser conversation. */
     experimentalFreshConversationPerTurn?: boolean;
     /** Explicit opt-in; ordinary chats remain the default. */
