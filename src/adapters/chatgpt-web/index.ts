@@ -1260,7 +1260,10 @@ export function createChatGptWebAdapter(
             await chatGptTurnSessions.retireAndWait(responseExecutionKey, incoming.abortSignal);
           }
         }
-        const executionKey = `${executionNamespace}:${chatGptTurnExecutionKey(parsed)}`;
+        // Each native tool-result round needs a fresh browser submission; reconnects with
+        // identical input still reuse its exact journaled response.
+        const roundKey = chatGptTurnRoundKey(parsed);
+        const executionKey = `${executionNamespace}:${browserRelay ? roundKey : chatGptTurnExecutionKey(parsed)}`;
         const ownerKey = `${executionNamespace}:${chatGptThreadOwnershipKey(parsed)}`;
         const nativeIdentity = extractChatGptTurnIdentity(parsed);
         const nativeTurnId = nativeIdentity.turnId;
@@ -1269,7 +1272,9 @@ export function createChatGptWebAdapter(
         if (abortedTurnIds?.size) {
           chatGptTurnSessions.retireAbortedOwnerTurns(ownerKey, abortedTurnIds, executionKey);
         }
-        const traceId = chatGptWebTraceId(provider, parsed);
+        const traceId = browserRelay
+          ? createHash("sha256").update(`${executionNamespace}:${roundKey}`).digest("hex").slice(0, 12)
+          : chatGptWebTraceId(provider, parsed);
         const session = await chatGptTurnSessions.getOrCreateAfterOwnerRetirement(
           executionKey,
           ownerKey,
@@ -1280,7 +1285,6 @@ export function createChatGptWebAdapter(
           nativeIdentity.threadId,
           chatGptInstructionLineage(parsed),
         );
-        const roundKey = chatGptTurnRoundKey(parsed);
         const emitRoundEvents = (events: readonly AdapterEvent[]): void => {
           // Journal the complete synchronous event batch before touching the HTTP observer. If the
           // observer disconnects midway through emission, an exact reconnect can replay the entire
