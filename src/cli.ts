@@ -57,6 +57,8 @@ Usage:
 
 Setup options:
   --browser-only               Account-eligible Web models, full context/images, no local tools or tunnel
+  --browser-relay              Experimental structured native Codex tool calls without MCP (browser-only)
+  --no-browser-relay           Disable the experimental Browser Relay
   --full                       Account-eligible Web models with tools through the configured connector
   --automatic-browser-interaction
                                Send prompts and read ChatGPT state through browser automation (default)
@@ -334,6 +336,10 @@ async function setupCommand(args: string[]): Promise<void> {
   }
   if (biggerContext || standardContext) options.experimentalBiggerContext = biggerContext;
   if (skillAttachments || inlineSkills) options.experimentalSkillAttachments = skillAttachments;
+  const browserRelay = takeFlag(args, "--browser-relay");
+  const noBrowserRelay = takeFlag(args, "--no-browser-relay");
+  if (browserRelay && noBrowserRelay) throw new Error("Choose --browser-relay or --no-browser-relay");
+  if (browserRelay || noBrowserRelay) options.experimentalBrowserRelay = browserRelay;
   const zeroRiskPro = takeFlag(args, "--zero-risk-pro");
   const zeroRiskDefault = takeFlag(args, "--zero-risk-default");
   if (zeroRiskPro && zeroRiskDefault) {
