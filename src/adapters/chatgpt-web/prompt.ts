@@ -503,6 +503,9 @@ export function compileChatGptWebPrompt(
     ? { localTools: true, effort: "low" as const, displayLabel: "Zero Risk" as const }
     : resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
   const captureLunaCheckpoint = options?.captureLunaCheckpoint === true;
+  if (options?.browserRelay && captureLunaCheckpoint) {
+    throw new Error("Browser Relay cannot append a Luna rolling checkpoint after its JSON response");
+  }
   const multipartParts = options?.experimentalMultipartParts;
   const multipartEnabled = multipartParts !== undefined;
   if (manualControl) {
