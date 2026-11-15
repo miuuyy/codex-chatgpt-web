@@ -120,6 +120,7 @@ export interface AppConfig {
   experimentalBiggerContext: boolean;
   composerPredictionsEnabled: boolean;
   experimentalSkillAttachments: boolean;
+  experimentalBrowserRelay: boolean;
   experimentalFreshConversationPerTurn: boolean;
   useTemporaryChats: boolean;
   /** Explicitly install the additional Pro-sized model row while Zero Risk is active. */
@@ -254,6 +255,7 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     experimentalBiggerContext: false,
     composerPredictionsEnabled: true,
     experimentalSkillAttachments: false,
+    experimentalBrowserRelay: false,
     experimentalFreshConversationPerTurn: false,
     useTemporaryChats: true,
     zeroRiskProEnabled: false,
@@ -555,6 +557,16 @@ function parseConfig(value: unknown, path: string): AppConfig {
     throw new Error(`Invalid useTemporaryChats in ${path}`);
   }
   const experimentalSkillAttachments = parsed.experimentalSkillAttachments === true;
+  if (parsed.experimentalBrowserRelay !== undefined && typeof parsed.experimentalBrowserRelay !== "boolean") {
+    throw new Error(`Invalid experimentalBrowserRelay in ${path}`);
+  }
+  const experimentalBrowserRelay = parsed.experimentalBrowserRelay === true;
+  if (experimentalBrowserRelay && parsed.mode !== "browser-only") {
+    throw new Error("Browser Relay requires browser-only mode; MCP full harness cannot be enabled simultaneously");
+  }
+  if (experimentalBrowserRelay && browserInteractionMode === "manual") {
+    throw new Error("Browser Relay requires automatic browser interaction");
+  }
   if (parsed.composerPredictionsEnabled !== undefined && typeof parsed.composerPredictionsEnabled !== "boolean") {
     throw new Error(`Invalid composerPredictionsEnabled in ${path}`);
   }
@@ -590,6 +602,7 @@ function parseConfig(value: unknown, path: string): AppConfig {
     experimentalBiggerContext,
     composerPredictionsEnabled,
     experimentalSkillAttachments,
+    experimentalBrowserRelay,
     experimentalFreshConversationPerTurn,
     useTemporaryChats: parsed.useTemporaryChats !== false,
     zeroRiskProEnabled,
@@ -648,6 +661,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       proAvailable: manual ? false : config.proAvailable,
       experimentalBiggerContext: manual ? false : config.experimentalBiggerContext,
       experimentalSkillAttachments: manual ? false : config.experimentalSkillAttachments,
+      experimentalBrowserRelay: !manual && config.experimentalBrowserRelay,
       experimentalFreshConversationPerTurn: !manual && config.experimentalFreshConversationPerTurn === true,
       useTemporaryChats: config.useTemporaryChats,
       ...(config.stallTimeoutSec !== undefined ? { stallTimeoutSec: config.stallTimeoutSec } : {}),
