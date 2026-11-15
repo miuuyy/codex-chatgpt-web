@@ -431,7 +431,7 @@ export function createChatGptWebAdapter(
       : undefined,
   );
   const currentUsageInput = (parsed: CodexParsedRequest): CodexParsedRequest => (
-    parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID && !experimentalBiggerContext && !parsed._compactionRequest
+    !browserRelay && parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID && !experimentalBiggerContext && !parsed._compactionRequest
       ? lunaCheckpointStore.apply(parsed).parsed
       : parsed
   );
@@ -460,7 +460,8 @@ export function createChatGptWebAdapter(
       ? { localTools: true }
       : resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, turnCapabilities);
     const identity = extractChatGptTurnIdentity(parsed);
-    const captureLunaCheckpoint = parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID
+    const captureLunaCheckpoint = !browserRelay
+      && parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID
       && !experimentalBiggerContext
       && !parsed._compactionRequest
       && Boolean(identity.threadId && identity.turnId);
