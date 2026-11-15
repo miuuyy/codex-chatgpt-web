@@ -8,7 +8,7 @@ import {
   parseBrowserRelayDecision,
 } from "../src/adapters/chatgpt-web/browser-relay";
 import { compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
-import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
+import { CHATGPT_WEB_MODEL_ID, CHATGPT_WEB_LUNA_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import type { AdapterEvent, CodexParsedRequest } from "../src/types";
 
 function request(): CodexParsedRequest {
@@ -204,4 +204,16 @@ test("Codex parser reconstructs an actual Browser Relay tool call and tool outpu
   expect(result).toMatchObject({
     toolCallId: call.call_id, toolName: "exec_command", content: "C:/project",
   });
+});
+
+
+test("Luna Browser Relay rejects rolling-checkpoint suffixes that corrupt JSON", () => {
+  const parsed = request();
+  parsed.modelId = CHATGPT_WEB_LUNA_MODEL_ID;
+  const prompt = compileChatGptWebPrompt(parsed, capabilities, undefined, { browserRelay: true });
+  expect(prompt.text).toContain(BROWSER_RELAY_PROTOCOL);
+  expect(prompt.text).not.toContain("Append the exact marker");
+  expect(() => compileChatGptWebPrompt(parsed, capabilities, undefined, {
+    browserRelay: true, captureLunaCheckpoint: true,
+  })).toThrow("cannot append a Luna rolling checkpoint");
 });
