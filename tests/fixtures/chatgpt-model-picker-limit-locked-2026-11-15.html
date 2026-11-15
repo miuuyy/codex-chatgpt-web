@@ -1,0 +1,50 @@
+<!-- Behavioral fixture rebuilt from the picker observed on 2026-11-15 after a usage limit was reached; not a raw page dump.
+     The disabled rows read Medium and High in this capture and Média and Alta in another; only the structure matters.
+     Both effort rows are aria-disabled. Choosing the model row switches the trigger to "6 Instant" and renders a one-position,
+     disabled slider in the inert layer. The tooltip node is rebuilt from a screenshot; its DOM was not captured. -->
+<form><div id="prompt-textarea" contenteditable="true">Draft</div>
+  <button type="button" data-tone="neutral" aria-haspopup="menu" aria-controls="picker" aria-expanded="false">GPT-6</button></form>
+<div id="picker" role="menu" hidden>
+  <div role="group" data-model-picker-view="advanced">
+    <div aria-hidden="true" data-active="false" inert>
+      <div role="menuitem" aria-label="Selecionar modelo" data-model-picker-view-toggle="true"><div data-menu-row-content="true"><span id="header">GPT-6</span></div></div>
+      <div id="power" hidden>
+        <span role="status" id="status">6 Instant, 1 de 1.</span>
+        <div role="menuitem" aria-disabled="true" aria-describedby="status" data-reasoning-slider="true">
+          <div data-model-picker-power-slider style="height:24px;width:120px">
+            <span data-orientation="horizontal" aria-disabled="true" data-disabled="" data-locked="false"><span data-selected="true"></span><span role="slider" aria-hidden="true" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0"></span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div aria-hidden="false" data-active="true">
+      <span>Limite de uso atingido</span>
+      <div id="m6" class="model" role="menuitemradio" aria-checked="true" data-model-selected="true"><div data-menu-row-content="true"><span>6</span></div></div>
+      <div id="m56" class="model" role="menuitemradio" aria-checked="false"><div data-menu-row-content="true"><span>GPT-5.6 Sol</span></div></div>
+      <div class="locked" role="menuitemradio" aria-disabled="true" data-disabled="" aria-checked="false" data-state="closed"><div data-menu-row-content="true"><span>Medium</span></div></div>
+      <div class="locked" role="menuitemradio" aria-disabled="true" data-disabled="" aria-checked="false" data-state="closed"><div data-menu-row-content="true"><span>High</span></div></div>
+    </div>
+  </div>
+</div>
+<script>
+  const button = document.querySelector("button"), menu = document.querySelector("#picker");
+  window.clicks = 0;
+  window.startInstant = () => { document.querySelector("#power").hidden = false; button.textContent = "6 Instant"; };
+  button.onclick = () => { menu.hidden = false; button.setAttribute("aria-expanded", "true"); };
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape") { menu.hidden = true; button.setAttribute("aria-expanded", "false"); }
+  });
+  document.addEventListener("click", event => { if (event.target.closest('[role="menuitemradio"]')) window.clicks += 1; });
+  document.querySelector("#m56").addEventListener("click", () => {
+    for (const row of document.querySelectorAll(".model")) row.setAttribute("aria-checked", String(row.id === "m56"));
+  });
+  document.querySelector("#m6").onclick = () => window.startInstant();
+  for (const row of document.querySelectorAll(".locked")) {
+    row.addEventListener("pointerenter", () => {
+      const tip = document.createElement("div");
+      tip.id = "tip"; tip.setAttribute("role", "tooltip"); tip.textContent = "Limite atingido. Tente novamente após 18 de nov. de 2026.";
+      document.body.append(tip); row.setAttribute("aria-describedby", "tip");
+    });
+    row.addEventListener("pointerleave", () => { document.querySelector("#tip")?.remove(); row.removeAttribute("aria-describedby"); });
+  }
+</script>
