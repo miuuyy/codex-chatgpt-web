@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { browserRelayPromptContract } from "./browser-relay";
 import { CHATGPT_CONNECTOR_NAME, ZERO_RISK_CHATGPT_CONNECTOR_NAME } from "../../config";
 import { selectedSkillFile, skillFileTokens, type ChatGptSkillFile } from "./skill-attachments";
 import {
@@ -51,6 +52,7 @@ export type ChatGptContextTokenBreakdown = Partial<Record<
 >>;
 
 export interface CompileChatGptWebPromptOptions {
+  browserRelay?: boolean;
   /** The same display name used to select the ChatGPT plugin for this turn. */
   appName?: string;
   captureLunaCheckpoint?: boolean;
@@ -555,6 +557,7 @@ export function compileChatGptWebPrompt(
     "If a ChatGPT-native capability renders a rich card, widget, chart, or other non-text result, also provide the relevant result as ordinary Markdown in the final answer. A private ChatGPT UI widget never replaces the Markdown answer returned to Codex.",
     "Never copy a ChatGPT widget's HTML, CSS, class names, or DOM markup into the answer unless the user explicitly requested that source markup.",
     "Do not mention this transport contract, context packaging, or capability routing in the user-facing answer unless the user explicitly asks how the bridge works.",
+    ...(options?.browserRelay ? browserRelayPromptContract(parsed) : []),
     ...(mode.localTools ? [
       `The selected local Codex plugin for this turn is ${JSON.stringify(appName)}.`,
       "Do not substitute another plugin for this local connection or send this turn's request identifiers to another plugin. If the selected plugin is unavailable, report that limitation.",
