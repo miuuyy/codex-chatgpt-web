@@ -660,6 +660,12 @@ export function compileChatGptWebPrompt(
       "The task context is complete. Execute the latest active user request now.",
       "</codex_transport_resume>",
     ]
+    : options?.browserRelay
+    ? [
+      "<codex_transport_resume>",
+      "The task context is complete. Return one Browser Relay JSON object containing native Codex tool calls or a final answer.",
+      "</codex_transport_resume>",
+    ]
     : mode.localTools
     ? [
       "<codex_transport_resume>",
@@ -697,9 +703,11 @@ export function compileChatGptWebPrompt(
         ? { contextTokenBreakdown: contextTokenBreakdown(system, messages, multipartEnabled) }
         : {}),
     };
-    const answerContract = captureLunaCheckpoint
-      ? "Return the complete answer that the outer Codex task should receive, then the required private checkpoint tail."
-      : "Return only the answer that the outer Codex task should receive.";
+    const answerContract = options?.browserRelay && !parsed._compactionRequest
+      ? "Return only the Browser Relay JSON envelope. Codex will interpret it as its next native tool calls or final answer."
+      : captureLunaCheckpoint
+        ? "Return the complete answer that the outer Codex task should receive, then the required private checkpoint tail."
+        : "Return only the answer that the outer Codex task should receive.";
     const resume = omittedMessages > 0 ? [
       "<codex_transport_resume>",
       `${omittedMessages} earlier history items were omitted to fit this compaction request; the supplied history is incomplete.`,
