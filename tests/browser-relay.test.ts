@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { bridgeToResponsesSSE } from "../src/bridge";
+import { bridgeToResponsesSSE, buildResponseJSON } from "../src/bridge";
+import { parseRequest } from "../src/responses/parser";
 import {
   BROWSER_RELAY_PROTOCOL,
   browserRelayEvents,
@@ -166,4 +167,41 @@ test("relay honors a forced named tool and a disabled-tool turn", () => {
   expect(browserRelayPromptContract(parsed).join("\n")).toContain("prohibited tool calls");
   expect(parseBrowserRelayDecision(envelope("final", { answer: "No action required" }), parsed))
     .toEqual({ type: "final", answer: "No action required" });
+});
+
+
+test("Codex parser reconstructs an actual Browser Relay tool call and tool output", () => {
+  const source = request();
+  const decision = parseBrowserRelayDecision(toolAnswer([
+    { name: "exec_command", arguments: { cmd: "pwd" } },
+  ]), source);
+  const events = browserRelayEvents(decision, usage);
+  const native = buildResponseJSON(events, source.modelId);
+  const calls = (native.output as Array<Record<string, unknown>>)
+    .filter(item => item.type === "function_call");
+  expect(calls).toHaveLength(1);
+  const call = calls[0]!;
+  expect(call.name).toBe("exec_command");
+  const parsed = parseRequest({
+    model: source.modelId,
+    input: [
+      { type: "message", role: "user", content: [{ type: "input_text", text: "Inspect project" }] },
+      ...calls,
+      { type: "function_call_output", call_id: call.call_id, output: "C:/project" },
+    ],
+    tools: [{ type: "function", name: "exec_command", description: "Run a command", parameters: {
+      type: "object", properties: { cmd: { type: "string" } }, required: ["cmd"],
+    } }],
+  });
+  const assistant = parsed.context.messages.find(message => message.role === "assistant");
+  expect(assistant).toBeDefined();
+  if (assistant?.role === "assistant") {
+    expect(assistant.content).toContainEqual(expect.objectContaining({
+      type: "toolCall", id: call.call_id, name: "exec_command",
+    }));
+  }
+  const result = parsed.context.messages.find(message => message.role === "toolResult");
+  expect(result).toMatchObject({
+    toolCallId: call.call_id, toolName: "exec_command", content: "C:/project",
+  });
 });
