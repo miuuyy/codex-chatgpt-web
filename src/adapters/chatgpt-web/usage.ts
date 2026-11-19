@@ -43,12 +43,20 @@ export function estimateChatGptWebInputTokens(
   capabilities: ChatGptWebCapabilities,
   options: CompileChatGptWebPromptOptions = {},
 ): number {
+  return estimateCompiledChatGptWebInputTokens(compileUsagePrompt(parsed, capabilities, options), parsed.modelId);
+}
+
+function compileUsagePrompt(
+  parsed: CodexParsedRequest,
+  capabilities: ChatGptWebCapabilities,
+  options: CompileChatGptWebPromptOptions,
+): CompiledChatGptWebPrompt {
   const manual = isChatGptWebZeroRiskBackendModel(parsed.modelId);
   const mode = manual
     ? { localTools: true }
     : resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
   const identity = extractChatGptTurnIdentity(parsed);
-  const compiled = compileChatGptWebPrompt(
+  return compileChatGptWebPrompt(
     parsed,
     capabilities,
     mode.localTools ? ESTIMATE_TURN_TOKEN : undefined,
@@ -60,7 +68,6 @@ export function estimateChatGptWebInputTokens(
         && Boolean(identity.threadId && identity.turnId)),
     },
   );
-  return estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId);
 }
 
 /**
@@ -146,6 +153,22 @@ function roundEvidenceText(evidence: ChatGptWebRoundEvidence): string {
   });
 }
 
+function pendingToolOutputTokens(evidence: ChatGptWebRoundEvidence, fallback: number): number {
+  let boundedTokens = 0;
+  let hasUnbounded = false;
+  for (const request of evidence.toolRequests ?? []) {
+    // These outer Codex tools enforce this output budget. Other tools keep the existing
+    // one-message headroom; arbitrary similarly named arguments are not a size guarantee.
+    const bounded = ["exec_command", "write_stdin", "functions.exec_command", "functions.write_stdin"]
+      .includes(request.wireName);
+    const limit = request.arguments?.max_output_tokens;
+    if (bounded && Number.isSafeInteger(limit) && Number(limit) > 0) boundedTokens += Number(limit);
+    else hasUnbounded = true;
+  }
+  // The existing reserve belongs to the round, not to each unbounded call in a batch.
+  return boundedTokens + (hasUnbounded ? fallback : 0);
+}
+
 export function estimateChatGptWebUsage(
   parsed: CodexParsedRequest,
   evidence: ChatGptWebRoundEvidence,
@@ -154,15 +177,18 @@ export function estimateChatGptWebUsage(
   experimentalSkillAttachments = false,
   appName?: string,
 ): CodexUsage {
+  const evidenceText = roundEvidenceText(evidence);
+  const outputTokens = conservativeTextTokens(evidenceText, parsed.modelId);
   const multipartParts = experimentalBiggerContext
     ? resolveBiggerContextMultipartParts(parsed, capabilities, experimentalSkillAttachments, appName)
     : undefined;
-  let inputTokens = estimateChatGptWebInputTokens(parsed, capabilities, {
+  const compiled = compileUsagePrompt(parsed, capabilities, {
     appName,
     ...(experimentalBiggerContext ? { captureLunaCheckpoint: false } : {}),
     experimentalSkillAttachments,
     experimentalMultipartParts: multipartParts,
   });
+  let inputTokens = estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId);
   const checkpointIndex = parsed.context.messages.findLastIndex(message => isNativeCompactionMessage(message)
     || (message.role === "user" && isReadableCompactionSummaryText(message.content)));
   const hasNewToolResults = parsed.context.messages.slice(checkpointIndex + 1).some(message => message.role === "toolResult");
@@ -170,9 +196,24 @@ export function estimateChatGptWebUsage(
     && (checkpointIndex < 0 || hasNewToolResults)) {
     const backendModel = parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID ? CHATGPT_WEB_LUNA_MODEL_ID : CHATGPT_WEB_BACKEND_MODEL;
     const mode = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
-    const base = resolveChatGptWebContextLimits(backendModel, mode.effort, capabilities, parsed._chatgptModelFamily);
+    const base = resolveChatGptWebContextLimits(backendModel, mode.effort,
+      { ...capabilities, experimentalBiggerContext: false }, parsed._chatgptModelFamily);
+    const bigger = resolveChatGptWebContextLimits(backendModel, mode.effort,
+      { ...capabilities, experimentalBiggerContext: true }, parsed._chatgptModelFamily);
+    const pendingResultTokens = pendingToolOutputTokens(evidence, base.contextWindow - base.autoCompactTokenLimit);
+    // The current answer/tool call also joins the next input. Reserve framing space without
+    // charging every small read the full ordinary 10k-token compaction headroom.
+    const continuationTokens = outputTokens + pendingResultTokens + 512;
+    const projectedInputTokens = inputTokens + continuationTokens;
+    const projectedMessageChars = compiled.text.length + evidenceText.length + pendingResultTokens * 4 + 2_048;
+    const inlineTransport = resolveChatGptWebTransportLimits(backendModel, mode.effort, capabilities);
+    const inlineVisibleTokenLimit = inlineTransport.browserMessageTokenLimit ?? Infinity;
+    const projectedVisibleTokens = projectedInputTokens - CHATGPT_WEB_PLATFORM_RESERVE_TOKENS - estimateChatGptWebImageTokens(compiled);
+    const inlineCharLimit = inlineTransport.browserComposerCharLimit ?? Infinity;
+    const inlineWouldOverflow = projectedInputTokens >= base.contextWindow
+      || projectedVisibleTokens > inlineVisibleTokenLimit || projectedMessageChars > inlineCharLimit;
     if (supportsChatGptWebBiggerContext(parsed.modelId, mode.effort, parsed._chatgptModelFamily)
-      && inputTokens >= base.autoCompactTokenLimit
+      && inlineWouldOverflow
       && multipartParts === undefined) {
       const staged = compileChatGptWebPrompt(parsed, capabilities, mode.localTools ? ESTIMATE_TURN_TOKEN : undefined, {
         appName, experimentalSkillAttachments, captureLunaCheckpoint: false,
@@ -182,18 +223,17 @@ export function estimateChatGptWebUsage(
       const ceiling = resolveChatGptWebMultipartContextWindow(backendModel, mode.effort, capabilities,
         CHATGPT_BIGGER_CONTEXT_PARTS, parsed._chatgptModelFamily);
       if (stagedTokens >= ceiling) {
-        const bigger = resolveChatGptWebContextLimits(backendModel, mode.effort,
-          { ...capabilities, experimentalBiggerContext: true }, parsed._chatgptModelFamily);
         // Codex controls automatic compaction through this conservative usage estimate.
-        // A fitting inline request must finish before the next staged request becomes impossible.
+        // Request it only when this continuation threatens the last fitting transport.
         console.info(`[chatgpt-web] compaction_capacity_reserve ${JSON.stringify({
-          inputTokens, stagedTokens, ceiling, reportedInputTokens: Math.max(inputTokens, bigger.autoCompactTokenLimit),
+          inputTokens, stagedTokens, ceiling, projectedInputTokens, projectedMessageChars, pendingResultTokens,
+          inlineTokenCeiling: base.contextWindow,
+          reportedInputTokens: Math.max(inputTokens, bigger.autoCompactTokenLimit),
         })}`);
         inputTokens = Math.max(inputTokens, bigger.autoCompactTokenLimit);
       }
     }
   }
-  const outputTokens = conservativeTextTokens(roundEvidenceText(evidence), parsed.modelId);
   return {
     inputTokens,
     outputTokens,

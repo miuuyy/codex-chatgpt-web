@@ -235,7 +235,7 @@ test("GPT-6 Plus keeps a fitting inline request when multipart encoding would ov
     content: "const value = objects[0]?.name ?? '#test';\n".repeat(500),
   }));
   const original = structuredClone(parsed);
-  const token = "turn_" + "A1".repeat(16);
+  const token = "turn_" + "0".repeat(32);
   const inline = compileChatGptWebPrompt(parsed, caps, token);
   const inlineInput = estimateCompiledChatGptWebInputTokens(inline, parsed.modelId);
   expect(inlineInput).toBeGreaterThan(80_000);
@@ -245,7 +245,7 @@ test("GPT-6 Plus keeps a fitting inline request when multipart encoding would ov
   expect(resolveBiggerContextMultipartParts(parsed, caps)).toBeUndefined();
   expect(parsed).toEqual(original);
   const usage = estimateChatGptWebUsage(parsed, { answer: "Saved the completed step." }, caps, true);
-  expect(usage.inputTokens).toBeGreaterThanOrEqual(110_000);
+  expect(usage.inputTokens).toBe(inlineInput);
   expect(usage.estimated).toBeTrue();
 }, 15_000);
 
@@ -312,5 +312,79 @@ test("a retained checkpoint does not repeatedly request compaction without new t
     content: "Completed a new step", isError: false, timestamp: Date.now(),
   });
   expect(estimateChatGptWebUsage(parsed, { answer: "A new step is complete." }, caps, true).inputTokens)
-    .toBeGreaterThanOrEqual(110_000);
+    .toBe(estimateChatGptWebInputTokens(parsed, caps, { captureLunaCheckpoint: false }));
+}, 15_000);
+
+test("fitting code history retains exact usage while small bounded tool results still fit", () => {
+  const caps = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: false, proAvailable: false };
+  const parsed = request("");
+  parsed._chatgptModelFamily = "6";
+  parsed.context.messages = Array.from({ length: 11 }, (_, index) => ({
+    role: "user", timestamp: index,
+    content: "const value = objects[0]?.name ?? '#test';\n".repeat(500),
+  }));
+  const before = structuredClone(parsed);
+  const tool = { callId: "small-read", wireName: "functions.exec_command", freeform: false,
+    arguments: { cmd: "read next section", max_output_tokens: 1_000 } };
+  const actual = estimateChatGptWebInputTokens(parsed, caps, { captureLunaCheckpoint: false });
+  expect(actual).toBeGreaterThan(80_000);
+  expect(actual).toBeLessThan(87_000);
+  expect(estimateChatGptWebUsage(parsed, { toolRequests: [tool] }, caps, true).inputTokens).toBe(actual);
+  expect(parsed).toEqual(before);
+}, 15_000);
+
+test("a bounded tool result that will cross the last fitting transport still schedules automatic compaction", () => {
+  const caps = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: false, proAvailable: false };
+  const parsed = request("");
+  parsed._chatgptModelFamily = "6";
+  parsed.context.messages = Array.from({ length: 11 }, (_, index) => ({
+    role: "user", timestamp: index,
+    content: "const value = objects[0]?.name ?? '#test';\n".repeat(500),
+  }));
+  const tool = { callId: "large-read", wireName: "exec_command", freeform: false,
+    arguments: { cmd: "read large section", max_output_tokens: 12_000 } };
+  expect(estimateChatGptWebUsage(parsed, { toolRequests: [tool] }, caps, true).inputTokens).toBeGreaterThanOrEqual(110_000);
+  const next = structuredClone(parsed);
+  next.context.messages.push({ role: "toolResult", toolCallId: tool.callId, toolName: "exec_command",
+    content: "word ".repeat(12_000), isError: false, timestamp: 12 });
+  const parts = resolveBiggerContextMultipartParts(next, caps);
+  expect(parts).toBeDefined();
+  expect(estimateChatGptWebInputTokens(next, caps, { experimentalMultipartParts: parts })).toBeGreaterThan(120_000);
+  // The internal backend ID is shared; the same continuation fits the wider 5.6 profile.
+  parsed._chatgptModelFamily = "5.6";
+  next._chatgptModelFamily = "5.6";
+  expect(estimateChatGptWebUsage(parsed, { toolRequests: [tool] }, caps, true).inputTokens)
+    .toBe(estimateChatGptWebInputTokens(parsed, caps, { captureLunaCheckpoint: false }));
+  const widerParts = resolveBiggerContextMultipartParts(next, caps);
+  expect(widerParts).toBe(2);
+  expect(estimateChatGptWebInputTokens(next, caps, { experimentalMultipartParts: widerParts })).toBeLessThan(240_000);
+}, 15_000);
+
+test("unbounded tools retain the ordinary reserve even when an unrelated argument looks like a limit", () => {
+  const caps = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: false, proAvailable: false };
+  const parsed = request("");
+  parsed._chatgptModelFamily = "6";
+  parsed.context.messages = Array.from({ length: 11 }, (_, index) => ({
+    role: "user", timestamp: index,
+    content: "const value = objects[0]?.name ?? '#test';\n".repeat(500),
+  }));
+  const tool = { callId: "unknown-read", wireName: "third_party.exec_command", freeform: false,
+    arguments: { max_output_tokens: 1 } };
+  expect(estimateChatGptWebUsage(parsed, { toolRequests: [tool] }, caps, true).inputTokens).toBeGreaterThanOrEqual(110_000);
+}, 15_000);
+
+test("parallel unknown tools share the ordinary reserve while explicit output budgets are summed", () => {
+  const caps = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: false, proAvailable: false };
+  const parsed = request("");
+  parsed._chatgptModelFamily = "6";
+  parsed.context.messages = Array.from({ length: 10 }, (_, index) => ({
+    role: "user", timestamp: index,
+    content: "const value = objects[0]?.name ?? '#test';\n".repeat(500),
+  }));
+  const actual = estimateChatGptWebInputTokens(parsed, caps, { captureLunaCheckpoint: false });
+  expect(actual).toBeLessThan(80_000);
+  const unknown = ["lookup_a", "lookup_b"].map(wireName => ({ callId: wireName, wireName, freeform: false }));
+  expect(estimateChatGptWebUsage(parsed, { toolRequests: unknown }, caps, true).inputTokens).toBe(actual);
+  const bounded = unknown.map(tool => ({ ...tool, wireName: "exec_command", arguments: { max_output_tokens: 6_000 } }));
+  expect(estimateChatGptWebUsage(parsed, { toolRequests: bounded }, caps, true).inputTokens).toBeGreaterThanOrEqual(110_000);
 }, 15_000);
