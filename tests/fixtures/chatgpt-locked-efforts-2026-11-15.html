@@ -1,0 +1,36 @@
+<!-- Reconstructed from the Plus picker's screenshot and sanitized markup in #993/#994. -->
+<form><div id="prompt-textarea" contenteditable="true">Draft</div>
+  <button id="control" type="button" data-tone="neutral" aria-haspopup="menu" aria-expanded="false" aria-controls="menu">GPT-6</button>
+</form>
+<div id="menu" role="menu" hidden>
+  <div role="group" data-model-picker-view="advanced">
+    <div id="fixed-view" data-active="false" aria-hidden="true" inert></div>
+    <div id="options" data-active="true" aria-hidden="false">
+      <div role="menuitemradio" aria-checked="true" data-model-selected="true"><div data-menu-row-content><span>6</span></div></div>
+      <div role="menuitemradio" aria-checked="false"><div data-menu-row-content><span>GPT-5.6 Sol</span></div></div>
+      <div role="menuitemradio" aria-checked="false" aria-disabled="true" data-disabled data-state="closed" aria-describedby="notice"><div data-menu-row-content><span>Média</span></div></div>
+      <div role="menuitemradio" aria-checked="false" aria-disabled="true" data-disabled data-state="closed" aria-describedby="notice"><div data-menu-row-content><span>Alta</span></div></div>
+    </div>
+  </div>
+</div>
+<div role="tooltip" id="notice">Limite atingido. Tente novamente amanhã.</div>
+<script>
+  const control = document.getElementById("control"), menu = document.getElementById("menu");
+  control.onclick = () => { menu.hidden = false; control.setAttribute("aria-expanded", "true"); };
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape") { menu.hidden = true; control.setAttribute("aria-expanded", "false"); }
+  });
+  const families = document.querySelectorAll('#options > [role="menuitemradio"]:not([data-disabled])');
+  for (const row of families) row.onclick = () => {
+    for (const option of families) {
+      option.setAttribute("aria-checked", String(option === row));
+      if (option === row) option.setAttribute("data-model-selected","true"); else option.removeAttribute("data-model-selected");
+    }
+    control.textContent = row.textContent + " Instant";
+    document.getElementById("fixed-view").innerHTML =
+      '<span id="announcement" role="status">' + row.textContent + ' Instant, 1 de 1.</span>' +
+      '<div role="menuitem" data-reasoning-slider aria-disabled="true" aria-describedby="announcement">' +
+      '<div data-model-picker-power-slider style="height:20px"><span aria-disabled="true" data-orientation="horizontal">' +
+      '<span role="slider" aria-hidden="true" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0"></span></span></div></div>';
+  };
+</script>

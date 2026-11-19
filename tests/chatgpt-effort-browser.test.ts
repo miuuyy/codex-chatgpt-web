@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { chromium } from "playwright-core";
 import { ChatGptBrowserWorker, setChatGptThinkMode } from "../src/adapters/chatgpt-web/browser-worker";
 import { CHATGPT_COMPOSER_SELECTOR } from "../src/chatgpt-ui/composer";
-import { CHATGPT_EFFORT_CONTROL_SELECTOR } from "../src/chatgpt-ui/model-picker";
+import { activateChatGptEffortMenu, CHATGPT_EFFORT_CONTROL_SELECTOR, chatGptLockedEffortPanel, chatGptLockedEffortMessage, waitForChatGptEffortRange } from "../src/chatgpt-ui/model-picker";
 import { detectChatGptAccountCapabilities } from "../src/chatgpt-session";
 import { assertChatGptModelFamily } from "../src/adapters/chatgpt-web/model-selection";
 
@@ -353,3 +353,68 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)(`smoke requires positive Luna
     }
   } finally { await browser.close(); }
 }, 40_000);
+
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("the limited Plus picker reports locked efforts and verifies explicit Instant again before Send (#993)", async () => {
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  try {
+    const page = await browser.newPage();
+    const html = readFileSync(new URL("./fixtures/chatgpt-locked-efforts-2026-11-15.html", import.meta.url), "utf8");
+    await page.setContent(html);
+    const worker = Object.create(ChatGptBrowserWorker.prototype);
+    worker.ensurePage = async () => page;
+    worker.prepareChatSurface = async () => {};
+    const caps = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false };
+    const highError = await worker.selectModelAndEffort(page, "gpt-5.6-sol", "high", caps, undefined, false, "6")
+      .catch((error: Error) => error);
+    expect(highError.code).toBe("chatgpt_effort_locked");
+    expect(highError.message).toContain("Limite atingido");
+    const selected = await worker.selectModelAndEffort(page, "gpt-5.6-sol", "low", caps, undefined, false, "6");
+    expect(selected.selection.label).toBe("6 Instant");
+    await worker.assertSelectedEffort(page, selected);
+    await page.locator("#announcement").evaluate(node => { node.textContent = "5.6 Instant, 1 de 1."; });
+    const mismatch = await worker.assertSelectedEffort(page, selected).catch((error: Error) => error);
+    expect(mismatch).toMatchObject({ code: "model_version_unavailable", retryable: false });
+    const setup = await detectChatGptAccountCapabilities(page, { selectorTimeoutMs: 2_000 }).catch((error: Error) => error.message);
+    expect(setup).toContain("Limite atingido");
+    expect(await page.locator("#menu").isVisible()).toBe(false);
+    const smoke = await worker.smokeTestExclusive().catch((error: Error) => error.message);
+    expect(smoke).toContain("Limite atingido");
+    expect(await page.locator("#prompt-textarea").textContent()).toBe("Draft");
+  } finally { await browser.close(); }
+}, 15_000);
+
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("a locked picker only reports the requested row's tooltip or a notice shared by both rows (#993)", async () => {
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(readFileSync(new URL("./fixtures/chatgpt-locked-efforts-2026-11-15.html", import.meta.url), "utf8"));
+    await page.locator("#control").click();
+    const panel = chatGptLockedEffortPanel(page.getByRole("group"));
+    expect(await panel.count()).toBe(1);
+    await panel.getByRole("menuitemradio", { name: "Alta" }).evaluate(row => {
+      row.setAttribute("aria-describedby", "other");
+      document.body.insertAdjacentHTML("beforeend", '<div id="other" role="tooltip">Separate row notice</div>');
+    });
+    const message = await chatGptLockedEffortMessage(panel, "High");
+    expect(message).toContain("disabled reasoning options");
+    expect(message).not.toContain("Separate row notice");
+    expect(message).not.toContain("Limite atingido");
+    expect(await chatGptLockedEffortMessage(panel, "Alta")).toContain("Separate row notice");
+  } finally { await browser.close(); }
+});
+
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("a disabled upsell does not lock a slow picker (#993)", async () => {
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(readFileSync(new URL("./fixtures/chatgpt-locked-efforts-2026-11-15.html", import.meta.url), "utf8"));
+    await page.locator("#options > [data-disabled]").first().evaluate(node => node.remove());
+    await page.locator("#options > [data-disabled]").evaluate(node => { node.textContent = "Pro"; });
+    const activation = await activateChatGptEffortMenu(page, page.locator("#control"));
+    await page.evaluate(() => setTimeout(() => {
+      document.querySelector("#options")!.insertAdjacentHTML("beforeend",
+        '<div data-model-picker-power-slider style="height:24px"><span role="slider"></span></div>');
+    }, 2_200));
+    expect(await waitForChatGptEffortRange(activation, 4_000)).toBe("slider");
+  } finally { await browser.close(); }
+}, 10_000);

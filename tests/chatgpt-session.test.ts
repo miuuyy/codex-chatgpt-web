@@ -4,7 +4,7 @@ import { CHATGPT_COMPOSER_SELECTOR } from "../src/chatgpt-ui/composer";
 import {
   CHATGPT_EFFORT_CONTROL_SELECTOR,
   CHATGPT_EFFORT_MENU_SELECTOR,
-  CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
+  CHATGPT_ACTIVE_EFFORT_SLIDER_SELECTOR,
   activateChatGptEffortMenu,
 } from "../src/chatgpt-ui/model-picker";
 import {
@@ -324,14 +324,15 @@ function reasoningPicker(options: { max?: string; locks?: Array<string | null>; 
   };
   const composer = { filter() { return this; }, last() { return this; }, count: async () => 1, isEditable: async () => true, locator: () => ({ count: async () => 1, locator: () => control }) };
   const modelRows = { count: async () => 3, first() { return this; }, waitFor: async () => {}, nth: () => { throw new Error("Model rows are not effort choices"); } };
-  const menu = { filter() { return this; }, last() { return this; }, isVisible: async () => true, locator: () => modelRows };
+  const menu = { filter() { return this; }, last() { return this; }, isVisible: async () => true,
+    locator: (selector: string) => selector.includes('data-model-picker-view="advanced"') ? hidden : modelRows };
   const page = {
     url: () => "https://chatgpt.com/",
     evaluate: async () => true,
     locator: (selector: string) => {
       if (selector === CHATGPT_COMPOSER_SELECTOR) return composer;
       if (selector === CHATGPT_EFFORT_MENU_SELECTOR) return menu;
-      if (selector === CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR) return container;
+      if (selector === CHATGPT_ACTIVE_EFFORT_SLIDER_SELECTOR) return container;
       return hidden;
     },
     keyboard: { press: async () => {
@@ -474,7 +475,7 @@ test("capability detection activates a closed Radix effort control and captures 
       return read(document.querySelector("[data-model-reasoning-effort-slider]")!);
     },
   };
-  const ownedMenu = { isVisible: async () => pointerOpened };
+  const ownedMenu = { isVisible: async () => pointerOpened, locator: () => ({ waitFor: () => new Promise<void>(() => {}) }) };
   const hiddenSurface = {
     filter() { return this; },
     last() { return this; },
@@ -511,7 +512,7 @@ test("capability detection activates a closed Radix effort control and captures 
     locator: (selector: string) => {
       if (selector === CHATGPT_COMPOSER_SELECTOR) return composer;
       if (selector === '[id="radix-effort-menu"]') return ownedMenu;
-      if (selector === CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR) return sliderContainer;
+      if (selector === CHATGPT_ACTIVE_EFFORT_SLIDER_SELECTOR) return sliderContainer;
       return hiddenSurface;
     },
     keyboard: {

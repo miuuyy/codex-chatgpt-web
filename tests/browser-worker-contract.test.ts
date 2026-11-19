@@ -13,7 +13,7 @@ import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
 import { CHATGPT_COMPOSER_SELECTOR, CHATGPT_SEND_BUTTON_SELECTOR, CHATGPT_THINK_BUTTON_SELECTOR } from "../src/chatgpt-ui/composer";
-import { CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR, parseChatGptEffortSliderState } from "../src/chatgpt-ui/model-picker";
+import { CHATGPT_ACTIVE_EFFORT_SLIDER_SELECTOR, parseChatGptEffortSliderState } from "../src/chatgpt-ui/model-picker";
 import { ChatGptExternalTurnProgress, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
 import type { CodexProviderConfig } from "../src/types";
 import { compileChatGptWebPrompt, formatChatGptWebMultipartCommit, formatChatGptWebMultipartStage } from "../src/adapters/chatgpt-web/prompt";
@@ -1891,7 +1891,7 @@ test("capability inspection records open slider state in safe logs before Escape
       return read(document.querySelector("[data-model-reasoning-effort-slider]")!);
     },
   };
-  const ownedMenu = { isVisible: async () => pickerOpen };
+  const ownedMenu = { isVisible: async () => pickerOpen, locator: () => ({ waitFor: () => new Promise<void>(() => {}) }) };
   const hiddenSurface = {
     filter() { return this; },
     last() { return this; },
@@ -1920,7 +1920,7 @@ test("capability inspection records open slider state in safe logs before Escape
     locator: (selector: string) => {
       if (selector === CHATGPT_COMPOSER_SELECTOR) return composer;
       if (selector === '[id="radix-effort-menu"]') return ownedMenu;
-      if (selector === CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR) return sliderContainer;
+      if (selector === CHATGPT_ACTIVE_EFFORT_SLIDER_SELECTOR) return sliderContainer;
       return hiddenSurface;
     },
     keyboard: {
@@ -3168,7 +3168,7 @@ test("effort menu waiting stops when ChatGPT reports an expired session", async 
   const composerForm = { locator: () => effortControl };
   const composer = { locator: () => composerForm };
   const effortChoice = { waitFor: async () => await neverVisible };
-  const effortChoices = { nth: () => effortChoice, count: async () => 3 };
+  const effortChoices = { nth: () => effortChoice, count: async () => 3, waitFor: async () => await neverVisible };
   const effortMenu = {
     last() { return this; },
     isVisible: async () => true,

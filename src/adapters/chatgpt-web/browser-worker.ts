@@ -83,6 +83,10 @@ import {
 import {
   CHATGPT_EFFORT_CONTROL_SELECTOR,
   CHATGPT_EFFORT_ITEM_SELECTOR,
+  chatGptLockedEffortMessage,
+  disabledRowTooltip,
+  chatGptLockedEffortPanel,
+  waitForChatGptEffortRange,
   CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
   activateChatGptEffortMenu,
   readChatGptEffortSnapshot,
@@ -109,7 +113,7 @@ import {
   type ChatGptWebModelFamily,
 } from "../../chatgpt-web-models";
 import { LauncherBrowserHelperClient } from "./launcher-helper-client";
-import { assertChatGptModelFamily, selectChatGptModelFamily } from "./model-selection";
+import { assertChatGptModelFamily, chatGptModelFamilyMatches, hasConfirmedLockedInstant, selectChatGptModelFamily } from "./model-selection";
 import { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 import {
   ChatGptCompactionHandoffAccepted,
@@ -243,6 +247,13 @@ function chatGptModelControlUnavailableError(diagnostic: string): Error {
   return new Error(CHATGPT_MODEL_CONTROL_UNAVAILABLE_MESSAGE, { cause: new Error(diagnostic) });
 }
 
+function unconfirmedLockedInstantError(): ChatGptWebAdapterError {
+  return new ChatGptWebAdapterError(
+    "ChatGPT could not confirm GPT-6 Instant in the model picker. The message was not sent.",
+    { status: 400, errorType: "invalid_request_error", code: "model_version_unavailable", retryable: false },
+  );
+}
+
 function chatGptModelControlUnavailableAdapterError(diagnostic: string, detail?: string): ChatGptWebAdapterError {
   return new ChatGptWebAdapterError(
     detail ? `${CHATGPT_MODEL_CONTROL_UNAVAILABLE_MESSAGE} ChatGPT: ${detail}` : CHATGPT_MODEL_CONTROL_UNAVAILABLE_MESSAGE,
@@ -259,36 +270,7 @@ function chatGptModelControlUnavailableAdapterError(diagnostic: string, detail?:
 export async function chatGptUnavailableProDetail(menu: Locator): Promise<string | undefined> {
   // Pro is the product label in the picker. Its linked tooltip supplies the site's own
   // localized explanation/date; do not search the conversation or infer a reset time.
-  const rows = menu.getByRole("menuitemradio", { name: "Pro", exact: true }).filter({ visible: true });
-  try {
-    if (await rows.count() !== 1 || await rows.getAttribute("aria-disabled") !== "true") return undefined;
-    await rows.hover({ timeout: 1_500 });
-    return await rows.evaluate(async element => {
-      const deadline = Date.now() + 1_000;
-      do {
-        const ids = element.getAttribute("aria-describedby")?.trim().split(/\s+/).filter(Boolean) ?? [];
-        const tooltips = ids.map(id => document.getElementById(id))
-          .filter((node): node is HTMLElement => node instanceof HTMLElement && node.getAttribute("role") === "tooltip");
-        const visible = tooltips.filter(node => {
-          for (let current: HTMLElement | null = node; current; current = current.parentElement) {
-            const style = getComputedStyle(current);
-            if (!current.isConnected || current.hidden || current.getAttribute("aria-hidden") === "true"
-              || style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
-          }
-          return true;
-        });
-        if (visible.length === 1) {
-          const text = visible[0]!.textContent?.replace(/\s+/g, " ").trim();
-          if (text && text.length <= 512) return text;
-        }
-        await new Promise(resolve => setTimeout(resolve, 50));
-      } while (Date.now() < deadline);
-      return undefined;
-    }, undefined, { timeout: 1_500 });
-  } catch {
-    // Optional UI detail must not replace the existing model-unavailable error.
-    return undefined;
-  }
+  return disabledRowTooltip(menu.getByRole("menuitemradio", { name: "Pro", exact: true }).filter({ visible: true }));
 }
 
 const CHATGPT_CONNECTOR_CLEANUP_TIMEOUT_MS = 5_000;
@@ -593,6 +575,7 @@ export class ChatGptSubmissionRejectionObserver {
 type SelectedChatGptWebModelMode = ChatGptWebModelMode & {
   modelFamily?: "5.6" | "6";
   selection?: { url: string; label: string };
+  lockedInstant?: true;
   usageModel?: ChatGptUsageModel;
 };
 
@@ -2402,14 +2385,38 @@ export class ChatGptBrowserWorker {
     const waitAbort = new AbortController();
     try {
       const ready = await Promise.race([
-        sliderContainer.waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal })
-          .then(() => effortSlider.waitFor({ state: "attached", timeout: 70_000, signal: waitAbort.signal }))
-          .then(() => "slider" as const),
+        waitForChatGptEffortRange(activation, 70_000, waitAbort.signal),
         chatGptRateLimitDialog(page).waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal }).then(() => "rate-limit" as const),
         chatGptExpiredSessionAlert(page).waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal }).then(() => "session-expired" as const),
       ]);
       if (ready === "rate-limit") await throwIfChatGptRateLimitDialog(page);
       if (ready === "session-expired") await throwIfChatGptSessionFailureAlert(page);
+      if (ready === "locked") {
+        await throwIfChatGptRateLimitDialog(page);
+        await throwIfChatGptSessionFailureAlert(page);
+        const panel = chatGptLockedEffortPanel(activation.menu);
+        if (modelFamily !== "6" || mode.effort !== "low") {
+          throw new ChatGptWebAdapterError(await chatGptLockedEffortMessage(panel, mode.displayLabel), {
+            status: 400, errorType: "invalid_request_error", code: "chatgpt_effort_locked", retryable: false,
+          });
+        }
+        const url = page.url();
+        if (!await hasConfirmedLockedInstant(activation)) {
+          await panel.getByRole("menuitemradio", { name: "6", exact: true, checked: true }).click({ timeout: 5_000 });
+        }
+        if (await currentEffort.getAttribute("aria-expanded") === "true") await page.keyboard.press("Escape");
+        await settleChatGptUi();
+        const label = (await currentEffort.innerText()).trim();
+        if (!chatGptModelFamilyMatches([label], "6", "low")) {
+          throw unconfirmedLockedInstantError();
+        }
+        const selected: SelectedChatGptWebModelMode = {
+          ...mode, modelFamily, selection: { url, label }, lockedInstant: true,
+          ...(trackUsage ? { usageModel: "other" as const } : {}),
+        };
+        await this.assertSelectedEffort(page, selected);
+        return selected;
+      }
       await captureDiagnostic?.("effort-slider-visible");
     } catch (error) {
       if (error instanceof ChatGptWebAdapterError) throw error;
@@ -2523,7 +2530,13 @@ export class ChatGptBrowserWorker {
     if (verifyFamily && mode.modelFamily && mode.uiEffortIndex !== null) {
       const menu = await activateChatGptEffortMenu(page, control);
       try {
-        await assertChatGptModelFamily(menu, mode.modelFamily, mode.effort, mode.uiEffortIndex);
+        if (mode.lockedInstant) {
+          if (!await hasConfirmedLockedInstant(menu)) {
+            throw unconfirmedLockedInstantError();
+          }
+        } else {
+          await assertChatGptModelFamily(menu, mode.modelFamily, mode.effort, mode.uiEffortIndex);
+        }
       } finally {
         await page.keyboard.press("Escape");
       }
