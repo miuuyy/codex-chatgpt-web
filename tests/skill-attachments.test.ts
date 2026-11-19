@@ -5,7 +5,7 @@ import { compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { chatGptPromptFilePayloads } from "../src/adapters/chatgpt-web/browser-worker";
 import { retainedConversationResumeRequest } from "../src/adapters/chatgpt-web/conversation-key";
-import { estimateCompiledChatGptWebInputTokens, estimateCompiledChatGptWebMessageTokens } from "../src/adapters/chatgpt-web/input-tokens";
+import { estimateCompiledChatGptWebInputTokens, measureChatGptWebTransport } from "../src/adapters/chatgpt-web/input-tokens";
 import { skillFileTokens } from "../src/adapters/chatgpt-web/skill-attachments";
 
 const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true };
@@ -81,7 +81,7 @@ test("skill content counts toward input and final-message budgets, including mul
     expect(fileTokens).toBeGreaterThan(1000);
     expect(estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId)
       - estimateCompiledChatGptWebInputTokens(withoutFiles, parsed.modelId)).toBe(fileTokens);
-    expect(estimateCompiledChatGptWebMessageTokens(compiled, parsed.modelId)).toBeGreaterThan(fileTokens);
+    expect(measureChatGptWebTransport(compiled, parsed.modelId).finalMessageTokens).toBeGreaterThan(fileTokens);
     if (parts) {
       expect(compiled.multipart!.parts.join(" ")).not.toContain("check this carefully");
       expect(compiled.multipart!.commit).toContain("skill_attachment");

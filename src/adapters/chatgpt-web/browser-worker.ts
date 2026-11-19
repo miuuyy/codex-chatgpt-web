@@ -7,7 +7,7 @@ import { chatGptInteractionState } from "./browser-interaction-state";
 import { BrowserDiagnosticHistory } from "./browser-diagnostic-history";
 import { ChatGptStreamDiagnostics } from "./stream-diagnostics";
 import { readChatGptUserMessage } from "./browser-user-message";
-import { skillFileTokens, validateSkillFiles } from "./skill-attachments";
+import { validateSkillFiles } from "./skill-attachments";
 import { detectChatGptLimitsPlan, readChatGptUsageAccount, readChatGptUsageModel, supportsChatGptUsageTracking, type ChatGptUsageModel } from "./limits";
 import { chromium, type Browser, type BrowserContext, type JSHandle, type Locator, type Page, type Request, type Response } from "playwright-core";
 import {
@@ -21,7 +21,6 @@ import {
   legacyChatGptConnectorMigrationMessage,
   LEGACY_CHATGPT_CONNECTOR_NAMES,
 } from "../../config";
-import { estimateTokens } from "../../lib/token-estimate";
 import { CHATGPT_STOPPED_THINKING_LABELS } from "./ui-labels";
 import type { CodexProviderConfig } from "../../types";
 import { parseDataUrl } from "../image";
@@ -38,20 +37,11 @@ import {
   type ChatGptWebModelMode,
 } from "./model";
 import {
-  compiledChatGptWebMaxMessageChars,
-  estimateChatGptWebImageTokens,
-  estimateCompiledChatGptWebMessageTokens,
-} from "./input-tokens";
-import {
   CHATGPT_MAX_INPUT_IMAGES,
-  formatChatGptWebMultipartCommit,
-  formatChatGptWebMultipartStage,
-  isChatGptWebMultipartPartCount,
   type CompiledChatGptWebPrompt,
   type ChatGptWebPromptImage,
   type ChatGptWebMultipartStage,
 } from "./prompt";
-import { estimateCompiledChatGptWebInputTokens } from "./input-tokens";
 import {
   assertAuthenticatedChatGptPage,
   assertNewChatPage,
@@ -101,17 +91,7 @@ import {
   LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS,
   notifyLauncherTurn,
 } from "../../launcher-browser-host";
-import {
-  CHATGPT_LUNA_BROWSER_INPUT_TOKEN_BUDGET,
-  CHATGPT_WEB_PLATFORM_RESERVE_TOKENS,
-  CHATGPT_WEB_GPT6_INSTANT_BIGGER_CONTEXT_ERROR,
-  resolveChatGptWebContextLimits,
-  resolveChatGptWebMessageTokenBudget,
-  resolveChatGptWebStagingTokenBudget,
-  resolveChatGptWebTransportLimits,
-  supportsChatGptWebBiggerContext,
-  type ChatGptWebModelFamily,
-} from "../../chatgpt-web-models";
+import { checkChatGptWebTransport } from "./transport-budget";
 import { LauncherBrowserHelperClient } from "./launcher-helper-client";
 import { assertChatGptModelFamily, chatGptModelFamilyMatches, hasConfirmedLockedInstant, selectChatGptModelFamily } from "./model-selection";
 import { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
@@ -708,176 +688,6 @@ export async function resolveChatGptToolConfirmation(
   }
 }
 
-export function assertChatGptWebInputWithinLimits(
-  estimatedInputTokens: number,
-  estimatedMessageTokens: number,
-  modelId: string,
-  effort: ChatGptWebModelMode["effort"],
-  capabilities: ChatGptWebCapabilities,
-  promptChars?: number,
-): void {
-  if (modelId !== CHATGPT_WEB_MODEL_ID && modelId !== CHATGPT_WEB_LUNA_MODEL_ID) {
-    throw new Error(`ChatGPT web context limit is not defined for model: ${modelId}`);
-  }
-  if (
-    modelId === CHATGPT_WEB_LUNA_MODEL_ID
-    && estimatedInputTokens > CHATGPT_LUNA_BROWSER_INPUT_TOKEN_BUDGET
-  ) {
-    throw new ChatGptWebAdapterError(
-      `This Luna turn requires ${estimatedInputTokens.toLocaleString("en-US")} estimated input tokens, which exceeds the measured ${CHATGPT_LUNA_BROWSER_INPUT_TOKEN_BUDGET.toLocaleString("en-US")}-token ChatGPT Free browser transport budget. Completed Luna history is already replaced by its rolling checkpoint; the remaining payload is the current Codex turn and cannot be reduced by /compact.`,
-      { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
-    );
-  }
-  const { contextWindow } = resolveChatGptWebContextLimits(modelId, effort, capabilities);
-  const { browserMessageTokenLimit, browserComposerCharLimit } = resolveChatGptWebTransportLimits(
-    modelId,
-    effort,
-    capabilities,
-  );
-  if (
-    browserComposerCharLimit !== undefined
-    && promptChars !== undefined
-    && promptChars > browserComposerCharLimit
-  ) {
-    throw new ChatGptWebAdapterError(
-      `This prompt contains ${promptChars.toLocaleString("en-US")} inline characters, which exceeds the measured ${browserComposerCharLimit.toLocaleString("en-US")}-character ChatGPT composer boundary for this account and effort. Run /compact, then retry this Web model.`,
-      { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
-    );
-  }
-  if (browserMessageTokenLimit !== undefined && estimatedMessageTokens > browserMessageTokenLimit) {
-    throw new ChatGptWebAdapterError(
-      `This prompt requires ${estimatedMessageTokens.toLocaleString("en-US")} visible message tokens, which exceeds the measured ${browserMessageTokenLimit.toLocaleString("en-US")}-token ChatGPT browser message boundary for this account and effort. The model context window is ${contextWindow.toLocaleString("en-US")} tokens; run /compact to reduce the next browser message without changing that model window.`,
-      { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
-    );
-  }
-  if (estimatedInputTokens < contextWindow) return;
-  throw new ChatGptWebAdapterError(
-    `This task is estimated at ${estimatedInputTokens.toLocaleString("en-US")} input tokens, which exceeds the ${contextWindow.toLocaleString("en-US")}-token context window for this ChatGPT Web model. Switch to a model with a larger context window, run /compact, then retry this Web model.`,
-    { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
-  );
-}
-
-export function assertChatGptWebMultipartInputWithinLimits(
-  estimatedInputTokens: number,
-  estimatedMessageTokens: number,
-  modelId: string,
-  effort: ChatGptWebModelMode["effort"],
-  capabilities: ChatGptWebCapabilities,
-  maxMessageChars: number,
-  partCount: number,
-  transport?: {
-    stagingEffort: ChatGptWebModelMode["effort"];
-    maxStageMessageTokens: number;
-    maxStageChars: number;
-    finalMessageTokens: number;
-    finalMessageChars: number;
-    finalImageTokens?: number;
-  },
-  modelFamily?: ChatGptWebModelFamily,
-): void {
-  if (!isChatGptWebMultipartPartCount(partCount)) {
-    throw new Error("Bigger Context requires two or six context parts");
-  }
-  if (modelId !== CHATGPT_WEB_MODEL_ID && modelId !== CHATGPT_WEB_LUNA_MODEL_ID) {
-    throw new Error(`ChatGPT Bigger Context limit is not defined for model: ${modelId}`);
-  }
-  if (!supportsChatGptWebBiggerContext(modelId, effort, modelFamily)) {
-    throw new Error(CHATGPT_WEB_GPT6_INSTANT_BIGGER_CONTEXT_ERROR);
-  }
-  const baseContextWindow = resolveChatGptWebMessageTokenBudget(modelId, effort, capabilities)
-    + CHATGPT_WEB_PLATFORM_RESERVE_TOKENS + 1;
-  const assertMessageBoundary = (
-    label: "stage" | "final part",
-    messageTokens: number,
-    messageChars: number,
-    messageEffort: ChatGptWebModelMode["effort"],
-    imageTokens = 0,
-  ): void => {
-    const { browserMessageTokenLimit, browserComposerCharLimit } = resolveChatGptWebTransportLimits(
-      modelId,
-      messageEffort,
-      capabilities,
-    );
-    if (browserComposerCharLimit !== undefined && messageChars > browserComposerCharLimit) {
-      throw new ChatGptWebAdapterError(
-        `A Bigger Context ${label} contains ${messageChars.toLocaleString("en-US")} characters, which exceeds the measured ${browserComposerCharLimit.toLocaleString("en-US")}-character ChatGPT composer boundary. The bridge will not split an individual Codex message or JSON record; compact the task before retrying.`,
-        { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
-      );
-    }
-    if (browserMessageTokenLimit !== undefined && messageTokens > browserMessageTokenLimit) {
-      throw new ChatGptWebAdapterError(
-        `A Bigger Context ${label} requires ${messageTokens.toLocaleString("en-US")} visible message tokens, which exceeds the measured ${browserMessageTokenLimit.toLocaleString("en-US")}-token ChatGPT message boundary. The bridge will not split an individual Codex message or JSON record; compact the task before retrying.`,
-        { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
-      );
-    }
-    const messageBudget = label === "stage"
-      ? resolveChatGptWebStagingTokenBudget(modelId, messageEffort, capabilities)
-      : resolveChatGptWebMessageTokenBudget(modelId, messageEffort, capabilities, imageTokens);
-    if (messageTokens > messageBudget) {
-      throw new ChatGptWebAdapterError(
-        `A Bigger Context ${label} requires ${messageTokens.toLocaleString("en-US")} visible message tokens, which exceeds its ${messageBudget.toLocaleString("en-US")}-token input budget after reserving space for ChatGPT and attachments. The bridge will not split an individual Codex message or JSON record; compact the task before retrying.`,
-        { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
-      );
-    }
-  };
-  if (transport) {
-    assertMessageBoundary(
-      "stage",
-      transport.maxStageMessageTokens,
-      transport.maxStageChars,
-      transport.stagingEffort,
-    );
-    assertMessageBoundary(
-      "final part",
-      transport.finalMessageTokens,
-      transport.finalMessageChars,
-      effort,
-      transport.finalImageTokens,
-    );
-  } else {
-    assertMessageBoundary("stage", estimatedMessageTokens, maxMessageChars, effort);
-  }
-  // More transport messages do not enlarge the model's advertised context window.
-  const { contextWindow } = resolveChatGptWebContextLimits(
-    modelId, effort, { ...capabilities, experimentalBiggerContext: true }, modelFamily,
-  );
-  const experimentalContextWindow = Math.min(contextWindow, baseContextWindow * partCount);
-  if (estimatedInputTokens < experimentalContextWindow) return;
-  const partLabel = partCount === 2 ? "two-part" : "six-part";
-  throw new ChatGptWebAdapterError(
-    `This Bigger Context transaction is estimated at ${estimatedInputTokens.toLocaleString("en-US")} input tokens, which exceeds its experimental ${experimentalContextWindow.toLocaleString("en-US")}-token ${partLabel} ceiling. Run /compact, then retry.`,
-    { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
-  );
-}
-
-/** Select the cheapest account-visible mode that can carry every inert multipart stage. */
-export function resolveChatGptWebMultipartStagingMode(
-  modelId: string,
-  capabilities: ChatGptWebCapabilities,
-  maxStageMessageTokens: number,
-  maxStageChars: number,
-): ChatGptWebModelMode {
-  if (modelId !== CHATGPT_WEB_MODEL_ID && modelId !== CHATGPT_WEB_LUNA_MODEL_ID) {
-    throw new Error(`ChatGPT Bigger Context staging mode is not defined for model: ${modelId}`);
-  }
-  const efforts: readonly ChatGptWebModelMode["effort"][] = modelId === CHATGPT_WEB_LUNA_MODEL_ID ? ["low"] : capabilities.proAvailable
-    ? ["low", "medium", "max"]
-    : ["low", "medium"];
-  for (const effort of efforts) {
-    const mode = resolveChatGptWebModelMode(modelId, effort, capabilities);
-    const limits = resolveChatGptWebTransportLimits(modelId, effort, capabilities);
-    const messageTokenLimit = resolveChatGptWebStagingTokenBudget(modelId, effort, capabilities);
-    const tokenFits = maxStageMessageTokens <= messageTokenLimit;
-    const charsFit = limits.browserComposerCharLimit === undefined
-      || maxStageChars <= limits.browserComposerCharLimit;
-    if (tokenFits && charsFit) return mode;
-  }
-  throw new ChatGptWebAdapterError(
-    `No ChatGPT effort available to this account can carry a Bigger Context stage with ${maxStageMessageTokens.toLocaleString("en-US")} estimated tokens and ${maxStageChars.toLocaleString("en-US")} characters.`,
-    { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
-  );
-}
-
 export const browserStageTimeouts = {
   browserPage: 60_000,
   newChatPreparation: 150_000,
@@ -1034,14 +844,14 @@ export interface BrowserTurn {
   reasoning?: string;
   modelFamily?: "5.6" | "6";
   capabilities: ChatGptWebCapabilities;
-  prepare: () => Promise<CompiledChatGptWebPrompt & { release: () => void }>;
-  prepareResume?: () => Promise<CompiledChatGptWebPrompt & { release: () => void }>;
+  prepare: (transactionId?: string) => Promise<CompiledChatGptWebPrompt & { release: () => void }>;
+  prepareResume?: (transactionId?: string) => Promise<CompiledChatGptWebPrompt & { release: () => void }>;
   /** Select the Codex Native connector without advertising the ordinary turn tool environment. */
   nativeConnector?: boolean;
   retainConversation?: boolean;
   requireRetainedConversation?: boolean;
   conversationKey?: string;
-  onPreparedSelected?: (reused: boolean) => void | Promise<void>;
+  onPreparedSelected?: (reused: boolean, transactionId?: string) => void | Promise<void>;
   abortSignal?: AbortSignal;
   onHeartbeat?: () => void;
   /** Positive generation evidence, distinct from an idle helper heartbeat. */
@@ -4889,7 +4699,8 @@ export class ChatGptBrowserWorker {
       if (reused && !turn.prepareResume) {
         throw new Error("Launcher reused a ChatGPT conversation without a continuation prompt");
       }
-      await turn.onPreparedSelected?.(reused);
+      const transactionId = `ctx_${randomUUID().replaceAll("-", "")}`;
+      await turn.onPreparedSelected?.(reused, transactionId);
       heartbeatTimer = setInterval(sendHeartbeat, LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS);
       heartbeatTimer.unref?.();
       sendHeartbeat();
@@ -4905,7 +4716,7 @@ export class ChatGptBrowserWorker {
           sendHeartbeat();
           await turn.onSubmitted?.();
         },
-      }, surfaceId, undefined, reused, lease.trackUsage === true);
+      }, surfaceId, undefined, reused, lease.trackUsage === true, transactionId);
     } catch (error) {
       originalError = error;
       terminal = error instanceof ChatGptCompactionHandoffAccepted
@@ -4957,6 +4768,7 @@ export class ChatGptBrowserWorker {
     maintenancePage?: Page,
     reuseConversation = false,
     trackUsage = false,
+    transactionId = `ctx_${randomUUID().replaceAll("-", "")}`,
   ): Promise<string> {
     if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
     if ((turn.externalProgress !== undefined) !== (turn.completionFence !== undefined)) {
@@ -4974,7 +4786,7 @@ export class ChatGptBrowserWorker {
     const requestedMode = resolveChatGptWebModelMode(turn.modelId, turn.reasoning, browserCapabilities);
     const prepare = reuseConversation ? turn.prepareResume : turn.prepare;
     if (!prepare) throw new Error("The retained ChatGPT conversation has no continuation prompt");
-    const prepared = await prepare();
+    const prepared = await prepare(transactionId);
     const diagnostics = new ChatGptBrowserDiagnostics(
       turn.traceId,
       this.config.browserDiagnosticsPath ?? join(getConfigDir(), "diagnostics", "browser-turns"),
@@ -5012,77 +4824,16 @@ export class ChatGptBrowserWorker {
       if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
       // Validate only the selected physical message, not canonical history used for usage estimates.
       assertChatGptPromptAttachments(prepared);
-      const multipartTransactionId = prepared.multipart
-        ? `ctx_${randomUUID().replaceAll("-", "")}`
-        : undefined;
-      const multipartStages = prepared.multipart && multipartTransactionId
-        ? prepared.multipart.parts.slice(0, -1).map((payload, index) => formatChatGptWebMultipartStage(
-          payload,
-          multipartTransactionId,
-          index + 1,
-          prepared.multipart!.parts.length,
-        ))
-        : undefined;
-      const multipartFinalPrompt = prepared.multipart && multipartTransactionId
-        ? formatChatGptWebMultipartCommit(prepared.multipart, multipartTransactionId)
-        : undefined;
-      const estimatedInputTokens = estimateCompiledChatGptWebInputTokens(prepared, turn.modelId);
-      const estimatedMessageTokens = estimateCompiledChatGptWebMessageTokens(prepared, turn.modelId);
-      const finalMessageTokens = multipartFinalPrompt
-        ? estimateTokens(multipartFinalPrompt, turn.modelId) + skillFileTokens(prepared.skillFiles, turn.modelId)
-        : estimatedMessageTokens;
-      const maxMessageChars = compiledChatGptWebMaxMessageChars(prepared);
-      const stageMessageTokens = multipartStages?.map(stage => estimateTokens(stage.text, turn.modelId));
-      const maxStageMessageTokens = stageMessageTokens ? Math.max(...stageMessageTokens) : undefined;
-      const maxStageChars = multipartStages
-        ? Math.max(...multipartStages.map(stage => stage.text.length))
-        : undefined;
-      const stagingMode = multipartStages
-        ? resolveChatGptWebMultipartStagingMode(
-          turn.modelId,
-          browserCapabilities,
-          maxStageMessageTokens!,
-          maxStageChars!,
-        )
-        : requestedMode;
+      const {
+        stages: multipartStages, finalPrompt, estimatedInputTokens, finalMessageTokens,
+        maxMessageChars, stageMessageTokens, maxStageMessageTokens, maxStageChars, stagingMode,
+      } = checkChatGptWebTransport(prepared, turn.modelId, requestedMode, browserCapabilities, turn.modelFamily, transactionId);
       // Pro's inert context uploads have always used 5.6 Sol. Pin that existing
       // transport explicitly now that Latest/GPT-6 uses 6 Sol at lower efforts.
       // The final answer still selects and verifies the requested Pro family.
       const stagingFamily = multipartStages && turn.modelFamily === "6"
         && requestedMode.effort === "max" && stagingMode.effort !== "max"
         ? "5.6" : turn.modelFamily;
-      if (prepared.multipart) {
-        assertChatGptWebMultipartInputWithinLimits(
-          estimatedInputTokens,
-          estimatedMessageTokens,
-          turn.modelId,
-          requestedMode.effort,
-          browserCapabilities,
-          maxMessageChars,
-          prepared.multipart.parts.length,
-          multipartStages
-            && multipartFinalPrompt
-            && maxStageMessageTokens !== undefined
-            && maxStageChars !== undefined ? {
-            stagingEffort: stagingMode.effort,
-            maxStageMessageTokens,
-            maxStageChars,
-            finalMessageTokens,
-            finalMessageChars: multipartFinalPrompt.length,
-            finalImageTokens: estimateChatGptWebImageTokens(prepared),
-          } : undefined,
-          turn.modelFamily,
-        );
-      } else {
-        assertChatGptWebInputWithinLimits(
-          estimatedInputTokens,
-          estimatedMessageTokens,
-          turn.modelId,
-          requestedMode.effort,
-          browserCapabilities,
-          maxMessageChars,
-        );
-      }
       const deadline = this.config.turnTimeoutMs === undefined
         ? undefined
         : Date.now() + this.config.turnTimeoutMs;
@@ -5294,9 +5045,8 @@ export class ChatGptBrowserWorker {
         };
       };
 
-      let finalPrompt = prepared.text;
       const acknowledgedStages: ChatGptAcknowledgedMultipartStage[] = [];
-      if (prepared.multipart && multipartStages && multipartTransactionId && multipartFinalPrompt) {
+      if (prepared.multipart && multipartStages) {
         for (let index = 0; index < multipartStages.length; index += 1) {
           const stage = multipartStages[index]!;
           // Each acknowledgement can replace the picker controls. Establish a fresh model/effort
@@ -5308,7 +5058,7 @@ export class ChatGptBrowserWorker {
           console.info(`[chatgpt-web] multipart_stage_prepared ${JSON.stringify({
             traceId: turn.traceId, part: index + 1, total: prepared.multipart.parts.length,
             effort: mode.effort, modelFamily: mode.modelFamily,
-            messageChars: stage.text.length, estimatedMessageTokens: stageMessageTokens![index],
+            messageChars: stage.text.length, estimatedMessageTokens: stageMessageTokens[index],
           })}`);
           let stageBaseline = await this.captureSubmissionBaseline(page, stage.text, acknowledgedStages);
           await this.runStage(
@@ -5426,7 +5176,6 @@ export class ChatGptBrowserWorker {
           );
           await diagnostics.capture(page, "final-part-effort-selected");
         }
-        finalPrompt = multipartFinalPrompt;
       }
 
       let submissionBaseline = await this.captureSubmissionBaseline(page, finalPrompt, acknowledgedStages, prepared.turnToken);
@@ -5516,7 +5265,7 @@ export class ChatGptBrowserWorker {
             console.info(`[chatgpt-web] final_submission_prepared ${JSON.stringify({
               traceId: turn.traceId, modelFamily: mode.modelFamily, effort: mode.effort,
               parts: prepared.multipart?.parts.length ?? 1,
-              messageChars: (multipartFinalPrompt ?? prepared.text).length,
+              messageChars: finalPrompt.length,
               estimatedMessageTokens: finalMessageTokens,
               estimatedInputTokens, proAvailable: browserCapabilities.proAvailable,
             })}`);

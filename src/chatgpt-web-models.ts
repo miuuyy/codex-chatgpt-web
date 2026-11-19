@@ -277,6 +277,16 @@ export function resolveChatGptWebMessageTokenBudget(
   ));
 }
 
+/** Exclusive total ceiling, including the platform reserve. More stages cannot enlarge the model window. */
+export function resolveChatGptWebMultipartContextWindow(
+  model: ChatGptWebAutomaticBackendModel, effort: ChatGptWebAdapterEffort,
+  capabilities: ChatGptWebAccountCapabilities, parts: number, family?: ChatGptWebModelFamily,
+): number {
+  const { contextWindow } = resolveChatGptWebContextLimits(model, effort, { ...capabilities, experimentalBiggerContext: true }, family);
+  const oneMessageWindow = resolveChatGptWebMessageTokenBudget(model, effort, capabilities) + CHATGPT_WEB_PLATFORM_RESERVE_TOKENS + 1;
+  return Math.min(contextWindow, oneMessageWindow * parts);
+}
+
 /** Keep repeated Plus Instant uploads within the ordinary pre-compaction input target. */
 export function resolveChatGptWebStagingTokenBudget(
   backendModel: ChatGptWebAutomaticBackendModel,

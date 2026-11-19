@@ -4,7 +4,7 @@ import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { notifyLauncherTurn, readLauncherBrowserHostDescriptor } from "../../launcher-browser-host";
 import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError } from "./adapter-error";
-import type { CompiledChatGptWebPrompt } from "./prompt";
+import { assertMultipartTransactionId, type CompiledChatGptWebPrompt } from "./prompt";
 import type { BrowserTurn, ResolvedBrowserConfig } from "./browser-worker";
 import {
   parseChatGptLunaCheckpoint,
@@ -30,7 +30,7 @@ type HelperMessage =
   | { type: "event"; id: string; event: "multipart_stage_acknowledged"; stageIndex: number }
   | { type: "event"; id: string; event: "completion_fence_begin"; requestId: number }
   | { type: "event"; id: string; event: "completion_fence_commit"; requestId: number; revision: number }
-  | { type: "event"; id: string; event: "prepared_selected"; reused: boolean }
+  | { type: "event"; id: string; event: "prepared_selected"; reused: boolean; transactionId?: string }
   | { type: "event"; id: string; event: "luna_checkpoint"; checkpoint: ChatGptLunaCheckpoint; answerHash: string }
   | { type: "result"; id: string; text: string }
   | {
@@ -112,7 +112,9 @@ function parseHelperMessage(line: string): HelperMessage {
       if (typeof message.reused !== "boolean") {
         throw new Error("Launcher browser helper prompt selection is invalid");
       }
-      return { type: "event", id: message.id, event, reused: message.reused };
+      const transactionId = message.transactionId;
+      if (transactionId !== undefined) assertMultipartTransactionId(transactionId);
+      return { type: "event", id: message.id, event, reused: message.reused, transactionId };
     }
     if (!["heartbeat", "generation_progress", "send_activated", "submitted", "reasoning", "commentary", "text"].includes(String(event))) {
       throw new Error("Launcher browser helper emitted an unknown event");
@@ -514,7 +516,7 @@ export class LauncherBrowserHelperClient {
       }
       else if (message.event === "prepared_selected") {
         const prepare = message.reused ? pending.turn.prepareResume : pending.turn.prepare;
-        void Promise.resolve().then(() => prepare?.()).then(prepared => {
+        void Promise.resolve().then(() => prepare?.(message.transactionId)).then(prepared => {
           if (!prepared) throw new Error("Launcher browser helper selected an unavailable continuation prompt");
           if (this.pending.get(message.id) !== pending) {
             prepared.release();
@@ -524,7 +526,7 @@ export class LauncherBrowserHelperClient {
           if (prepared.skillFiles?.length && !this.helperFeatures.has("skill-attachments")) {
             throw new Error("Launcher browser helper does not support skill attachments; update or restart the launcher");
           }
-          return Promise.resolve(pending.turn.onPreparedSelected?.(message.reused)).then(() => {
+          return Promise.resolve(pending.turn.onPreparedSelected?.(message.reused, message.transactionId)).then(() => {
             if (this.pending.get(message.id) !== pending) return;
             return this.send({
               type: "prepared_selected_ack",

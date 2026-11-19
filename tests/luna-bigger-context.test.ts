@@ -2,9 +2,9 @@ import { expect, test } from "bun:test";
 import { estimateTokens } from "../src/lib/token-estimate";
 import { compileChatGptWebPrompt, formatChatGptWebMultipartCommit } from "../src/adapters/chatgpt-web/prompt";
 import { compiledChatGptWebMessages, estimateCompiledChatGptWebInputTokens } from "../src/adapters/chatgpt-web/input-tokens";
-import { estimateChatGptWebUsage, resolveBiggerContextMultipartParts } from "../src/adapters/chatgpt-web/usage";
+import { estimateChatGptWebUsage, compileBiggerContextPrompt } from "../src/adapters/chatgpt-web/usage";
 import { CHATGPT_LUNA_CHECKPOINT_MARKER } from "../src/adapters/chatgpt-web/rolling-checkpoint";
-import { assertChatGptWebMultipartInputWithinLimits, resolveChatGptWebMultipartStagingMode } from "../src/adapters/chatgpt-web/browser-worker";
+import { assertChatGptWebMultipartInputWithinLimits, resolveChatGptWebMultipartStagingMode } from "../src/adapters/chatgpt-web/transport-budget";
 import { CHATGPT_LUNA_BROWSER_INPUT_TOKEN_BUDGET, CHATGPT_WEB_PLATFORM_RESERVE_TOKENS, resolveChatGptWebMessageTokenBudget } from "../src/chatgpt-web-models";
 import { parseRequest } from "../src/responses/parser";
 import type { CodexParsedRequest } from "../src/types";
@@ -23,9 +23,9 @@ test("Luna plans 1/2/6 messages against Free budgets and preserves every complet
   for (const effort of ["low", "medium"]) for (const [count, words, expected] of [[1, 1000, 1], [4, 7500, 2], [8, 6000, 6]]) {
     const parsed = request(count!, words!, effort);
     const original = structuredClone(parsed);
-    const parts = resolveBiggerContextMultipartParts(parsed, caps);
+    const compiled = compileBiggerContextPrompt(parsed, caps);
+    const parts = compiled.multipart?.parts.length;
     expect(parts ?? 1).toBe(expected);
-    const compiled = compileChatGptWebPrompt(parsed, caps, undefined, { experimentalMultipartParts: parts });
     const messages = compiledChatGptWebMessages(compiled);
     expect(messages).toHaveLength(expected!);
     for (const message of messages) expect(estimateTokens(message) + CHATGPT_WEB_PLATFORM_RESERVE_TOKENS)
@@ -67,11 +67,11 @@ test("Luna multipart preflight bounds the total, each part and final attachments
     .toThrow("ChatGPT message boundary");
 });
 
-test("Luna full-history compaction uses six parts without also capturing a rolling summary", () => {
+test("Luna full-history compaction uses the smallest multipart transport without also capturing a rolling summary", () => {
   const parsed = request(4, 2000);
   parsed._compactionRequest = true;
-  expect(resolveBiggerContextMultipartParts(parsed, caps)).toBe(6);
-  const compiled = compileChatGptWebPrompt(parsed, caps, undefined, { experimentalMultipartParts: 6 });
+  const compiled = compileBiggerContextPrompt(parsed, caps);
+  expect(compiled.multipart?.parts.length).toBe(2);
   expect(compiled.trimmedCompactionMessages).toBeUndefined();
   expect(formatChatGptWebMultipartCommit(compiled.multipart!, `ctx_${"0".repeat(32)}`)).not.toContain(CHATGPT_LUNA_CHECKPOINT_MARKER);
   parsed._compactionRequest = false;

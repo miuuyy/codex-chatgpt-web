@@ -11,7 +11,7 @@ import {
 import {
   assertChatGptWebMultipartInputWithinLimits,
   resolveChatGptWebMultipartStagingMode,
-} from "../src/adapters/chatgpt-web/browser-worker";
+} from "../src/adapters/chatgpt-web/transport-budget";
 import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "../src/adapters/chatgpt-web/model";
 import { skillFileTokens } from "../src/adapters/chatgpt-web/skill-attachments";
 import { estimateTokens } from "../src/lib/token-estimate";

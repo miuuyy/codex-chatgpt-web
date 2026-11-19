@@ -104,15 +104,14 @@ that ChatGPT will follow them more reliably.
 
 Both launcher profiles expose **Bigger Context (experimental)** in Settings. It is disabled by
 default. The switch updates the profile's canonical runtime configuration through the normal setup
-transaction; it is not a launcher-only preference. Production setup also rewrites the managed
-Codex model catalog with 3x context and auto-compaction thresholds and asks you to restart Codex.
+transaction. Production setup writes the selected model’s context and auto-compaction limits to
+the managed Codex model catalog and asks you to restart Codex.
 The DEV CLI reads the same setting from its isolated runtime configuration on each command.
 
-When enabled, a normal turn stays on the original single-message path while its estimated input
-is below the selected mode's existing auto-compaction threshold. At the first threshold it uses two
-messages; at twice that threshold it uses six messages. The final context part also commits the
-transaction and starts the task, so there is no extra request. The existing DEV compaction threshold
-remains three times the selected mode's base limit.
+A request that fits the selected mode’s single-message limits goes straight to ChatGPT. Larger
+requests use two or six messages. The bridge checks the formatted messages, attachments, and
+total context for the selected model before sending. The final part starts the task. Codex uses
+the model catalog’s separate threshold to decide when to request compaction.
 
 Each stage contains complete semantic records, never a raw JSON string cut in the middle. The model
 must return an exact transaction-bound SHA-256 acknowledgement before the next part is sent.
@@ -131,23 +130,20 @@ and waits for its physical launcher settlement before closing the old surface; t
 starts a fresh chat. This does not depend on ChatGPT rendering assistant text or a Copy
 action after the control-only response. If the retained task chat was already closed, the bridge
 starts one read-only fallback chat from the canonical Codex history instead. Browser-only mode
-has no retained MCP boundary and uses the six-message compaction path so its summarizer receives
-the complete expanded history.
+sends its summarizer the complete history in the smallest supported transport that fits. Only the
+six-part compaction path can drop older records when the full history is too large.
 
 Any missing or malformed acknowledgement fails the whole transaction. No later part or final
-commit is sent, and a retry starts again from part one in a fresh chat. The model context
-and auto-compaction ceilings are reported as 3× while the switch is active, but every individual
-stage must still fit the selected ChatGPT mode's measured one-message boundary.
+commit is sent, and a retry starts again from part one in a fresh chat. Each stage must fit the
+measured one-message limits of the mode that carries it.
 
-Small turns use one request. Two-part turns use one inert staging request and one final request;
-six-part turns use five staging requests and one final request. Browser-only compaction also uses
-six parts. Inert stages use the fastest available mode that fits their complete messages; the final
-part uses the selected execution effort. Plus Instant uploads keep the same input headroom as
-ordinary Instant turns; the selected final mode can receive a larger share of the context.
-Large turns may increase the probability of
-rate limits or a temporary account cooldown. The experiment is intentionally unavailable for Luna:
-Luna's later requests still include the accumulated transcript inside the same measured
-28,000-token browser transport budget.
+Two-part turns use one staging request and one final request. Six-part turns use five staging
+requests and one final request. Inert stages use the fastest available mode that fits their
+complete messages. The final part uses the selected execution effort. Plus Instant uploads keep
+the same input headroom as ordinary Instant turns. The final mode can receive a larger share of
+the context. Large turns may increase the risk of rate limits or a temporary account cooldown.
+Luna keeps its measured 28,000-token limit per message. Its separate compaction requests use two
+or six parts.
 
 Browser-only chats do not advertise outer tools and never claim simulated effects. Full setup keeps
 the launcher-owned DEV tunnel ready so ChatGPT can create and validate `Codex Native2 DEV` before a

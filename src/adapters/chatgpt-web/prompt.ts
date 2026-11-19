@@ -3,10 +3,9 @@ import { CHATGPT_CONNECTOR_NAME, ZERO_RISK_CHATGPT_CONNECTOR_NAME } from "../../
 import { selectedSkillFile, skillFileTokens, type ChatGptSkillFile } from "./skill-attachments";
 import {
   CHATGPT_WEB_GPT6_INSTANT_BIGGER_CONTEXT_ERROR,
-  CHATGPT_WEB_PLATFORM_RESERVE_TOKENS,
   chatGptWebImageTokenReserve,
   isChatGptWebZeroRiskBackendModel,
-  resolveChatGptWebContextLimits,
+  resolveChatGptWebMultipartContextWindow,
   resolveChatGptWebMessageTokenBudget,
   resolveChatGptWebStagingTokenBudget,
   resolveChatGptWebTransportLimits,
@@ -56,6 +55,10 @@ export interface CompileChatGptWebPromptOptions {
   captureLunaCheckpoint?: boolean;
   experimentalSkillAttachments?: boolean;
   experimentalMultipartParts?: ChatGptWebMultipartPartCount;
+  /** Browser-selected transaction identity, including its exact encoded token cost. */
+  multipartTransactionId?: string;
+  /** Reject a smaller compaction transport before it discards any history. */
+  requireCompleteHistory?: boolean;
   /** Capture only when preparing a real browser submission, not during budget-planning probes. */
   includeContextTokenBreakdown?: boolean;
   /**
@@ -85,10 +88,11 @@ export interface ChatGptWebMultipartStage {
   sha256: string;
 }
 
+export const CHATGPT_ESTIMATE_TRANSACTION_ID = `ctx_${"0".repeat(32)}`;
 const MULTIPART_TRANSACTION_ID = /^ctx_[a-f0-9]{32}$/;
 
-function assertMultipartTransactionId(transactionId: string): void {
-  if (!MULTIPART_TRANSACTION_ID.test(transactionId)) {
+export function assertMultipartTransactionId(transactionId: unknown): asserts transactionId is string {
+  if (typeof transactionId !== "string" || !MULTIPART_TRANSACTION_ID.test(transactionId)) {
     throw new Error("ChatGPT multipart transaction identity is invalid");
   }
 }
@@ -725,7 +729,7 @@ export function compileChatGptWebPrompt(
         ].join("\n"),
       };
       const imageTokens = images.reduce((sum, image) => sum + chatGptWebImageTokenReserve(image.detail), 0);
-      const transactionId = `ctx_${"0".repeat(32)}`;
+      const transactionId = options?.multipartTransactionId ?? CHATGPT_ESTIMATE_TRANSACTION_ID;
       // First try Instant-sized stages and give the final selected mode its own larger share.
       // Equal parts near Instant's maximum can be accepted once and rejected on the next Send.
       // If complete records cannot fit that allocation, plan with the wider available stage mode
@@ -798,16 +802,20 @@ export function compileChatGptWebPrompt(
   // Match browser-worker's exclusive transaction ceiling, including wrappers, acknowledgements,
   // attachments and the platform reserve. The legacy inline byte cap does not apply to multipart.
   // Individual records remain atomic; browser preflight still rejects any part that cannot fit.
-  const multipartTokenBudget = compiled.multipart ? Math.min(
-    resolveChatGptWebContextLimits(
-      backendModel, mode.effort, { ...capabilities, experimentalBiggerContext: true }, parsed._chatgptModelFamily,
-    ).contextWindow,
-    (resolveChatGptWebMessageTokenBudget(backendModel, mode.effort, capabilities)
-      + CHATGPT_WEB_PLATFORM_RESERVE_TOKENS + 1) * compiled.multipart.parts.length,
+  const multipartTokenBudget = compiled.multipart ? resolveChatGptWebMultipartContextWindow(
+    backendModel, mode.effort, capabilities, compiled.multipart.parts.length, parsed._chatgptModelFamily,
   ) : undefined;
   const exceedsCompactionBudget = (): boolean => compiled.multipart
-    ? estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId) >= multipartTokenBudget!
+    ? estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId, options?.multipartTransactionId) >= multipartTokenBudget!
     : chatGptPromptJsonBytes(compiled.text) > CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET;
+
+  if (options?.requireCompleteHistory) {
+    if (exceedsCompactionBudget()) throw new ChatGptWebAdapterError(
+      "The complete compaction history exceeds this transport's budget.",
+      { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
+    );
+    return compiled;
+  }
 
   // A cumulative checkpoint may be the only remaining account of earlier work. Preserve the
   // newest one and the final compaction instruction; trim other history in its original order.
@@ -824,7 +832,7 @@ export function compileChatGptWebPrompt(
   }
   if (exceedsCompactionBudget()) {
     if (compiled.multipart) {
-      const inputTokens = estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId);
+      const inputTokens = estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId, options?.multipartTransactionId);
       throw new ChatGptWebAdapterError(
         `ChatGPT Web compaction still requires ${inputTokens.toLocaleString("en-US")} input tokens after other history was trimmed; the required system context, ${checkpointIndex >= 0 ? "cumulative checkpoint, and " : ""}final compaction instruction cannot fit below the ${multipartTokenBudget!.toLocaleString("en-US")}-token ${compiled.multipart.parts.length === 2 ? "two-part" : "six-part"} ceiling. Reduce the required context before retrying.`,
         { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },

@@ -29,7 +29,7 @@ import { createChatGptStructuredOutputValidator } from "./output-validation";
 import { chatGptWebTurnRetryPolicy } from "./retry-policy";
 import { TurnBroker, type BrokerToolRequest, type BrokerToolResult, type TurnBrokerOwner } from "./turn-broker";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptCompactionSourceExecutionKey, chatGptInstructionLineage, chatGptThreadOwnershipKey, chatGptTurnExecutionKey, chatGptTurnRetryKey, chatGptTurnRoundKey, chatGptTurnSessions, type ChatGptBrowserOutcome, type ChatGptTraceEvent, type ChatGptTurnRuntime, type ChatGptTurnSession } from "./turn-execution";
-import { estimateChatGptWebUsage, resolveBiggerContextMultipartParts } from "./usage";
+import { compileBiggerContextPrompt, estimateChatGptWebUsage } from "./usage";
 import { ChatGptThreadEnvironmentStore } from "./thread-environment";
 import {
   ChatGptLunaCheckpointStore,
@@ -478,20 +478,12 @@ export function createChatGptWebAdapter(
         await releaseLauncherRetainedConversation(retainedLauncherDescriptor, conversationKey);
       }
       : undefined;
-    const compileOptionsFor = (input: CodexParsedRequest) => {
-      if (manualRequest) return {};
-      const experimentalMultipartParts = experimentalBiggerContext
-        ? resolveBiggerContextMultipartParts(input, turnCapabilities, experimentalSkillAttachments, worker.appName)
-        : undefined;
-      return {
-        appName: worker.appName,
-        includeContextTokenBreakdown: true,
-        captureLunaCheckpoint,
-        experimentalSkillAttachments,
-        ...(experimentalMultipartParts !== undefined
-          ? { experimentalMultipartParts }
-          : {}),
-      };
+    const preparePrompt = (input: CodexParsedRequest, transactionId?: string, turnToken?: string) => {
+      const compile = experimentalBiggerContext ? compileBiggerContextPrompt : compileChatGptWebPrompt;
+      return compile(input, turnCapabilities, turnToken, {
+        appName: worker.appName, includeContextTokenBreakdown: true, captureLunaCheckpoint, experimentalSkillAttachments,
+        multipartTransactionId: transactionId,
+      });
     };
     if (captureLunaCheckpoint) {
       console.info(
@@ -729,8 +721,8 @@ export function createChatGptWebAdapter(
       };
     }
     if (!mode.localTools) {
-      const prepareWith = async (input: CodexParsedRequest) => ({
-        ...compileChatGptWebPrompt(input, turnCapabilities, undefined, compileOptionsFor(input)),
+      const prepareWith = async (input: CodexParsedRequest, transactionId?: string) => ({
+        ...preparePrompt(input, transactionId),
         release: () => {},
       });
       const browserTurn = cancellableBrowserTurn(finalizeCheckpoint(worker.run({
@@ -739,8 +731,8 @@ export function createChatGptWebAdapter(
         reasoning: parsed.options.reasoning,
         ...(parsed._chatgptModelFamily ? { modelFamily: parsed._chatgptModelFamily } : {}),
         capabilities: turnCapabilities,
-        prepare: () => prepareWith(checkpointInput.parsed),
-        ...(resumeInput ? { prepareResume: () => prepareWith(resumeInput) } : {}),
+        prepare: transactionId => prepareWith(checkpointInput.parsed, transactionId),
+        ...(resumeInput ? { prepareResume: (transactionId?: string) => prepareWith(resumeInput, transactionId) } : {}),
         ...(retainConversation ? { retainConversation: true, conversationKey } : {}),
         abortSignal: browserAbort.signal,
         ...(parsed._compactionRequest ? { compaction: true } : {}),
@@ -773,7 +765,7 @@ export function createChatGptWebAdapter(
     const externalProgress = new ChatGptExternalTurnProgress();
     let tokenSettled = false;
     let activeToken: string | undefined;
-    const prepareWith = async (input: CodexParsedRequest) => {
+    const prepareWith = async (input: CodexParsedRequest, transactionId?: string) => {
       const turnToken = activeToken ?? await broker.register(
         environment,
         timeoutMs === undefined ? undefined : timeoutMs + 60_000,
@@ -781,12 +773,7 @@ export function createChatGptWebAdapter(
       );
       activeToken = turnToken;
       try {
-        const compiled = compileChatGptWebPrompt(
-          input,
-          turnCapabilities,
-          turnToken,
-          compileOptionsFor(input),
-        );
+        const compiled = preparePrompt(input, transactionId, turnToken);
         // Publish only after preparation succeeds: otherwise its failure revokes the token
         // before the response observer uses it and masks the cause as an expired capability.
         observeCapabilityRetirement(turnToken, externalProgress);
@@ -807,8 +794,8 @@ export function createChatGptWebAdapter(
       reasoning: parsed.options.reasoning,
       ...(parsed._chatgptModelFamily ? { modelFamily: parsed._chatgptModelFamily } : {}),
       capabilities: turnCapabilities,
-      prepare: () => prepareWith(checkpointInput.parsed),
-      ...(resumeInput ? { prepareResume: () => prepareWith(resumeInput) } : {}),
+      prepare: transactionId => prepareWith(checkpointInput.parsed, transactionId),
+      ...(resumeInput ? { prepareResume: (transactionId?: string) => prepareWith(resumeInput, transactionId) } : {}),
       ...(retainConversation ? { retainConversation: true, conversationKey } : {}),
       abortSignal: browserAbort.signal,
       ...(parsed._compactionRequest ? { compaction: true } : {}),

@@ -157,7 +157,7 @@ function printHeader(
   stdout.write(`model ${state.model} · ${mode === "full" ? "tools explicitly simulated" : "browser-only, no outer tools"} · live launcher browser\n`);
   stdout.write(`context ${statusLine(status)}\n`);
   if (biggerContext) {
-    stdout.write(`${yellow("Bigger Context experimental")} · adaptive 1/2/3-message context · same-agent compaction handoff · elevated rate-limit/cooldown risk\n`);
+    stdout.write(`${yellow("Bigger Context experimental")} · adaptive 1/2/6-message context · same-agent compaction handoff · elevated rate-limit/cooldown risk\n`);
   }
   stdout.write(`${dim("Codex route is untouched. No Responses port is bound, replaced, stopped, or restarted.")}\n`);
 }
@@ -330,7 +330,7 @@ export async function runDevCommand(args: string[]): Promise<void> {
       stdout.write(`launcher: ${launcher.running ? `running (pid ${launcher.pid})` : `not ready${launcher.error ? ` · ${launcher.error}` : ""}`}\n`);
       stdout.write(`config: ${config.configured ? `${config.mode} (${config.purpose})` : `not ready${config.error ? ` · ${config.error}` : ""}`}\n`);
       stdout.write(`MCP runtime: ${mcpRuntime.required ? (mcpRuntime.ready ? "ready" : `not ready${mcpRuntime.detail ? ` · ${mcpRuntime.detail}` : ""}`) : "not required"}\n`);
-      stdout.write(`Bigger Context: ${features.biggerContext ? "enabled (experimental, adaptive 1/2/3 messages; same-agent compaction handoff)" : "disabled"}\n`);
+      stdout.write(`Bigger Context: ${features.biggerContext ? "enabled (experimental, adaptive 1/2/6 messages; same-agent compaction handoff)" : "disabled"}\n`);
       stdout.write("Codex route: isolated and unused\nResponses listener: not started\n");
     }
     return;

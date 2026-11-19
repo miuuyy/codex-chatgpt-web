@@ -1,12 +1,8 @@
 import type { AppConfig } from "./config";
 import type { CodexParsedRequest } from "./types";
 import { compileChatGptWebPrompt, countChatGptContextImages } from "./adapters/chatgpt-web/prompt";
-import { assertChatGptWebInputWithinLimits } from "./adapters/chatgpt-web/browser-worker";
-import {
-  compiledChatGptWebMaxMessageChars,
-  estimateCompiledChatGptWebInputTokens,
-  estimateCompiledChatGptWebMessageTokens,
-} from "./adapters/chatgpt-web/input-tokens";
+import { checkChatGptWebTransport } from "./adapters/chatgpt-web/transport-budget";
+import { resolveChatGptWebModelMode } from "./adapters/chatgpt-web/model";
 
 /** Apply the user's prediction policy without changing the originating task's model or settings. */
 export function configureComposerPrediction(parsed: CodexParsedRequest, config: AppConfig): AppConfig {
@@ -41,12 +37,6 @@ export function assertComposerPredictionFits(parsed: CodexParsedRequest, config:
   if (compiled.images.length !== countChatGptContextImages(parsed.context.messages)) {
     throw new Error("The conversation contains more images than a prediction can include.");
   }
-  assertChatGptWebInputWithinLimits(
-    estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId),
-    estimateCompiledChatGptWebMessageTokens(compiled, parsed.modelId),
-    parsed.modelId,
-    "medium",
-    capabilities,
-    compiledChatGptWebMaxMessageChars(compiled),
-  );
+  const mode = resolveChatGptWebModelMode(parsed.modelId, "medium", capabilities);
+  checkChatGptWebTransport(compiled, parsed.modelId, mode, capabilities, parsed._chatgptModelFamily);
 }
