@@ -68,6 +68,7 @@ import {
   CHATGPT_USER_TURN_SELECTOR,
 } from "../../chatgpt-ui/turns";
 import {
+  chatGptAttachmentPreview,
   chatGptStopButton,
   chatGptThinkButtons,
   CHATGPT_COMPOSER_SELECTOR,
@@ -4063,23 +4064,29 @@ export class ChatGptBrowserWorker {
     const input = composerForm.locator('input[data-testid="upload-photos-input"], input[type="file"][multiple]:not([accept])');
     await input.waitFor({ state: "attached", timeout: 20_000 });
     const uploads = await observeChatGptAttachmentUploads(page, files.map(file => file.name));
+    const previewWait = new AbortController();
     try {
       await withBrowserTurnAbort(input.setInputFiles(files), abortSignal);
+      let visiblePreviews = 0;
       try {
-        await withBrowserTurnAbort(Promise.all([uploads.wait(abortSignal), ...files.map(file => (
-          composerForm.getByRole("group", { name: file.name, exact: true })
-            .or(composerForm.locator(`.composer-attachment-surface:is(button, [role="button"])[aria-label=${JSON.stringify(file.name)}]`))
-            .waitFor({ state: "visible", timeout: 60_000 })
-        ))]), abortSignal);
+        const previews = files.map(async file => {
+          await chatGptAttachmentPreview(composerForm, file)
+            .waitFor({ state: "visible", timeout: 60_000, signal: previewWait.signal });
+          visiblePreviews++;
+        });
+        await withBrowserTurnAbort(Promise.all([uploads.wait(abortSignal), ...previews]), abortSignal);
       } catch (error) {
         uploads.throwIfFailed();
-        if (abortSignal?.aborted) throw error;
+        if (abortSignal?.aborted || !(error instanceof Error) || error.name !== "TimeoutError") throw error;
         const alerts = (await page.locator('[role="alert"]').allInnerTexts().catch(() => []))
           .map(text => text.replace(/\s+/g, " ").trim())
           .filter(Boolean);
-        throw new Error(
-          `ChatGPT did not accept all prompt attachments`
-          + (alerts.length > 0 ? `: ${alerts.join(" | ")}` : ""),
+        throw new ChatGptWebAdapterError(
+          `The launcher recognized ${visiblePreviews}/${files.length} attachment previews. `
+          + `ChatGPT confirmed ${uploads.completedCount}/${files.length} uploads. `
+          + "Check the attachments in the ChatGPT tab before retrying."
+          + (alerts.length > 0 ? ` ChatGPT: ${alerts.join(" | ")}` : ""),
+          { status: 502, errorType: "server_error", code: "chatgpt_attachment_unconfirmed", retryable: false },
         );
       }
       uploads.throwIfFailed();
@@ -4092,6 +4099,7 @@ export class ChatGptBrowserWorker {
       }
       throw new Error("ChatGPT accepted the prompt attachments but did not make the message ready to send");
     } finally {
+      previewWait.abort();
       await uploads.dispose();
     }
   }

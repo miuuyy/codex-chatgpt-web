@@ -129,11 +129,13 @@ export async function observeChatGptAttachmentUploads(page: Page, names: string[
   session.on("event", onEvent);
   const dispose = async () => {
     disposed = true;
+    reject(new DOMException("Upload observation ended", "AbortError"));
     session.off("event", onEvent);
     await session.detach().catch(() => {});
   };
   try { await session.send("Network.enable"); } catch (error) { await dispose(); throw error; }
   return {
+    get completedCount() { return completed.size; },
     throwIfFailed: () => { if (failure) throw failure; },
     wait: (signal?: AbortSignal) => new Promise<void>((yes, no) => {
       const abort = () => no(signal?.reason ?? new DOMException("Upload observation aborted", "AbortError"));

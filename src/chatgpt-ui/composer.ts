@@ -11,6 +11,21 @@ export const CHATGPT_COMPOSER_VARIANTS = {
 export const CHATGPT_COMPOSER_SELECTOR = Object.values(CHATGPT_COMPOSER_VARIANTS).join(", ");
 /** Resolve only inside the verified composer's form; multiple submitters are an error. */
 export const CHATGPT_SEND_BUTTON_SELECTOR = '[data-testid="send-button"], button[type="submit"]';
+
+export function chatGptAttachmentPreview(form: Locator, file: { name: string; mimeType: string }): Locator {
+  const name = JSON.stringify(file.name);
+  let preview = form.getByRole("group", { name: file.name, exact: true })
+    .or(form.locator(`.composer-attachment-surface:is(button, [role="button"])[aria-label=${name}]`));
+  if (file.mimeType.startsWith("image/")) {
+    // 2026-11-18 (#996): when preview interaction is off, the composer renders the
+    // filename as the thumbnail's alt text. Its outer tile has no button role or label.
+    preview = preview.or(form.locator(
+      `[data-composer-attachments]:not([inert]) div.composer-attachment-surface:not([role]) > span.composer-attachment-surface > img[alt=${name}]`,
+    ));
+  }
+  return preview.filter({ visible: true });
+}
+
 // Captured in the launcher's current composer on 2026-10-09. The primary action's
 // square glyph identifies Stop without its translated label. Button type/class alone
 // also match voice controls; keep the observed icon and composer ownership together.

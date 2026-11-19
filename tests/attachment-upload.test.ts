@@ -3,6 +3,7 @@ import {chromium,type Browser} from "playwright-core";
 import {observeChatGptAttachmentUploads} from "../src/adapters/chatgpt-web/attachment-upload";
 import {ChatGptBrowserWorker} from "../src/adapters/chatgpt-web/browser-worker";
 import {ChatGptWebAdapterError} from "../src/adapters/chatgpt-web/adapter-error";
+import { chatGptAttachmentPreview } from "../src/chatgpt-ui/composer";
 
 const executable=process.env.CHATGPT_DOM_TEST_BROWSER;
 const html=`<form><div id="prompt-textarea" contenteditable="true">original message</div><input data-testid="upload-photos-input" type="file" multiple><button data-testid="send-button" type="button" onclick="window.sends++">Send</button></form>
@@ -14,6 +15,38 @@ async function fixture(run:(browser:Browser,base:string)=>Promise<void>,handler:
  try{await run(browser,`http://127.0.0.1:${server.port}`);}finally{await browser.close();server.stop(true);}
 }
 const prompt={text:'original message',images:[{ref:'codex-input-image-1',imageUrl:'data:image/png;base64,'+Buffer.from('test').toString('base64')}]};
+
+test.skipIf(!executable)("the composer can verify a named image thumbnail without a preview button (#996)", async () => {
+  const fileName = "codex-input-image-1.png";
+  const thumbnail = `<div class="composer-attachment-surface"><span class="composer-attachment-surface"><img alt="${fileName}" width="20" height="20"></span></div>`;
+  const document = `<form><div id="prompt-textarea" contenteditable="true">Prompt</div>
+    <input type="file" multiple><button type="submit">Send</button>
+    <div data-composer-attachments><img alt="${fileName}">${thumbnail.replace(fileName, "other.png")}
+      <div class="composer-attachment-surface"><span class="composer-attachment-surface"><span role="progressbar"></span></span></div></div>
+    <div data-composer-attachments inert>${thumbnail}</div>
+    <div hidden class="composer-attachment-surface" role="button" aria-label="${fileName}"></div></form>
+    <div data-composer-attachments>${thumbnail}</div>`;
+  await fixture(async (browser, base) => {
+    const page = await browser.newPage();
+    await page.goto(base);
+    const preview = chatGptAttachmentPreview(page.locator("form"), { name: fileName, mimeType: "image/png" });
+    expect(await preview.count()).toBe(0);
+    await page.locator("input").evaluate(input => {
+      input.addEventListener("change", () => void fetch("/backend-api/files/process_upload_stream", {
+        method: "POST", body: JSON.stringify({ file_name: "codex-input-image-1.png" }),
+      }));
+    });
+    await page.locator("form [data-composer-attachments]:not([inert])").evaluate((row, markup) => {
+      row.insertAdjacentHTML("beforeend", markup);
+    }, thumbnail);
+    expect(await preview.count()).toBe(1);
+    expect(await chatGptAttachmentPreview(page.locator("form"), { name: fileName, mimeType: "text/plain" }).count()).toBe(0);
+    const worker = Object.create(ChatGptBrowserWorker.prototype);
+    await worker.attachFiles(page, prompt, AbortSignal.timeout(5_000));
+  }, () => new Response('{"event":"file.processing.completed"}\n', {
+    headers: { "content-type": "application/x-ndjson" },
+  }), document);
+}, 15_000);
 
 test.skipIf(!executable)('saved-chat uploads use the active composer while the hidden home composer remains mounted',async()=>{
  let uploads=0;
@@ -108,7 +141,9 @@ test.skipIf(!executable)('HTTP 200 processing errors fail and unrelated uploads 
 test.skipIf(!executable)('unfinished processing is cancelled without leaking the browser observation',async()=>{
  await fixture(async(browser,base)=>{
   const page=await browser.newPage();await page.goto(base);const observer=await observeChatGptAttachmentUploads(page,['wanted.png']);
+  const pending = observer.wait().then(() => "completed", (error: Error) => error.message);
   try{await expect(observer.wait(AbortSignal.timeout(80))).rejects.toThrow();}finally{await observer.dispose();}
+  expect(await pending).toBe("Upload observation ended");
   expect(await page.evaluate(()=>document.title)).toBe('');
  },()=>new Response(''));
 },10000);

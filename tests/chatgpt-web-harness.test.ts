@@ -1683,6 +1683,7 @@ describe("ChatGPT outer-native harness v4", () => {
   test.each([
     { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded" },
     { status: 429, errorType: "rate_limit_error", code: "rate_limit_exceeded" },
+    { status: 502, errorType: "server_error", code: "chatgpt_attachment_unconfirmed" },
   ])("a terminal $code failure remains replayable without starting another browser turn", async failure => {
     const socketPath = brokerTestEndpoint(`cgw-h4-nonretryable-${process.pid}-${Date.now()}`);
     const provider: CodexProviderConfig = {
