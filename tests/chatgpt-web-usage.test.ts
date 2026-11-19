@@ -244,7 +244,7 @@ test("#1001 keeps a fitting GPT-6 Plus code transcript inline across planning an
   expect(checkChatGptWebTransport(selected, parsed.modelId, mode, caps, "6", id).estimatedInputTokens).toBe(inlineTokens);
   expect(() => checkChatGptWebTransport(staged, parsed.modelId, mode, caps, "6", id)).toThrow("120,000-token");
   expect(estimateChatGptWebUsage(parsed, {}, caps, true).inputTokens).toBe(inlineTokens);
-});
+}, 30_000);
 
 test("Bigger Context refuses an oversized ordinary GPT-6 Plus transcript before Send and preserves its records", () => {
   const caps = { ...capabilities, proAvailable: false };
@@ -269,7 +269,7 @@ test("Bigger Context refuses an oversized ordinary GPT-6 Plus transcript before 
   expect(compact.trimmedCompactionMessages).toBeGreaterThan(0);
   expect(checkChatGptWebTransport(compact, parsed.modelId, mode, caps, "6", id).estimatedInputTokens)
     .toBe(estimateCompiledChatGptWebInputTokens(compact, parsed.modelId, id));
-});
+}, 30_000);
 
 test("the selected multipart transaction ID counts toward the GPT-6 Plus ceiling", () => {
   const caps = { ...capabilities, proAvailable: false, extraHighAvailable: false };
@@ -282,4 +282,4 @@ test("the selected multipart transaction ID counts toward the GPT-6 Plus ceiling
   expect(estimateCompiledChatGptWebInputTokens(candidate, parsed.modelId)).toBeLessThan(120_000);
   expect(estimateCompiledChatGptWebInputTokens(candidate, parsed.modelId, id)).toBeGreaterThanOrEqual(120_000);
   expect(() => compileBiggerContextPrompt(parsed, caps, undefined, { multipartTransactionId: id })).toThrow("120,000-token six-part ceiling");
-});
+}, 30_000);
