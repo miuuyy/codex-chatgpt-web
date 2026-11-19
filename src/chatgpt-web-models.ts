@@ -216,6 +216,22 @@ export function resolveChatGptWebContextLimits(
   );
 }
 
+/** Total input capacity for a staged transaction at the selected account and model family. */
+export function resolveChatGptWebMultipartContextWindow(
+  backendModel: ChatGptWebAutomaticBackendModel,
+  effort: ChatGptWebAdapterEffort,
+  capabilities: ChatGptWebAccountCapabilities,
+  partCount: number,
+  modelFamily?: ChatGptWebModelFamily,
+): number {
+  const oneMessageWindow = resolveChatGptWebMessageTokenBudget(backendModel, effort, capabilities)
+    + CHATGPT_WEB_PLATFORM_RESERVE_TOKENS + 1;
+  const { contextWindow } = resolveChatGptWebContextLimits(
+    backendModel, effort, { ...capabilities, experimentalBiggerContext: true }, modelFamily,
+  );
+  return Math.min(contextWindow, oneMessageWindow * partCount);
+}
+
 /** Resolve limits of one visible ChatGPT composer message, independently of model context. */
 export function resolveChatGptWebTransportLimits(
   backendModel: ChatGptWebBackendModel,

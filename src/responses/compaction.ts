@@ -18,6 +18,18 @@ import { isNativeAgentsMdContext } from "./native-context";
  */
 
 export const BRIDGE_COMPACTION_PREFIX = "ocx1:";
+export const LATEST_USER_PROMPT_MARKER = "CODEX_LATEST_USER_PROMPT_JSON";
+const nativeCompactionMessages = new WeakSet<object>();
+
+/** Parser provenance stays out of the protocol and cannot be supplied by quoted user text. */
+export function markNativeCompactionMessage<T extends object>(message: T): T {
+  nativeCompactionMessages.add(message);
+  return message;
+}
+
+export function isNativeCompactionMessage(message: object): boolean {
+  return nativeCompactionMessages.has(message);
+}
 
 /** Native compact.rs consumes an assistant message; compact_remote_v2 consumes a compaction item. */
 export function isNativeTextCompaction(body: unknown): boolean {

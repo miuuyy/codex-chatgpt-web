@@ -5,7 +5,7 @@ import { compiledChatGptWebMessages, estimateChatGptWebImageTokens, estimateComp
 import { assertChatGptWebMultipartInputWithinLimits, resolveChatGptWebMultipartStagingMode } from "../src/adapters/chatgpt-web/browser-worker";
 import { estimateTokens } from "../src/lib/token-estimate";
 import type { CodexParsedRequest } from "../src/types";
-import { resolveChatGptWebMessageTokenBudget, resolveChatGptWebStagingTokenBudget } from "../src/chatgpt-web-models";
+import { resolveChatGptWebMessageTokenBudget, resolveChatGptWebMultipartContextWindow, resolveChatGptWebStagingTokenBudget } from "../src/chatgpt-web-models";
 import { parseRequest } from "../src/responses/parser";
 
 const capabilities = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true };
@@ -125,9 +125,12 @@ test("GPT-6 Sol stages complete Plus and Pro history with consistent usage accou
   for (const proAvailable of [false, true]) {
     const caps = { ...capabilities, proAvailable };
     const parts = resolveBiggerContextMultipartParts(parsed, caps);
-    expect(parts).toBe(2);
+    expect(parts).toBe(proAvailable ? undefined : 2);
     const staged = compileChatGptWebPrompt(parsed, caps, undefined, { experimentalMultipartParts: parts });
-    expect(staged.multipart!.parts.flatMap(part => JSON.parse(part).records).map(record => record.message.content))
+    const messages = staged.multipart
+      ? staged.multipart.parts.flatMap(part => JSON.parse(part).records).map(record => record.message)
+      : JSON.parse(staged.text.match(/<codex_context_json>\n([\s\S]*?)\n<\/codex_context_json>/)![1]!).messages;
+    expect(messages.map((message: { content: string }) => message.content))
       .toEqual(parsed.context.messages.map(message => message.content));
     expect(estimateChatGptWebUsage(parsed, { answer: "done" }, caps, true).inputTokens)
       .toBe(estimateCompiledChatGptWebInputTokens(staged, parsed.modelId));
@@ -222,3 +225,92 @@ test("multipart planning leaves room for final attachments and execution instruc
     )).not.toThrow();
   }
 }, 30_000);
+
+test("GPT-6 Plus keeps a fitting inline request when multipart encoding would overflow", () => {
+  const caps = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: false, proAvailable: false };
+  const parsed = request("");
+  parsed._chatgptModelFamily = "6";
+  parsed.context.messages = Array.from({ length: 11 }, (_, index) => ({
+    role: "user", timestamp: index + 1,
+    content: "const value = objects[0]?.name ?? '#test';\n".repeat(500),
+  }));
+  const original = structuredClone(parsed);
+  const token = "turn_" + "A1".repeat(16);
+  const inline = compileChatGptWebPrompt(parsed, caps, token);
+  const inlineInput = estimateCompiledChatGptWebInputTokens(inline, parsed.modelId);
+  expect(inlineInput).toBeGreaterThan(80_000);
+  expect(inlineInput).toBeLessThan(90_000);
+  const staged = compileChatGptWebPrompt(parsed, caps, token, { experimentalMultipartParts: 2 });
+  expect(estimateCompiledChatGptWebInputTokens(staged, parsed.modelId)).toBeGreaterThan(120_000);
+  expect(resolveBiggerContextMultipartParts(parsed, caps)).toBeUndefined();
+  expect(parsed).toEqual(original);
+  const usage = estimateChatGptWebUsage(parsed, { answer: "Saved the completed step." }, caps, true);
+  expect(usage.inputTokens).toBeGreaterThanOrEqual(110_000);
+  expect(usage.estimated).toBeTrue();
+}, 15_000);
+
+test("GPT-6 Plus plans against its full context ceiling", () => {
+  const caps = { ...capabilities, proAvailable: false };
+  const parsed = request("");
+  parsed._chatgptModelFamily = "6";
+  parsed.context.messages = Array.from({ length: 23 }, (_, index) => ({
+    role: "user", timestamp: index + 1, content: "Record " + index + " " + "word ".repeat(5000),
+  }));
+  expect(resolveBiggerContextMultipartParts(parsed, caps)).toBe(6);
+}, 15_000);
+
+
+test.each([
+  { family: "6", pro: false, parts: 2, ceiling: 120_000 },
+  { family: "6", pro: false, parts: 6, ceiling: 120_000 },
+  { family: "6", pro: true, parts: 2, ceiling: 222_386 },
+  { family: "6", pro: true, parts: 6, ceiling: 240_000 },
+  { family: "5.6", pro: false, parts: 2, ceiling: 180_000 },
+  { family: "5.6", pro: false, parts: 6, ceiling: 270_000 },
+] as const)("planner and preflight enforce the same selected context ceiling %j", scenario => {
+  const caps = { ...capabilities, proAvailable: scenario.pro };
+  const cap = resolveChatGptWebMultipartContextWindow("gpt-5.6-sol", "high", caps, scenario.parts, scenario.family);
+  expect(cap).toBe(scenario.ceiling);
+  expect(() => assertChatGptWebMultipartInputWithinLimits(
+    cap - 1, 1, "gpt-5.6-sol", "high", caps, 1, scenario.parts, undefined, scenario.family,
+  )).not.toThrow();
+  expect(() => assertChatGptWebMultipartInputWithinLimits(
+    cap, 1, "gpt-5.6-sol", "high", caps, 1, scenario.parts, undefined, scenario.family,
+  )).toThrow("ceiling");
+});
+
+test("a fitting inline task below the normal checkpoint threshold retains exact usage", () => {
+  const caps = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: false, proAvailable: false };
+  const parsed = request("");
+  parsed._chatgptModelFamily = "6";
+  parsed.context.messages = Array.from({ length: 9 }, (_, index) => ({
+    role: "user", timestamp: index + 1,
+    content: "const value = objects[0]?.name ?? '#test';\n".repeat(500),
+  }));
+  const prompt = compileChatGptWebPrompt(parsed, caps, "turn_" + "0".repeat(32));
+  expect(estimateChatGptWebUsage(parsed, { answer: "Done" }, caps, true).inputTokens)
+    .toBe(estimateCompiledChatGptWebInputTokens(prompt, parsed.modelId));
+}, 15_000);
+
+test("a retained checkpoint does not repeatedly request compaction without new tool results", async () => {
+  const { encodeCompactionSummary } = await import("../src/responses/compaction");
+  const caps = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: false, proAvailable: false };
+  const parsed = parseRequest({ model: "gpt-5.6-sol", reasoning: { effort: "high" }, input: [
+    { type: "compaction", encrypted_content: encodeCompactionSummary("The completed step and its result remain established.") },
+    ...Array.from({ length: 11 }, (_, index) => ({
+      type: "message", role: "user",
+      content: "const value = objects[0]?.name ?? '#test';\n".repeat(500),
+    })),
+  ] });
+  parsed._chatgptModelFamily = "6";
+  const actual = estimateChatGptWebInputTokens(parsed, caps, { captureLunaCheckpoint: false });
+  expect(actual).toBeGreaterThan(80_000);
+  expect(actual).toBeLessThan(90_000);
+  expect(estimateChatGptWebUsage(parsed, { answer: "The checkpoint is still current." }, caps, true).inputTokens).toBe(actual);
+  parsed.context.messages.push({
+    role: "toolResult", toolCallId: "new-completed-call", toolName: "exec_command",
+    content: "Completed a new step", isError: false, timestamp: Date.now(),
+  });
+  expect(estimateChatGptWebUsage(parsed, { answer: "A new step is complete." }, caps, true).inputTokens)
+    .toBeGreaterThanOrEqual(110_000);
+}, 15_000);

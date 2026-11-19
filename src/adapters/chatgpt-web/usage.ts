@@ -2,15 +2,16 @@ import { skillFileTokens } from "./skill-attachments";
 import { estimateTokens } from "../../lib/token-estimate";
 import {
   CHATGPT_WEB_BACKEND_MODEL,
-  CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER,
   CHATGPT_WEB_PLATFORM_RESERVE_TOKENS,
   isChatGptWebZeroRiskBackendModel,
   resolveChatGptWebContextLimits,
   resolveChatGptWebMessageTokenBudget,
+  resolveChatGptWebMultipartContextWindow,
   resolveChatGptWebTransportLimits,
   supportsChatGptWebBiggerContext,
 } from "../../chatgpt-web-models";
 import type { CodexParsedRequest, CodexUsage } from "../../types";
+import { isNativeCompactionMessage, isReadableCompactionSummaryText } from "../../responses/compaction";
 import { compiledChatGptWebMessages, estimateChatGptWebImageTokens, estimateCompiledChatGptWebInputTokens } from "./input-tokens";
 import {
   CHATGPT_BIGGER_CONTEXT_PARTS,
@@ -112,9 +113,9 @@ export function resolveBiggerContextMultipartParts(
       if (estimateTokens(text, parsed.modelId) > budget) return false;
     }
     return estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId)
-      < contextWindow * Math.min(messages.length, CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER);
+      < resolveChatGptWebMultipartContextWindow(backendModel, mode.effort, capabilities, messages.length, parsed._chatgptModelFamily);
   };
-  if (initialParts === undefined && fits(inline)) return undefined;
+  if (fits(inline)) return undefined;
   return fits(compile(2)) ? 2 : CHATGPT_BIGGER_CONTEXT_PARTS;
 }
 
@@ -153,14 +154,45 @@ export function estimateChatGptWebUsage(
   experimentalSkillAttachments = false,
   appName?: string,
 ): CodexUsage {
-  const inputTokens = estimateChatGptWebInputTokens(parsed, capabilities, {
+  const multipartParts = experimentalBiggerContext
+    ? resolveBiggerContextMultipartParts(parsed, capabilities, experimentalSkillAttachments, appName)
+    : undefined;
+  let inputTokens = estimateChatGptWebInputTokens(parsed, capabilities, {
     appName,
     ...(experimentalBiggerContext ? { captureLunaCheckpoint: false } : {}),
     experimentalSkillAttachments,
-    experimentalMultipartParts: experimentalBiggerContext
-      ? resolveBiggerContextMultipartParts(parsed, capabilities, experimentalSkillAttachments, appName)
-      : undefined,
+    experimentalMultipartParts: multipartParts,
   });
+  const checkpointIndex = parsed.context.messages.findLastIndex(message => isNativeCompactionMessage(message)
+    || (message.role === "user" && isReadableCompactionSummaryText(message.content)));
+  const hasNewToolResults = parsed.context.messages.slice(checkpointIndex + 1).some(message => message.role === "toolResult");
+  if (experimentalBiggerContext && !parsed._compactionRequest && !isChatGptWebZeroRiskBackendModel(parsed.modelId)
+    && (checkpointIndex < 0 || hasNewToolResults)) {
+    const backendModel = parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID ? CHATGPT_WEB_LUNA_MODEL_ID : CHATGPT_WEB_BACKEND_MODEL;
+    const mode = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
+    const base = resolveChatGptWebContextLimits(backendModel, mode.effort, capabilities, parsed._chatgptModelFamily);
+    if (supportsChatGptWebBiggerContext(parsed.modelId, mode.effort, parsed._chatgptModelFamily)
+      && inputTokens >= base.autoCompactTokenLimit
+      && multipartParts === undefined) {
+      const staged = compileChatGptWebPrompt(parsed, capabilities, mode.localTools ? ESTIMATE_TURN_TOKEN : undefined, {
+        appName, experimentalSkillAttachments, captureLunaCheckpoint: false,
+        experimentalMultipartParts: CHATGPT_BIGGER_CONTEXT_PARTS,
+      });
+      const stagedTokens = estimateCompiledChatGptWebInputTokens(staged, parsed.modelId);
+      const ceiling = resolveChatGptWebMultipartContextWindow(backendModel, mode.effort, capabilities,
+        CHATGPT_BIGGER_CONTEXT_PARTS, parsed._chatgptModelFamily);
+      if (stagedTokens >= ceiling) {
+        const bigger = resolveChatGptWebContextLimits(backendModel, mode.effort,
+          { ...capabilities, experimentalBiggerContext: true }, parsed._chatgptModelFamily);
+        // Codex controls automatic compaction through this conservative usage estimate.
+        // A fitting inline request must finish before the next staged request becomes impossible.
+        console.info(`[chatgpt-web] compaction_capacity_reserve ${JSON.stringify({
+          inputTokens, stagedTokens, ceiling, reportedInputTokens: Math.max(inputTokens, bigger.autoCompactTokenLimit),
+        })}`);
+        inputTokens = Math.max(inputTokens, bigger.autoCompactTokenLimit);
+      }
+    }
+  }
   const outputTokens = conservativeTextTokens(roundEvidenceText(evidence), parsed.modelId);
   return {
     inputTokens,

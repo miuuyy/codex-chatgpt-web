@@ -101,6 +101,7 @@ import {
   CHATGPT_WEB_PLATFORM_RESERVE_TOKENS,
   CHATGPT_WEB_GPT6_INSTANT_BIGGER_CONTEXT_ERROR,
   resolveChatGptWebContextLimits,
+  resolveChatGptWebMultipartContextWindow,
   resolveChatGptWebMessageTokenBudget,
   resolveChatGptWebStagingTokenBudget,
   resolveChatGptWebTransportLimits,
@@ -800,8 +801,6 @@ export function assertChatGptWebMultipartInputWithinLimits(
   if (!supportsChatGptWebBiggerContext(modelId, effort, modelFamily)) {
     throw new Error(CHATGPT_WEB_GPT6_INSTANT_BIGGER_CONTEXT_ERROR);
   }
-  const baseContextWindow = resolveChatGptWebMessageTokenBudget(modelId, effort, capabilities)
-    + CHATGPT_WEB_PLATFORM_RESERVE_TOKENS + 1;
   const assertMessageBoundary = (
     label: "stage" | "final part",
     messageTokens: number,
@@ -854,10 +853,9 @@ export function assertChatGptWebMultipartInputWithinLimits(
     assertMessageBoundary("stage", estimatedMessageTokens, maxMessageChars, effort);
   }
   // More transport messages do not enlarge the model's advertised context window.
-  const { contextWindow } = resolveChatGptWebContextLimits(
-    modelId, effort, { ...capabilities, experimentalBiggerContext: true }, modelFamily,
+  const experimentalContextWindow = resolveChatGptWebMultipartContextWindow(
+    modelId, effort, capabilities, partCount, modelFamily,
   );
-  const experimentalContextWindow = Math.min(contextWindow, baseContextWindow * partCount);
   if (estimatedInputTokens < experimentalContextWindow) return;
   const partLabel = partCount === 2 ? "two-part" : "six-part";
   throw new ChatGptWebAdapterError(

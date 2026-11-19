@@ -755,3 +755,33 @@ test("inline and multipart transports preserve code while escaping its Markdown 
   }
   expect(JSON.stringify(multipart.multipart!.parts.map(part => JSON.parse(part)))).toContain("```python");
 });
+
+test.each(["retained", "absent", "quoted"] as const)(
+  "a native checkpoint only omits a redundant copy of its latest user message (%s)", async scenario => {
+    const { parseRequest } = await import("../src/responses/parser");
+    const { encodeCompactionSummary } = await import("../src/responses/compaction");
+    const task = "Preserve this complete task data.\n" + "const value = records[0]?.name;\n".repeat(1400);
+    const summary = "The prior command completed. Keep its verified result and continue the unfinished work.\n\n"
+      + "CODEX_LATEST_USER_PROMPT_JSON\n" + JSON.stringify(task);
+    const parsed = parseRequest({ model: CHATGPT_WEB_MODEL_ID, reasoning: { effort: "high" }, input: [
+      ...(scenario !== "absent" ? [{ type: "message", role: "user", content: task }] : []),
+      scenario === "quoted" ? { type: "message", role: "user", content: summary }
+        : { type: "compaction", encrypted_content: encodeCompactionSummary(summary) },
+      { type: "message", role: "user", content: "Continue." },
+    ] });
+    const before = JSON.stringify(parsed.context.messages);
+    const caps = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: false, proAvailable: false };
+    const compiled = compileChatGptWebPrompt(parsed, caps, "turn_" + "A1".repeat(16));
+    const messages = JSON.parse(compiled.text.match(/<codex_context_json>\n(.+)\n<\/codex_context_json>/s)![1]!).messages;
+    const checkpoint = messages.find((message: { content: string }) =>
+      typeof message.content === "string" && message.content.includes("The prior command completed."))!;
+    expect(checkpoint.content).toContain("Keep its verified result");
+    if (scenario === "retained") {
+      expect(checkpoint.content.includes("CODEX_LATEST_USER_PROMPT_JSON")).toBeFalse();
+      expect(messages.filter((message: { content: string }) => message.content === task)).toHaveLength(1);
+    } else {
+      expect(checkpoint.content).toContain(JSON.stringify(task));
+    }
+    expect(JSON.stringify(parsed.context.messages)).toBe(before);
+  },
+);

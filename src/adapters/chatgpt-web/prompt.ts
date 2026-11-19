@@ -3,10 +3,9 @@ import { CHATGPT_CONNECTOR_NAME, ZERO_RISK_CHATGPT_CONNECTOR_NAME } from "../../
 import { selectedSkillFile, skillFileTokens, type ChatGptSkillFile } from "./skill-attachments";
 import {
   CHATGPT_WEB_GPT6_INSTANT_BIGGER_CONTEXT_ERROR,
-  CHATGPT_WEB_PLATFORM_RESERVE_TOKENS,
   chatGptWebImageTokenReserve,
   isChatGptWebZeroRiskBackendModel,
-  resolveChatGptWebContextLimits,
+  resolveChatGptWebMultipartContextWindow,
   resolveChatGptWebMessageTokenBudget,
   resolveChatGptWebStagingTokenBudget,
   resolveChatGptWebTransportLimits,
@@ -18,7 +17,7 @@ import { chatGptTurnUserRevisionHistory, extractChatGptTurnIdentity } from "./en
 import { estimateCompiledChatGptWebInputTokens } from "./input-tokens";
 import { estimateTokens } from "../../lib/token-estimate";
 import type { CodexAssistantContentPart, CodexContentPart, CodexMessage, CodexParsedRequest } from "../../types";
-import { isOnePixelPngDataUrl, isReadableCompactionSummaryText } from "../../responses/compaction";
+import { LATEST_USER_PROMPT_MARKER, isNativeCompactionMessage, isOnePixelPngDataUrl, isReadableCompactionSummaryText } from "../../responses/compaction";
 import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import {
   CHATGPT_LUNA_CHECKPOINT_MARKER,
@@ -791,6 +790,24 @@ export function compileChatGptWebPrompt(
   let sourceMessages = withoutSupersededModelSwitchContracts(restoreCompactionTaskMessages(
     parsed, extractChatGptTurnIdentity(parsed), chatGptTurnUserRevisionHistory(parsed),
   ));
+  const retainedUserMessages = new Set(sourceMessages
+    .filter(message => message.role === "user" && !isNativeCompactionMessage(message))
+    .map(plainMessageText));
+  sourceMessages = sourceMessages.map(message => {
+    if (message.role !== "user" || !isNativeCompactionMessage(message) || typeof message.content !== "string") return message;
+    let content = message.content;
+    const marker = `\n${LATEST_USER_PROMPT_MARKER}\n`;
+    const markerOffset = content.lastIndexOf(marker);
+    if (markerOffset >= 0) {
+      try {
+        const task: unknown = JSON.parse(content.slice(markerOffset + marker.length));
+        // Native compaction may retain the complete user message beside our checkpoint.
+        // Keep its text once while the canonical stored summary remains byte-for-byte intact.
+        if (typeof task === "string" && retainedUserMessages.has(task)) content = content.slice(0, markerOffset).trimEnd();
+      } catch { /* A partial appendix remains part of the supplied checkpoint. */ }
+    }
+    return { ...message, content: content };
+  });
   const initialMessageCount = sourceMessages.length;
   let compiled = build(sourceMessages);
   if (!parsed._compactionRequest) return compiled;
@@ -798,12 +815,8 @@ export function compileChatGptWebPrompt(
   // Match browser-worker's exclusive transaction ceiling, including wrappers, acknowledgements,
   // attachments and the platform reserve. The legacy inline byte cap does not apply to multipart.
   // Individual records remain atomic; browser preflight still rejects any part that cannot fit.
-  const multipartTokenBudget = compiled.multipart ? Math.min(
-    resolveChatGptWebContextLimits(
-      backendModel, mode.effort, { ...capabilities, experimentalBiggerContext: true }, parsed._chatgptModelFamily,
-    ).contextWindow,
-    (resolveChatGptWebMessageTokenBudget(backendModel, mode.effort, capabilities)
-      + CHATGPT_WEB_PLATFORM_RESERVE_TOKENS + 1) * compiled.multipart.parts.length,
+  const multipartTokenBudget = compiled.multipart ? resolveChatGptWebMultipartContextWindow(
+    backendModel, mode.effort, capabilities, compiled.multipart.parts.length, parsed._chatgptModelFamily,
   ) : undefined;
   const exceedsCompactionBudget = (): boolean => compiled.multipart
     ? estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId) >= multipartTokenBudget!
