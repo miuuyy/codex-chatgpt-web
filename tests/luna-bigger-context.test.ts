@@ -67,12 +67,16 @@ test("Luna multipart preflight bounds the total, each part and final attachments
     .toThrow("ChatGPT message boundary");
 });
 
-test("Luna full-history compaction uses six parts without also capturing a rolling summary", () => {
+test("Luna full-history compaction uses the smallest lossless staged upload without a rolling summary", () => {
   const parsed = request(4, 2000);
   parsed._compactionRequest = true;
-  expect(resolveBiggerContextMultipartParts(parsed, caps)).toBe(6);
-  const compiled = compileChatGptWebPrompt(parsed, caps, undefined, { experimentalMultipartParts: 6 });
+  const parts = resolveBiggerContextMultipartParts(parsed, caps);
+  expect(parts).toBe(2);
+  const compiled = compileChatGptWebPrompt(parsed, caps, undefined, { experimentalMultipartParts: parts });
   expect(compiled.trimmedCompactionMessages).toBeUndefined();
+  const records = compiled.multipart!.parts.flatMap(part => JSON.parse(part).records);
+  expect(records.filter(record => record.kind === "message").map(record => record.message.content))
+    .toEqual(parsed.context.messages.map(message => message.content));
   expect(formatChatGptWebMultipartCommit(compiled.multipart!, `ctx_${"0".repeat(32)}`)).not.toContain(CHATGPT_LUNA_CHECKPOINT_MARKER);
   parsed._compactionRequest = false;
   expect(compileChatGptWebPrompt(parsed, caps, undefined, { captureLunaCheckpoint: true }).text)

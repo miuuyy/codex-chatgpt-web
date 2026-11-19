@@ -111,7 +111,7 @@ describe("native /models augmentation", () => {
     expect(pro.auto_compact_token_limit).toBe(285_000);
   });
 
-  test("publishes measured GPT-6 context by account and effort while preserving GPT-5.6 and Pro budgets", () => {
+  test("publishes Plus Thinking input budgets by family while preserving Pro and Instant profiles", () => {
     for (const proAvailable of [false, true]) {
       const config = {
         ...defaultConfig("full"), proAvailable, extraHighAvailable: proAvailable,
@@ -130,7 +130,8 @@ describe("native /models augmentation", () => {
           max_context_window: expanded ? expandedWindow : window, auto_compact_token_limit: expanded ? expandedCompact : compact });
         expect(six.description).toContain(expanded ? "Plus and Pro" : "standard context");
         expect(models.find(model => model.slug === `chatgpt-web/gpt-5.6-${suffix}`)).toMatchObject({
-          context_window: window * 3, auto_compact_token_limit: compact * 3,
+          context_window: !proAvailable && expanded ? 120_000 : window * 3,
+          auto_compact_token_limit: !proAvailable && expanded ? 110_000 : compact * 3,
         });
       }
       if (proAvailable) {

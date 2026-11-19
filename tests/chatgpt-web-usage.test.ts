@@ -104,11 +104,11 @@ test("multipart selection accounts for whole-record and composer fit before subm
   ).effort).toBe("max");
 }, 60_000);
 
-test("Bigger Context compaction selects six parts before the legacy inline byte budget", () => {
+test("Bigger Context compaction stages intact history above the inline byte budget", () => {
   const parsed = request("x".repeat(160_000));
   parsed._compactionRequest = true;
   const parts = resolveBiggerContextMultipartParts(parsed, capabilities);
-  expect(parts).toBe(6);
+  expect(parts).toBe(2);
   const compiled = compileChatGptWebPrompt(parsed, capabilities, undefined, { experimentalMultipartParts: parts });
   expect(compiled.trimmedCompactionMessages).toBeUndefined();
   expect(compiled.multipart!.parts.flatMap(part => JSON.parse(part).records).map(record => record.message.content))
@@ -125,7 +125,7 @@ test("GPT-6 Sol stages complete Plus and Pro history with consistent usage accou
   for (const proAvailable of [false, true]) {
     const caps = { ...capabilities, proAvailable };
     const parts = resolveBiggerContextMultipartParts(parsed, caps);
-    expect(parts).toBe(proAvailable ? undefined : 2);
+    expect(parts).toBeUndefined();
     const staged = compileChatGptWebPrompt(parsed, caps, undefined, { experimentalMultipartParts: parts });
     const messages = staged.multipart
       ? staged.multipart.parts.flatMap(part => JSON.parse(part).records).map(record => record.message)
@@ -147,8 +147,12 @@ test("GPT-6 compaction respects the selected account and effort", () => {
       const supported = effort !== "low";
       const parts = resolveBiggerContextMultipartParts(parsed, caps);
       if (supported) {
-        expect(parts).toBe(6);
-        expect(compileChatGptWebPrompt(parsed, caps, undefined, { experimentalMultipartParts: parts }).multipart!.parts).toHaveLength(6);
+        expect(parts).toBeUndefined();
+        const compiled = compileChatGptWebPrompt(parsed, caps, undefined, { experimentalMultipartParts: parts });
+        expect(compiled.text).toContain("Summarize this task.");
+        expect(compiled.trimmedCompactionMessages).toBeUndefined();
+        expect(estimateChatGptWebUsage(parsed, { answer: "summary" }, caps, true).inputTokens)
+          .toBe(estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId));
       } else {
         expect(parts).toBeUndefined();
         expect(estimateChatGptWebUsage(parsed, { answer: "summary" }, caps, true))
@@ -160,14 +164,16 @@ test("GPT-6 compaction respects the selected account and effort", () => {
   }
   parsed.options.reasoning = "max";
   const parts = resolveBiggerContextMultipartParts(parsed, capabilities);
-  expect(parts).toBe(6);
-  expect(compileChatGptWebPrompt(parsed, capabilities, undefined, { experimentalMultipartParts: parts }).multipart!.parts).toHaveLength(6);
+  expect(parts).toBeUndefined();
+  const compiled = compileChatGptWebPrompt(parsed, capabilities, undefined, { experimentalMultipartParts: parts });
+  expect(compiled.text).toContain("Summarize this task.");
+  expect(compiled.trimmedCompactionMessages).toBeUndefined();
 });
 
-test("Plus history is rebalanced into smaller Instant uploads and a larger selected-mode final message", () => {
+test("ordinary and checkpoint uploads fit each declared stage budget", () => {
   const plus = { ...capabilities, proAvailable: false, extraHighAvailable: false };
   const parsed = request("");
-  parsed.context.messages = Array.from({ length: 60 }, (_, index) => ({
+  parsed.context.messages = Array.from({ length: 28 }, (_, index) => ({
     role: "user", content: `record-${index}: ${"word ".repeat(3000)}`, timestamp: index + 1,
   }));
   for (const compaction of [false, true]) {
@@ -178,12 +184,13 @@ test("Plus history is rebalanced into smaller Instant uploads and a larger selec
     expect(compiled.trimmedCompactionMessages).toBeUndefined();
     const messages = compiledChatGptWebMessages(compiled);
     const stagingTokens = messages.slice(0, -1).map(text => estimateTokens(text));
-    const stagingBudget = resolveChatGptWebStagingTokenBudget("gpt-5.6-sol", "low", plus);
+    const stagingBudget = compaction ? resolveChatGptWebMessageTokenBudget("gpt-5.6-sol", "high", plus)
+      : resolveChatGptWebStagingTokenBudget("gpt-5.6-sol", "low", plus);
     expect(Math.max(...stagingTokens)).toBeLessThanOrEqual(stagingBudget);
-    expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus,
+    if (!compaction) expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus,
       Math.max(...stagingTokens), Math.max(...messages.slice(0, -1).map(text => text.length))).effort).toBe("low");
     const finalTokens = estimateTokens(messages.at(-1)!);
-    expect(finalTokens).toBeGreaterThan(Math.max(...stagingTokens));
+    if (!compaction) expect(finalTokens).toBeGreaterThan(Math.max(...stagingTokens));
     expect(finalTokens).toBeLessThanOrEqual(resolveChatGptWebMessageTokenBudget("gpt-5.6-sol", "high", plus));
   }
 }, 30_000);
@@ -196,12 +203,12 @@ test("multipart planning leaves room for final attachments and execution instruc
   ]) {
     const caps = { ...capabilities, proAvailable: scenario.proAvailable };
     const parsed = request("");
-    const texts = Array.from({ length: 36 }, (_, index) => `record ${index}: ${"word ".repeat(5_000)}`);
+    const texts = Array.from({ length: scenario.proAvailable ? 36 : 12 }, (_, index) => `record ${index}: ${"word ".repeat(5_000)}`);
     parsed.context.messages = texts.map((content, index) => ({ role: "user", content, timestamp: index + 1 }));
     const images = Array.from({ length: scenario.images }, (_, index) => ({
       type: "image" as const, imageUrl: `data:image/png;base64,partition-image-${index}`, detail: "original" as const,
     }));
-    if (images.length) parsed.context.messages.push({ role: "user", content: images, timestamp: 37 });
+    if (images.length) parsed.context.messages.push({ role: "user", content: images, timestamp: texts.length + 1 });
     if (scenario.schema) parsed.options.outputFormat = {
       type: "json_schema", name: "result", strict: true, schema: { type: "string", description: "schema ".repeat(24_000) },
     };
@@ -265,8 +272,8 @@ test.each([
   { family: "6", pro: false, parts: 6, ceiling: 120_000 },
   { family: "6", pro: true, parts: 2, ceiling: 222_386 },
   { family: "6", pro: true, parts: 6, ceiling: 240_000 },
-  { family: "5.6", pro: false, parts: 2, ceiling: 180_000 },
-  { family: "5.6", pro: false, parts: 6, ceiling: 270_000 },
+  { family: "5.6", pro: false, parts: 2, ceiling: 120_000 },
+  { family: "5.6", pro: false, parts: 6, ceiling: 120_000 },
 ] as const)("planner and preflight enforce the same selected context ceiling %j", scenario => {
   const caps = { ...capabilities, proAvailable: scenario.pro };
   const cap = resolveChatGptWebMultipartContextWindow("gpt-5.6-sol", "high", caps, scenario.parts, scenario.family);
@@ -337,39 +344,40 @@ test("a bounded tool result that will cross the last fitting transport still sch
   const caps = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: false, proAvailable: false };
   const parsed = request("");
   parsed._chatgptModelFamily = "6";
-  parsed.context.messages = Array.from({ length: 11 }, (_, index) => ({
+  parsed.context.messages = Array.from({ length: 14 }, (_, index) => ({
     role: "user", timestamp: index,
     content: "const value = objects[0]?.name ?? '#test';\n".repeat(500),
   }));
   const tool = { callId: "large-read", wireName: "exec_command", freeform: false,
-    arguments: { cmd: "read large section", max_output_tokens: 12_000 } };
+    arguments: { cmd: "read large section", max_output_tokens: 14_000 } };
   expect(estimateChatGptWebUsage(parsed, { toolRequests: [tool] }, caps, true).inputTokens).toBeGreaterThanOrEqual(110_000);
   const next = structuredClone(parsed);
   next.context.messages.push({ role: "toolResult", toolCallId: tool.callId, toolName: "exec_command",
-    content: "word ".repeat(12_000), isError: false, timestamp: 12 });
+    content: "word ".repeat(14_000), isError: false, timestamp: 12 });
   const parts = resolveBiggerContextMultipartParts(next, caps);
   expect(parts).toBeDefined();
   expect(estimateChatGptWebInputTokens(next, caps, { experimentalMultipartParts: parts })).toBeGreaterThan(120_000);
-  // The internal backend ID is shared; the same continuation fits the wider 5.6 profile.
+  // The Pro account profile remains independent of the shared backend identifier.
+  const pro = { ...caps, proAvailable: true };
   parsed._chatgptModelFamily = "5.6";
   next._chatgptModelFamily = "5.6";
-  expect(estimateChatGptWebUsage(parsed, { toolRequests: [tool] }, caps, true).inputTokens)
-    .toBe(estimateChatGptWebInputTokens(parsed, caps, { captureLunaCheckpoint: false }));
-  const widerParts = resolveBiggerContextMultipartParts(next, caps);
+  expect(estimateChatGptWebUsage(parsed, { toolRequests: [tool] }, pro, true).inputTokens)
+    .toBe(estimateChatGptWebInputTokens(parsed, pro, { captureLunaCheckpoint: false }));
+  const widerParts = resolveBiggerContextMultipartParts(next, pro);
   expect(widerParts).toBe(2);
-  expect(estimateChatGptWebInputTokens(next, caps, { experimentalMultipartParts: widerParts })).toBeLessThan(240_000);
+  expect(estimateChatGptWebInputTokens(next, pro, { experimentalMultipartParts: widerParts })).toBeLessThan(240_000);
 }, 15_000);
 
 test("unbounded tools retain the ordinary reserve even when an unrelated argument looks like a limit", () => {
   const caps = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: false, proAvailable: false };
   const parsed = request("");
   parsed._chatgptModelFamily = "6";
-  parsed.context.messages = Array.from({ length: 11 }, (_, index) => ({
+  parsed.context.messages = Array.from({ length: 14 }, (_, index) => ({
     role: "user", timestamp: index,
     content: "const value = objects[0]?.name ?? '#test';\n".repeat(500),
   }));
   const tool = { callId: "unknown-read", wireName: "third_party.exec_command", freeform: false,
-    arguments: { max_output_tokens: 1 } };
+    arguments: { max_output_tokens: 1, cmd: "x ".repeat(2_500) } };
   expect(estimateChatGptWebUsage(parsed, { toolRequests: [tool] }, caps, true).inputTokens).toBeGreaterThanOrEqual(110_000);
 }, 15_000);
 
@@ -377,14 +385,15 @@ test("parallel unknown tools share the ordinary reserve while explicit output bu
   const caps = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: false, proAvailable: false };
   const parsed = request("");
   parsed._chatgptModelFamily = "6";
-  parsed.context.messages = Array.from({ length: 10 }, (_, index) => ({
+  parsed.context.messages = Array.from({ length: 13 }, (_, index) => ({
     role: "user", timestamp: index,
     content: "const value = objects[0]?.name ?? '#test';\n".repeat(500),
   }));
   const actual = estimateChatGptWebInputTokens(parsed, caps, { captureLunaCheckpoint: false });
-  expect(actual).toBeLessThan(80_000);
+  expect(actual).toBeGreaterThan(90_000);
+  expect(actual).toBeLessThan(110_000);
   const unknown = ["lookup_a", "lookup_b"].map(wireName => ({ callId: wireName, wireName, freeform: false }));
   expect(estimateChatGptWebUsage(parsed, { toolRequests: unknown }, caps, true).inputTokens).toBe(actual);
-  const bounded = unknown.map(tool => ({ ...tool, wireName: "exec_command", arguments: { max_output_tokens: 6_000 } }));
+  const bounded = unknown.map(tool => ({ ...tool, wireName: "exec_command", arguments: { max_output_tokens: 10_000 } }));
   expect(estimateChatGptWebUsage(parsed, { toolRequests: bounded }, caps, true).inputTokens).toBeGreaterThanOrEqual(110_000);
 }, 15_000);

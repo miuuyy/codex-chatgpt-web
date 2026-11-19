@@ -10,6 +10,7 @@ import {
   resolveChatGptWebStagingTokenBudget,
   resolveChatGptWebTransportLimits,
   supportsChatGptWebBiggerContext,
+  supportsChatGptWebBiggerInlineInput,
 } from "../../chatgpt-web-models";
 import { ChatGptWebAdapterError } from "./adapter-error";
 import { restoreCompactionTaskMessages } from "./compaction-continuation";
@@ -38,6 +39,8 @@ export interface CompiledChatGptWebPrompt {
   skillFiles?: ChatGptSkillFile[];
   /** Transactional transport when Bigger Context is explicitly enabled. */
   multipart?: ChatGptWebMultipartPrompt;
+  /** Explicit opt-in to the validated Bigger Context single-message input budget. */
+  biggerContext?: true;
   /** Oldest history items removed by native-style compaction fit recovery; absent on normal turns. */
   trimmedCompactionMessages?: number;
   /** Numeric counts of the submitted context records, never their contents or identifiers. */
@@ -54,7 +57,9 @@ export interface CompileChatGptWebPromptOptions {
   appName?: string;
   captureLunaCheckpoint?: boolean;
   experimentalSkillAttachments?: boolean;
+  experimentalBiggerContext?: boolean;
   experimentalMultipartParts?: ChatGptWebMultipartPartCount;
+  probeUntrimmedCompaction?: boolean;
   /** Capture only when preparing a real browser submission, not during budget-planning probes. */
   includeContextTokenBreakdown?: boolean;
   /**
@@ -506,7 +511,7 @@ export function compileChatGptWebPrompt(
     if (!capabilities.localToolsEnabled) {
       throw new Error("ChatGPT Zero Risk requires the Full Codex harness");
     }
-    if (captureLunaCheckpoint || multipartEnabled) {
+    if (captureLunaCheckpoint || multipartEnabled || options?.experimentalBiggerContext) {
       throw new Error("ChatGPT Zero Risk does not support rolling or multipart browser transport");
     }
   }
@@ -784,7 +789,11 @@ export function compileChatGptWebPrompt(
       "```",
       ...resume,
     ].join("\n");
-    return { text, images, ...attachments };
+    return { text, images, ...attachments,
+      ...(options?.experimentalBiggerContext && supportsChatGptWebBiggerContext(parsed.modelId, mode.effort, parsed._chatgptModelFamily)
+        && supportsChatGptWebBiggerInlineInput(parsed.modelId, mode.effort, capabilities)
+        ? { biggerContext: true as const } : {}),
+    };
   };
 
   let sourceMessages = withoutSupersededModelSwitchContracts(restoreCompactionTaskMessages(
@@ -810,7 +819,7 @@ export function compileChatGptWebPrompt(
   });
   const initialMessageCount = sourceMessages.length;
   let compiled = build(sourceMessages);
-  if (!parsed._compactionRequest) return compiled;
+  if (!parsed._compactionRequest || options?.probeUntrimmedCompaction) return compiled;
 
   // Match browser-worker's exclusive transaction ceiling, including wrappers, acknowledgements,
   // attachments and the platform reserve. The legacy inline byte cap does not apply to multipart.

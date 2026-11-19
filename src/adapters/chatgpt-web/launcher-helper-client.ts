@@ -521,6 +521,9 @@ export class LauncherBrowserHelperClient {
             return;
           }
           pending.prepared = prepared;
+          if (prepared.biggerContext && !this.helperFeatures.has("bigger-inline-context")) {
+            throw new Error("Launcher browser helper does not support the Bigger Context inline budget; restart the updated launcher");
+          }
           if (prepared.skillFiles?.length && !this.helperFeatures.has("skill-attachments")) {
             throw new Error("Launcher browser helper does not support skill attachments; update or restart the launcher");
           }
@@ -535,6 +538,7 @@ export class LauncherBrowserHelperClient {
                 ...(prepared.turnToken ? { turnToken: prepared.turnToken } : {}),
                 ...(prepared.skillFiles ? { skillFiles: prepared.skillFiles } : {}),
                 ...(prepared.multipart ? { multipart: prepared.multipart } : {}),
+                ...(prepared.biggerContext ? { biggerContext: true } : {}),
                 ...(prepared.contextTokenBreakdown ? { contextTokenBreakdown: prepared.contextTokenBreakdown } : {}),
                 ...(prepared.trimmedCompactionMessages !== undefined
                   ? { trimmedCompactionMessages: prepared.trimmedCompactionMessages }

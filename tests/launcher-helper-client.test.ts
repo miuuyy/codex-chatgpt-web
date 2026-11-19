@@ -48,6 +48,7 @@ test("daemon streams browser lifecycle through the real helper process", async (
       if (turn.modelFamily !== "5.6") throw new Error("Pinned model family lost in helper IPC");
       await turn.onPreparedSelected(false);
       const prepared = await turn.prepare();
+      if (prepared.biggerContext !== true) throw new Error("Bigger inline window lost in helper IPC");
       if (prepared.skillFiles?.[0]?.text !== "<skill>\\n<name>ipc</name>\\n<path>/skills/ipc/SKILL.md</path>\\ncheck IPC\\n</skill>") throw new Error("Skill file lost in IPC");
       if (prepared.multipart.parts.length !== 6) throw new Error("Multipart context was lost");
       for (let index = 1; index < prepared.multipart.parts.length; index++) {
@@ -130,6 +131,7 @@ test("daemon streams browser lifecycle through the real helper process", async (
           content: "<skill>\n<name>ipc</name>\n<path>/skills/ipc/SKILL.md</path>\ncheck IPC\n</skill>",
         })],
         multipart: { parts: ["part one", "part two", "part three", "part four", "part five", "part six"], commit: "inspect" },
+        biggerContext: true,
         release: () => { released = true; },
       }),
       onMultipartStageAcknowledged: stage => { acknowledgedStages.push(stage); },
@@ -449,7 +451,7 @@ test("structured helper errors preserve the ChatGPT adapter failure contract", a
   });
 });
 
-test("an older helper cannot silently drop selected skill files and releases the prepared turn", async () => {
+test.each(["skills", "inline"] as const)("an older helper cannot silently drop %s data and releases the prepared turn", async feature => {
   const client = new LauncherBrowserHelperClient({
     appName: "Codex Native2", browserHost: "launcher", browserHostDescriptorPath: "/durable/launcher.json",
     storageStatePath: "/durable/unused.json", chromeExecutablePath: "/durable/chrome", headed: true, autoApproveToolCalls: false, useTemporaryChats: false,
@@ -475,16 +477,18 @@ test("an older helper cannot silently drop selected skill files and releases the
   };
   let released = false;
   await expect(client.run({
-    traceId: "skill-old-helper", modelId: "gpt-5.6-sol", reasoning: "high",
+    traceId: `old-helper-${feature}`, modelId: "gpt-5.6-sol", reasoning: "high",
     capabilities: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false },
     prepare: async () => ({ text: "inspect", images: [],
-      skillFiles: [selectedSkillFile({ role: "user", origin: "codex_skill", timestamp: 0,
-        content: "<skill>\n<name>test</name>\n<path>/test</path>\ncheck\n</skill>",
-      })],
+      ...(feature === "inline" ? { biggerContext: true as const } : {
+        skillFiles: [selectedSkillFile({ role: "user", origin: "codex_skill", timestamp: 0,
+          content: "<skill>\n<name>test</name>\n<path>/test</path>\ncheck\n</skill>",
+        })],
+      }),
       release() { released = true; },
     }),
     onTextDelta() {},
-  })).rejects.toThrow("does not support skill attachments");
+  })).rejects.toThrow(feature === "inline" ? "does not support the Bigger Context inline budget" : "does not support skill attachments");
   expect(sent).toEqual(["run", "abort"]);
   expect(released).toBe(true);
 });

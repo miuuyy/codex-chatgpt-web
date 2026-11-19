@@ -431,6 +431,11 @@ input.on("line", line => {
         return;
       }
     }
+    if (prepared.biggerContext !== undefined && prepared.biggerContext !== true) {
+      writeProtocol({ type: "error", id: message.id, message: "Browser helper Bigger Context policy is invalid" });
+      abortControllers.get(message.id)?.abort();
+      return;
+    }
     const selection = preparedSelections.get(message.id);
     if (!selection) {
       writeProtocol({ type: "error", id: message.id, message: "Browser helper has no pending prompt selection" });
@@ -538,4 +543,4 @@ process.once("SIGTERM", () => {
 });
 
 // Advertise the optional frames this helper understands so the daemon can negotiate them explicitly.
-writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack", "skill-attachments"] });
+writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack", "skill-attachments", "bigger-inline-context"] });

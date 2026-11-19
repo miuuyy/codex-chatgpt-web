@@ -3552,10 +3552,10 @@ test("GPT-6 staged input enforces its measured account and effort ceiling before
 
 test("Bigger Context fits mixed-density whole records within both token and composer limits", () => {
   const capabilities = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false, experimentalBiggerContext: true };
-  const dense = "a!b@c#d$e%f^g&h*".repeat(3_750);
+  const dense = "a!b@c#d$e%f^g&h*".repeat(1_200);
   const sparse = "x".repeat(dense.length);
   const whitespace = " ".repeat(450_000);
-  // Equal byte sizes must not pack two dense records into one oversized stage. Conversely,
+  // Different token densities must still respect each stage budget. Conversely,
   // token-only balancing must not leave all the low-token whitespace in one oversized composer.
   for (const contents of [
     [dense, dense, sparse, sparse, dense, sparse],
@@ -3649,7 +3649,7 @@ test("Bigger Context preflight expands only the total context ceiling and keeps 
     2,
   )).toThrow("two-part ceiling");
   expect(() => assertChatGptWebMultipartInputWithinLimits(
-    269_999,
+    119_999,
     80_000,
     "gpt-5.6-sol",
     "high",
@@ -3658,23 +3658,23 @@ test("Bigger Context preflight expands only the total context ceiling and keeps 
     6,
   )).not.toThrow();
   expect(() => assertChatGptWebMultipartInputWithinLimits(
-    270_000,
+    120_000,
     80_000,
     "gpt-5.6-sol",
     "high",
     plus,
     500_000,
     6,
-  )).toThrow("270,000-token six-part ceiling");
+  )).toThrow("120,000-token six-part ceiling");
   expect(() => assertChatGptWebMultipartInputWithinLimits(
-    180_000,
+    120_000,
     80_000,
     "gpt-5.6-sol",
     "high",
     plus,
     500_000,
     2,
-  )).toThrow("180,000-token two-part ceiling");
+  )).toThrow("120,000-token two-part ceiling");
   expect(() => assertChatGptWebMultipartInputWithinLimits(
     280_000,
     103_001,

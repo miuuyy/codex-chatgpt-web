@@ -106,6 +106,7 @@ import {
   resolveChatGptWebStagingTokenBudget,
   resolveChatGptWebTransportLimits,
   supportsChatGptWebBiggerContext,
+  supportsChatGptWebBiggerInlineInput,
   type ChatGptWebModelFamily,
 } from "../../chatgpt-web-models";
 import { LauncherBrowserHelperClient } from "./launcher-helper-client";
@@ -730,8 +731,9 @@ export function assertChatGptWebInputWithinLimits(
   estimatedMessageTokens: number,
   modelId: string,
   effort: ChatGptWebModelMode["effort"],
-  capabilities: ChatGptWebCapabilities,
+  capabilities: ChatGptWebCapabilities & { experimentalBiggerContext?: boolean },
   promptChars?: number,
+  modelFamily?: "5.6" | "6",
 ): void {
   if (modelId !== CHATGPT_WEB_MODEL_ID && modelId !== CHATGPT_WEB_LUNA_MODEL_ID) {
     throw new Error(`ChatGPT web context limit is not defined for model: ${modelId}`);
@@ -745,7 +747,10 @@ export function assertChatGptWebInputWithinLimits(
       { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
     );
   }
-  const { contextWindow } = resolveChatGptWebContextLimits(modelId, effort, capabilities);
+  const { contextWindow } = resolveChatGptWebContextLimits(modelId, effort, {
+    ...capabilities, experimentalBiggerContext: capabilities.experimentalBiggerContext
+      && supportsChatGptWebBiggerInlineInput(modelId, effort, capabilities),
+  }, modelFamily);
   const { browserMessageTokenLimit, browserComposerCharLimit } = resolveChatGptWebTransportLimits(
     modelId,
     effort,
@@ -5056,8 +5061,9 @@ export class ChatGptBrowserWorker {
           estimatedMessageTokens,
           turn.modelId,
           requestedMode.effort,
-          browserCapabilities,
+          { ...browserCapabilities, experimentalBiggerContext: prepared.biggerContext === true },
           maxMessageChars,
+          turn.modelFamily,
         );
       }
       const deadline = this.config.turnTimeoutMs === undefined

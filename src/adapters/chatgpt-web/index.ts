@@ -488,6 +488,7 @@ export function createChatGptWebAdapter(
         includeContextTokenBreakdown: true,
         captureLunaCheckpoint,
         experimentalSkillAttachments,
+        experimentalBiggerContext,
         ...(experimentalMultipartParts !== undefined
           ? { experimentalMultipartParts }
           : {}),
