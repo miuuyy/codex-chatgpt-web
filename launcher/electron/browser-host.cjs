@@ -182,6 +182,13 @@ function isAbortedNavigationError(error) {
   return error instanceof Error && /\bERR_ABORTED\b/.test(error.message);
 }
 
+function logChatGptSessionLoss(host, result, source) {
+  // Only record an observed transition. The session payload can contain credentials.
+  if (host.state.authenticated && ["http-401", "session-error", "no-user", "expired"].includes(result.signedOutReason)) {
+    host.logger.info("browser.session_signed_out", { source, reason: result.signedOutReason });
+  }
+}
+
 function isNewChatUrl(value) {
   let parsed;
   try {
@@ -1370,6 +1377,7 @@ class BrowserHost {
         if (this.destroyed || browserInteractionModeFor(this) !== "automatic") return;
         if (revision !== this.authenticationRevision) continue;
         if (this.reauthenticationRequired) return;
+        logChatGptSessionLoss(this, result, "idle");
         const availability = this.activeTraceId || this.manualOperation ? {} : result.sessionCheckError
           ? { status: "error", message: result.sessionCheckError }
           : result.sessionAuthenticated
@@ -3071,6 +3079,7 @@ class BrowserHost {
       // A newer session change owns authentication. Do not publish an old in-flight
       // page probe after a sign-out/sign-in notification.
       if (revision !== this.authenticationRevision) return this.snapshot();
+      logChatGptSessionLoss(this, result, "page");
       if (result.sessionAuthenticated) {
         this.reauthenticationRequired = false;
         if (this.authView && !this.authView.webContents.isDestroyed()) {

@@ -1164,9 +1164,11 @@ test("session verification distinguishes a missing login from network and invali
   const validSession = { user: { id: "fixture" }, expires: "2099-01-01T00:00:00Z" };
   const cases = [
     { name: "valid", fetch: async () => response(validSession), status: "ready", authenticated: true },
-    { name: "guest", fetch: async () => response({}), status: "signed-out" },
-    { name: "expired", fetch: async () => response({ ...validSession, expires: "2000-01-01T00:00:00Z" }), status: "signed-out" },
-    { name: "unauthorized", fetch: async () => response(null, { ok: false, status: 401 }), status: "signed-out" },
+    { name: "guest", fetch: async () => response({}), status: "signed-out", reason: "no-user" },
+    { name: "expired", fetch: async () => response({ ...validSession, expires: "2000-01-01T00:00:00Z" }), status: "signed-out", reason: "expired" },
+    { name: "unauthorized", fetch: async () => response(null, { ok: false, status: 401 }), status: "signed-out", reason: "http-401" },
+    { name: "session error", fetch: async () => response({ error: "private-detail" }), status: "signed-out", reason: "session-error" },
+    { name: "invalid expiry", fetch: async () => response({ ...validSession, expires: "private-invalid-date" }), status: "error" },
     { name: "network", fetch: async () => { throw new Error("private-proxy-secret"); }, status: "error", message: /connection|network/i },
     { name: "deadline", timeout: true, fetch: async (_url, { signal }) => {
       await new Promise(resolve => setImmediate(resolve));
@@ -1183,6 +1185,7 @@ test("session verification distinguishes a missing login from network and invali
     { name: "renderer", rendererError: true, status: "error", message: /browser/i },
   ];
   for (const item of cases) {
+    const log = [];
     const fixture = {
       state: { authenticated: true }, activeTraceId: null, manualOperation: null,
       view: { webContents: {
@@ -1201,13 +1204,15 @@ test("session verification distinguishes a missing login from network and invali
         },
       } },
       setState(patch) { this.state = { ...this.state, ...patch }; },
-      snapshot() { return { ...this.state }; }, logger: { info() {} },
+      snapshot() { return { ...this.state }; }, logger: { info: (...entry) => log.push(entry) },
     };
     const result = await BrowserHost.prototype.probeAuthentication.call(fixture);
     assert.equal(result.status, item.status, item.name);
     assert.equal(result.authenticated, item.authenticated === true, item.name);
     if (item.message) assert.match(result.message, item.message, item.name);
     assert.doesNotMatch(JSON.stringify(result), /private-/);
+    if (item.reason) await BrowserHost.prototype.probeAuthentication.call(fixture);
+    assert.deepEqual(log, item.reason ? [["browser.session_signed_out", { source: "page", reason: item.reason }]] : []);
   }
 });
 
@@ -1311,6 +1316,7 @@ test("shared session changes refresh hidden sign-in state without navigating any
   const requests = [];
   let payload = {};
   let mode = "automatic";
+  const sessionEvents = [];
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {
     state: { authenticated: true, status: "ready" },
     turnTabs: new Map(),
@@ -1327,7 +1333,7 @@ test("shared session changes refresh hidden sign-in state without navigating any
       },
     } } },
     setState(patch) { this.state = { ...this.state, ...patch }; },
-    logger: { warn() { assert.fail("Session refresh failed"); } },
+    logger: { info: (...entry) => sessionEvents.push(entry), warn() { assert.fail("Session refresh failed"); } },
   });
   fixture.bindAuthenticationChanges();
   const notify = cookie => cookies.emit("changed", {}, cookie, "explicit", true);
@@ -1338,6 +1344,7 @@ test("shared session changes refresh hidden sign-in state without navigating any
   await fixture.authenticationRefresh;
   assert.equal(fixture.state.authenticated, false);
   assert.equal(fixture.state.status, "signed-out");
+  assert.deepEqual(sessionEvents, [["browser.session_signed_out", { source: "idle", reason: "no-user" }]]);
   payload = { user: { id: "test" }, expires: "2099-01-01T00:00:00Z" };
   notify({ httpOnly: true, domain: "chatgpt.com" });
   await fixture.authenticationRefresh;

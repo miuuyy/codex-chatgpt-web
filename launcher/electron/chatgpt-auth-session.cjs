@@ -12,7 +12,7 @@ async function readChatGptAuthSession(fetchSession, origin, timeoutMs) {
       signal: controller.signal,
     });
     received = true;
-    if (response.status === 401) return { sessionAuthenticated: false, sessionCheckError: null };
+    if (response.status === 401) return { sessionAuthenticated: false, sessionCheckError: null, signedOutReason: "http-401" };
     if (!response.ok) {
       return { sessionAuthenticated: false, sessionCheckError: `ChatGPT session verification failed (HTTP ${response.status}). Check your connection and retry.` };
     }
@@ -22,13 +22,17 @@ async function readChatGptAuthSession(fetchSession, origin, timeoutMs) {
     const payload = await response.json();
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Invalid session");
     const user = payload.user;
-    const authenticated = user && typeof user === "object" && !Array.isArray(user)
-      && Object.keys(user).length > 0
-      && (payload.error === undefined || payload.error === null || payload.error === "")
-      && (payload.expires === undefined || payload.expires === null
-        || typeof payload.expires === "string" && Number.isFinite(Date.parse(payload.expires))
-          && Date.parse(payload.expires) > Date.now());
-    return { sessionAuthenticated: Boolean(authenticated), sessionCheckError: null };
+    let signedOutReason;
+    if (payload.error != null && payload.error !== "") {
+      signedOutReason = "session-error";
+    } else if (!user || typeof user !== "object" || Array.isArray(user) || Object.keys(user).length === 0) {
+      signedOutReason = "no-user";
+    } else if (payload.expires != null) {
+      const expires = typeof payload.expires === "string" ? Date.parse(payload.expires) : NaN;
+      if (!Number.isFinite(expires)) throw new Error("Invalid session expiration");
+      if (expires <= Date.now()) signedOutReason = "expired";
+    }
+    return { sessionAuthenticated: !signedOutReason, sessionCheckError: null, signedOutReason };
   } catch {
     return { sessionAuthenticated: false, sessionCheckError: controller.signal.aborted
       ? "ChatGPT session verification timed out. Check your network or proxy and retry."
