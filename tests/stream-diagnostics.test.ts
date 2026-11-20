@@ -164,3 +164,93 @@ test("late events from a detached page cannot change a new page's capture with t
   expect(reports).toHaveLength(1);
   expect(reports[0]).toMatchObject({ terminal: "detached", unavailable: true, doneMarker: false });
 });
+
+async function serviceStreamFixture(bufferedData: string | Promise<string> = "",
+  tokenCopy?: ConstructorParameters<typeof ChatGptStreamDiagnostics>[1],
+  catalogBody?: string,
+) {
+  const reports: any[] = [];
+  const session = new EventEmitter() as any;
+  session.send = async (method: string) => method === "Page.getFrameTree"
+    ? { frameTree: { frame: { id: "main" } } }
+    : method === "Network.streamResourceContent" ? { bufferedData: await bufferedData }
+    : method === "Network.getResponseBody" ? { body: catalogBody ?? "{}", base64Encoded: false } : {};
+  session.detach = async () => {};
+  const observer = new ChatGptStreamDiagnostics(value => reports.push(value), tokenCopy);
+  await observer.attach({ context: () => ({ newCDPSession: async () => session }) } as any);
+  const request = (id: string, owner = "main") => session.emit("Network.requestWillBeSent", {
+    requestId: id, frameId: owner, request: { method: "POST", url: "https://chatgpt.com/backend-api/f/conversation" },
+  });
+  const response = (id: string, status = 200) => session.emit("Network.responseReceived", {
+    requestId: id, response: { status, mimeType: "text/event-stream" },
+  });
+  const data = (id: string, text: string) => session.emit("Network.dataReceived", {
+    requestId: id, data: Buffer.from(text).toString("base64"),
+  });
+  return { reports, session, observer, request, response, data };
+}
+
+test.each(["matching", "unknown", "ambiguous", "foreign frame", "no response", "denied", "wrong link", "wrong app", "redirect", "refresh", "cached catalogue"] as const)(
+  "token recovery requires a verified connector link for the final upload (%s)", async scenario => {
+    const token = `turn_${"A".repeat(31)}Z`;
+    const appId = "asdk_app_" + "a".repeat(32);
+    const link = "link_" + "b".repeat(32);
+    const alternateLink = "link_" + "c".repeat(32);
+    const name = "Codex Native2";
+    const target = "https://chatgpt.com/backend-api/aip/connectors/links/list_accessible";
+    let rejected = 0;
+    const catalog = JSON.stringify({ links: [
+      { connector_id: appId, id: link },
+      ...(scenario === "ambiguous" ? [{ connector_id: appId, id: alternateLink }] : []),
+    ] });
+    const fixture = await serviceStreamFixture("", { expected: token, rejected: () => { rejected++; } }, catalog);
+    const path = `/${name}/${scenario === "wrong link" ? alternateLink : link}/codex_exec`;
+    const messages = frame({ message: { id: "user", author: { role: "user" } } }) +
+      frame({ message: { id: "tool-call", author: { role: "assistant" }, recipient: "api_tool.call_tool",
+        status: "finished_successfully", content: { content_type: "code",
+          text: JSON.stringify({ path, args: { turn_token: token.slice(0, -1) } }) } } });
+    try {
+      if (scenario !== "unknown" && scenario !== "cached catalogue") {
+        fixture.session.emit("Network.requestWillBeSent", {
+          requestId: "catalog", frameId: scenario === "foreign frame" ? "other" : "main",
+          request: { method: "GET", url: target },
+        });
+        if (scenario !== "no response") fixture.session.emit("Network.responseReceived", {
+          requestId: "catalog", response: { url: scenario === "redirect" ? "https://other.example/catalog" : target,
+            mimeType: "application/json", status: scenario === "denied" ? 403 : 200 },
+        });
+        fixture.session.emit("Network.loadingFinished", { requestId: "catalog", encodedDataLength: catalog.length });
+        await new Promise(resolve => setImmediate(resolve));
+      }
+      fixture.observer.begin();
+      fixture.request("stage"); fixture.response("stage");
+      await new Promise(resolve => setImmediate(resolve));
+      fixture.data("stage", messages);
+      expect(rejected).toBe(0);
+
+      const selectedAppId = scenario === "wrong app" ? "asdk_app_" + "d".repeat(32) : appId;
+      fixture.observer.begin({ tokenCopyConnector: { appId: selectedAppId, name } });
+      if (scenario === "cached catalogue") {
+        const verified = await fixture.observer.refreshTokenCopyConnector({
+          evaluate: async () => catalog,
+        } as any);
+        expect(verified).toBe(true);
+      }
+      fixture.request("final"); fixture.response("final");
+      await new Promise(resolve => setImmediate(resolve));
+      if (scenario === "refresh") {
+        fixture.session.emit("Network.requestWillBeSent", {
+          requestId: "new-catalog", frameId: "main", request: { method: "GET", url: target },
+        });
+      }
+      fixture.data("final", messages);
+      expect(rejected).toBe(scenario === "matching" || scenario === "cached catalogue" ? 1 : 0);
+    } finally {
+      await fixture.observer.dispose();
+    }
+    const exported = JSON.stringify(fixture.reports);
+    expect(exported).not.toContain(token.slice(0, -1));
+    expect(exported).not.toContain(appId);
+    expect(exported).not.toContain(link);
+  },
+);

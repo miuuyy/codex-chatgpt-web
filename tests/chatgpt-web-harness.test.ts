@@ -2797,6 +2797,55 @@ describe("ChatGPT outer-native harness v4", () => {
     }
   });
 
+  test("the normal adapter retries a confirmed shortened token before any tool or answer", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-token-copy-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: `browser://token-copy-${Date.now()}`,
+      chatgptWeb: {
+        appName: "Codex Native2", brokerSocketPath: socketPath, localToolsEnabled: true,
+        solAvailable: true, extraHighAvailable: true, proAvailable: true,
+        experimentalBiggerContext: true,
+      },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const original = worker.run;
+    let starts = 0;
+    let capability = "";
+    worker.run = async turn => {
+      const prepared = await turn.prepare();
+      try {
+        starts++;
+        if (starts === 1) {
+          capability = prepared.turnToken!;
+          throw new ChatGptWebAdapterError("Confirmed shortened capability", {
+            status: 400, errorType: "invalid_request_error", code: "chatgpt_token_copy_error",
+            retryable: false, tokenCopyRejected: true,
+          });
+        }
+        expect(prepared.turnToken).toBe(capability);
+        expect(prepared.text).toContain("<codex_token_copy_recovery>");
+        expect(prepared.text.split(capability)).toHaveLength(2);
+        expect(turn.prepareResume).toBeUndefined();
+        turn.onTextDelta("Recovered answer");
+        return "Recovered answer";
+      } finally { prepared.release(); }
+    };
+    try {
+      const events: AdapterEvent[] = [];
+      await createChatGptWebAdapter(provider).runTurn!(
+        rawWireRequest(environmentXml), { headers: new Headers() }, event => events.push(event),
+      );
+      expect(starts).toBe(2);
+      expect(events.some(event => event.type === "error" || event.type === "tool_call_start")).toBeFalse();
+      expect(events.filter(event => event.type === "text_delta").map(event => event.text).join("")).toBe("Recovered answer");
+      expect(events.at(-1)).toMatchObject({ type: "done", endTurn: true });
+    } finally {
+      worker.run = original;
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
+
   test("replays an ordinary post-tool final after one retained structured compaction handoff", async () => {
     const socketPath = brokerTestEndpoint(`cgw-h3-adapter-${process.pid}-${Date.now()}`);
     const provider: CodexProviderConfig = {

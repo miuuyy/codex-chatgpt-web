@@ -42,6 +42,7 @@ type HelperMessage =
       errorType?: string;
       code?: string;
       retryable?: boolean;
+      tokenCopyRejected?: boolean;
     };
 
 function parseHelperMessage(line: string): HelperMessage {
@@ -147,6 +148,10 @@ function parseHelperMessage(line: string): HelperMessage {
     const errorType = message.errorType;
     const code = message.code;
     const retryable = message.retryable;
+    const tokenCopyRejected = message.tokenCopyRejected;
+    if (tokenCopyRejected !== undefined && typeof tokenCopyRejected !== "boolean") {
+      throw new Error("Launcher browser helper token-copy evidence is invalid");
+    }
     const structured = status !== undefined
       || errorType !== undefined
       || code !== undefined
@@ -175,6 +180,7 @@ function parseHelperMessage(line: string): HelperMessage {
         errorType: errorType as string,
         code: code as string,
         retryable: retryable as boolean,
+        ...(tokenCopyRejected === true ? { tokenCopyRejected: true } : {}),
       } : {}),
     };
   }
@@ -288,6 +294,8 @@ export class LauncherBrowserHelperClient {
             ...(turn.modelFamily ? { modelFamily: turn.modelFamily } : {}),
             capabilities: turn.capabilities,
             ...(turn.nativeConnector ? { nativeConnector: true } : {}),
+            ...(turn.nativeTokenBrokerSocket && this.helperFeatures.has("native-token-rejection-proof")
+              ? { nativeTokenBrokerSocket: turn.nativeTokenBrokerSocket } : {}),
             ...(turn.prepareResume ? { resumeAvailable: true } : {}),
             ...(turn.retainConversation ? { retainConversation: true } : {}),
             ...(turn.requireRetainedConversation ? { requireRetainedConversation: true } : {}),
@@ -575,6 +583,7 @@ export class LauncherBrowserHelperClient {
           errorType: message.errorType!,
           code: message.code!,
           retryable: message.retryable!,
+          tokenCopyRejected: message.tokenCopyRejected,
         })
         : message.name === "AbortError"
           ? new DOMException(message.message, "AbortError")

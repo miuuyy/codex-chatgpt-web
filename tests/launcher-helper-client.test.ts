@@ -492,3 +492,52 @@ test("an older helper cannot silently drop selected skill files and releases the
   expect(sent).toEqual(["run", "abort"]);
   expect(released).toBe(true);
 });
+
+test("confirmed token-copy rejection evidence crosses both production helper protocol endpoints", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-helper-copy-rejection-"));
+  roots.push(root);
+  const helper = join(root, "helper.ts");
+  writeFileSync(helper, `
+    import { ChatGptBrowserWorker } from ${JSON.stringify(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url).href)};
+    import { ChatGptWebAdapterError } from ${JSON.stringify(new URL("../src/adapters/chatgpt-web/adapter-error.ts", import.meta.url).href)};
+    // Replace browser IO only; production helper serialization and client decoding remain real.
+    ChatGptBrowserWorker.prototype.run = async function(turn) {
+      await turn.onPreparedSelected(false);
+      await turn.prepare();
+      throw new ChatGptWebAdapterError("ChatGPT copied the current capability incorrectly.", {
+        status: 400, errorType: "invalid_request_error", code: "chatgpt_token_copy_error", retryable: false,
+        tokenCopyRejected: true,
+      });
+    };
+    await import(${JSON.stringify(new URL("../src/adapters/chatgpt-web/browser-helper-main.ts", import.meta.url).href)});
+  `, { mode: 0o700 });
+  const descriptorPath = join(root, "launcher.json");
+  writeFileSync(descriptorPath, JSON.stringify({
+    version: 3, kind: LAUNCHER_BROWSER_HOST_KIND, profile: "production", pid: process.pid,
+    endpoint: "http://127.0.0.1:39001",
+    control: { endpoint: "http://127.0.0.1:39002", token: "launcher-control-token-0123456789abcdefghijklmnop" },
+    helper: { executable: process.execPath, script: helper },
+    partition: "persist:codex-web-gpt-chatgpt", idleUrl: LAUNCHER_BROWSER_IDLE_URL,
+    surfaceId: "launcher_surface_id_0123456789AB", createdAt: new Date().toISOString(),
+    surfaceTargets: { launcher_surface_id_0123456789AB: "native-owned-target" },
+  }), { mode: 0o600 });
+  const client = new LauncherBrowserHelperClient({
+    appName: "Codex Native2", browserHost: "launcher", browserHostDescriptorPath: descriptorPath,
+    browserHelperScriptPath: helper, storageStatePath: join(root, "unused-state.json"),
+    chromeExecutablePath: join(root, "unused-chrome"), headed: true, autoApproveToolCalls: false,
+    useTemporaryChats: false,
+  });
+  let released = false;
+  try {
+    const error = await client.run({
+      traceId: "confirmed-copy-rejection", modelId: "gpt-5.6-sol", reasoning: "high",
+      capabilities: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false },
+      prepare: async () => ({ text: "test context", images: [], release: () => { released = true; } }),
+      onTextDelta() {},
+    }).then(() => undefined, failure => failure);
+    expect(error).toBeInstanceOf(ChatGptWebAdapterError);
+    expect(error).toMatchObject({ status: 400, errorType: "invalid_request_error", code: "chatgpt_token_copy_error",
+      retryable: false, tokenCopyRejected: true });
+    expect(released).toBeTrue();
+  } finally { await client.close(); }
+});

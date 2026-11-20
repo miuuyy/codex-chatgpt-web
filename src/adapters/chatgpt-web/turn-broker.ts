@@ -137,6 +137,7 @@ interface BrokerRequest {
     | "owner_safe_sent"
     | "owner_next"
     | "owner_complete"
+    | "owner_verify_rejected_native_copy"
     | "owner_completion_fence_begin"
     | "owner_completion_fence_commit"
     | "owner_wait_retirement"
@@ -161,6 +162,8 @@ interface BrokerRequest {
   callId?: string;
   activityId?: string;
   revision?: number;
+  rejectedTokenDigest?: string;
+  submittedAt?: number;
   toolResult?: BrokerToolResult;
   handoffId?: string;
   summary?: string;
@@ -179,6 +182,8 @@ interface BrokerResponse {
 const brokers = new Map<string, TurnBroker>();
 const MAX_BROKER_LINE_CHARS = 67_108_864;
 const MAX_RETIRED_TURN_HANDLES = 64;
+const NATIVE_TOKEN_REJECTION_MAX_AGE_MS = 10_000;
+const NATIVE_TURN_TOKEN = /^turn_[A-Za-z0-9_-]{32}$/;
 const MAX_PENDING_CALL_DIAGNOSTICS = 16;
 
 function retirementDiagnostics(channel: TurnChannel): BrokerRetirementDiagnostics {
@@ -224,9 +229,12 @@ function opaqueId(prefix: string): string {
 }
 
 function handleFingerprint(value: string): string {
-  return createHash("sha256").update(value).digest("hex").slice(0, 12);
+  return capabilityDigest(value).slice(0, 12);
 }
 
+function capabilityDigest(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
 function errorOf(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
 }
@@ -325,6 +333,7 @@ export class TurnBroker implements TurnBrokerOwner {
   // before timeout cleanup cannot erase the last observed delivery state.
   private readonly retiredBindings = new Map<string, BrokerRetirementDiagnostics>();
   private readonly retiredTokens = new Map<string, string>();
+  private readonly rejectedNativeClaims = new Map<string, number>();
   private acceptingExternalOwners = true;
   private server?: Server;
   private startPromise?: Promise<void>;
@@ -978,7 +987,7 @@ export class TurnBroker implements TurnBrokerOwner {
     if (!request || typeof request !== "object" || typeof request.id !== "string" || request.id.length === 0 || request.id.length > 256) {
       throw new Error("turn broker request id is invalid");
     }
-    if (!["claim", "resolve", "release", "invoke", "owner_status", "owner_register", "owner_register_safe", "owner_update", "owner_safe_sent", "owner_next", "owner_complete", "owner_completion_fence_begin", "owner_completion_fence_commit", "owner_wait_retirement", "owner_revoke", "owner_safe_wait_start", "owner_safe_wait_completion", "owner_request_compaction", "owner_compaction_delivery_count", "safe_start", "safe_complete", "activity_complete", "submit_compaction_handoff"].includes(request.method)) {
+    if (!["claim", "resolve", "release", "invoke", "owner_status", "owner_register", "owner_register_safe", "owner_update", "owner_safe_sent", "owner_next", "owner_complete", "owner_verify_rejected_native_copy", "owner_completion_fence_begin", "owner_completion_fence_commit", "owner_wait_retirement", "owner_revoke", "owner_safe_wait_start", "owner_safe_wait_completion", "owner_request_compaction", "owner_compaction_delivery_count", "safe_start", "safe_complete", "activity_complete", "submit_compaction_handoff"].includes(request.method)) {
       throw new Error("turn broker method is invalid");
     }
   }
@@ -1101,6 +1110,20 @@ export class TurnBroker implements TurnBrokerOwner {
       if (!request.token) throw new Error("turn owner token is required");
       return { count: this.compactionDeliveryCount(request.token) };
     }
+    if (request.method === "owner_verify_rejected_native_copy") {
+      const { token, rejectedTokenDigest, submittedAt } = request;
+      const channel = typeof token === "string" && NATIVE_TURN_TOKEN.test(token) ? this.channels.get(token) : undefined;
+      const now = Date.now();
+      if (!channel || channel.safe || channel.completionCommitted || channel.activityRevision !== 0
+        || typeof rejectedTokenDigest !== "string" || !/^[a-f0-9]{64}$/.test(rejectedTokenDigest)
+        || typeof submittedAt !== "number" || !Number.isSafeInteger(submittedAt) || submittedAt > now
+        || capabilityDigest(token!) === rejectedTokenDigest) return { rejected: false };
+      const deniedAt = this.rejectedNativeClaims.get(rejectedTokenDigest);
+      if (deniedAt === undefined || deniedAt < submittedAt || deniedAt > now
+        || now - deniedAt > NATIVE_TOKEN_REJECTION_MAX_AGE_MS) return { rejected: false };
+      this.rejectedNativeClaims.delete(rejectedTokenDigest);
+      return { rejected: true };
+    }
     if (request.method === "claim") {
       const contract = request.contract ?? "native";
       const token = request.token;
@@ -1110,6 +1133,16 @@ export class TurnBroker implements TurnBrokerOwner {
       const channel = this.channels.get(token);
       let activeChannel = channel && !channel.completionCommitted ? channel : undefined;
       const retiredTurn = channel?.completionCommitted ? channel.traceId : this.retiredTokens.get(token);
+      if (contract === "native" && NATIVE_TURN_TOKEN.test(token)) {
+        const digest = capabilityDigest(token);
+        this.rejectedNativeClaims.delete(digest);
+        if (!activeChannel) {
+          if (this.rejectedNativeClaims.size >= MAX_RETIRED_TURN_HANDLES) {
+            this.rejectedNativeClaims.delete(this.rejectedNativeClaims.keys().next().value!);
+          }
+          this.rejectedNativeClaims.set(digest, Date.now());
+        }
+      }
       console.error(
         `[chatgpt-web] broker claim received (tokenChars=${token.length}, tokenHash=${handleFingerprint(token)}, valid=${Boolean(activeChannel)}`
         + `${activeChannel ? "" : `, retiredTurn=${retiredTurn ?? "unknown"}`})`,

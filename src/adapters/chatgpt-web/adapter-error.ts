@@ -4,6 +4,7 @@ export interface ChatGptWebAdapterErrorOptions {
   code: string;
   retryable: boolean;
   cause?: unknown;
+  tokenCopyRejected?: boolean;
 }
 
 export class ChatGptWebAdapterError extends Error {
@@ -11,6 +12,7 @@ export class ChatGptWebAdapterError extends Error {
   readonly errorType: string;
   readonly code: string;
   readonly retryable: boolean;
+  readonly tokenCopyRejected: boolean;
 
   constructor(message: string, options: ChatGptWebAdapterErrorOptions) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
@@ -19,6 +21,7 @@ export class ChatGptWebAdapterError extends Error {
     this.errorType = options.errorType;
     this.code = options.code;
     this.retryable = options.retryable;
+    this.tokenCopyRejected = options.tokenCopyRejected === true;
   }
 }
 

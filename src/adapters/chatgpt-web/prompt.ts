@@ -59,6 +59,7 @@ export interface CompileChatGptWebPromptOptions {
   multipartTransactionId?: string;
   /** Reject a smaller compaction transport before it discards any history. */
   requireCompleteHistory?: boolean;
+  tokenCopyRecovery?: true;
   /** Capture only when preparing a real browser submission, not during budget-planning probes. */
   includeContextTokenBreakdown?: boolean;
   /**
@@ -658,6 +659,12 @@ export function compileChatGptWebPrompt(
     ? [
       "<codex_transport_resume>",
       `The task context is complete. Pass turn_token ${turnToken} unchanged to every tool call through the selected local Codex plugin in this response, including continuations after tool results; do not expose it in the answer. Execute the latest active user request now.`,
+      `Copy all ${turnToken!.length} characters of the token above, including its final character. If the plugin explicitly rejects the turn_token format, copy it again and retry only that rejected call once. Preserve all completed tool results.`,
+      ...(options?.tokenCopyRecovery ? [
+        "<codex_token_copy_recovery>",
+        "The preceding Native2 tool call used an incorrect copy of the capability. Use the exact token above and continue from the recorded tool results.",
+        "</codex_token_copy_recovery>",
+      ] : []),
       "</codex_transport_resume>",
     ]
     : [
