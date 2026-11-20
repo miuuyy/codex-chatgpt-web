@@ -294,6 +294,8 @@ export class LauncherBrowserHelperClient {
             ...(turn.modelFamily ? { modelFamily: turn.modelFamily } : {}),
             capabilities: turn.capabilities,
             ...(turn.nativeConnector ? { nativeConnector: true } : {}),
+            ...(turn.nativeTokenBrokerSocket && this.helperFeatures.has("native-token-rejection-proof")
+              ? { nativeTokenBrokerSocket: turn.nativeTokenBrokerSocket } : {}),
             ...(turn.prepareResume ? { resumeAvailable: true } : {}),
             ...(turn.retainConversation ? { retainConversation: true } : {}),
             ...(turn.requireRetainedConversation ? { requireRetainedConversation: true } : {}),

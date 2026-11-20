@@ -1,4 +1,5 @@
 import { canReplayTokenCopy } from "./token-copy-recovery";
+import { callTurnBroker } from "./turn-broker";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -849,6 +850,8 @@ export interface BrowserTurn {
   prepareResume?: (transactionId?: string) => Promise<CompiledChatGptWebPrompt & { release: () => void }>;
   /** Rebuild full history and count retry guidance before selecting a transport. */
   prepareTokenCopyRetry?: BrowserTurn["prepare"];
+  /** Private local broker supplying denial evidence for this Native2 turn. */
+  nativeTokenBrokerSocket?: string;
   /** Select the Codex Native connector without advertising the ordinary turn tool environment. */
   nativeConnector?: boolean;
   retainConversation?: boolean;
@@ -4818,15 +4821,35 @@ export class ChatGptBrowserWorker {
     const rejectionAbort = new AbortController();
     const submissionRejection = new ChatGptSubmissionRejectionObserver(error => rejectionAbort.abort(error));
     let outputObserved = false;
+    const nativeTokenBrokerSocket = turn.nativeTokenBrokerSocket;
     const streamDiagnostics = new ChatGptStreamDiagnostics(state => {
       console.info(`[chatgpt-web] stream_lifecycle ${JSON.stringify({ traceId: turn.traceId, ...state })}`);
     }, prepared.turnToken ? { expected: prepared.turnToken, rejected: () => {
       if (!canReplayTokenCopy(turn, outputObserved)) return;
       rejectionAbort.abort(new ChatGptWebAdapterError(
-        "ChatGPT dropped a character when copying the current tool capability.",
+        "ChatGPT supplied a wrong token for the current Native2 tool call.",
         { status: 400, errorType: "invalid_request_error", code: "chatgpt_token_copy_error", retryable: false, tokenCopyRejected: true },
       ));
-    } } : undefined);
+    }, ...(nativeTokenBrokerSocket ? {
+      verifyRejected: async (digest: string, submittedAt: number) => {
+        console.info(`[chatgpt-web] full_length_token_candidate_observed ${JSON.stringify({ traceId: turn.traceId })}`);
+        // The observation arrives before ChatGPT's connector RPC reaches the
+        // local broker. Wait for that bounded, asynchronous denial.
+        for (const delay of [0, 100, 250, 500, 750, 1_000, 1_000, 1_000, 1_000, 1_000]) {
+          if (delay) await new Promise(resolveDelay => setTimeout(resolveDelay, delay));
+          if (!canReplayTokenCopy(turn, outputObserved)) return false;
+          const proof = await callTurnBroker<{ rejected: boolean }>(nativeTokenBrokerSocket, {
+            method: "owner_verify_rejected_native_copy", token: prepared.turnToken,
+            rejectedTokenDigest: digest, submittedAt,
+          }, 500, turn.abortSignal).catch(() => undefined);
+          if (proof?.rejected === true) {
+            console.info(`[chatgpt-web] full_length_token_rejection_verified ${JSON.stringify({ traceId: turn.traceId })}`);
+            return true;
+          }
+        }
+        return false;
+      },
+    } : {}) } : undefined);
     let lastGenerationProgress = 0;
     const generation = {
       active: () => submissionRejection.hasActiveResponse(),
@@ -5305,6 +5328,12 @@ export class ChatGptBrowserWorker {
             const tokenCopyConnector = prepared.turnToken && mode.localTools
               ? await this.selectedConnectorForTokenCopy(page, turn.abortSignal) : undefined;
             streamDiagnostics.begin({ tokenCopyConnector });
+            if (prepared.turnToken && mode.localTools) {
+              const verified = await withBrowserTurnAbort(streamDiagnostics.refreshTokenCopyConnector(page), turn.abortSignal);
+              console.info(`[chatgpt-web] native_token_copy_scope ${JSON.stringify({
+                traceId: turn.traceId, selected: Boolean(tokenCopyConnector), verified,
+              })}`);
+            }
             await submissionRejection.captureAlertBaseline();
             await turn.onSendActivated?.();
           } },

@@ -662,7 +662,7 @@ export function compileChatGptWebPrompt(
       `Copy all ${turnToken!.length} characters of the token above, including its final character. If the plugin explicitly rejects the turn_token format, copy it again and retry only that rejected call once. Preserve all completed tool results.`,
       ...(options?.tokenCopyRecovery ? [
         "<codex_token_copy_recovery>",
-        "The preceding Native2 tool call rejected a shortened copy of the capability. Use the exact token above and continue from the recorded tool results.",
+        "The preceding Native2 tool call used an incorrect copy of the capability. Use the exact token above and continue from the recorded tool results.",
         "</codex_token_copy_recovery>",
       ] : []),
       "</codex_transport_resume>",

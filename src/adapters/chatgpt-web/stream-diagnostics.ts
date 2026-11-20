@@ -224,12 +224,50 @@ export class ChatGptStreamDiagnostics {
 
   constructor(
     private readonly report: (state: Record<string, unknown>) => void,
-    private readonly tokenCopy?: { expected: string; rejected(): void },
+    private readonly tokenCopy?: {
+      expected: string;
+      rejected(): void;
+      verifyRejected?(digest: string, submittedAt: number): Promise<boolean>;
+    },
   ) {}
 
   begin(options?: { tokenCopyConnector?: SelectedConnector }): void {
     this.submission += 1;
     this.selectedConnector = options?.tokenCopyConnector;
+  }
+
+  /** The page can reuse a cached catalogue, leaving no fresh CDP response to observe. */
+  async refreshTokenCopyConnector(page: Page): Promise<boolean> {
+    const { selectedConnector, generation, submission } = this;
+    if (!this.tokenCopy || !selectedConnector) return false;
+    if (this.verifiedConnectorNamespace()) return true;
+    try {
+      const body = await bounded(page.evaluate(async ({ appId, catalogueUrl, maxSize }) => {
+        if (location.origin !== "https://chatgpt.com") return undefined;
+        const signal = AbortSignal.timeout(1_850);
+        const options = { signal, redirect: "error", cache: "no-store" } as const;
+        const auth = await fetch("/api/auth/session", options);
+        if (!auth.ok) return undefined;
+        const { accessToken } = await auth.json() as { accessToken?: unknown };
+        if (typeof accessToken !== "string" || !accessToken) return undefined;
+        const catalogue = await fetch(catalogueUrl, {
+          ...options, method: "POST", body: JSON.stringify({ principals: [] }),
+          headers: { authorization: "Bearer " + accessToken, "content-type": "application/json" },
+        });
+        if (!catalogue.ok || !catalogue.headers.get("content-type")?.startsWith("application/json")) return undefined;
+        const text = await catalogue.text();
+        if (text.length > maxSize) return undefined;
+        const links = (JSON.parse(text) as { links?: unknown[] }).links;
+        if (!Array.isArray(links) || links.length > 1024) return undefined;
+        return JSON.stringify({ links: links.filter(link => (
+          typeof link === "object" && link !== null && (link as { connector_id?: unknown }).connector_id === appId
+        )) });
+      }, { appId: selectedConnector.appId, catalogueUrl: CONNECTOR_LINKS_URL, maxSize: MAX_CATALOG_BYTES }));
+      if (generation === this.generation && submission === this.submission && body) {
+        this.accessibleLinks = connectorLinks(body);
+      }
+    } catch { /* Missing proof leaves recovery disabled for this send. */ }
+    return Boolean(this.verifiedConnectorNamespace());
   }
 
   private verifiedConnectorNamespace(): string | undefined {
@@ -266,13 +304,18 @@ export class ChatGptStreamDiagnostics {
         if (!this.submission || event.request.method !== "POST"
           || event.request.url !== "https://chatgpt.com/backend-api/f/conversation") return;
         const connectorNamespace = this.verifiedConnectorNamespace();
+        const tokenCopy = this.tokenCopy;
         if (this.captures.size >= 12) { this.report({ unavailable: true, reason: "request_limit" }); return; }
+        const submittedAt = Date.now();
+        const currentCapture = () => generation === this.generation && capture.submission === this.submission
+          && this.captures.get(event.requestId) === capture && capture.status === 200;
         const capture: Capture = { request: ++this.sequence, submission: this.submission,
-          projection: new ChatGptStreamProjection(connectorNamespace && this.tokenCopy ? new ChatGptTokenCopyObserver(this.tokenCopy.expected, connectorNamespace, () => {
-            if (generation === this.generation && capture.submission === this.submission
-              && this.captures.get(event.requestId) === capture && capture.status === 200
-              && this.verifiedConnectorNamespace() === connectorNamespace) this.tokenCopy?.rejected();
-          }) : undefined), pending: [], pendingBytes: 0, streaming: false, unavailable: false };
+          projection: new ChatGptStreamProjection(connectorNamespace && tokenCopy ? new ChatGptTokenCopyObserver(tokenCopy.expected, connectorNamespace, () => {
+            if (currentCapture() && this.verifiedConnectorNamespace() === connectorNamespace) tokenCopy.rejected();
+          }, tokenCopy.verifyRejected ? async digest => {
+            if (!currentCapture() || this.verifiedConnectorNamespace() !== connectorNamespace) return false;
+            return await tokenCopy.verifyRejected!(digest, submittedAt);
+          } : undefined) : undefined), pending: [], pendingBytes: 0, streaming: false, unavailable: false };
         this.captures.set(event.requestId, capture);
       });
       session.on("Network.responseReceived", event => {

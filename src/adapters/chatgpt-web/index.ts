@@ -802,6 +802,7 @@ export function createChatGptWebAdapter(
       capabilities: turnCapabilities,
       prepare: transactionId => prepareWith(checkpointInput.parsed, transactionId),
       prepareTokenCopyRetry: transactionId => prepareWith(checkpointInput.parsed, transactionId, true),
+      ...(structuredBroker ? { nativeTokenBrokerSocket: structuredBroker.socketPath } : {}),
       ...(resumeInput ? { prepareResume: (transactionId?: string) => prepareWith(resumeInput, transactionId) } : {}),
       ...(retainConversation ? { retainConversation: true, conversationKey } : {}),
       abortSignal: browserAbort.signal,

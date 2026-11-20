@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { ChatGptWebAdapterError } from "./adapter-error";
 import type { BrowserTurn } from "./browser-worker";
 
@@ -12,19 +13,23 @@ export class ChatGptTokenCopyObserver {
   private userSeen = false;
   private userCreatedAt?: number;
   private call?: { id: unknown; text: string; status?: string };
+  private preview?: { id: string; finished: boolean };
   private replayUnsafe = false;
   private path?: string;
   private operation?: string;
   private rejected = false;
+  private verifying?: { id: unknown; digest: string };
 
   constructor(
     private readonly expected: string,
     private readonly connectorNamespace: string,
     private readonly reject: () => void,
+    private readonly verifyRejected?: (digest: string) => Promise<boolean>,
   ) {}
 
   accept(event: Record<string, unknown>): void {
-    const whole = object(event.message) ?? object(object(event.v)?.message);
+    const whole = object(event.message) ?? object(object(event.v)?.message)
+      ?? (event.type === "input_message" ? object(event.input_message) : undefined);
     if (whole) {
       const role = object(whole.author)?.role;
       if (role === "user") {
@@ -34,14 +39,28 @@ export class ChatGptTokenCopyObserver {
       const content = object(whole.content);
       const current = this.userCreatedAt === undefined || typeof whole.create_time !== "number"
         || whole.create_time >= this.userCreatedAt;
+      if (this.preview && this.preview.id !== whole.id) {
+        if (!this.preview.finished) this.replayUnsafe = true;
+        this.preview = undefined;
+      }
+      const metadata = object(whole.metadata);
+      // The live backend emits an empty, hidden preview ahead of the actual API
+      // call. Only this exact envelope is harmless; a populated or changed
+      // functions.exec message stays an ambiguous dispatch.
+      const preview = role === "assistant" && whole.recipient === "functions.exec" && whole.channel === "commentary"
+        && typeof whole.id === "string" && metadata?.message_type === "next"
+        && metadata.is_visually_hidden_from_conversation === true && content?.content_type === "text"
+        && Array.isArray(content.parts) && content.parts.length === 1 && content.parts[0] === "";
       if (this.userSeen && current && role === "assistant" && typeof whole.recipient === "string"
-        && whole.recipient !== "all" && whole.recipient !== "api_tool.call_tool") {
+        && whole.recipient !== "all" && whole.recipient !== "api_tool.call_tool" && !preview) {
         this.replayUnsafe = true;
       }
       // A tool envelope that disappears before its outcome is known could have been dispatched.
       if (this.call && this.call.id !== whole.id && this.call.status !== "finished_successfully") {
         this.replayUnsafe = true;
       }
+      if (preview) this.preview = { id: whole.id as string, finished: whole.status === "finished_successfully" };
+      else if (this.preview) { this.preview = undefined; this.replayUnsafe = true; }
       this.call = this.userSeen && current && role === "assistant" && whole.recipient === "api_tool.call_tool"
         && content?.content_type === "code"
         ? { id: whole.id, text: typeof content.text === "string" ? content.text : "", status: String(whole.status ?? "") }
@@ -72,6 +91,11 @@ export class ChatGptTokenCopyObserver {
       }
       return;
     }
+    if (this.preview) {
+      if (path === "/message/status") this.preview.finished = event.v === "finished_successfully";
+      else if (path !== "/message/end_turn" && path !== "/message/metadata") this.replayUnsafe = true;
+      return;
+    }
     if (!this.call) return;
     if (path === "/message/content/text" && typeof event.v === "string") {
       this.call.text = operation === "append" ? this.call.text + event.v : event.v;
@@ -90,15 +114,34 @@ export class ChatGptTokenCopyObserver {
     const prefix = `${this.connectorNamespace}/`;
     const name = path?.startsWith(prefix) ? path.slice(prefix.length) : undefined;
     const copied = object(invocation?.args)?.turn_token;
+    const digest = typeof copied === "string" && TURN_TOKEN_PATTERN.test(copied)
+      ? createHash("sha256").update(copied).digest("hex") : undefined;
+    if (this.verifying) {
+      if (!name || !NATIVE_TOOLS.has(name) || this.verifying.id !== this.call.id || this.verifying.digest !== digest) {
+        this.replayUnsafe = true;
+      }
+      return;
+    }
     const missingCharacter = typeof copied === "string" && copied.length === this.expected.length - 1
       && Array.from(this.expected).some((_, index) => this.expected.slice(0, index) + this.expected.slice(index + 1) === copied);
-    if (!name || !NATIVE_TOOLS.has(name) || !missingCharacter) {
+    if (name && NATIVE_TOOLS.has(name) && missingCharacter) {
+      this.rejected = true;
+      this.reject();
+      return;
+    }
+    if (!name || !NATIVE_TOOLS.has(name) || !this.verifyRejected || !digest || copied === this.expected) {
       // Another plugin call might have run even when the native broker has not reported progress.
       this.replayUnsafe = true;
       return;
     }
-    this.rejected = true;
-    this.reject();
+    // A full-length value could authorize a different live turn. Recover only
+    // when this exact capability was actually denied by the local broker.
+    this.verifying = { id: this.call.id, digest };
+    void this.verifyRejected(digest).then(denied => {
+      if (!denied || this.replayUnsafe || this.rejected) return;
+      this.rejected = true;
+      this.reject();
+    }).catch(() => { this.replayUnsafe = true; });
   }
 }
 

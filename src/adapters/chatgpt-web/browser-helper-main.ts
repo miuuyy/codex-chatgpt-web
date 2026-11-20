@@ -10,6 +10,7 @@ import { createBrowserHelperPromptSelection } from "./browser-helper-prompt-sele
 import { isChatGptWebMultipartPartCount, type CompiledChatGptWebPrompt } from "./prompt";
 import { ChatGptMirroredTurnProgress } from "./turn-progress";
 import type { ChatGptExternalTurnProgressSnapshot } from "./turn-progress";
+import { resolveBrokerEndpoint } from "../../config";
 
 interface RunMessage {
   type: "run";
@@ -29,6 +30,7 @@ interface RunMessage {
     modelFamily?: "5.6" | "6";
     capabilities: ChatGptWebCapabilities;
     nativeConnector?: boolean;
+    nativeTokenBrokerSocket?: string;
     resumeAvailable?: boolean;
     retainConversation?: boolean;
     requireRetainedConversation?: boolean;
@@ -187,6 +189,12 @@ async function run(message: RunMessage): Promise<void> {
   if (message.turn.externalProgress !== undefined && typeof message.turn.externalProgress !== "boolean") {
     throw new Error("Browser helper external progress flag is invalid");
   }
+  if (message.turn.nativeTokenBrokerSocket !== undefined
+    && (typeof message.turn.nativeTokenBrokerSocket !== "string" || !message.turn.nativeTokenBrokerSocket
+      || message.turn.nativeTokenBrokerSocket !== resolveBrokerEndpoint(message.turn.nativeTokenBrokerSocket)
+      || !message.turn.externalProgress)) {
+    throw new Error("Browser helper Native2 broker endpoint is invalid");
+  }
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: "https://chatgpt.com",
@@ -224,6 +232,7 @@ async function run(message: RunMessage): Promise<void> {
     ...(message.turn.modelFamily ? { modelFamily: message.turn.modelFamily } : {}),
     capabilities: message.turn.capabilities,
     ...(message.turn.nativeConnector ? { nativeConnector: true } : {}),
+    ...(message.turn.nativeTokenBrokerSocket ? { nativeTokenBrokerSocket: message.turn.nativeTokenBrokerSocket } : {}),
     prepare: prepareSelected,
     ...(message.turn.resumeAvailable ? { prepareResume: prepareSelected } : {}),
     ...(message.turn.retainConversation ? { retainConversation: true } : {}),
@@ -539,4 +548,4 @@ process.once("SIGTERM", () => {
 });
 
 // Advertise the optional frames this helper understands so the daemon can negotiate them explicitly.
-writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack", "skill-attachments"] });
+writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack", "skill-attachments", "native-token-rejection-proof"] });

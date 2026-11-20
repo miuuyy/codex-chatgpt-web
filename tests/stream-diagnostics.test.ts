@@ -190,7 +190,7 @@ async function serviceStreamFixture(bufferedData: string | Promise<string> = "",
   return { reports, session, observer, request, response, data };
 }
 
-test.each(["matching", "unknown", "ambiguous", "foreign frame", "no response", "denied", "wrong link", "wrong app", "redirect", "refresh"] as const)(
+test.each(["matching", "unknown", "ambiguous", "foreign frame", "no response", "denied", "wrong link", "wrong app", "redirect", "refresh", "cached catalogue"] as const)(
   "token recovery requires a verified connector link for the final upload (%s)", async scenario => {
     const token = `turn_${"A".repeat(31)}Z`;
     const appId = "asdk_app_" + "a".repeat(32);
@@ -210,7 +210,7 @@ test.each(["matching", "unknown", "ambiguous", "foreign frame", "no response", "
         status: "finished_successfully", content: { content_type: "code",
           text: JSON.stringify({ path, args: { turn_token: token.slice(0, -1) } }) } } });
     try {
-      if (scenario !== "unknown") {
+      if (scenario !== "unknown" && scenario !== "cached catalogue") {
         fixture.session.emit("Network.requestWillBeSent", {
           requestId: "catalog", frameId: scenario === "foreign frame" ? "other" : "main",
           request: { method: "GET", url: target },
@@ -230,6 +230,12 @@ test.each(["matching", "unknown", "ambiguous", "foreign frame", "no response", "
 
       const selectedAppId = scenario === "wrong app" ? "asdk_app_" + "d".repeat(32) : appId;
       fixture.observer.begin({ tokenCopyConnector: { appId: selectedAppId, name } });
+      if (scenario === "cached catalogue") {
+        const verified = await fixture.observer.refreshTokenCopyConnector({
+          evaluate: async () => catalog,
+        } as any);
+        expect(verified).toBe(true);
+      }
       fixture.request("final"); fixture.response("final");
       await new Promise(resolve => setImmediate(resolve));
       if (scenario === "refresh") {
@@ -238,7 +244,7 @@ test.each(["matching", "unknown", "ambiguous", "foreign frame", "no response", "
         });
       }
       fixture.data("final", messages);
-      expect(rejected).toBe(scenario === "matching" ? 1 : 0);
+      expect(rejected).toBe(scenario === "matching" || scenario === "cached catalogue" ? 1 : 0);
     } finally {
       await fixture.observer.dispose();
     }

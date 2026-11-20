@@ -1,4 +1,8 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ChatGptTokenCopyObserver, runWithTokenCopyRecovery } from "../src/adapters/chatgpt-web/token-copy-recovery";
 import { ChatGptStreamProjection } from "../src/adapters/chatgpt-web/stream-diagnostics";
 import { ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-error";
@@ -7,6 +11,8 @@ import { ChatGptExternalTurnProgress } from "../src/adapters/chatgpt-web/turn-pr
 import { compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
 import { compileBiggerContextPrompt } from "../src/adapters/chatgpt-web/usage";
 import { parseRequest } from "../src/responses/parser";
+import { defaultBrokerEndpoint } from "../src/config";
+import { callTurnBroker, TurnBroker } from "../src/adapters/chatgpt-web/turn-broker";
 
 const token = `turn_${"A".repeat(31)}Z`;
 const connector = "/Codex Native2/link_" + "a".repeat(32);
@@ -16,6 +22,11 @@ const call = (copy: string, extra = {}) => ({ id: "call-current", author: { role
     path: connector + "/codex_exec", args: { turn_token: copy, cmd: "printf TEST" },
   }) }, ...extra });
 const frame = (event: unknown) => Buffer.from(`data: ${JSON.stringify(event)}\n\n`);
+const hiddenPreview = {
+  id: "tool-preview", author: { role: "assistant" }, recipient: "functions.exec", channel: "commentary",
+  create_time: 10.5, status: "in_progress", content: { content_type: "text", parts: [""] },
+  metadata: { message_type: "next", is_visually_hidden_from_conversation: true },
+};
 
 test("the observed 37-to-36 character copy error is detected without accepting a repaired token", () => {
   let rejected = 0;
@@ -96,6 +107,81 @@ test("a malformed value unrelated to the supplied token does not authorize repla
   observer.accept({ message: user });
   observer.accept({ message: call("turn_short") });
   expect(rejected).toBe(0);
+});
+
+test("a full-length mismatch recovers only after the real broker denies the current call", async () => {
+  const root = mkdtempSync(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "cgw-token-"));
+  const socket = defaultBrokerEndpoint(root);
+  const broker = TurnBroker.forSocket(socket);
+  const environment = { cwd: root, roots: [root], writableRoots: [root],
+    sandboxPolicy: { type: "dangerFullAccess" } as const, tools: [] };
+  try {
+    const expected = await broker.register(environment);
+    const different = `turn_${"B".repeat(32)}`;
+    const digest = createHash("sha256").update(different).digest("hex");
+    const submittedAt = Date.now() - 1;
+    const verify = (rejectedTokenDigest = digest, since = submittedAt) => callTurnBroker<{ rejected: boolean }>(socket, {
+      method: "owner_verify_rejected_native_copy", token: expected, rejectedTokenDigest, submittedAt: since,
+    });
+    const otherLiveToken = await broker.register(environment);
+    await callTurnBroker(socket, { method: "claim", token: otherLiveToken });
+    expect(await verify(createHash("sha256").update(otherLiveToken).digest("hex"))).toEqual({ rejected: false });
+    expect(await verify()).toEqual({ rejected: false });
+    await expect(callTurnBroker(socket, { method: "claim", token: different })).rejects.toThrow("invalid, expired, or revoked");
+    expect(await verify(digest, Date.now() + 1_000)).toEqual({ rejected: false });
+
+    let observation: Promise<boolean> | undefined;
+    let retried = 0;
+    const observer = new ChatGptTokenCopyObserver(expected, connector, () => { retried++; }, observedDigest => {
+      observation = verify(observedDigest).then(result => result.rejected);
+      return observation;
+    });
+    observer.accept({ type: "input_message", input_message: user });
+    observer.accept({ v: { message: hiddenPreview } });
+    observer.accept({ p: "/message/status", o: "replace", v: "finished_successfully" });
+    observer.accept({ message: call(different) });
+    expect(observation).toBeDefined();
+    expect(await observation).toBeTrue();
+    expect(retried).toBe(1);
+    expect(await verify()).toEqual({ rejected: false });
+
+    // A fresh denial cannot authorize replay after the expected capability has been used.
+    await expect(callTurnBroker(socket, { method: "claim", token: different })).rejects.toThrow("invalid, expired, or revoked");
+    await callTurnBroker(socket, { method: "claim", token: expected });
+    expect(await verify()).toEqual({ rejected: false });
+  } finally {
+    await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test.each([token, token.slice(0, -1)])("a second call while a full-length rejection awaits proof blocks recovery", async competing => {
+  let deliverProof!: (denied: boolean) => void;
+  const proof = new Promise<boolean>(resolve => { deliverProof = resolve; });
+  let retried = 0;
+  const observer = new ChatGptTokenCopyObserver(token, connector, () => { retried++; }, () => proof);
+  observer.accept({ message: user });
+  observer.accept({ message: call(`turn_${"B".repeat(32)}`) });
+  observer.accept({ message: call(competing, { id: "competing-call" }) });
+  deliverProof(true);
+  await proof;
+  expect(retried).toBe(0);
+});
+
+test.each(["populated", "patched", "unfinished"] as const)("a %s functions.exec preview cannot authorize replay", scenario => {
+  let observed = 0;
+  const observer = new ChatGptTokenCopyObserver(token, connector, () => {}, async () => {
+    observed++;
+    return true;
+  });
+  observer.accept({ type: "input_message", input_message: user });
+  const preview = scenario === "populated"
+    ? { ...hiddenPreview, content: { ...hiddenPreview.content, parts: ["actual tool arguments"] } } : hiddenPreview;
+  observer.accept({ v: { message: preview } });
+  if (scenario === "patched") observer.accept({ p: "/message/content/parts/0", o: "append", v: "actual tool arguments" });
+  if (scenario !== "unfinished") observer.accept({ p: "/message/status", o: "replace", v: "finished_successfully" });
+  observer.accept({ v: { message: call(`turn_${"B".repeat(32)}`) } });
+  expect(observed).toBe(0);
 });
 
 const rejected = () => new ChatGptWebAdapterError("Observed mismatched tool capability", {
