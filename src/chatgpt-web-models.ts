@@ -103,8 +103,10 @@ export const CHATGPT_WEB_GPT6_SOL_BIGGER_AUTO_COMPACT_TOKEN_LIMIT = 220_000;
 // Rechecked 2026-10-10 on Plus: Medium and High recovered all 12 distributed
 // codes at 127k estimated input tokens. At 144k both lost the entire first part.
 // Keep headroom below the passing result, with compaction before the ceiling.
-export const CHATGPT_WEB_GPT6_PLUS_BIGGER_CONTEXT_WINDOW = 120_000;
-export const CHATGPT_WEB_GPT6_PLUS_BIGGER_AUTO_COMPACT_TOKEN_LIMIT = 110_000;
+export const CHATGPT_WEB_PLUS_THINKING_INPUT_TOKEN_BUDGET = 120_000;
+export const CHATGPT_WEB_PLUS_THINKING_AUTO_COMPACT_TOKEN_LIMIT = 110_000;
+export const CHATGPT_WEB_GPT6_PLUS_BIGGER_CONTEXT_WINDOW = CHATGPT_WEB_PLUS_THINKING_INPUT_TOKEN_BUDGET;
+export const CHATGPT_WEB_GPT6_PLUS_BIGGER_AUTO_COMPACT_TOKEN_LIMIT = CHATGPT_WEB_PLUS_THINKING_AUTO_COMPACT_TOKEN_LIMIT;
 
 export interface ChatGptWebContextLimits {
   contextWindow: number;
@@ -127,6 +129,15 @@ export function supportsChatGptWebBiggerContext(
   return backendModel === CHATGPT_WEB_BACKEND_MODEL && (
     modelFamily !== "6" || effort !== "low"
   );
+}
+
+/** Expanded single-message input has been validated for Plus Thinking, not Instant or Pro. */
+export function supportsChatGptWebBiggerInlineInput(
+  backendModel: string,
+  effort: ChatGptWebAdapterEffort,
+  capabilities: ChatGptWebAccountCapabilities,
+): boolean {
+  return backendModel === CHATGPT_WEB_BACKEND_MODEL && !capabilities.proAvailable && effort !== "low";
 }
 
 export function isChatGptWebZeroRiskBackendModel(
@@ -204,6 +215,12 @@ export function resolveChatGptWebContextLimits(
   }
   if (!capabilities.experimentalBiggerContext
     || !supportsChatGptWebBiggerContext(backendModel, effort, modelFamily)) return limits;
+  // ChatGPT Thinking's product input budget is separate from the API/total window.
+  // Live Plus 5.6 checks retained all markers at 113k input, but lost the oldest part at 140k.
+  // More staged messages cannot multiply that input budget.
+  if (!capabilities.proAvailable && effort !== "low") {
+    return contextLimits(CHATGPT_WEB_PLUS_THINKING_INPUT_TOKEN_BUDGET, CHATGPT_WEB_PLUS_THINKING_AUTO_COMPACT_TOKEN_LIMIT);
+  }
   if (modelFamily === "6" && effort !== "max") {
     return contextLimits(
       capabilities.proAvailable ? CHATGPT_WEB_GPT6_SOL_BIGGER_CONTEXT_WINDOW : CHATGPT_WEB_GPT6_PLUS_BIGGER_CONTEXT_WINDOW,

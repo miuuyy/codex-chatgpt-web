@@ -6,15 +6,18 @@ import {
   chatGptWebImageTokenReserve,
   isChatGptWebZeroRiskBackendModel,
   resolveChatGptWebMultipartContextWindow,
+  resolveChatGptWebContextLimits,
   resolveChatGptWebMessageTokenBudget,
   resolveChatGptWebStagingTokenBudget,
   resolveChatGptWebTransportLimits,
   supportsChatGptWebBiggerContext,
+  supportsChatGptWebBiggerInlineInput,
 } from "../../chatgpt-web-models";
 import { ChatGptWebAdapterError } from "./adapter-error";
+import type { ChatGptMessageLimits } from "./message-limit-recovery";
 import { restoreCompactionTaskMessages } from "./compaction-continuation";
 import { chatGptTurnUserRevisionHistory, extractChatGptTurnIdentity } from "./environment";
-import { estimateCompiledChatGptWebInputTokens } from "./input-tokens";
+import { compiledChatGptWebMessages, estimateCompiledChatGptWebMessageTokens, estimateCompiledChatGptWebInputTokens } from "./input-tokens";
 import { estimateTokens } from "../../lib/token-estimate";
 import type { CodexAssistantContentPart, CodexContentPart, CodexMessage, CodexParsedRequest } from "../../types";
 import { isOnePixelPngDataUrl, isReadableCompactionSummaryText } from "../../responses/compaction";
@@ -38,6 +41,10 @@ export interface CompiledChatGptWebPrompt {
   skillFiles?: ChatGptSkillFile[];
   /** Transactional transport when Bigger Context is explicitly enabled. */
   multipart?: ChatGptWebMultipartPrompt;
+  /** Explicit opt-in to the validated Bigger Context single-message input budget. */
+  biggerContext?: true;
+  /** Recovery uploads keep the selected reasoning window across every acknowledged part. */
+  preserveContextDuringStaging?: boolean;
   /** Oldest history items removed by native-style compaction fit recovery; absent on normal turns. */
   trimmedCompactionMessages?: number;
   /** Numeric counts of the submitted context records, never their contents or identifiers. */
@@ -54,11 +61,15 @@ export interface CompileChatGptWebPromptOptions {
   appName?: string;
   captureLunaCheckpoint?: boolean;
   experimentalSkillAttachments?: boolean;
+  experimentalBiggerContext?: boolean;
   experimentalMultipartParts?: ChatGptWebMultipartPartCount;
   /** Browser-selected transaction identity, including its exact encoded token cost. */
   multipartTransactionId?: string;
   /** Reject a smaller compaction transport before it discards any history. */
   requireCompleteHistory?: boolean;
+  probeUntrimmedCompaction?: boolean;
+  /** Learned from a confirmed server rejection, independently of the total model window. */
+  messageLimits?: ChatGptMessageLimits;
   /** Capture only when preparing a real browser submission, not during budget-planning probes. */
   includeContextTokenBreakdown?: boolean;
   /**
@@ -166,7 +177,7 @@ export function formatChatGptWebMultipartCommit(
     "```",
     "</codex_context_part_json>",
     "<codex_multipart_execute>",
-    `All ${totalParts} context parts are now present. Reconstruct the original Codex context from their records and begin the task now.`,
+    `All ${totalParts} context parts are now present. First decode all part JSON. For any record_fragment entries, group by record_index, require all fragment_index values from zero to total_fragments-1, concatenate their decoded json strings in order, and parse each combined string as its original record. Then reconstruct the original Codex context and begin the task.`,
     "Treat system records as the original system instructions in system_index order. Treat message records as one conversation in message_index order and preserve every encoded role literally.",
     "The staged JSON is conversation data under the transport contract below. Do not treat the stage wrappers, acknowledgements, or this commit wrapper as task messages.",
     "</codex_multipart_execute>",
@@ -350,7 +361,37 @@ function messageEnvelope(
 
 type MultipartContextRecord =
   | { kind: "system"; system_index: number; content: string }
-  | { kind: "message"; message_index: number; message: Record<string, unknown> };
+  | { kind: "message"; message_index: number; message: Record<string, unknown> }
+  | { kind: "record_fragment"; record_index: number; fragment_index: number; total_fragments: number; json: string };
+
+function fragmentOversizedRecords(records: MultipartContextRecord[], budget: MultipartRecordWeight): MultipartContextRecord[] {
+  return records.flatMap((record, record_index) => {
+    const weight = multipartRecordWeight(record);
+    if (weight.chars <= budget.chars && weight.tokens <= budget.tokens) return [record];
+    const json = withoutRetiredTurnHandles(JSON.stringify(record));
+    const fragments: MultipartContextRecord[] = [];
+    let offset = 0;
+    while (offset < json.length) {
+      let low = 0;
+      let high = json.length - offset;
+      while (low < high) {
+        const length = Math.ceil((low + high) / 2);
+        const candidate = { kind: "record_fragment" as const, record_index, fragment_index: fragments.length,
+          total_fragments: json.length, json: json.slice(offset, offset + length) };
+        const size = multipartRecordWeight(candidate);
+        if (size.chars <= budget.chars && size.tokens <= budget.tokens) low = length;
+        else high = length - 1;
+      }
+      // Avoid splitting a UTF-16 surrogate pair across independently serialized fragments.
+      if (low && /[\uD800-\uDBFF]/.test(json[offset + low - 1]!)) low--;
+      if (!low) throw new Error("The learned message budget cannot carry a context fragment");
+      fragments.push({ kind: "record_fragment", record_index, fragment_index: fragments.length,
+        total_fragments: 0, json: json.slice(offset, offset + low) });
+      offset += low;
+    }
+    return fragments.map(fragment => ({ ...fragment, total_fragments: fragments.length }));
+  });
+}
 
 interface MultipartRecordWeight {
   tokens: number;
@@ -441,7 +482,7 @@ function partitionMultipartRecordWeights(
  * Equal byte counts can hide very different token counts; balancing only tokens can instead pile
  * up low-token text beyond the composer limit. The final part also owns attachments and execution
  * instructions. Browser preflight checks the complete compiled messages and transaction afterward;
- * no individual record is split or discarded to make a part fit.
+ * learned-limit recovery transports oversized records as lossless ordered fragments.
  */
 function partitionMultipartContext(
   records: readonly MultipartContextRecord[],
@@ -465,6 +506,89 @@ function partitionMultipartContext(
     records: group,
   }));
   return payloads;
+}
+
+/** Fill the actual wire messages when whole-record balancing leaves unusable gaps. */
+function partitionAtMessageBoundaries(
+  records: readonly MultipartContextRecord[],
+  multipart: ChatGptWebMultipartPrompt,
+  budgets: readonly { chars: number; tokenLimit: number; charLimit: number }[],
+  transactionId: string,
+  modelId: string,
+): ChatGptWebMultipartParts | undefined {
+  const totalParts = multipart.parts.length;
+  // Fragment encoding only adds characters. Avoid costly repeated searches when even the
+  // unfragmented records exceed every part's combined space (common during compaction trim).
+  if (records.reduce((sum, record) => sum + serializeMultipartContext(record).length, 0)
+    > budgets.reduce((sum, budget) => sum + budget.chars, 0)) return undefined;
+  const encode = (group: readonly MultipartContextRecord[], index: number): string => serializeMultipartContext({
+    version: 1, part_index: index + 1, total_parts: totalParts, records: group,
+  });
+  // Leave a small token margin for real transaction IDs and changed fragment-count hashes.
+  // Character budgets need no such reserve: those fields keep their exact serialized length.
+  for (const tokenReserve of [128, 256]) {
+    const groups: MultipartContextRecord[][] = Array.from({ length: totalParts }, () => []);
+    const parts = groups.map(encode);
+    const fragmentCounts = new Map<number, number>();
+    let recordIndex = 0;
+    let offset = 0;
+    let json = "";
+    const fits = (payload: string, index: number, reserve = tokenReserve): boolean => {
+      const text = index === totalParts - 1
+        ? formatChatGptWebMultipartCommit({ ...multipart, parts: parts.map((part, i) => i === index ? payload : part) }, transactionId)
+        : formatChatGptWebMultipartStage(payload, transactionId, index + 1, totalParts).text;
+      return text.length <= budgets[index]!.charLimit
+        && estimateTokens(text, modelId) <= budgets[index]!.tokenLimit - reserve;
+    };
+    for (let partIndex = 0; partIndex < totalParts; partIndex++) {
+      const group = groups[partIndex]!;
+      while (recordIndex < records.length) {
+        const record = records[recordIndex]!;
+        if (offset === 0 && fits(encode([...group, record], partIndex), partIndex)) {
+          group.push(record);
+          parts[partIndex] = encode(group, partIndex);
+          recordIndex++;
+          continue;
+        }
+        if (offset === 0) json = withoutRetiredTurnHandles(JSON.stringify(record));
+        const fragment = (length: number): MultipartContextRecord => ({
+          kind: "record_fragment", record_index: recordIndex,
+          fragment_index: fragmentCounts.get(recordIndex) ?? 0,
+          // A record can cross at most one boundary per part; replace this upper bound below.
+          total_fragments: totalParts, json: json.slice(offset, offset + length),
+        });
+        let low = 0;
+        let high = json.length - offset;
+        while (low < high) {
+          const length = Math.ceil((low + high) / 2);
+          if (fits(encode([...group, fragment(length)], partIndex), partIndex)) low = length;
+          else high = length - 1;
+        }
+        // Fragments must remain valid Unicode strings even when encoded independently.
+        if (low && /[\uD800-\uDBFF]/.test(json[offset + low - 1]!)) low--;
+        while (low && !fits(encode([...group, fragment(low)], partIndex), partIndex)) {
+          low--;
+          if (low && /[\uD800-\uDBFF]/.test(json[offset + low - 1]!)) low--;
+        }
+        if (!low) break;
+        group.push(fragment(low));
+        fragmentCounts.set(recordIndex, (fragmentCounts.get(recordIndex) ?? 0) + 1);
+        parts[partIndex] = encode(group, partIndex);
+        offset += low;
+        if (offset < json.length) break;
+        recordIndex++;
+        offset = 0;
+      }
+    }
+    if (recordIndex !== records.length) return undefined;
+    groups.forEach((group, index) => {
+      parts[index] = encode(group.map(record => record.kind === "record_fragment"
+        ? { ...record, total_fragments: fragmentCounts.get(record.record_index)! } : record), index);
+    });
+    // No estimated record weights or placeholder hashes can authorize an oversized Send.
+    if (parts.every((payload, index) => fits(payload, index, 64))) return parts;
+  }
+  return undefined;
 }
 
 export function chatGptReadOnlyContextWarning(
@@ -511,7 +635,7 @@ export function compileChatGptWebPrompt(
     if (!capabilities.localToolsEnabled) {
       throw new Error("ChatGPT Zero Risk requires the Full Codex harness");
     }
-    if (captureLunaCheckpoint || multipartEnabled) {
+    if (captureLunaCheckpoint || multipartEnabled || options?.experimentalBiggerContext) {
       throw new Error("ChatGPT Zero Risk does not support rolling or multipart browser transport");
     }
   }
@@ -734,7 +858,8 @@ export function compileChatGptWebPrompt(
       // Equal parts near Instant's maximum can be accepted once and rejected on the next Send.
       // If complete records cannot fit that allocation, plan with the wider available stage mode
       // before submitting anything; no context is truncated and no failed upload is replayed.
-      const stagingEfforts = backendModel === CHATGPT_WEB_LUNA_MODEL_ID ? ["low"] as const
+      const stagingEfforts = options?.messageLimits || parsed._compactionRequest ? [mode.effort]
+        : backendModel === CHATGPT_WEB_LUNA_MODEL_ID ? ["low"] as const
         : capabilities.proAvailable ? ["max"] as const : ["low", "medium"] as const;
       const emptyParts = multipart.parts;
       for (const stagingEffort of stagingEfforts) {
@@ -743,31 +868,52 @@ export function compileChatGptWebPrompt(
           const final = index === multipart.parts.length - 1;
           const effort = final ? mode.effort : stagingEffort;
           const limits = resolveChatGptWebTransportLimits(backendModel, effort, capabilities);
-          const tokenLimit = final
+          const nativeTokenLimit = final
             ? resolveChatGptWebMessageTokenBudget(backendModel, effort, capabilities,
               imageTokens + skillFileTokens(skillFiles, parsed.modelId))
             : resolveChatGptWebStagingTokenBudget(backendModel, effort, capabilities);
+          const tokenLimit = Math.min(nativeTokenLimit, (options?.messageLimits?.tokens ?? Infinity)
+            - (final ? skillFileTokens(skillFiles, parsed.modelId) : 0));
+          const charLimit = Math.min(limits.browserComposerCharLimit ?? Infinity, options?.messageLimits?.chars ?? Infinity);
           const fixedMessage = final
             ? formatChatGptWebMultipartCommit(multipart, transactionId)
             : formatChatGptWebMultipartStage(payload, transactionId, index + 1, multipartParts!).text;
           const tokens = tokenLimit - estimateTokens(fixedMessage);
-          const chars = (limits.browserComposerCharLimit ?? Infinity) - fixedMessage.length;
+          const chars = charLimit - fixedMessage.length;
           if (tokens <= 0 || chars <= 0) {
             throw new ChatGptWebAdapterError(
               `The Bigger Context ${final ? "final part's instructions and attachments" : "stage wrapper"} exceed the available message budget before any task history is added. Reduce those inputs before retrying.`,
-              { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
+              { status: 400, errorType: "invalid_request_error",
+                code: options?.messageLimits ? "chatgpt_message_transport_capacity_exceeded" : "context_length_exceeded", retryable: false },
             );
           }
-          return { tokens, chars, tokenLimit, charLimit: limits.browserComposerCharLimit ?? Infinity };
+          return { tokens, chars, tokenLimit, charLimit };
         });
-        multipart.parts = partitionMultipartContext(records, multipartParts!, budgets);
-        if (stagingEfforts.length > 1 && stagingEffort === "low" && multipart.parts.some((payload, index) => {
-          const final = index === multipart.parts.length - 1;
-          const text = final ? formatChatGptWebMultipartCommit(multipart, transactionId)
+        const aggregateCharsFit = records.reduce((sum, record) =>
+          sum + serializeMultipartContext(record).length, 0) <= budgets.reduce((sum, budget) => sum + budget.chars, 0);
+        const recoveryRecords = options?.messageLimits && aggregateCharsFit ? fragmentOversizedRecords(records, {
+          tokens: Math.floor(Math.min(...budgets.map(budget => budget.tokens)) * 0.8),
+          chars: Math.floor(Math.min(...budgets.map(budget => budget.chars)) * 0.8),
+        }) : records;
+        multipart.parts = partitionMultipartContext(recoveryRecords, multipartParts!, budgets);
+        const exceedsMessageBudgets = (): boolean => multipart.parts.some((payload, index) => {
+          const text = index === multipart.parts.length - 1 ? formatChatGptWebMultipartCommit(multipart, transactionId)
             : formatChatGptWebMultipartStage(payload, transactionId, index + 1, multipartParts!).text;
           return estimateTokens(text) > budgets[index]!.tokenLimit || text.length > budgets[index]!.charLimit;
-        })) continue;
-        return { text: multipart.commit, images, ...attachments, multipart };
+        });
+        if (aggregateCharsFit && exceedsMessageBudgets()
+          && (options?.messageLimits || (backendModel !== CHATGPT_WEB_LUNA_MODEL_ID && stagingEffort === stagingEfforts.at(-1)))) {
+          multipart.parts = partitionAtMessageBoundaries(records, multipart, budgets, transactionId, parsed.modelId)
+            ?? multipart.parts;
+        }
+        if (stagingEfforts.length > 1 && stagingEffort === "low" && exceedsMessageBudgets()) continue;
+        if (options?.messageLimits && !parsed._compactionRequest && exceedsMessageBudgets()) {
+          throw new ChatGptWebAdapterError(`The complete task cannot fit within the learned ${multipartParts === 2 ? "two" : "six"}-message upload limits. This upload exceeds a per-message transport limit; the model input budget is checked separately.`, {
+            status: 400, errorType: "invalid_request_error", code: "chatgpt_message_transport_capacity_exceeded", retryable: false,
+          });
+        }
+        return { text: multipart.commit, images, ...attachments, multipart,
+          ...(options?.messageLimits || parsed._compactionRequest ? { preserveContextDuringStaging: true } : {}) };
       }
       throw new Error("No Bigger Context staging allocation is available");
     }
@@ -789,7 +935,11 @@ export function compileChatGptWebPrompt(
       "```",
       ...resume,
     ].join("\n");
-    return { text, images, ...attachments };
+    return { text, images, ...attachments,
+      ...(options?.experimentalBiggerContext && supportsChatGptWebBiggerContext(parsed.modelId, mode.effort, parsed._chatgptModelFamily)
+        && supportsChatGptWebBiggerInlineInput(parsed.modelId, mode.effort, capabilities)
+        ? { biggerContext: true as const } : {}),
+    };
   };
 
   let sourceMessages = withoutSupersededModelSwitchContracts(restoreCompactionTaskMessages(
@@ -797,17 +947,27 @@ export function compileChatGptWebPrompt(
   ));
   const initialMessageCount = sourceMessages.length;
   let compiled = build(sourceMessages);
-  if (!parsed._compactionRequest) return compiled;
+  if (!parsed._compactionRequest || options?.probeUntrimmedCompaction) return compiled;
 
-  // Match browser-worker's exclusive transaction ceiling, including wrappers, acknowledgements,
-  // attachments and the platform reserve. The legacy inline byte cap does not apply to multipart.
-  // Individual records remain atomic; browser preflight still rejects any part that cannot fit.
-  const multipartTokenBudget = compiled.multipart ? resolveChatGptWebMultipartContextWindow(
+  // Match browser preflight for multipart and expanded inline inputs. The legacy byte cap
+  // still bounds ordinary inline compaction.
+  const tokenBudget = compiled.multipart ? resolveChatGptWebMultipartContextWindow(
     backendModel, mode.effort, capabilities, compiled.multipart.parts.length, parsed._chatgptModelFamily,
-  ) : undefined;
-  const exceedsCompactionBudget = (): boolean => compiled.multipart
-    ? estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId, options?.multipartTransactionId) >= multipartTokenBudget!
-    : chatGptPromptJsonBytes(compiled.text) > CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET;
+  ) : compiled.biggerContext ? resolveChatGptWebContextLimits(backendModel, mode.effort,
+    { ...capabilities, experimentalBiggerContext: true }, parsed._chatgptModelFamily).contextWindow : undefined;
+  const inlineTransport = compiled.biggerContext
+    ? resolveChatGptWebTransportLimits(backendModel, mode.effort, capabilities) : undefined;
+  const messageLimits = !compiled.multipart && options?.messageLimits?.probeInline ? undefined : options?.messageLimits;
+  const exceedsCompactionBudget = (): boolean => (tokenBudget !== undefined
+    ? estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId, options?.multipartTransactionId) >= tokenBudget
+    : chatGptPromptJsonBytes(compiled.text) > CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET)
+    || compiled.text.length > (inlineTransport?.browserComposerCharLimit ?? Infinity)
+    || (inlineTransport?.browserMessageTokenLimit !== undefined
+      && estimateCompiledChatGptWebMessageTokens(compiled, parsed.modelId) > inlineTransport.browserMessageTokenLimit)
+    || (messageLimits !== undefined && compiledChatGptWebMessages(compiled, options?.multipartTransactionId).some((text, index, messages) =>
+      text.length > messageLimits.chars || estimateTokens(text, parsed.modelId)
+        + (index === messages.length - 1 ? skillFileTokens(compiled.skillFiles, parsed.modelId) : 0)
+        > messageLimits.tokens));
 
   if (options?.requireCompleteHistory) {
     if (exceedsCompactionBudget()) throw new ChatGptWebAdapterError(
@@ -831,10 +991,16 @@ export function compileChatGptWebPrompt(
     compiled = build(sourceMessages, initialMessageCount - sourceMessages.length);
   }
   if (exceedsCompactionBudget()) {
-    if (compiled.multipart) {
+    if (tokenBudget !== undefined) {
       const inputTokens = estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId, options?.multipartTransactionId);
+      if (inputTokens < tokenBudget) {
+        throw new ChatGptWebAdapterError(
+          "The required system context, cumulative checkpoint and final compaction instruction cannot fit within the learned per-message upload limits. The total model context window is not exhausted. Reduce those required inputs before retrying.",
+          { status: 400, errorType: "invalid_request_error", code: "chatgpt_message_transport_capacity_exceeded", retryable: false },
+        );
+      }
       throw new ChatGptWebAdapterError(
-        `ChatGPT Web compaction still requires ${inputTokens.toLocaleString("en-US")} input tokens after other history was trimmed; the required system context, ${checkpointIndex >= 0 ? "cumulative checkpoint, and " : ""}final compaction instruction cannot fit below the ${multipartTokenBudget!.toLocaleString("en-US")}-token ${compiled.multipart.parts.length === 2 ? "two-part" : "six-part"} ceiling. Reduce the required context before retrying.`,
+        `ChatGPT Web compaction still requires ${inputTokens.toLocaleString("en-US")} input tokens after other history was trimmed; the required system context, ${checkpointIndex >= 0 ? "cumulative checkpoint, and " : ""}final compaction instruction cannot fit below the ${tokenBudget.toLocaleString("en-US")}-token ${compiled.multipart ? compiled.multipart.parts.length === 2 ? "two-part" : "six-part" : "inline"} ceiling. Reduce the required context before retrying.`,
         { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
       );
     }

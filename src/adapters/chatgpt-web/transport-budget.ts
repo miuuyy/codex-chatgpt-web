@@ -1,3 +1,7 @@
+import type { ChatGptMessageLimits } from "./message-limit-recovery";
+import { compiledChatGptWebMessages } from "./input-tokens";
+import { estimateTokens } from "../../lib/token-estimate";
+import { skillFileTokens } from "./skill-attachments";
 import {
   CHATGPT_LUNA_BROWSER_INPUT_TOKEN_BUDGET,
   CHATGPT_WEB_GPT6_INSTANT_BIGGER_CONTEXT_ERROR,
@@ -7,6 +11,7 @@ import {
   resolveChatGptWebStagingTokenBudget,
   resolveChatGptWebTransportLimits,
   supportsChatGptWebBiggerContext,
+  supportsChatGptWebBiggerInlineInput,
   type ChatGptWebModelFamily,
 } from "../../chatgpt-web-models";
 import { ChatGptWebAdapterError } from "./adapter-error";
@@ -22,8 +27,9 @@ export function assertChatGptWebInputWithinLimits(
   estimatedMessageTokens: number,
   modelId: string,
   effort: ChatGptWebModelMode["effort"],
-  capabilities: ChatGptWebCapabilities,
+  capabilities: ChatGptWebCapabilities & { experimentalBiggerContext?: boolean },
   promptChars?: number,
+  modelFamily?: ChatGptWebModelFamily,
 ): void {
   if (modelId !== CHATGPT_WEB_MODEL_ID && modelId !== CHATGPT_WEB_LUNA_MODEL_ID) {
     throw new Error(`ChatGPT web context limit is not defined for model: ${modelId}`);
@@ -37,7 +43,7 @@ export function assertChatGptWebInputWithinLimits(
       { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
     );
   }
-  const { contextWindow } = resolveChatGptWebContextLimits(modelId, effort, { ...capabilities, experimentalBiggerContext: false });
+  const { contextWindow } = resolveChatGptWebContextLimits(modelId, effort, { ...capabilities, experimentalBiggerContext: capabilities.experimentalBiggerContext && supportsChatGptWebBiggerInlineInput(modelId, effort, capabilities) }, modelFamily);
   const { browserMessageTokenLimit, browserComposerCharLimit } = resolveChatGptWebTransportLimits(
     modelId,
     effort,
@@ -184,15 +190,25 @@ export function resolveChatGptWebMultipartStagingMode(
 /** Check the same formatted messages in transport selection and immediately before Send. */
 export function checkChatGptWebTransport(
   compiled: CompiledChatGptWebPrompt, modelId: string, mode: ChatGptWebModelMode,
-  caps: ChatGptWebCapabilities, family?: ChatGptWebModelFamily, transactionId?: string,
+  caps: ChatGptWebCapabilities, family?: ChatGptWebModelFamily, transactionId?: string, messageLimits?: ChatGptMessageLimits,
 ) {
   const transport = measureChatGptWebTransport(compiled, modelId, transactionId);
   const { estimatedInputTokens, finalMessageTokens, finalPrompt, maxMessageChars, maxStageMessageTokens, maxStageChars } = transport;
+  const binding = !compiled.multipart && messageLimits?.probeInline ? undefined : messageLimits;
+  if (binding && compiledChatGptWebMessages(compiled, transactionId).some((text, index, messages) =>
+    text.length > binding.chars || estimateTokens(text, modelId)
+      + (index === messages.length - 1 ? skillFileTokens(compiled.skillFiles, modelId) : 0) > binding.tokens)) {
+    throw new ChatGptWebAdapterError("The complete request exceeds the learned per-message upload limits.", {
+      status: 400, errorType: "invalid_request_error", code: "chatgpt_message_transport_capacity_exceeded", retryable: false,
+    });
+  }
   if (!compiled.multipart) {
-    assertChatGptWebInputWithinLimits(estimatedInputTokens, finalMessageTokens, modelId, mode.effort, caps, maxMessageChars);
+    assertChatGptWebInputWithinLimits(estimatedInputTokens, finalMessageTokens, modelId, mode.effort,
+      { ...caps, experimentalBiggerContext: compiled.biggerContext === true }, maxMessageChars, family);
     return { ...transport, stagingMode: mode };
   }
-  const stagingMode = resolveChatGptWebMultipartStagingMode(modelId, caps, maxStageMessageTokens, maxStageChars);
+  const stagingMode = compiled.preserveContextDuringStaging ? { ...mode, localTools: false }
+    : resolveChatGptWebMultipartStagingMode(modelId, caps, maxStageMessageTokens, maxStageChars);
   assertChatGptWebMultipartInputWithinLimits(
     estimatedInputTokens, Math.max(maxStageMessageTokens, finalMessageTokens), modelId, mode.effort, caps,
     maxMessageChars, compiled.multipart.parts.length, {

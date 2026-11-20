@@ -30,7 +30,7 @@ type HelperMessage =
   | { type: "event"; id: string; event: "multipart_stage_acknowledged"; stageIndex: number }
   | { type: "event"; id: string; event: "completion_fence_begin"; requestId: number }
   | { type: "event"; id: string; event: "completion_fence_commit"; requestId: number; revision: number }
-  | { type: "event"; id: string; event: "prepared_selected"; reused: boolean; transactionId?: string }
+  | { type: "event"; id: string; event: "prepared_selected"; reused: boolean; transactionId?: string; accountKey?: string }
   | { type: "event"; id: string; event: "luna_checkpoint"; checkpoint: ChatGptLunaCheckpoint; answerHash: string }
   | { type: "result"; id: string; text: string }
   | {
@@ -42,6 +42,8 @@ type HelperMessage =
       errorType?: string;
       code?: string;
       retryable?: boolean;
+      inputRejected?: boolean;
+      rejectedMessageSize?: { chars: number; tokens: number };
     };
 
 function parseHelperMessage(line: string): HelperMessage {
@@ -114,7 +116,11 @@ function parseHelperMessage(line: string): HelperMessage {
       }
       const transactionId = message.transactionId;
       if (transactionId !== undefined) assertMultipartTransactionId(transactionId);
-      return { type: "event", id: message.id, event, reused: message.reused, transactionId };
+      if (message.accountKey !== undefined && (typeof message.accountKey !== "string" || !/^[a-f0-9]{64}$/.test(message.accountKey))) {
+        throw new Error("Launcher browser helper message-limit account identity is invalid");
+      }
+      return { type: "event", id: message.id, event, reused: message.reused, transactionId,
+        ...(message.accountKey ? { accountKey: message.accountKey as string } : {}) };
     }
     if (!["heartbeat", "generation_progress", "send_activated", "submitted", "reasoning", "commentary", "text"].includes(String(event))) {
       throw new Error("Launcher browser helper emitted an unknown event");
@@ -147,6 +153,14 @@ function parseHelperMessage(line: string): HelperMessage {
     const errorType = message.errorType;
     const code = message.code;
     const retryable = message.retryable;
+    const inputRejected = message.inputRejected;
+    const size = message.rejectedMessageSize as { chars?: unknown; tokens?: unknown } | undefined;
+    if ((inputRejected !== undefined && typeof inputRejected !== "boolean")
+      || (size !== undefined && (!size || typeof size !== "object"
+        || !Number.isSafeInteger(size.chars) || (size.chars as number) <= 0
+        || !Number.isSafeInteger(size.tokens) || (size.tokens as number) <= 0))) {
+      throw new Error("Launcher browser helper rejection evidence is invalid");
+    }
     const structured = status !== undefined
       || errorType !== undefined
       || code !== undefined
@@ -175,6 +189,8 @@ function parseHelperMessage(line: string): HelperMessage {
         errorType: errorType as string,
         code: code as string,
         retryable: retryable as boolean,
+        ...(inputRejected === true ? { inputRejected: true } : {}),
+        ...(size ? { rejectedMessageSize: size as { chars: number; tokens: number } } : {}),
       } : {}),
     };
   }
@@ -228,6 +244,9 @@ export class LauncherBrowserHelperClient {
       throw new Error(
         "Launcher browser helper does not support the MCP completion fence; update or restart the launcher",
       );
+    }
+    if (turn.accountScopedMessageLimits && !this.helperFeatures.has("account-scoped-message-limits")) {
+      throw new Error("Launcher browser helper cannot isolate learned limits by account; restart the updated launcher");
     }
     return await new Promise<string>((resolveResult, rejectResult) => {
         if (this.pending.has(turn.traceId)) {
@@ -288,6 +307,7 @@ export class LauncherBrowserHelperClient {
             ...(turn.modelFamily ? { modelFamily: turn.modelFamily } : {}),
             capabilities: turn.capabilities,
             ...(turn.nativeConnector ? { nativeConnector: true } : {}),
+            ...(turn.accountScopedMessageLimits ? { accountScopedMessageLimits: true } : {}),
             ...(turn.prepareResume ? { resumeAvailable: true } : {}),
             ...(turn.retainConversation ? { retainConversation: true } : {}),
             ...(turn.requireRetainedConversation ? { requireRetainedConversation: true } : {}),
@@ -516,17 +536,31 @@ export class LauncherBrowserHelperClient {
       }
       else if (message.event === "prepared_selected") {
         const prepare = message.reused ? pending.turn.prepareResume : pending.turn.prepare;
-        void Promise.resolve().then(() => prepare?.(message.transactionId)).then(prepared => {
+        void Promise.resolve().then(() => pending.turn.onPreparedSelected?.(message.reused, message.transactionId, message.accountKey))
+          .then(() => prepare?.(message.transactionId)).then(prepared => {
           if (!prepared) throw new Error("Launcher browser helper selected an unavailable continuation prompt");
           if (this.pending.get(message.id) !== pending) {
             prepared.release();
             return;
           }
           pending.prepared = prepared;
+          if (prepared.preserveContextDuringStaging && !this.helperFeatures.has("staging-context-window")) {
+            throw new Error("Launcher browser helper cannot preserve the recovery staging window; restart the updated launcher");
+          }
+          if (prepared.biggerContext && !this.helperFeatures.has("bigger-inline-context")) {
+            throw new Error("Launcher browser helper does not support the Bigger Context inline budget; restart the updated launcher");
+          }
+          const fragments = prepared.multipart?.parts.some(part => {
+            try { return JSON.parse(part).records?.some((record: { kind?: string }) => record.kind === "record_fragment"); }
+            catch { return false; } // The browser worker validates malformed payloads before Send.
+          });
+          if (fragments && !this.helperFeatures.has("context-record-fragments")) {
+            throw new Error("Launcher browser helper does not support context record fragments; restart the updated launcher");
+          }
           if (prepared.skillFiles?.length && !this.helperFeatures.has("skill-attachments")) {
             throw new Error("Launcher browser helper does not support skill attachments; update or restart the launcher");
           }
-          return Promise.resolve(pending.turn.onPreparedSelected?.(message.reused, message.transactionId)).then(() => {
+          return Promise.resolve().then(() => {
             if (this.pending.get(message.id) !== pending) return;
             return this.send({
               type: "prepared_selected_ack",
@@ -537,6 +571,8 @@ export class LauncherBrowserHelperClient {
                 ...(prepared.turnToken ? { turnToken: prepared.turnToken } : {}),
                 ...(prepared.skillFiles ? { skillFiles: prepared.skillFiles } : {}),
                 ...(prepared.multipart ? { multipart: prepared.multipart } : {}),
+                ...(prepared.biggerContext ? { biggerContext: true } : {}),
+                ...(prepared.preserveContextDuringStaging ? { preserveContextDuringStaging: true } : {}),
                 ...(prepared.contextTokenBreakdown ? { contextTokenBreakdown: prepared.contextTokenBreakdown } : {}),
                 ...(prepared.trimmedCompactionMessages !== undefined
                   ? { trimmedCompactionMessages: prepared.trimmedCompactionMessages }
@@ -575,6 +611,8 @@ export class LauncherBrowserHelperClient {
           errorType: message.errorType!,
           code: message.code!,
           retryable: message.retryable!,
+          inputRejected: message.inputRejected,
+          rejectedMessageSize: message.rejectedMessageSize,
         })
         : message.name === "AbortError"
           ? new DOMException(message.message, "AbortError")

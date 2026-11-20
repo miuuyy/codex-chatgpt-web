@@ -16,8 +16,8 @@ function formatChatGptWebTransport(compiled: CompiledChatGptWebPrompt, transacti
   return { stages, finalPrompt };
 }
 
-export function compiledChatGptWebMessages(compiled: CompiledChatGptWebPrompt): string[] {
-  const { stages, finalPrompt } = formatChatGptWebTransport(compiled);
+export function compiledChatGptWebMessages(compiled: CompiledChatGptWebPrompt, transactionId?: string): string[] {
+  const { stages, finalPrompt } = formatChatGptWebTransport(compiled, transactionId);
   return [...(stages ?? []).map(stage => stage.text), finalPrompt];
 }
 
@@ -50,4 +50,12 @@ export function estimateChatGptWebImageTokens(compiled: CompiledChatGptWebPrompt
     (total, image) => total + chatGptWebImageTokenReserve(image.detail),
     0,
   );
+}
+
+export function estimateCompiledChatGptWebMessageTokens(compiled: CompiledChatGptWebPrompt, modelId: string): number {
+  const measured = measureChatGptWebTransport(compiled, modelId);
+  return Math.max(measured.maxStageMessageTokens, measured.finalMessageTokens);
+}
+export function compiledChatGptWebMaxMessageChars(compiled: CompiledChatGptWebPrompt): number {
+  return Math.max(...compiledChatGptWebMessages(compiled).map(text => text.length));
 }

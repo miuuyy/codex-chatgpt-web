@@ -29,6 +29,7 @@ interface RunMessage {
     modelFamily?: "5.6" | "6";
     capabilities: ChatGptWebCapabilities;
     nativeConnector?: boolean;
+    accountScopedMessageLimits?: boolean;
     resumeAvailable?: boolean;
     retainConversation?: boolean;
     requireRetainedConversation?: boolean;
@@ -187,6 +188,9 @@ async function run(message: RunMessage): Promise<void> {
   if (message.turn.externalProgress !== undefined && typeof message.turn.externalProgress !== "boolean") {
     throw new Error("Browser helper external progress flag is invalid");
   }
+  if (message.turn.accountScopedMessageLimits !== undefined && typeof message.turn.accountScopedMessageLimits !== "boolean") {
+    throw new Error("Browser helper message-limit account flag is invalid");
+  }
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: "https://chatgpt.com",
@@ -223,6 +227,7 @@ async function run(message: RunMessage): Promise<void> {
     reasoning: message.turn.reasoning,
     ...(message.turn.modelFamily ? { modelFamily: message.turn.modelFamily } : {}),
     capabilities: message.turn.capabilities,
+    ...(message.turn.accountScopedMessageLimits ? { accountScopedMessageLimits: true } : {}),
     ...(message.turn.nativeConnector ? { nativeConnector: true } : {}),
     prepare: prepareSelected,
     ...(message.turn.resumeAvailable ? { prepareResume: prepareSelected } : {}),
@@ -264,8 +269,9 @@ async function run(message: RunMessage): Promise<void> {
     } : {}),
     onHeartbeat: () => writeProtocol({ type: "event", id: message.id, event: "heartbeat" }),
     onGenerationProgress: () => writeProtocol({ type: "event", id: message.id, event: "generation_progress" }),
-    onPreparedSelected: (reused, transactionId) => {
-      if (!writeProtocol({ type: "event", id: message.id, event: "prepared_selected", reused, transactionId })) {
+    onPreparedSelected: (reused, transactionId, accountKey) => {
+      if (!writeProtocol({ type: "event", id: message.id, event: "prepared_selected", reused, transactionId,
+        ...(accountKey ? { accountKey } : {}) })) {
         throw new Error("Browser helper could not request prompt selection");
       }
       return promptSelection.wait().then(() => undefined);
@@ -324,6 +330,8 @@ async function run(message: RunMessage): Promise<void> {
         errorType: error.errorType,
         code: error.code,
         retryable: error.retryable,
+        inputRejected: error.inputRejected,
+        ...(error.rejectedMessageSize ? { rejectedMessageSize: error.rejectedMessageSize } : {}),
       } : {}),
     });
   } finally {
@@ -430,6 +438,16 @@ input.on("line", line => {
         abortControllers.get(message.id)?.abort();
         return;
       }
+    }
+    if (prepared.preserveContextDuringStaging !== undefined && typeof prepared.preserveContextDuringStaging !== "boolean") {
+      writeProtocol({ type: "error", id: message.id, message: "Browser helper staging context policy is invalid" });
+      abortControllers.get(message.id)?.abort();
+      return;
+    }
+    if (prepared.biggerContext !== undefined && prepared.biggerContext !== true) {
+      writeProtocol({ type: "error", id: message.id, message: "Browser helper Bigger Context policy is invalid" });
+      abortControllers.get(message.id)?.abort();
+      return;
     }
     const selection = preparedSelections.get(message.id);
     if (!selection) {
@@ -538,4 +556,4 @@ process.once("SIGTERM", () => {
 });
 
 // Advertise the optional frames this helper understands so the daemon can negotiate them explicitly.
-writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack", "skill-attachments"] });
+writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack", "skill-attachments", "staging-context-window", "bigger-inline-context", "context-record-fragments", "account-scoped-message-limits"] });

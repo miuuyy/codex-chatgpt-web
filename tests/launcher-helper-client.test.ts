@@ -46,8 +46,11 @@ test("daemon streams browser lifecycle through the real helper process", async (
       if (Object.hasOwn(this.config, "useSavedChats")) throw new Error("Retired setting reached helper worker");
       if (this.config.useTemporaryChats !== true) throw new Error("Temporary Chat preference lost in turn IPC");
       if (turn.modelFamily !== "5.6") throw new Error("Pinned model family lost in helper IPC");
-      await turn.onPreparedSelected(false);
+      if (!turn.accountScopedMessageLimits) throw new Error("Account-scoped message limits flag lost in helper IPC");
+      await turn.onPreparedSelected(false, "ctx_b6088f32f1ca497eb6b50dfcab1abaca", "a".repeat(64));
       const prepared = await turn.prepare();
+      if (prepared.preserveContextDuringStaging !== true) throw new Error("Recovery staging window lost in helper IPC");
+      if (prepared.biggerContext !== true) throw new Error("Bigger inline window lost in helper IPC");
       if (prepared.skillFiles?.[0]?.text !== "<skill>\\n<name>ipc</name>\\n<path>/skills/ipc/SKILL.md</path>\\ncheck IPC\\n</skill>") throw new Error("Skill file lost in IPC");
       if (prepared.multipart.parts.length !== 6) throw new Error("Multipart context was lost");
       for (let index = 1; index < prepared.multipart.parts.length; index++) {
@@ -116,6 +119,7 @@ test("daemon streams browser lifecycle through the real helper process", async (
   let heartbeats = 0;
   let generationProgress = 0;
   let released = false;
+  let accountSelected = false;
   const client = new LauncherBrowserHelperClient(config);
   try {
     const result = await client.run({
@@ -124,14 +128,22 @@ test("daemon streams browser lifecycle through the real helper process", async (
       reasoning: "high",
       modelFamily: "5.6",
       capabilities: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false },
-      prepare: async () => ({
+      accountScopedMessageLimits: true,
+      onPreparedSelected: (_reused, _transactionId, accountKey) => {
+        expect(accountKey).toBe("a".repeat(64)); accountSelected = true;
+      },
+      prepare: async () => {
+        if (!accountSelected) throw new Error("Prompt compiled before account selection");
+        return ({
         text: "inspect", images: [],
         skillFiles: [selectedSkillFile({ role: "user", origin: "codex_skill", timestamp: 0,
           content: "<skill>\n<name>ipc</name>\n<path>/skills/ipc/SKILL.md</path>\ncheck IPC\n</skill>",
         })],
         multipart: { parts: ["part one", "part two", "part three", "part four", "part five", "part six"], commit: "inspect" },
+        preserveContextDuringStaging: true,
+        biggerContext: true,
         release: () => { released = true; },
-      }),
+      }); },
       onMultipartStageAcknowledged: stage => { acknowledgedStages.push(stage); },
       onSendActivated: () => { sendActivated = true; },
       onSubmitted: () => { submitted = true; },
@@ -453,7 +465,150 @@ test("structured helper errors preserve the ChatGPT adapter failure contract", a
   });
 });
 
-test("an older helper cannot silently drop selected skill files and releases the prepared turn", async () => {
+test("confirmed message-size rejection evidence crosses both production helper protocol endpoints", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-helper-size-rejection-"));
+  roots.push(root);
+  const helper = join(root, "helper.ts");
+  writeFileSync(helper, `
+    import { ChatGptBrowserWorker } from ${JSON.stringify(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url).href)};
+    import { ChatGptWebAdapterError } from ${JSON.stringify(new URL("../src/adapters/chatgpt-web/adapter-error.ts", import.meta.url).href)};
+    // Replace browser IO only; production helper serialization and client decoding remain real.
+    ChatGptBrowserWorker.prototype.run = async function(turn) {
+      await turn.onPreparedSelected(false);
+      await turn.prepare();
+      throw new ChatGptWebAdapterError("ChatGPT rejected the current message as too large.", {
+        status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false,
+        inputRejected: true, rejectedMessageSize: { chars: 174000, tokens: 46000 },
+      });
+    };
+    await import(${JSON.stringify(new URL("../src/adapters/chatgpt-web/browser-helper-main.ts", import.meta.url).href)});
+  `, { mode: 0o700 });
+  const descriptorPath = join(root, "launcher.json");
+  writeFileSync(descriptorPath, JSON.stringify({
+    version: 3, kind: LAUNCHER_BROWSER_HOST_KIND, profile: "production", pid: process.pid,
+    endpoint: "http://127.0.0.1:39001",
+    control: { endpoint: "http://127.0.0.1:39002", token: "launcher-control-token-0123456789abcdefghijklmnop" },
+    helper: { executable: process.execPath, script: helper },
+    partition: "persist:codex-web-gpt-chatgpt", idleUrl: LAUNCHER_BROWSER_IDLE_URL,
+    surfaceId: "launcher_surface_id_0123456789AB", createdAt: new Date().toISOString(),
+    surfaceTargets: { launcher_surface_id_0123456789AB: "native-owned-target" },
+  }), { mode: 0o600 });
+  const client = new LauncherBrowserHelperClient({
+    appName: "Codex Native2", browserHost: "launcher", browserHostDescriptorPath: descriptorPath,
+    browserHelperScriptPath: helper, storageStatePath: join(root, "unused-state.json"),
+    chromeExecutablePath: join(root, "unused-chrome"), headed: true, autoApproveToolCalls: false,
+    useTemporaryChats: false,
+  });
+  let released = false;
+  try {
+    const error = await client.run({
+      traceId: "confirmed-size-rejection", modelId: "gpt-5.6-sol", reasoning: "high",
+      capabilities: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false },
+      prepare: async () => ({ text: "test context", images: [], release: () => { released = true; } }),
+      onTextDelta() {},
+    }).then(() => undefined, failure => failure);
+    expect(error).toBeInstanceOf(ChatGptWebAdapterError);
+    expect(error).toMatchObject({ status: 400, errorType: "invalid_request_error", code: "context_length_exceeded",
+      retryable: false, inputRejected: true, rejectedMessageSize: { chars: 174_000, tokens: 46_000 } });
+    expect(released).toBeTrue();
+  } finally { await client.close(); }
+});
+
+function helperRejectionFixture() {
+  const client = new LauncherBrowserHelperClient({
+    appName: "Codex Native2", browserHost: "launcher", browserHostDescriptorPath: "/durable/launcher.json",
+    storageStatePath: "/durable/unused-state.json", chromeExecutablePath: "/durable/unused-chrome",
+    headed: true, autoApproveToolCalls: false, useTemporaryChats: false,
+  });
+  const internal = client as unknown as {
+    child?: unknown;
+    pending: Map<string, { turn: BrowserTurn; resolve(value: string): void; reject(error: Error): void }>;
+    handleLine(child: unknown, line: string): void;
+    handleExit(child: unknown, error: Error): void;
+    finishWithError(id: string, error: Error): void;
+    terminateChild(child: unknown, timeout: number): Promise<void>;
+  };
+  const child = {};
+  const id = "rejection-evidence-123";
+  internal.child = child;
+  // Invalid-protocol teardown normally notifies a real launcher and stops a child. Keep those
+  // cleanup boundaries isolated while exercising the production parser and rejection result.
+  internal.handleExit = (_child, error) => internal.finishWithError(id, error);
+  internal.terminateChild = async () => {};
+  const result = new Promise<string>((resolve, reject) => internal.pending.set(id, {
+    turn: { traceId: id, modelId: "gpt-5.6-sol",
+      capabilities: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false },
+      prepare: async () => ({ text: "context", images: [], release() {} }), onTextDelta() {} },
+    resolve, reject,
+  })).then(() => undefined, error => error as Error);
+  return { result,
+    receiveSelection: (accountKey: unknown) => internal.handleLine(child, JSON.stringify({
+      type: "event", id, event: "prepared_selected", reused: false, accountKey,
+    })),
+    receive: (evidence: Record<string, unknown>) => internal.handleLine(child, JSON.stringify({
+    type: "error", id, message: "ChatGPT rejected the current message as too large.",
+    status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false,
+    ...evidence,
+  })) };
+}
+
+test.each(["raw-account-id", "a".repeat(63), "a".repeat(65), 42, null])("helper rejects malformed account identity: %j", async accountKey => {
+  const fixture = helperRejectionFixture();
+  fixture.receiveSelection(accountKey);
+  expect((await fixture.result)?.message).toContain("account identity is invalid");
+});
+
+test("an older helper cannot silently omit learned-limit account isolation", async () => {
+  const client = new LauncherBrowserHelperClient({
+    appName: "Codex Native2", browserHost: "launcher", browserHostDescriptorPath: "/durable/launcher.json",
+    storageStatePath: "/durable/unused.json", chromeExecutablePath: "/durable/chrome", headed: true, autoApproveToolCalls: false, useTemporaryChats: false,
+  });
+  const internal = client as unknown as { ensureChild(): Promise<void>; send(): Promise<void> };
+  internal.ensureChild = async () => {};
+  internal.send = async () => { throw new Error("Must not dispatch this turn"); };
+  await expect(client.run({ traceId: "old-account-helper", modelId: "gpt-5.6-sol", accountScopedMessageLimits: true,
+    capabilities: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false },
+    prepare: async () => { throw new Error("Must not compile using an unknown account"); }, onTextDelta() {},
+  })).rejects.toThrow("cannot isolate learned limits by account");
+});
+
+test.each([
+  { evidence: {}, rejected: false },
+  { evidence: { inputRejected: false }, rejected: false },
+  { evidence: { rejectedMessageSize: { chars: 174_000, tokens: 46_000 } }, rejected: false },
+  { evidence: { inputRejected: true }, rejected: true },
+])("helper decoding never infers missing rejection evidence from an error message: %j", async ({ evidence, rejected }) => {
+  const fixture = helperRejectionFixture();
+  fixture.receive(evidence);
+  const error = await fixture.result;
+  expect(error).toBeInstanceOf(ChatGptWebAdapterError);
+  expect((error as ChatGptWebAdapterError).inputRejected).toBe(rejected);
+  expect((error as ChatGptWebAdapterError).rejectedMessageSize).toEqual(
+    (evidence as { rejectedMessageSize?: { chars: number; tokens: number } }).rejectedMessageSize,
+  );
+});
+
+test.each([
+  { inputRejected: "true" }, { inputRejected: 1 }, { inputRejected: null },
+  { rejectedMessageSize: null }, { rejectedMessageSize: [] },
+  { rejectedMessageSize: { chars: 174_000 } },
+  { rejectedMessageSize: { chars: "174000", tokens: 46_000 } },
+  { rejectedMessageSize: { chars: 174_000, tokens: "46000" } },
+  { rejectedMessageSize: { chars: 0, tokens: 46_000 } },
+  { rejectedMessageSize: { chars: 174_000, tokens: -1 } },
+  { rejectedMessageSize: { chars: 174_000.5, tokens: 46_000 } },
+  { rejectedMessageSize: { chars: 174_000, tokens: Number.MAX_SAFE_INTEGER + 1 } },
+])("helper rejects malformed message-size evidence instead of authorizing recovery: %j", async evidence => {
+  const fixture = helperRejectionFixture();
+  fixture.receive(evidence);
+  const error = await fixture.result;
+  expect(error).toBeInstanceOf(Error);
+  expect(error).not.toBeInstanceOf(ChatGptWebAdapterError);
+  expect(error?.message).toContain("rejection evidence is invalid");
+  expect((error as ChatGptWebAdapterError).inputRejected).toBeUndefined();
+});
+
+test.each(["skills", "inline", "fragments"] as const)("an older helper cannot silently drop %s data and releases the prepared turn", async feature => {
   const client = new LauncherBrowserHelperClient({
     appName: "Codex Native2", browserHost: "launcher", browserHostDescriptorPath: "/durable/launcher.json",
     storageStatePath: "/durable/unused.json", chromeExecutablePath: "/durable/chrome", headed: true, autoApproveToolCalls: false, useTemporaryChats: false,
@@ -479,16 +634,20 @@ test("an older helper cannot silently drop selected skill files and releases the
   };
   let released = false;
   await expect(client.run({
-    traceId: "skill-old-helper", modelId: "gpt-5.6-sol", reasoning: "high",
+    traceId: `old-helper-${feature}`, modelId: "gpt-5.6-sol", reasoning: "high",
     capabilities: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false },
     prepare: async () => ({ text: "inspect", images: [],
-      skillFiles: [selectedSkillFile({ role: "user", origin: "codex_skill", timestamp: 0,
-        content: "<skill>\n<name>test</name>\n<path>/test</path>\ncheck\n</skill>",
-      })],
+      ...(feature === "inline" ? { biggerContext: true as const } : feature === "fragments" ? {
+        multipart: { parts: Array.from({ length: 6 }, () => JSON.stringify({ records: [{ kind: "record_fragment", record_index: 0, fragment_index: 0, total_fragments: 1, json: "{}" }] })), commit: "inspect" },
+      } : {
+        skillFiles: [selectedSkillFile({ role: "user", origin: "codex_skill", timestamp: 0,
+          content: "<skill>\n<name>test</name>\n<path>/test</path>\ncheck\n</skill>",
+        })],
+      }),
       release() { released = true; },
     }),
     onTextDelta() {},
-  })).rejects.toThrow("does not support skill attachments");
+  })).rejects.toThrow(feature === "inline" ? "does not support the Bigger Context inline budget" : feature === "fragments" ? "does not support context record fragments" : "does not support skill attachments");
   expect(sent).toEqual(["run", "abort"]);
   expect(released).toBe(true);
 });

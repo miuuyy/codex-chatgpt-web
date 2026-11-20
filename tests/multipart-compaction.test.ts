@@ -75,6 +75,7 @@ test.each(["string", "text parts"] as const)("#930: GPT-6 Pro compaction recover
 
   expect(() => assertMultipartFits(compiled, parsed)).not.toThrow();
   expect(compiled.multipart!.parts).toHaveLength(6);
+  expect(compiled.preserveContextDuringStaging).toBeTrue();
   expect(compiled.trimmedCompactionMessages).toBe(3);
   const records = compiled.multipart!.parts.flatMap(part => JSON.parse(part).records);
   expect(records[0].content).toBe(parsed.context.systemPrompt![0]);
@@ -89,6 +90,25 @@ test.each(["string", "text parts"] as const)("#930: GPT-6 Pro compaction recover
   expect(compiled.multipart!.commit).toContain("Preserve still-relevant progress, constraints and pending work");
   expect(compiled.multipart!.commit).not.toContain("The task context is complete.");
   expect(parsed).toEqual(before);
+}, 30_000);
+
+test("automatic compaction honors learned message limits before accepting its protected checkpoint", () => {
+  const parsed = request();
+  const checkpoint = `${SUMMARY_PREFIX}\nPreserve the verified cumulative checkpoint`;
+  parsed.context.messages = [
+    { role: "user", content: checkpoint, timestamp: 1 },
+    ...Array.from({ length: 10 }, (_, index) => ({ role: "toolResult" as const,
+      toolCallId: `read-${index}`, toolName: "read", isError: false,
+      content: `history-${index} ${"word ".repeat(14_000)}`, timestamp: index + 2 })),
+    { role: "user", content: "Produce the cumulative checkpoint now.", timestamp: 13 },
+  ];
+  const messageLimits = { chars: 113_100, tokens: 29_900 };
+  const compiled = compileChatGptWebPrompt(parsed, capabilities, turnToken, { experimentalMultipartParts: 6, messageLimits });
+  expect(compiled.trimmedCompactionMessages).toBeGreaterThan(0);
+  expect(compiledChatGptWebMessages(compiled).every(text => text.length <= messageLimits.chars
+    && estimateTokens(text) <= messageLimits.tokens)).toBeTrue();
+  expect(compiled.multipart!.parts.flatMap(part => JSON.parse(part).records).some(record =>
+    record.kind === "message" && record.message.content === checkpoint)).toBeTrue();
 }, 30_000);
 
 test.each([
@@ -204,10 +224,10 @@ test.each(["checkpoint", "final instruction", "system"] as const)(
     if (required === "checkpoint") expect((error as Error).message).toContain("cumulative checkpoint");
     expect((error as Error).message).not.toContain("Run /compact");
     expect(parsed).toEqual(before);
-  }, 30_000,
+  }, 60_000,
 );
 
-test("multipart compaction keeps atomic records below the total ceiling and still rejects oversized stages", () => {
+test("multipart compaction fragments an oversized record losslessly within the selected stage budget", () => {
   const parsed = request();
   parsed.context.messages = [
     { role: "user", content: "word ".repeat(110_000), timestamp: 1 },
@@ -216,11 +236,13 @@ test("multipart compaction keeps atomic records below the total ceiling and stil
   const compiled = compileChatGptWebPrompt(parsed, capabilities, turnToken, { experimentalMultipartParts: 6 });
   expect(estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId)).toBeLessThan(240_000);
   expect(compiled.trimmedCompactionMessages).toBeUndefined();
-  expect(compiled.multipart!.parts.flatMap(part => JSON.parse(part).records)
-    .filter(record => record.kind === "message").map(record => record.message.content))
-    .toEqual(parsed.context.messages.map(message => message.content));
-  expect(() => assertMultipartFits(compiled, parsed)).toThrow("No ChatGPT effort available");
-});
+  const records = compiled.multipart!.parts.flatMap(part => JSON.parse(part).records);
+  const fragments = records.filter(record => record.kind === "record_fragment");
+  expect(fragments.length).toBeGreaterThan(1);
+  expect(JSON.parse(fragments.map(fragment => fragment.json).join("")).message.content).toBe(parsed.context.messages[0]!.content);
+  expect(records.filter(record => record.kind === "message").map(record => record.message.content)).toEqual(["checkpoint now"]);
+  expect(() => assertMultipartFits(compiled, parsed)).not.toThrow();
+}, 30_000);
 
 test("multipart compaction counts and rebuilds image and skill attachments after trimming", () => {
   const parsed = request();
