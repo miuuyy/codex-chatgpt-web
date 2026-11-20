@@ -20,7 +20,7 @@ import { chatGptTurnUserRevisionHistory, extractChatGptTurnIdentity } from "./en
 import { compiledChatGptWebMessages, estimateCompiledChatGptWebMessageTokens, estimateCompiledChatGptWebInputTokens } from "./input-tokens";
 import { estimateTokens } from "../../lib/token-estimate";
 import type { CodexAssistantContentPart, CodexContentPart, CodexMessage, CodexParsedRequest } from "../../types";
-import { isOnePixelPngDataUrl, isReadableCompactionSummaryText } from "../../responses/compaction";
+import { isNativeCompactionMessage, isOnePixelPngDataUrl, isReadableCompactionSummaryText } from "../../responses/compaction";
 import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import {
   CHATGPT_LUNA_CHECKPOINT_MARKER,
@@ -47,6 +47,8 @@ export interface CompiledChatGptWebPrompt {
   preserveContextDuringStaging?: boolean;
   /** Oldest history items removed by native-style compaction fit recovery; absent on normal turns. */
   trimmedCompactionMessages?: number;
+  /** Number of historical shell results represented by excerpts on a blocked fresh replay. */
+  historicalShellExcerpts?: number;
   /** Numeric counts of the submitted context records, never their contents or identifiers. */
   contextTokenBreakdown?: ChatGptContextTokenBreakdown;
 }
@@ -70,6 +72,8 @@ export interface CompileChatGptWebPromptOptions {
   probeUntrimmedCompaction?: boolean;
   /** Learned from a confirmed server rejection, independently of the total model window. */
   messageLimits?: ChatGptMessageLimits;
+  /** Input-only fallback after the complete fresh replay fails preflight. */
+  excerptHistoricalShellResults?: true;
   /** Capture only when preparing a real browser submission, not during budget-planning probes. */
   includeContextTokenBreakdown?: boolean;
   /**
@@ -357,6 +361,18 @@ function messageEnvelope(
     };
   }
   return { role: message.role, content: inputContent(message.content, images, budget) };
+}
+
+/** Keep the command header and terminal status without splitting a Unicode surrogate pair. */
+function historicalShellOutputExcerpt(text: string): string {
+  const maxChars = 1_200;
+  if (text.length <= maxChars) return text;
+  const separator = "\n[Earlier shell output excerpt. The full result remains in Codex history. Do not repeat a completed action just to recover the omitted text.]\n";
+  let head = Math.ceil((maxChars - separator.length) / 2);
+  let tail = text.length - Math.floor((maxChars - separator.length) / 2);
+  if (/[\uD800-\uDBFF]/.test(text[head - 1]!)) head--;
+  if (/[\uDC00-\uDFFF]/.test(text[tail]!)) tail++;
+  return text.slice(0, head) + separator + text.slice(tail);
 }
 
 type MultipartContextRecord =
@@ -790,6 +806,7 @@ export function compileChatGptWebPrompt(
       "</codex_transport_resume>",
     ];
   const backendModel = parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID ? CHATGPT_WEB_LUNA_MODEL_ID : CHATGPT_WEB_MODEL_ID;
+  let historicalShellExcerpts = 0;
   const build = (sourceMessages: readonly CodexMessage[], omittedMessages = 0): CompiledChatGptWebPrompt => {
     const images: ChatGptWebPromptImage[] = [];
     const budget: ImageBudget = {
@@ -811,6 +828,7 @@ export function compileChatGptWebPrompt(
     const attachments = {
       ...(skillFiles.length ? { skillFiles } : {}),
       ...(mode.localTools && !manualControl && !parsed._compactionRequest ? { turnToken } : {}),
+      ...(historicalShellExcerpts ? { historicalShellExcerpts } : {}),
       ...(options?.includeContextTokenBreakdown
         ? { contextTokenBreakdown: contextTokenBreakdown(system, messages, multipartEnabled) }
         : {}),
@@ -945,6 +963,26 @@ export function compileChatGptWebPrompt(
   let sourceMessages = withoutSupersededModelSwitchContracts(restoreCompactionTaskMessages(
     parsed, extractChatGptTurnIdentity(parsed), chatGptTurnUserRevisionHistory(parsed),
   ));
+  if (options?.excerptHistoricalShellResults && !parsed._compactionRequest) {
+    sourceMessages = sourceMessages.slice();
+    const latest = sourceMessages.findLastIndex(message => message.role === "user" && !message.origin
+      && !isNativeCompactionMessage(message));
+    let shellResults = 0;
+    for (let index = latest - 1; index >= 0; index--) {
+      const message = sourceMessages[index]!;
+      if (message.role !== "toolResult" || (message.toolNamespace && message.toolNamespace !== "functions")
+        || (message.toolName !== "exec_command" && message.toolName !== "write_stdin")) continue;
+      // Preserve the two most recent shell results and preserve attachments verbatim.
+      if (shellResults++ < 2) continue;
+      const content = typeof message.content === "string" ? message.content
+        : message.content.every(part => part.type === "text") ? message.content.map(part => part.text).join("\n") : undefined;
+      if (!content) continue;
+      const excerpt = historicalShellOutputExcerpt(content);
+      if (excerpt === content) continue;
+      sourceMessages[index] = { ...message, content: excerpt };
+      historicalShellExcerpts++;
+    }
+  }
   const initialMessageCount = sourceMessages.length;
   let compiled = build(sourceMessages);
   if (!parsed._compactionRequest || options?.probeUntrimmedCompaction) return compiled;

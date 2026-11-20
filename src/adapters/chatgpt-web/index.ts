@@ -30,7 +30,7 @@ import { createChatGptStructuredOutputValidator } from "./output-validation";
 import { chatGptWebTurnRetryPolicy } from "./retry-policy";
 import { TurnBroker, type BrokerToolRequest, type BrokerToolResult, type TurnBrokerOwner } from "./turn-broker";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptCompactionSourceExecutionKey, chatGptInstructionLineage, chatGptThreadOwnershipKey, chatGptTurnExecutionKey, chatGptTurnRetryKey, chatGptTurnRoundKey, chatGptTurnSessions, type ChatGptBrowserOutcome, type ChatGptTraceEvent, type ChatGptTurnRuntime, type ChatGptTurnSession } from "./turn-execution";
-import { compileBiggerContextPrompt, estimateChatGptWebUsage } from "./usage";
+import { compileBiggerContextPrompt, compileFreshChatGptWebPrompt, estimateChatGptWebUsage } from "./usage";
 import { ChatGptThreadEnvironmentStore } from "./thread-environment";
 import {
   ChatGptLunaCheckpointStore,
@@ -526,11 +526,19 @@ export function createChatGptWebAdapter(
       ? runWithMessageLimitRecovery(turn, runAttempt, () => limitKey, limits => { messageLimits = limits; }, messageLimitStore)
       : runAttempt(turn);
     const preparePrompt = (input: CodexParsedRequest, transactionId?: string, turnToken?: string) => {
-      const compile = experimentalBiggerContext ? compileBiggerContextPrompt : compileChatGptWebPrompt;
-      return compile(input, turnCapabilities, turnToken, {
+      const freshNativeReplay = input === checkpointInput.parsed && identity.threadId && identity.turnId;
+      const compile = !experimentalBiggerContext ? compileChatGptWebPrompt
+        : freshNativeReplay ? compileFreshChatGptWebPrompt : compileBiggerContextPrompt;
+      const prompt = compile(input, turnCapabilities, turnToken, {
         appName: worker.appName, includeContextTokenBreakdown: true, captureLunaCheckpoint, experimentalSkillAttachments,
         experimentalBiggerContext, messageLimits, multipartTransactionId: transactionId,
       });
+      if (prompt.historicalShellExcerpts) {
+        console.info(`[chatgpt-web] fresh_replay_recovered ${JSON.stringify({
+          traceId, shellExcerpts: prompt.historicalShellExcerpts, parts: prompt.multipart?.parts.length ?? 1,
+        })}`);
+      }
+      return prompt;
     };
     if (captureLunaCheckpoint) {
       console.info(

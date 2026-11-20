@@ -11,6 +11,7 @@ import {
   resolveChatGptWebMultipartContextWindow,
   resolveChatGptWebTransportLimits,
   supportsChatGptWebBiggerContext,
+  supportsChatGptWebBiggerInlineInput,
 } from "../../chatgpt-web-models";
 import type { CodexParsedRequest, CodexUsage } from "../../types";
 import { isNativeCompactionMessage, isReadableCompactionSummaryText } from "../../responses/compaction";
@@ -104,6 +105,30 @@ export function compileBiggerContextPrompt(
     }
   }
   throw new Error("No Bigger Context transport was evaluated");
+}
+
+/** Recover a blocked fresh replay before Send, without rewriting Codex history. */
+export function compileFreshChatGptWebPrompt(
+  parsed: CodexParsedRequest, capabilities: ChatGptWebCapabilities, turnToken?: string,
+  options: CompileChatGptWebPromptOptions = {},
+): CompiledChatGptWebPrompt {
+  try {
+    return compileBiggerContextPrompt(parsed, capabilities, turnToken, options);
+  } catch (error) {
+    const latest = parsed.context.messages.at(-1);
+    if (!(error instanceof ChatGptWebAdapterError)
+      || (error.code !== "context_length_exceeded" && error.code !== "chatgpt_message_transport_capacity_exceeded")
+      || !capabilities.localToolsEnabled || parsed._compactionRequest
+      || latest?.role !== "user" || latest.origin || isNativeCompactionMessage(latest)
+      || isReadableCompactionSummaryText(latest.content)) throw error;
+    const mode = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
+    if (!supportsChatGptWebBiggerInlineInput(parsed.modelId, mode.effort, capabilities)) throw error;
+    const recovered = compileBiggerContextPrompt(parsed, capabilities, turnToken, {
+      ...options, excerptHistoricalShellResults: true,
+    });
+    if (!recovered.historicalShellExcerpts) throw error;
+    return recovered;
+  }
 }
 
 /** Compatibility for callers that need the selected part count rather than the compiled prompt. */
