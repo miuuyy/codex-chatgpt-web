@@ -476,10 +476,11 @@ export function runStructuredCompactionOnce(
   // Return a deadline failure promptly, while its physical browser owner still blocks retries
   // and cancel-all completion. A cancelled queued run must also retain its predecessor's gate.
   const ownerSettlement = promise.then(() => false, error => {
-    // Native retries of the identical oversized input cannot fix a size rejection. Replay that
-    // terminal result under the existing cache lifetime; reduced input/model changes get a new key.
-    return !(error instanceof ChatGptWebAdapterError
-      && error.code === "context_length_exceeded" && !error.retryable);
+    // Identical input cannot fix a size rejection or prove that a missing handoff was not a
+    // refusal. Replay these terminal results even after retirement removes the retained source;
+    // otherwise reconnect could start a fresh-history fallback. Changed input gets a new key.
+    return !(error instanceof ChatGptWebAdapterError && !error.retryable
+      && (error.code === "context_length_exceeded" || error.code === "compaction_handoff_missing"));
   }).then(async evict => {
     await Promise.allSettled(physicalSettlements);
     run.active = false;

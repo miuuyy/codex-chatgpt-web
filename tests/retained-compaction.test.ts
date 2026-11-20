@@ -1776,7 +1776,19 @@ test("a timed-out fresh compaction retains its owner until helper cleanup comple
   }
 });
 
-test.each([false, true])("structured compact rebuild after retained browser loss preserves rate limit=%s", async rateLimited => {
+test.each([
+  { scenario: "retained browser loss", rateLimited: false },
+  { scenario: "a valid checkpoint may quote a refusal", retainedHandoff: 'The earlier assistant said "I cannot help with that request". Preserve that boundary.', rateLimited: false },
+  { scenario: "explicit refusal ends the attempt", retainedReply: "I cannot provide the requested context summary. I will not call the handoff tool.", rateLimited: false },
+  { scenario: "ordinary text is not permission to retry", retainedReply: "The requested tool call did not run.", rateLimited: false },
+  { scenario: "quoted refusal is not authenticated refusal evidence", retainedReply: 'The history contains the quote "I cannot help with that request".', rateLimited: false },
+  { scenario: "empty response is not permission to retry", retainedReply: "", rateLimited: false },
+  { scenario: "transport failure stays terminal", retainedError: new Error("net::ERR_CONNECTION_REFUSED"), rateLimited: false },
+  { scenario: "missing response DOM stays terminal", retainedError: new ChatGptWebAdapterError("The bound response DOM is missing.", {
+    status: 502, errorType: "server_error", code: "chatgpt_response_incomplete", retryable: false,
+  }), rateLimited: false },
+  { scenario: "retained browser loss preserves rate limit", rateLimited: true },
+])("structured compaction: %j", async ({ retainedReply, retainedError, retainedHandoff, rateLimited }) => {
   const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-stale-retained-compact-"));
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
@@ -1795,6 +1807,7 @@ test.each([false, true])("structured compact rebuild after retained browser loss
   const sourceRequest = request(false);
   const namespace = chatGptWebExecutionNamespace(provider);
   const sourceKey = `${namespace}:${chatGptTurnExecutionKey(sourceRequest)}`;
+  let releases = 0;
   chatGptTurnSessions.getOrCreate(sourceKey, () => ({
     mode: "read-only",
     browser: Promise.resolve("source complete"),
@@ -1803,6 +1816,7 @@ test.each([false, true])("structured compact rebuild after retained browser loss
     text: new ChatGptTextFeed(),
     usageInput: sourceRequest,
     conversationKey: chatGptConversationKey(sourceRequest, namespace)!,
+    releaseRetainedConversation: async () => { releases += 1; },
     cancel() {},
   }));
   await chatGptTurnSessions.find(sourceKey)!.browserOutcome;
@@ -1810,7 +1824,23 @@ test.each([false, true])("structured compact rebuild after retained browser loss
   let browserStarts = 0;
   (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
     browserStarts += 1;
-    if (turn.requireRetainedConversation) throw chatGptRetainedConversationUnavailableError();
+    if (turn.requireRetainedConversation) {
+      if (retainedHandoff) {
+        const prepared = await turn.prepare();
+        const { token, handoffId } = controlBinding(prepared.text);
+        await callTurnBroker(provider.chatgptWeb!.brokerSocketPath!, {
+          method: "submit_compaction_handoff", token, handoffId, summary: retainedHandoff,
+        });
+        prepared.release();
+        return "Checkpoint submitted.";
+      }
+      if (retainedReply !== undefined) return retainedReply;
+      if (retainedError) throw retainedError;
+      throw chatGptRetainedConversationUnavailableError();
+    }
+    expect(releases).toBe(1);
+    expect(turn.capabilities.localToolsEnabled).toBeFalse();
+    expect(turn.nativeConnector).toBeUndefined();
     const prepared = await turn.prepare();
     expect(prepared.text).toContain("Original task");
     prepared.release();
@@ -1820,12 +1850,49 @@ test.each([false, true])("structured compact rebuild after retained browser loss
     return "Fallback checkpoint after retained browser loss";
   };
   const events: AdapterEvent[] = [];
+  const adapter = createChatGptWebAdapter(provider);
+  const compact = request(true);
   try {
-    await createChatGptWebAdapter(provider).runTurn!(
-      request(true),
+    await adapter.runTurn!(
+      compact,
       { headers: new Headers() },
       event => events.push(event),
     );
+    if (retainedHandoff) {
+      expect(browserStarts).toBe(1);
+      expect(releases).toBe(1);
+      expect(events.some(event => event.type === "text_delta" && event.text.includes(retainedHandoff))).toBeTrue();
+      expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+      const replay: AdapterEvent[] = [];
+      await adapter.runTurn!(compact, { headers: new Headers() }, event => replay.push(event));
+      expect(replay).toEqual(events);
+      expect(browserStarts).toBe(1);
+      return;
+    }
+    if (retainedReply !== undefined || retainedError) {
+      expect(browserStarts).toBe(1);
+      expect(releases).toBe(1);
+      expect(events.filter(event => event.type !== "heartbeat")).toEqual([expect.objectContaining({
+        type: "error",
+        status: retainedError instanceof ChatGptWebAdapterError ? retainedError.status : 409,
+        errorType: retainedError instanceof ChatGptWebAdapterError ? retainedError.errorType : "invalid_request_error",
+        code: retainedError instanceof ChatGptWebAdapterError ? retainedError.code
+          : retainedError ? "compaction_handoff_failed" : "compaction_handoff_missing",
+        retryable: false,
+      })]);
+      if (retainedError) {
+        expect(events.at(-1)).toMatchObject({ message: expect.stringContaining(retainedError.message) });
+      } else {
+        // Reconnecting to this exact compaction replays its missing-receipt failure; it
+        // must not submit another retained request or start a fresh-history fallback.
+        const replay: AdapterEvent[] = [];
+        await adapter.runTurn!(compact, { headers: new Headers() }, event => replay.push(event));
+        expect(replay).toEqual(events);
+        expect(browserStarts).toBe(1);
+        expect(releases).toBe(1);
+      }
+      return;
+    }
     expect(browserStarts).toBe(2);
     if (rateLimited) {
       expect(events.at(-1)).toMatchObject({
@@ -1838,6 +1905,11 @@ test.each([false, true])("structured compact rebuild after retained browser loss
     expect(events.some(event => event.type === "text_delta"
       && event.text.includes("Fallback checkpoint after retained browser loss"))).toBeTrue();
     expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+
+    const replay: AdapterEvent[] = [];
+    await adapter.runTurn!(compact, { headers: new Headers() }, event => replay.push(event));
+    expect(replay).toEqual(events);
+    expect(browserStarts).toBe(2);
   } finally {
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
     chatGptTurnSessions.clear();

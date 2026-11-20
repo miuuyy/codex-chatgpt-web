@@ -1189,6 +1189,10 @@ export function createChatGptWebAdapter(
                       && handoffError.code === "compaction_source_unavailable") {
                       return await runFreshCompaction("source_disappeared_before_handoff");
                     }
+                    // A missing receipt can be an explicit refusal. Neither assistant prose
+                    // nor an empty response proves that rebuilding in a fresh chat is safe.
+                    // Keep this terminal until the service supplies evidence distinguishing it
+                    // from a refused handoff; only source unavailability above permits recovery.
                     throw handoffError;
                   } finally {
                     stopSourceProgress?.();
