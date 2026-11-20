@@ -151,6 +151,8 @@ export class ChatGptTextFeed {
 }
 
 interface ChatGptTurnRuntimeBase {
+  /** Physical attempts owned by this one logical Codex execution. */
+  browserTraceIds?: ReadonlySet<string>;
   browser: Promise<string>;
   /** Physical helper/Playwright settlement, including the launcher end/release acknowledgement. */
   physicalSettlement: Promise<void>;
@@ -763,7 +765,7 @@ export class ChatGptTurnSessions {
   /** Revoke execution immediately; keep physical cleanup tracked independently of the UI receipt. */
   beginCancelTrace(traceId: string, reason: Error): { cancelled: number; settlement: Promise<void> } {
     const sessions = [...this.entries.values()]
-      .filter(session => session.traceId === traceId && session.isActive());
+      .filter(session => (session.traceId === traceId || session.runtime.browserTraceIds?.has(traceId)) && session.isActive());
     for (const session of sessions) session.cancel(reason);
     return { cancelled: sessions.length, settlement: Promise.all(sessions.map(session => session.physicalSettlement)).then(() => undefined) };
   }
@@ -798,7 +800,7 @@ export class ChatGptTurnSessions {
 
   cancelledError(traceId: string): Error | undefined {
     for (const session of this.entries.values()) {
-      if (session.traceId !== traceId) continue;
+      if (session.traceId !== traceId && !session.runtime.browserTraceIds?.has(traceId)) continue;
       if (session.supersededError) return session.supersededError;
       const outcome = session.settledOutcome();
       if (outcome?.type !== "error") continue;

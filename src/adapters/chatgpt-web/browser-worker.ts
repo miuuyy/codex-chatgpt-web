@@ -1,3 +1,4 @@
+import { canReplayTokenCopy } from "./token-copy-recovery";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -846,6 +847,8 @@ export interface BrowserTurn {
   capabilities: ChatGptWebCapabilities;
   prepare: (transactionId?: string) => Promise<CompiledChatGptWebPrompt & { release: () => void }>;
   prepareResume?: (transactionId?: string) => Promise<CompiledChatGptWebPrompt & { release: () => void }>;
+  /** Rebuild full history and count retry guidance before selecting a transport. */
+  prepareTokenCopyRetry?: BrowserTurn["prepare"];
   /** Select the Codex Native connector without advertising the ordinary turn tool environment. */
   nativeConnector?: boolean;
   retainConversation?: boolean;
@@ -3099,6 +3102,20 @@ export class ChatGptBrowserWorker {
       .filter({ visible: true });
   }
 
+  private async selectedConnectorForTokenCopy(page: Page, abortSignal?: AbortSignal) {
+    try {
+      const composer = await this.activeComposer(page, 30_000, abortSignal);
+      const ids = await withBrowserTurnAbort(withChatGptBrowserObservationTimeout(
+        this.selectedConnectorControl(composer).evaluateAll(elements => elements.map(element => {
+          const appId = element.getAttribute("app-mention-path")?.match(/^app:\/\/(asdk_app_[a-f0-9]{32})$/)?.[1];
+          const pluginId = element.getAttribute("data-id")?.match(/^plugin:(asdk_app_[a-f0-9]{32})$/)?.[1];
+          return appId && pluginId && appId !== pluginId ? undefined : appId ?? pluginId;
+        })),
+      ), abortSignal);
+      if (ids.length === 1 && ids[0]) return { name: this.config.appName, appId: ids[0] };
+    } catch { /* Optional replay proof must not prevent an ordinary send. */ }
+  }
+
   private async connectorIsSelected(composer: Locator, abortSignal?: AbortSignal): Promise<boolean> {
     const selected = this.selectedConnectorControl(composer);
     const keywords = await withBrowserTurnAbort(
@@ -4800,9 +4817,16 @@ export class ChatGptBrowserWorker {
     const originalAbortSignal = turn.abortSignal;
     const rejectionAbort = new AbortController();
     const submissionRejection = new ChatGptSubmissionRejectionObserver(error => rejectionAbort.abort(error));
+    let outputObserved = false;
     const streamDiagnostics = new ChatGptStreamDiagnostics(state => {
       console.info(`[chatgpt-web] stream_lifecycle ${JSON.stringify({ traceId: turn.traceId, ...state })}`);
-    });
+    }, prepared.turnToken ? { expected: prepared.turnToken, rejected: () => {
+      if (!canReplayTokenCopy(turn, outputObserved)) return;
+      rejectionAbort.abort(new ChatGptWebAdapterError(
+        "ChatGPT dropped a character when copying the current tool capability.",
+        { status: 400, errorType: "invalid_request_error", code: "chatgpt_token_copy_error", retryable: false, tokenCopyRejected: true },
+      ));
+    } } : undefined);
     let lastGenerationProgress = 0;
     const generation = {
       active: () => submissionRejection.hasActiveResponse(),
@@ -4817,9 +4841,17 @@ export class ChatGptBrowserWorker {
         turn.onGenerationProgress?.();
       },
     };
-    turn = { ...turn, abortSignal: originalAbortSignal
-      ? AbortSignal.any([originalAbortSignal, rejectionAbort.signal])
-      : rejectionAbort.signal };
+    const originalTurn = turn;
+    turn = {
+      ...turn,
+      abortSignal: originalAbortSignal ? AbortSignal.any([originalAbortSignal, rejectionAbort.signal]) : rejectionAbort.signal,
+      onTextDelta: delta => { outputObserved ||= Boolean(delta.trim()); originalTurn.onTextDelta(delta); },
+      onCommentary: (text, continuation) => {
+        if (!originalTurn.onCommentary) return;
+        outputObserved ||= Boolean(text.trim());
+        originalTurn.onCommentary(text, continuation);
+      },
+    };
     try {
       if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
       // Validate only the selected physical message, not canonical history used for usage estimates.
@@ -5270,7 +5302,9 @@ export class ChatGptBrowserWorker {
               estimatedInputTokens, proAvailable: browserCapabilities.proAvailable,
             })}`);
             submissionRejection.begin(page);
-            streamDiagnostics.begin();
+            const tokenCopyConnector = prepared.turnToken && mode.localTools
+              ? await this.selectedConnectorForTokenCopy(page, turn.abortSignal) : undefined;
+            streamDiagnostics.begin({ tokenCopyConnector });
             await submissionRejection.captureAlertBaseline();
             await turn.onSendActivated?.();
           } },
