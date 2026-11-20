@@ -13,7 +13,7 @@ import type {
 } from "../types";
 import { namespacedToolName } from "../types";
 import { responsesRequestSchema } from "./schema";
-import { compactionItemToText, isNativeTextCompaction } from "./compaction";
+import { compactionItemToText, isNativeTextCompaction, markNativeCompactionMessage } from "./compaction";
 import { previousResponseReplayPrefixLength } from "./state";
 import { decodeReasoningEnvelope } from "./reasoning-envelope";
 import { readNativeThreadDelegation } from "./native-context";
@@ -343,11 +343,11 @@ export function parseRequest(body: unknown): CodexParsedRequest {
         const encrypted = (item as { encrypted_content?: unknown }).encrypted_content;
         if (effectiveType === "context_compaction" && typeof encrypted !== "string") continue;
         pendingReasoning.length = 0;
-        messages.push({
+        messages.push(markNativeCompactionMessage({
           role: "user",
           content: compactionItemToText(typeof encrypted === "string" ? encrypted : undefined),
           timestamp: now,
-        });
+        }));
         continue;
       }
 

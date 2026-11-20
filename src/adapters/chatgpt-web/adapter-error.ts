@@ -4,6 +4,9 @@ export interface ChatGptWebAdapterErrorOptions {
   code: string;
   retryable: boolean;
   cause?: unknown;
+  /** Only an observed rejection of this browser submission may set this flag. */
+  inputRejected?: boolean;
+  rejectedMessageSize?: { chars: number; tokens: number };
 }
 
 export class ChatGptWebAdapterError extends Error {
@@ -11,6 +14,8 @@ export class ChatGptWebAdapterError extends Error {
   readonly errorType: string;
   readonly code: string;
   readonly retryable: boolean;
+  readonly inputRejected: boolean;
+  rejectedMessageSize?: { chars: number; tokens: number };
 
   constructor(message: string, options: ChatGptWebAdapterErrorOptions) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
@@ -19,6 +24,8 @@ export class ChatGptWebAdapterError extends Error {
     this.errorType = options.errorType;
     this.code = options.code;
     this.retryable = options.retryable;
+    this.inputRejected = options.inputRejected === true;
+    this.rejectedMessageSize = options.rejectedMessageSize;
   }
 }
 

@@ -8,7 +8,7 @@ import { BrowserDiagnosticHistory } from "./browser-diagnostic-history";
 import { ChatGptStreamDiagnostics } from "./stream-diagnostics";
 import { readChatGptUserMessage } from "./browser-user-message";
 import { validateSkillFiles } from "./skill-attachments";
-import { detectChatGptLimitsPlan, readChatGptUsageAccount, readChatGptUsageModel, supportsChatGptUsageTracking, type ChatGptUsageModel } from "./limits";
+import { assertChatGptMessageLimitAccount, detectChatGptLimitsPlan, readChatGptUsageAccount, readChatGptUsageModel, supportsChatGptUsageTracking, type ChatGptUsageModel } from "./limits";
 import { chromium, type Browser, type BrowserContext, type JSHandle, type Locator, type Page, type Request, type Response } from "playwright-core";
 import {
   atomicWriteFile,
@@ -484,7 +484,7 @@ export class ChatGptSubmissionRejectionObserver {
   private sizeError(): ChatGptWebAdapterError {
     return new ChatGptWebAdapterError(
       "ChatGPT rejected this message because it exceeds the selected mode's input-size limit. Reduce the context or compact with another model before retrying.",
-      { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
+      { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false, inputRejected: true },
     );
   }
 
@@ -851,7 +851,9 @@ export interface BrowserTurn {
   retainConversation?: boolean;
   requireRetainedConversation?: boolean;
   conversationKey?: string;
-  onPreparedSelected?: (reused: boolean, transactionId?: string) => void | Promise<void>;
+  /** Resolve the account from the leased browser before selecting persistent upload limits. */
+  accountScopedMessageLimits?: boolean;
+  onPreparedSelected?: (reused: boolean, transactionId?: string, accountKey?: string) => void | Promise<void>;
   abortSignal?: AbortSignal;
   onHeartbeat?: () => void;
   /** Positive generation evidence, distinct from an idle helper heartbeat. */
@@ -4632,9 +4634,34 @@ export class ChatGptBrowserWorker {
     return redactChatGptUiDiagnostic(JSON.stringify({ response: responseState, overlays }));
   }
 
+  private async messageLimitAccount(page: Page, fresh = false, signal?: AbortSignal): Promise<string | undefined> {
+    try {
+      // A fresh lease starts on the launcher idle page. Only establish the authenticated
+      // origin here; normal UI preparation stays after browser diagnostics are attached.
+      if (fresh && new URL(page.url()).origin !== "https://chatgpt.com") {
+        await withBrowserTurnAbort(page.goto("https://chatgpt.com/", {
+          waitUntil: "domcontentloaded", timeout: browserStageTimeouts.newChatPreparation,
+        }), signal);
+      }
+      return (await readChatGptUsageAccount(page)).accountKey;
+    } catch (error) {
+      if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
+      return undefined; // Unidentified accounts never inherit persistent limits.
+    }
+  }
+
   private async runExclusive(turn: BrowserTurn): Promise<string> {
     if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
-    if (this.config.browserHost !== "launcher") return this.runBrowserTurn(turn);
+    if (this.config.browserHost !== "launcher") {
+      if (!turn.accountScopedMessageLimits) return this.runBrowserTurn(turn);
+      const page = await this.pageForNewTurn();
+      try {
+        const accountKey = await this.messageLimitAccount(page, true, turn.abortSignal);
+        const transactionId = `ctx_${randomUUID().replaceAll("-", "")}`;
+        await turn.onPreparedSelected?.(false, transactionId, accountKey);
+        return await this.runBrowserTurn(turn, undefined, page, false, false, transactionId, accountKey);
+      } finally { await page.close().catch(() => {}); }
+    }
 
     const lease = await notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
       phase: "start",
@@ -4700,10 +4727,19 @@ export class ChatGptBrowserWorker {
         throw new Error("Launcher reused a ChatGPT conversation without a continuation prompt");
       }
       const transactionId = `ctx_${randomUUID().replaceAll("-", "")}`;
-      await turn.onPreparedSelected?.(reused, transactionId);
       heartbeatTimer = setInterval(sendHeartbeat, LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS);
       heartbeatTimer.unref?.();
       sendHeartbeat();
+      let accountKey: string | undefined;
+      if (turn.accountScopedMessageLimits) {
+        const connection = await connectLauncherBrowserHost(this.config.browserHostDescriptorPath!,
+          browserStageTimeouts.browserPage, surfaceId, turn.abortSignal);
+        try {
+          accountKey = await this.messageLimitAccount(connection.page, !reused, turn.abortSignal);
+        }
+        finally { await connection.browser.close(); }
+      }
+      await turn.onPreparedSelected?.(reused, transactionId, accountKey);
       return await this.runBrowserTurn({
         ...turn,
         onSendActivated: async () => {
@@ -4716,7 +4752,7 @@ export class ChatGptBrowserWorker {
           sendHeartbeat();
           await turn.onSubmitted?.();
         },
-      }, surfaceId, undefined, reused, lease.trackUsage === true, transactionId);
+      }, surfaceId, undefined, reused, lease.trackUsage === true, transactionId, accountKey);
     } catch (error) {
       originalError = error;
       terminal = error instanceof ChatGptCompactionHandoffAccepted
@@ -4769,6 +4805,8 @@ export class ChatGptBrowserWorker {
     reuseConversation = false,
     trackUsage = false,
     transactionId = `ctx_${randomUUID().replaceAll("-", "")}`,
+    messageLimitAccountKey?: string,
+    surfacePrepared = false,
   ): Promise<string> {
     if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
     if ((turn.externalProgress !== undefined) !== (turn.completionFence !== undefined)) {
@@ -4800,9 +4838,13 @@ export class ChatGptBrowserWorker {
     const originalAbortSignal = turn.abortSignal;
     const rejectionAbort = new AbortController();
     const submissionRejection = new ChatGptSubmissionRejectionObserver(error => rejectionAbort.abort(error));
+    let submittedMessageSize: { chars: number; tokens: number } | undefined;
     const streamDiagnostics = new ChatGptStreamDiagnostics(state => {
       console.info(`[chatgpt-web] stream_lifecycle ${JSON.stringify({ traceId: turn.traceId, ...state })}`);
-    });
+    }, () => rejectionAbort.abort(new ChatGptWebAdapterError(
+      "ChatGPT rejected the current message as too large.",
+      { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false, inputRejected: true },
+    )));
     let lastGenerationProgress = 0;
     const generation = {
       active: () => submissionRejection.hasActiveResponse(),
@@ -4989,7 +5031,7 @@ export class ChatGptBrowserWorker {
           + ` maxStageMessageTokens=${maxStageMessageTokens} maxStageChars=${maxStageChars}`,
         );
       }
-      if (!reuseConversation) {
+      if (!reuseConversation && !surfacePrepared) {
         await this.runStage(
           turn.traceId,
           "new_chat_preparation",
@@ -5019,6 +5061,11 @@ export class ChatGptBrowserWorker {
 
       // One receipt per physical Send, not per native tool call or stream attachment.
       // The ID survives observation recovery; a new actual Send receives a new ID.
+      const verifyAccountForSend = async () => {
+        if (turn.accountScopedMessageLimits && messageLimitAccountKey) {
+          await assertChatGptMessageLimitAccount(page, messageLimitAccountKey);
+        }
+      };
       const usageSubmission = async () => {
         if (!trackUsage) return undefined;
         const id = randomUUID();
@@ -5089,9 +5136,11 @@ export class ChatGptBrowserWorker {
               undefined,
               { onSubmitted: recordStageUsage, onSendActivated: async () => {
                 await this.assertSelectedEffort(page, mode);
+                submittedMessageSize = { chars: stage.text.length, tokens: stageMessageTokens[index]! };
                 submissionRejection.begin(page);
                 streamDiagnostics.begin();
                 await submissionRejection.captureAlertBaseline();
+                await verifyAccountForSend();
               } },
               undefined,
               launcherObservationRecovery
@@ -5270,8 +5319,10 @@ export class ChatGptBrowserWorker {
               estimatedInputTokens, proAvailable: browserCapabilities.proAvailable,
             })}`);
             submissionRejection.begin(page);
+            submittedMessageSize = { chars: finalPrompt.length, tokens: finalMessageTokens };
             streamDiagnostics.begin();
             await submissionRejection.captureAlertBaseline();
+            await verifyAccountForSend();
             await turn.onSendActivated?.();
           } },
           completionTracker,
@@ -5634,6 +5685,9 @@ export class ChatGptBrowserWorker {
         `[chatgpt-web] browser turn ${turn.traceId} failed:`
         + ` ${redactChatGptUiDiagnostic(error instanceof Error ? error.message : String(error))}`,
       );
+      if (error instanceof ChatGptWebAdapterError && error.inputRejected && submittedMessageSize) {
+        error.rejectedMessageSize = submittedMessageSize;
+      }
       if (diagnosticPage && !diagnosticPage.isClosed()) {
         await diagnostics.capture(diagnosticPage, "turn-failed", error);
       }

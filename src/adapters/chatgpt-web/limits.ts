@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { ChatGptWebAdapterError } from "./adapter-error";
 import type { Locator, Page } from "playwright-core";
 import { parseChatGptModelAnnouncement, readChatGptModelAnnouncements } from "../../chatgpt-ui/model-picker";
 
@@ -53,6 +54,16 @@ export async function readChatGptUsageAccount(page: Page): Promise<{
     personal: identity.structure === "personal",
     needsAttention: identity.needsAttention,
   };
+}
+
+/** A prepared account's cached limits cannot authorize a Send after sign-out or account switch. */
+export async function assertChatGptMessageLimitAccount(page: Page, expected: string): Promise<void> {
+  const current = await readChatGptUsageAccount(page).catch(() => undefined);
+  if (current?.accountKey !== expected) {
+    throw new ChatGptWebAdapterError("The ChatGPT account changed while preparing this task. Retry with the current account.", {
+      status: 409, errorType: "invalid_request_error", code: "chatgpt_account_changed", retryable: false,
+    });
+  }
 }
 
 /** The authenticated account tier is stable across renamed and translated billing headings. */

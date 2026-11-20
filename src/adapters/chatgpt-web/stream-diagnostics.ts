@@ -1,7 +1,9 @@
 import type { CDPSession, Page } from "playwright-core";
+import { parseChatGptServiceError, parseChatGptSizeRejection, type ChatGptServiceError } from "./service-error";
 
 const MAX_FRAME_CHARS = 256_000;
 const MAX_MESSAGES = 32;
+const MAX_SERVICE_ERRORS = 4;
 const ROLES = new Set(["assistant", "user", "tool", "system"]);
 const CHANNELS = new Set(["analysis", "commentary", "final", "summary", "notification", "justify", "confidence"]);
 const STATUSES = new Set(["in_progress", "finished_successfully", "finished_partial", "error"]);
@@ -27,7 +29,7 @@ async function bounded<T>(operation: Promise<T>): Promise<T> {
   } finally { clearTimeout(timer); }
 }
 
-/** Diagnostic projection only. It never supplies completion, liveness, retry or tool authority. */
+/** Sanitized diagnostics plus an optional explicit rejection signal; never completion or tool authority. */
 export class ChatGptStreamProjection {
   private buffer = "";
   private discarding = false;
@@ -44,8 +46,12 @@ export class ChatGptStreamProjection {
   private messageSequence = 0;
   private done = false;
   private serviceError = false;
+  private readonly serviceErrors: ChatGptServiceError[] = [];
+  private sizeRejected = false;
   private readonly formats = new Map<string, number>();
   private omittedFormats = 0;
+
+  constructor(private readonly onInputTooLarge?: () => void) {}
 
   push(bytes: Uint8Array): void {
     this.buffer += this.decoder.decode(bytes, { stream: true });
@@ -66,6 +72,7 @@ export class ChatGptStreamProjection {
 
   snapshot() {
     return { frames: this.frames, doneMarker: this.done, serviceError: this.serviceError,
+      serviceErrors: this.serviceErrors.map(error => ({ ...error })),
       malformedFrames: this.malformed, unresolvedPatches: this.unresolved,
       oversizedFrames: this.oversized, omittedMessages: this.omittedMessages,
       incompleteFrame: this.discarding || this.buffer.trim().length > 0,
@@ -97,6 +104,20 @@ export class ChatGptStreamProjection {
     }
     this.formats.set(shape, (this.formats.get(shape) ?? 0) + 1);
     if (event.error || event.error_code) this.serviceError = true;
+    const serviceError = parseChatGptServiceError(event);
+    if (serviceError) {
+      this.serviceError = true;
+      if (this.serviceErrors.length < MAX_SERVICE_ERRORS && !this.serviceErrors.some(error =>
+        error.error_code === serviceError.error_code && error.error_reason === serviceError.error_reason)) {
+        this.serviceErrors.push(serviceError);
+      }
+    }
+    if (!this.sizeRejected && parseChatGptSizeRejection(event)) {
+      this.sizeRejected = true;
+      // Recovery is explicitly opted into and independent from diagnostic reporting. A consumer
+      // callback failure must not replace the owned stream's result or disable observation.
+      try { this.onInputTooLarge?.(); } catch { /* The caller owns its recovery failure. */ }
+    }
     if (object(event.message)) { this.message(event.message); return; }
     this.patch(event);
   }
@@ -185,7 +206,7 @@ type Capture = {
   networkError?: string;
 };
 
-/** Passive CDP observation of only the owned page's submissions after Send. */
+/** Owned-page CDP diagnostics, optionally notifying a caller of a confirmed input rejection. */
 export class ChatGptStreamDiagnostics {
   private session?: CDPSession;
   private readonly captures = new Map<string, Capture>();
@@ -193,7 +214,10 @@ export class ChatGptStreamDiagnostics {
   private sequence = 0;
   private generation = 0;
 
-  constructor(private readonly report: (state: Record<string, unknown>) => void) {}
+  constructor(
+    private readonly report: (state: Record<string, unknown>) => void,
+    private readonly onInputTooLarge?: () => void,
+  ) {}
 
   begin(): void { this.submission += 1; }
 
@@ -214,8 +238,14 @@ export class ChatGptStreamDiagnostics {
         if (generation !== this.generation || !this.submission || event.frameId !== frameTree.frame.id || event.request.method !== "POST"
           || event.request.url !== "https://chatgpt.com/backend-api/f/conversation") return;
         if (this.captures.size >= 12) { this.report({ unavailable: true, reason: "request_limit" }); return; }
-        this.captures.set(event.requestId, { request: ++this.sequence, submission: this.submission,
-          projection: new ChatGptStreamProjection(), pending: [], pendingBytes: 0, streaming: false, unavailable: false });
+        const capture: Capture = { request: ++this.sequence, submission: this.submission,
+          projection: new ChatGptStreamProjection(() => {
+            if (generation === this.generation && capture.submission === this.submission
+              && this.captures.get(event.requestId) === capture && capture.status === 200) {
+              this.onInputTooLarge?.();
+            }
+          }), pending: [], pendingBytes: 0, streaming: false, unavailable: false };
+        this.captures.set(event.requestId, capture);
       });
       session.on("Network.responseReceived", event => {
         if (generation !== this.generation) return;

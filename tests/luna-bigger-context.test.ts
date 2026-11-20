@@ -73,6 +73,9 @@ test("Luna full-history compaction uses the smallest multipart transport without
   const compiled = compileBiggerContextPrompt(parsed, caps);
   expect(compiled.multipart?.parts.length).toBe(2);
   expect(compiled.trimmedCompactionMessages).toBeUndefined();
+  const records = compiled.multipart!.parts.flatMap(part => JSON.parse(part).records);
+  expect(records.filter(record => record.kind === "message").map(record => record.message.content))
+    .toEqual(parsed.context.messages.map(message => message.content));
   expect(formatChatGptWebMultipartCommit(compiled.multipart!, `ctx_${"0".repeat(32)}`)).not.toContain(CHATGPT_LUNA_CHECKPOINT_MARKER);
   parsed._compactionRequest = false;
   expect(compileChatGptWebPrompt(parsed, caps, undefined, { captureLunaCheckpoint: true }).text)

@@ -21,6 +21,81 @@ import { compileChatGptWebPrompt, formatChatGptWebMultipartCommit, formatChatGpt
 import { estimateCompiledChatGptWebInputTokens } from "../src/adapters/chatgpt-web/input-tokens";
 import { estimateTokens } from "../src/lib/token-estimate";
 import { chatGptHtmlToMarkdown } from "../src/adapters/chatgpt-web/markdown";
+import { readChatGptUsageAccount } from "../src/adapters/chatgpt-web/limits";
+
+test("fresh account lookup establishes origin without moving UI preparation ahead of diagnostics", async () => {
+  const root = mkdtempSync(join(tmpdir(), "account-origin-"));
+  const worker: any = ChatGptBrowserWorker.forProvider({ adapter: "chatgpt-web", baseUrl: `browser://${root}` });
+  let url = "about:blank", navigations = 0, closed = false, selected = false;
+  const page = {
+    url: () => url, close: async () => { closed = true; },
+    goto: async (next: string) => { navigations++; url = next; },
+    evaluate: async () => ({ userId: "fixture-user", accountId: "fixture-account", planType: "plus", structure: "personal" }),
+  };
+  worker.pageForNewTurn = async () => page;
+  worker.prepareChatSurface = async () => { throw new Error("UI preparation belongs after diagnostics"); };
+  worker.runBrowserTurn = async (...args: unknown[]) => {
+    expect(selected).toBeTrue(); expect(args[7]).not.toBe(true);
+    return "Normal preparation can continue";
+  };
+  try {
+    await expect(worker.runExclusive({ traceId: "account-origin", accountScopedMessageLimits: true,
+      onPreparedSelected: (_reused: boolean, transaction: string, key: string) => {
+        expect(transaction).toMatch(/^ctx_[a-f0-9]{32}$/); expect(key).toMatch(/^[a-f0-9]{64}$/); selected = true;
+      },
+    })).resolves.toBe("Normal preparation can continue");
+    expect(navigations).toBe(1); expect(closed).toBeTrue();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test.each([false, true])("an account switch at Send activation cannot use the prepared account's limits (multipart=%s)", async multipart => {
+  const root = mkdtempSync(join(tmpdir(), "account-send-boundary-"));
+  const capabilities = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false };
+  const prepared = { ...compileChatGptWebPrompt({
+    modelId: CHATGPT_WEB_MODEL_ID, stream: true, options: { reasoning: "low" },
+    context: { messages: [{ role: "user", content: "Preserve this task", timestamp: 1 }] },
+  }, capabilities, undefined, multipart ? { experimentalMultipartParts: 2 } : {}), release() {} };
+  const worker: any = ChatGptBrowserWorker.forProvider({ adapter: "chatgpt-web", baseUrl: `browser://${root}`,
+    chatgptWeb: { browserDiagnosticsPath: root } });
+  let accountId = "account-a", sends = 0;
+  const controls: any = { filter: () => controls, count: async () => 1,
+    first: () => ({ innerText: async () => "Instant", getAttribute: async () => "false" }) };
+  const composer = { locator: () => ({ locator: () => controls }), isEditable: async () => true };
+  const page = Object.assign(new EventEmitter(), {
+    url: () => "https://chatgpt.com/", isClosed: () => false,
+    evaluate: async (callback: Function) => {
+      if (callback.toString().includes("/api/auth/session")) return {
+        userId: "fixture-user", accountId, planType: "plus", structure: "personal", needsAttention: false,
+      };
+      throw new Error("No real browser in the account-switch fixture");
+    },
+    evaluateHandle: async () => ({ evaluate: async () => false, dispose: async () => {} }),
+  });
+  const initial = await readChatGptUsageAccount(page as never);
+  Object.assign(worker, {
+    activeComposer: async () => composer,
+    selectModelAndEffort: async () => ({ ...resolveChatGptWebMultipartStagingMode(CHATGPT_WEB_MODEL_ID, capabilities, 100, 100),
+      selection: { url: page.url(), label: "Instant" } }),
+    captureSubmissionBaseline: async () => ({}),
+    attachPrompt: async () => {}, attachPromptWithCompactionRetry: async () => {}, attachFiles: async () => {},
+    sendAttachedPrompt: async (_page: unknown, _baseline: unknown, _capture: unknown, _signal: unknown,
+      _progress: unknown, lifecycle: { onSendActivated(): Promise<void> }) => {
+      // Preparation and accounting already observed A. The session changes while Send waits.
+      accountId = "account-b";
+      await lifecycle.onSendActivated();
+      sends++;
+      throw new Error("A switched account must never reach Send");
+    },
+  });
+  try {
+    await expect(worker.runBrowserTurn({ traceId: `account-boundary-${multipart}`, modelId: CHATGPT_WEB_MODEL_ID,
+      reasoning: "low", capabilities, accountScopedMessageLimits: true,
+      prepare: async () => prepared, onTextDelta() {},
+    }, undefined, page, false, false, "ctx_b6088f32f1ca497eb6b50dfcab1abaca", initial.accountKey, true))
+      .rejects.toMatchObject({ code: "chatgpt_account_changed", retryable: false });
+    expect(sends).toBe(0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test("unavailable Pro detail reads only its linked tooltip in any language", async () => {
   const { createWindow } = require("@mixmark-io/domino");
@@ -3573,10 +3648,10 @@ test("GPT-6 staged input enforces its measured account and effort ceiling before
 
 test("Bigger Context fits mixed-density whole records within both token and composer limits", () => {
   const capabilities = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false, experimentalBiggerContext: true };
-  const dense = "a!b@c#d$e%f^g&h*".repeat(3_750);
+  const dense = "a!b@c#d$e%f^g&h*".repeat(1_200);
   const sparse = "x".repeat(dense.length);
   const whitespace = " ".repeat(450_000);
-  // Equal byte sizes must not pack two dense records into one oversized stage. Conversely,
+  // Different token densities must still respect each stage budget. Conversely,
   // token-only balancing must not leave all the low-token whitespace in one oversized composer.
   for (const contents of [
     [dense, dense, sparse, sparse, dense, sparse],
@@ -3670,7 +3745,7 @@ test("Bigger Context preflight expands only the total context ceiling and keeps 
     2,
   )).toThrow("two-part ceiling");
   expect(() => assertChatGptWebMultipartInputWithinLimits(
-    269_999,
+    119_999,
     80_000,
     "gpt-5.6-sol",
     "high",
@@ -3679,23 +3754,23 @@ test("Bigger Context preflight expands only the total context ceiling and keeps 
     6,
   )).not.toThrow();
   expect(() => assertChatGptWebMultipartInputWithinLimits(
-    270_000,
+    120_000,
     80_000,
     "gpt-5.6-sol",
     "high",
     plus,
     500_000,
     6,
-  )).toThrow("270,000-token six-part ceiling");
+  )).toThrow("120,000-token six-part ceiling");
   expect(() => assertChatGptWebMultipartInputWithinLimits(
-    180_000,
+    120_000,
     80_000,
     "gpt-5.6-sol",
     "high",
     plus,
     500_000,
     2,
-  )).toThrow("180,000-token two-part ceiling");
+  )).toThrow("120,000-token two-part ceiling");
   expect(() => assertChatGptWebMultipartInputWithinLimits(
     280_000,
     103_001,

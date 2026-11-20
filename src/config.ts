@@ -640,6 +640,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       chromeExecutablePath: config.chromeExecutablePath,
       brokerSocketPath: config.brokerSocketPath,
       threadEnvironmentStatePath: join(getConfigDir(), "runtime", "thread-environments.json"),
+      messageLimitStatePath: join(getConfigDir(), "runtime", "message-limits.json"),
       lunaCheckpointStatePath: join(getConfigDir(), "runtime", "luna-checkpoints.json"),
       headed: config.headed,
       localToolsEnabled: config.mode === "full",

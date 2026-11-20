@@ -94,13 +94,15 @@ The launcher's **MCP** page guides the complete setup. For the exact clicks, see
 > See [Limits](https://github.com/miuuyy/codex-chatgpt-web/discussions/309) for the current
 > ChatGPT message allowances for **GPT-5.6 Sol Pro** and **GPT-6 Astra**. Context limits depend on
 > the account type and selected effort. Plus Medium/High uses a measured 90,000-token window.
-> GPT-5.6 supports up to 270,000 tokens with experimental **3× context** enabled, with native
-> Codex compaction supported throughout.
+> With experimental **Bigger Context** enabled, Plus GPT-5.6 and GPT-6 Thinking use a
+> **120,000-token input budget**, with native Codex compaction at **110,000**. A fitting
+> request stays in one message. Splitting uploads does not multiply the model's input capacity.
 >
 > GPT-6 Sol supports Bigger Context at Medium, High and available Extra High: **120,000 tokens
 > on Plus**, with compaction at **110,000**, and **240,000 on Pro**, with compaction at **220,000**.
 > GPT-6 Instant uses standard context.
-> GPT-5.6 and GPT-6 Pro keep their existing Bigger Context limits.
+> Pro-account and dedicated Pro-model profiles retain their separate experimental budgets.
+> ChatGPT web input limits differ from total context and from API/Work/Codex model windows.
 
 1. Finish the required setup, open **MCP**, create the Tunnel and regular API key, then press
    **Connect harness**.

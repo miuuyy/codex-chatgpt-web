@@ -1,10 +1,33 @@
 import { expect, test } from "bun:test";
 import {
+  assertChatGptMessageLimitAccount,
   chatGptUsageModelFromAnnouncements,
   detectChatGptLimitsPlan,
   readChatGptUsageAccount,
   supportsChatGptUsageTracking,
 } from "../src/adapters/chatgpt-web/limits";
+
+test("prepared message limits reject a Plus-account switch or lost session before Send", async () => {
+  let accountId = "plus-account-a", unavailable = false;
+  const page = {
+    url: () => "https://chatgpt.com/",
+    evaluate: async () => {
+      if (unavailable) throw new Error("Signed out");
+      return { userId: "user", accountId, structure: "personal", planType: "plus", needsAttention: false };
+    },
+  };
+  const accountA = await readChatGptUsageAccount(page as never);
+  await expect(assertChatGptMessageLimitAccount(page as never, accountA.accountKey)).resolves.toBeUndefined();
+  accountId = "plus-account-b";
+  await expect(assertChatGptMessageLimitAccount(page as never, accountA.accountKey)).rejects.toMatchObject({
+    code: "chatgpt_account_changed", retryable: false, inputRejected: false,
+  });
+  accountId = "plus-account-a";
+  unavailable = true;
+  await expect(assertChatGptMessageLimitAccount(page as never, accountA.accountKey)).rejects.toMatchObject({
+    code: "chatgpt_account_changed", retryable: false,
+  });
+});
 
 test("Limits reads exact personal account tiers without inspecting billing UI", async () => {
   for (const [planType, expected] of [["pro", "pro_200"], ["prolite", "pro_100"], ["promax", "unsupported"], ["free", "unsupported"]] as const) {
