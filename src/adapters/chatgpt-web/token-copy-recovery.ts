@@ -166,8 +166,14 @@ export async function runWithTokenCopyRecovery(turn: BrowserTurn, run: (turn: Br
         },
       });
     } catch (error) {
-      if (!(error instanceof ChatGptWebAdapterError) || !error.tokenCopyRejected || attempt >= 2
+      if (!(error instanceof ChatGptWebAdapterError) || !error.tokenCopyRejected
         || !canReplayTokenCopy(turn, outputObserved)) throw error;
+      if (attempt >= 2) {
+        throw new ChatGptWebAdapterError(error.message, {
+          status: error.status, errorType: error.errorType, code: "chatgpt_token_copy_retries_exhausted",
+          retryable: false, tokenCopyRejected: true, cause: error,
+        });
+      }
       console.info(`[chatgpt-web] token_copy_recovery ${JSON.stringify({ attempt: attempt + 1 })}`);
       current = { ...turn, traceId: `${turn.traceId}_token${attempt + 1}`, prepareResume: undefined,
         prepare: prepareRetry,

@@ -658,11 +658,17 @@ export function compileChatGptWebPrompt(
     : mode.localTools
     ? [
       "<codex_transport_resume>",
-      `The task context is complete. Pass turn_token ${turnToken} unchanged to every tool call through the selected local Codex plugin in this response, including continuations after tool results; do not expose it in the answer. Execute the latest active user request now.`,
-      `Copy all ${turnToken!.length} characters of the token above, including its final character. If the plugin explicitly rejects the turn_token format, copy it again and retry only that rejected call once. Preserve all completed tool results.`,
+      ...(options?.tokenCopyRecovery ? [
+        "The task context is complete. Use the capability field below for every call to the selected local Codex plugin. Keep it out of the answer. Continue the latest active user request and preserve all completed tool results.",
+      ] : [
+        `The task context is complete. Pass turn_token ${turnToken} unchanged to every tool call through the selected local Codex plugin in this response, including continuations after tool results; do not expose it in the answer. Execute the latest active user request now.`,
+        `Copy all ${turnToken!.length} characters of the token above, including its final character. If the plugin explicitly rejects the turn_token format, copy it again and retry only that rejected call once. Preserve all completed tool results.`,
+      ]),
       ...(options?.tokenCopyRecovery ? [
         "<codex_token_copy_recovery>",
-        "The preceding Native2 tool call used an incorrect copy of the capability. Use the exact token above and continue from the recorded tool results.",
+        "The preceding Native2 tool call used an incorrect copy of the capability. Continue from the recorded tool results.",
+        `Use the following exact JSON field in the arguments for each selected Native2 tool call. Copy all ${turnToken!.length} characters of its value, including the final character. Add the arguments for the intended tool without changing the capability field.`,
+        JSON.stringify({ turn_token: turnToken }),
         "</codex_token_copy_recovery>",
       ] : []),
       "</codex_transport_resume>",

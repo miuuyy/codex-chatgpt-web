@@ -438,6 +438,7 @@ export function createChatGptWebAdapter(
     traceId: string,
     turnCapabilities: ChatGptWebCapabilities,
     hooks: {
+      freshToken?: boolean;
       onCompactionProgress?: (
         kind: "generation" | "submitted" | "multipart_acknowledged",
         part?: number,
@@ -470,7 +471,7 @@ export function createChatGptWebAdapter(
       && retainedLauncherDescriptor
       ? chatGptConversationKey(checkpointInput.parsed, executionNamespace)
       : undefined;
-    const resumeInput = conversationKey
+    const resumeInput = conversationKey && !hooks.freshToken
       ? retainedConversationResumeRequest(checkpointInput.parsed)
       : undefined;
     const retainConversation = conversationKey !== undefined;
@@ -488,7 +489,7 @@ export function createChatGptWebAdapter(
       const compile = experimentalBiggerContext ? compileBiggerContextPrompt : compileChatGptWebPrompt;
       return compile(input, turnCapabilities, turnToken, {
         appName: worker.appName, includeContextTokenBreakdown: true, captureLunaCheckpoint, experimentalSkillAttachments,
-        multipartTransactionId: transactionId, tokenCopyRecovery,
+        multipartTransactionId: transactionId, tokenCopyRecovery: hooks.freshToken ? true : tokenCopyRecovery,
       });
     };
     if (captureLunaCheckpoint) {
@@ -801,7 +802,7 @@ export function createChatGptWebAdapter(
       ...(parsed._chatgptModelFamily ? { modelFamily: parsed._chatgptModelFamily } : {}),
       capabilities: turnCapabilities,
       prepare: transactionId => prepareWith(checkpointInput.parsed, transactionId),
-      prepareTokenCopyRetry: transactionId => prepareWith(checkpointInput.parsed, transactionId, true),
+      ...(!hooks.freshToken ? { prepareTokenCopyRetry: (transactionId?: string) => prepareWith(checkpointInput.parsed, transactionId, true) } : {}),
       ...(structuredBroker ? { nativeTokenBrokerSocket: structuredBroker.socketPath } : {}),
       ...(resumeInput ? { prepareResume: (transactionId?: string) => prepareWith(resumeInput, transactionId) } : {}),
       ...(retainConversation ? { retainConversation: true, conversationKey } : {}),
@@ -1259,18 +1260,20 @@ export function createChatGptWebAdapter(
         if (abortedTurnIds?.size) {
           chatGptTurnSessions.retireAbortedOwnerTurns(ownerKey, abortedTurnIds, executionKey);
         }
-        const traceId = chatGptWebTraceId(provider, parsed);
+        const initialTrace = chatGptWebTraceId(provider, parsed);
+        const roundKey = chatGptTurnRoundKey(parsed);
         const session = await chatGptTurnSessions.getOrCreateAfterOwnerRetirement(
           executionKey,
           ownerKey,
-          () => startRuntime(parsed, environment, traceId, turnCapabilities),
-          traceId,
+          freshTokenTrace => startRuntime(parsed, environment, freshTokenTrace ?? initialTrace, turnCapabilities, { freshToken: Boolean(freshTokenTrace) }),
+          initialTrace,
           incoming.abortSignal,
           nativeTurnId,
           nativeIdentity.threadId,
           chatGptInstructionLineage(parsed),
+          roundKey,
         );
-        const roundKey = chatGptTurnRoundKey(parsed);
+        const traceId = session.traceId ?? initialTrace;
         const emitRoundEvents = (events: readonly AdapterEvent[]): void => {
           // Journal the complete synchronous event batch before touching the HTTP observer. If the
           // observer disconnects midway through emission, an exact reconnect can replay the entire
@@ -1532,6 +1535,17 @@ export function createChatGptWebAdapter(
           const settled = awaitingRuntime ? session.settledOutcome() : undefined;
           if (settled?.type === "error") error = settled.error;
           const turnError = submittedTurnFailure(session, error, parsed);
+          if (turnError instanceof ChatGptWebAdapterError && turnError.code === "chatgpt_token_copy_retries_exhausted"
+            && turnError.tokenCopyRejected && !incoming.abortSignal?.aborted && !parsed._compactionRequest
+            && session.runtime.mode === "tools" && !session.runtime.manualControl && session.runtime.submission?.phase === "accepted"
+            && session.runtime.externalProgress.snapshot().lastToolBatchRevision === 0
+            && !session.roundEvents(roundKey).some(event => event.type === "tool_call_start" || event.type === "text_delta")) {
+            const replacementTrace = createHash("sha256").update(`${traceId}:fresh_token`).digest("hex").slice(0, 12);
+            if (chatGptTurnSessions.prepareFreshTokenRetry(executionKey, session, roundKey, replacementTrace)) {
+              console.info(`[chatgpt-web] native2_fresh_capability_retry ${JSON.stringify({ traceId, replacementTrace })}`);
+              return runChatGptWebTurn();
+            }
+          }
           const handledError = turnError instanceof ChatGptWebAdapterError && turnError.retryable
             ? chatGptWebTurnRetryPolicy.recordRetryableFailure(retryKey, turnError)
             : turnError;

@@ -1641,6 +1641,72 @@ describe("ChatGPT outer-native harness v4", () => {
     }
   });
 
+  test("verified token-copy exhaustion retires the old capability and makes one fresh binding", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-token-rotation-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web", baseUrl: `browser://token-rotation-${Date.now()}`,
+      chatgptWeb: { brokerSocketPath: socketPath, ...toolCapabilities },
+    };
+    const broker = TurnBroker.forSocket(socketPath);
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run;
+    const tokens: string[] = [];
+    const initial = rawWireRequest(environmentXml);
+    const executionKey = `${chatGptWebExecutionNamespace(provider)}:${chatGptTurnExecutionKey(initial)}`;
+    worker.run = async turn => {
+      const prompt = await turn.prepare();
+      try {
+        const token = prompt.turnToken!;
+        tokens.push(token);
+        await turn.onSendActivated?.();
+        await turn.onSubmitted?.();
+        if (tokens.length <= 3) throw new ChatGptWebAdapterError("Verified Native2 copy rejection", {
+          status: 400, errorType: "invalid_request_error", code: "chatgpt_token_copy_error", retryable: false, tokenCopyRejected: true,
+        });
+        expect(new Set(tokens.slice(0, 3)).size).toBe(1);
+        expect(token === tokens[0]).toBeFalse();
+        expect(turn.prepareTokenCopyRetry).toBeUndefined();
+        expect(prompt.text.includes(JSON.stringify({ turn_token: token }))).toBeTrue();
+        expect(prompt.text.includes(tokens[0]!)).toBeFalse();
+        await expect(callTurnBroker(socketPath, { method: "claim", token: tokens[0]! })).rejects.toThrow();
+        const { bindingId } = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
+        const result = await invokeAfterBrowserBoundary(turn, () => callTurnBroker<BrokerToolResult>(socketPath, {
+          method: "invoke", bindingId, wireName: "exec_command", arguments: { cmd: "perform-once" },
+        }, 5_000));
+        expect(result.content).toEqual([{ type: "text", text: "Work complete" }]);
+        turn.onTextDelta("Complete.");
+        return "Complete.";
+      } finally { prompt.release(); }
+    };
+    const adapter = createChatGptWebAdapter(provider, { broker });
+    try {
+      const events: AdapterEvent[] = [];
+      await adapter.runTurn!(initial, { headers: new Headers() }, event => events.push(event));
+      const calls = events.filter(event => event.type === "tool_call_start");
+      expect(calls).toHaveLength(1);
+      expect(tokens).toHaveLength(4);
+      const call = calls[0]!;
+      const continuation = structuredClone(initial);
+      continuation.context.messages.push({ role: "assistant", timestamp: 3,
+        content: [{ type: "toolCall", id: call.id, name: "exec_command", arguments: { cmd: "perform-once" } }] }, {
+        role: "toolResult", timestamp: 4, toolCallId: call.id, toolName: "exec_command", content: "Work complete", isError: false,
+      });
+      (continuation._rawBody as { input: unknown[] }).input.push(
+        { type: "function_call", call_id: call.id, name: "exec_command", arguments: '{"cmd":"perform-once"}' },
+        { type: "function_call_output", call_id: call.id, output: "Work complete" },
+      );
+      const completed: AdapterEvent[] = [];
+      await adapter.runTurn!(continuation, { headers: new Headers() }, event => completed.push(event));
+      expect(completed.at(-1)).toMatchObject({ type: "done", endTurn: true });
+      expect(completed.some(event => event.type === "tool_call_start")).toBeFalse();
+      expect(tokens).toHaveLength(4);
+    } finally {
+      worker.run = originalRun;
+      await chatGptTurnSessions.retireAndWait(executionKey);
+      await broker.close();
+    }
+  }, 15_000);
+
   test("prompt preparation preserves its error instead of exposing a revoked MCP token", async () => {
     const socketPath = brokerTestEndpoint(`cgw-prepare-error-${process.pid}-${Date.now()}`);
     const provider: CodexProviderConfig = {

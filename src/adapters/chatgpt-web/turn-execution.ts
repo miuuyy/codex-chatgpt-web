@@ -286,6 +286,7 @@ export class ChatGptTurnSession {
   private lastTouchedAt = this.createdAt;
   readonly browserOutcome: Promise<ChatGptBrowserOutcome>;
   readonly physicalSettlement: Promise<void>;
+  freshTokenRetry?: { roundKey: string; traceId: string };
   private readonly outstandingById = new Map<string, BrokerToolRequest>();
   private readonly deliveredResultIds = new Set<string>();
   private outstandingReasoning: string[] = [];
@@ -560,12 +561,13 @@ export class ChatGptTurnSessions {
   async getOrCreateAfterOwnerRetirement(
     key: string,
     ownerKey: string,
-    start: () => ChatGptTurnRuntime,
+    start: (freshTokenTraceId?: string) => ChatGptTurnRuntime,
     traceId?: string,
     signal?: AbortSignal,
     nativeTurnId?: string,
     nativeThreadId?: string,
     instruction?: ChatGptInstructionLineage,
+    roundKey?: string,
   ): Promise<ChatGptTurnSession> {
     for (;;) {
       if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
@@ -573,6 +575,22 @@ export class ChatGptTurnSessions {
       if (existing) {
         if (existing.supersededError) throw existing.supersededError;
         existing.touch();
+        const retry = existing.freshTokenRetry;
+        if (retry && retry.roundKey === roundKey) {
+          await awaitWithAbort(existing.physicalSettlement, signal);
+          await awaitWithAbort(Promise.resolve(existing.runtime.retireCapability?.()), signal);
+          if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
+          const current = this.entries.get(key);
+          if (!current) throw new DOMException("ChatGPT web turn aborted", "AbortError");
+          if (current !== existing) continue;
+          this.entries.delete(key);
+          try {
+            return this.getOrCreate(key, () => start(retry.traceId), retry.traceId, ownerKey, nativeTurnId, nativeThreadId, instruction?.current);
+          } catch (error) {
+            this.entries.set(key, existing);
+            throw error;
+          }
+        }
         return existing;
       }
       const pending = this.retirements.get(key) ?? this.ownerRetirements.get(ownerKey);
@@ -722,6 +740,16 @@ export class ChatGptTurnSessions {
   retire(key: string, session: ChatGptTurnSession): boolean {
     if (this.entries.get(key) !== session) return false;
     this.entries.delete(key);
+    this.forgetConversationHead(session);
+    this.beginRetirement(key, session);
+    return true;
+  }
+
+  prepareFreshTokenRetry(key: string, session: ChatGptTurnSession, roundKey: string, traceId: string): boolean {
+    if (this.entries.get(key) !== session || session.freshTokenRetry) return false;
+    // Keep the plan attached to its exact input until the revoked browser owner settles.
+    // A reconnect can then recover it, and native interruption can still retire it.
+    session.freshTokenRetry = { roundKey, traceId };
     this.forgetConversationHead(session);
     this.beginRetirement(key, session);
     return true;
