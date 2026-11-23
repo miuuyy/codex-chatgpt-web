@@ -283,6 +283,32 @@ function verifyCompactedEnvironmentItems(fd: number, size: number, items: Record
   }
 }
 
+const CALENDAR_ONLY_ENVIRONMENT_PATTERN =
+  /^<environment_context>\s*<current_date>(\d{4}-\d{2}-\d{2})<\/current_date>\s*(?:<timezone>([^<>\r\n]+)<\/timezone>\s*)?<\/environment_context>$/;
+
+function calendarOnlyEnvironment(content: unknown): { currentDate: string; timezone?: string } | undefined {
+  if (!Array.isArray(content)) return undefined;
+  let parsed: { currentDate: string; timezone?: string } | undefined;
+  for (const part of content) {
+    const text = record(part)?.text;
+    if (typeof text !== "string" || !/<\/?environment_context\b/i.test(text)) continue;
+    if (parsed) return undefined;
+    const match = CALENDAR_ONLY_ENVIRONMENT_PATTERN.exec(text.trim());
+    if (!match) return undefined;
+    parsed = { currentDate: match[1]!, ...(match[2] ? { timezone: match[2].trim() } : {}) };
+  }
+  return parsed;
+}
+
+function worldStateMatchesCalendar(
+  payload: Record<string, unknown> | undefined,
+  calendar: { currentDate: string; timezone?: string },
+): boolean {
+  const environments = record(record(payload?.state)?.environments);
+  if (!environments || environments.current_date !== calendar.currentDate) return false;
+  return calendar.timezone === undefined || environments.timezone === calendar.timezone;
+}
+
 function verifyHistoricalEnvironmentMessages(
   fd: number,
   size: number,
@@ -291,6 +317,16 @@ function verifyHistoricalEnvironmentMessages(
 ): void {
   const pending = new Map(messages.map(message => [message.id, message.content]));
   if (pending.size !== messages.length) throw new Error("Codex environment history repeats a message id");
+  // Codex 0.169+ records the initial date/timezone-only preamble after task_started and before
+  // turn_context, paired with world_state. Any environment claim carrying filesystem or policy
+  // tags must still appear before task_started.
+  let currentCalendarPreamble: {
+    id: string;
+    content: unknown;
+    calendar: { currentDate: string; timezone?: string };
+    itemMatched: boolean;
+    worldStateMatched: boolean;
+  } | undefined;
   let position = 0;
   let carry = Buffer.alloc(0);
   while (position < size) {
@@ -309,10 +345,37 @@ function verifyHistoricalEnvironmentMessages(
       if (line.length > MAX_ROLLOUT_JSON_LINE_BYTES) throw new Error("Codex rollout JSONL record exceeds the bounded record size");
       const item = parseJsonLine(line);
       const payload = record(item.payload);
+      if (currentCalendarPreamble) {
+        if (item.type === "turn_context" && payload?.turn_id === turnId) {
+          if (currentCalendarPreamble.itemMatched && currentCalendarPreamble.worldStateMatched) return;
+          throw new Error("Codex rollout does not authenticate the historical environment messages");
+        }
+        if (item.type === "event_msg" && payload?.type === "task_started") {
+          throw new Error("Codex rollout does not authenticate the historical environment messages");
+        }
+        if (item.type === "response_item" && payload?.type === "message" && payload.role === "user"
+          && payload.id === currentCalendarPreamble.id) {
+          if (!isDeepStrictEqual(payload.content, currentCalendarPreamble.content)) {
+            throw new Error("Historical environment message differs from its native Codex record");
+          }
+          currentCalendarPreamble.itemMatched = true;
+        } else if (item.type === "world_state" && worldStateMatchesCalendar(payload, currentCalendarPreamble.calendar)) {
+          currentCalendarPreamble.worldStateMatched = true;
+        }
+        continue;
+      }
       // Core writes task_started before this turn's environment update. Merely finding matching
       // XML somewhere in the file would also accept a current update as historical.
       if (item.type === "event_msg" && payload?.type === "task_started" && payload.turn_id === turnId) {
         if (pending.size === 0) return;
+        if (pending.size === 1) {
+          const [[id, content]] = [...pending.entries()] as [[string, unknown]];
+          const calendar = calendarOnlyEnvironment(content);
+          if (calendar) {
+            currentCalendarPreamble = { id, content, calendar, itemMatched: false, worldStateMatched: false };
+            continue;
+          }
+        }
         throw new Error("Codex rollout does not authenticate the historical environment messages");
       }
       if (item.type !== "response_item" || payload?.type !== "message" || payload.role !== "user"
@@ -325,7 +388,11 @@ function verifyHistoricalEnvironmentMessages(
     carry = Buffer.from(data.subarray(start));
     if (carry.length > MAX_ROLLOUT_JSON_LINE_BYTES) throw new Error("Codex rollout JSONL record exceeds the bounded record size");
   }
-  throw new Error("Codex rollout has no current task boundary for environment history");
+  throw new Error(
+    currentCalendarPreamble
+      ? "Codex rollout does not authenticate the historical environment messages"
+      : "Codex rollout has no current task boundary for environment history",
+  );
 }
 
 function validateSessionMeta(
