@@ -91,3 +91,43 @@ test("repeated picker version verifies GPT-5.6 Pro without accepting conflicting
   expect(chatGptModelFamilyMatches(["6 Astra 6 Pro"], "6", "max")).toBeTrue();
   expect(chatGptModelFamilyMatches(["6 Astra 6 Pro"], "6", "high")).toBeFalse();
 });
+
+test("bare repeated picker versions verify GPT-6 and GPT-6.2 without accepting mismatches", () => {
+  for (const [effort, mode] of [["low", "Instant"], ["medium", "Medium"], ["high", "High"], ["xhigh", "Extra High"], ["max", "Pro"]] as const) {
+    const evidence = [`6 ${mode}, 1 of 5.`, `6 6 ${mode}`];
+    expect(chatGptModelFamilyMatches(evidence, "6", effort)).toBeTrue();
+    expect(chatGptModelFamilyMatches(evidence, "6.2", effort)).toBeFalse();
+  }
+  expect(chatGptUsageModelFromAnnouncements(["6 Pro, 5 of 5.", "6 6 Pro"])).toBe("gpt-6-pro");
+  for (const [effort, mode] of [["low", "Instant"], ["medium", "Medium"], ["high", "High"], ["xhigh", "Extra High"]] as const) {
+    expect(chatGptModelFamilyMatches([`6.2 ${mode}, 2 of 5.`, `6.2 ${mode}`], "6.2", effort)).toBeTrue();
+    expect(chatGptModelFamilyMatches([`6.2 ${mode}, 2 of 5.`, `6.2 6.2 ${mode}`], "6.2", effort)).toBeTrue();
+    expect(chatGptModelFamilyMatches([`6.2 ${mode}, 2 of 5.`, `6.2 ${mode}`], "6", effort)).toBeFalse();
+  }
+  for (const conflicting of ["6 6.2 High", "6.2 6 Pro", "6 6.1 High", "6 5.6 Pro", "6 6"]) {
+    expect(chatGptModelFamilyMatches([conflicting], "6", "high")).toBeFalse();
+    expect(chatGptModelFamilyMatches([conflicting], "6", "max")).toBeFalse();
+    expect(chatGptModelFamilyMatches([conflicting], "6.2", "high")).toBeFalse();
+    expect(chatGptUsageModelFromAnnouncements([conflicting])).toBe("pro-unknown");
+  }
+});
+
+test("coexisting Latest and 6 rows resolve 6 to explicit 6 and 6.2 to Latest without collision", async () => {
+  const labels = ["Latest", "6", "GPT-5.6 Sol"];
+  for (const [family, expectedRow] of [["6", "6"], ["6.2", "Latest"], ["5.6", "GPT-5.6 Sol"]] as const) {
+    const matched: string[] = [];
+    const menu = { menu: {
+      getByRole: (_role: string, options: { name: RegExp }) => {
+        const hits = labels.filter(label => options.name.test(label));
+        return {
+          count: async () => hits.length,
+          getAttribute: async () => { matched.push(...hits); return "true"; },
+          waitFor: async () => { throw new Error("unexpected wait"); },
+        };
+      },
+      locator: () => ({ count: async () => 1, getAttribute: async () => "true" }),
+    } } as unknown as Parameters<typeof selectChatGptModelFamily>[0];
+    expect(await selectChatGptModelFamily(menu, family, async () => menu)).toBe(menu);
+    expect(matched).toEqual([expectedRow]);
+  }
+});

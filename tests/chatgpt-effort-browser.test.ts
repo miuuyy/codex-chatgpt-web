@@ -418,3 +418,25 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("a disabled upsell does not l
     expect(await waitForChatGptEffortRange(activation, 4_000)).toBe("slider");
   } finally { await browser.close(); }
 }, 10_000);
+
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("the three-family limited Plus picker recognizes locked efforts alongside Latest", async () => {
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  try {
+    const page = await browser.newPage();
+    const html = readFileSync(new URL("./fixtures/chatgpt-locked-efforts-2026-11-15.html", import.meta.url), "utf8")
+      .replace(
+        '<div role="menuitemradio" aria-checked="true" data-model-selected="true"><div data-menu-row-content><span>6</span></div></div>',
+        '<div role="menuitemradio" aria-checked="false"><div data-menu-row-content><span>Latest</span></div></div>\n'
+          + '<div role="menuitemradio" aria-checked="true" data-model-selected="true"><div data-menu-row-content><span>6</span></div></div>',
+      );
+    await page.setContent(html);
+    const worker = Object.create(ChatGptBrowserWorker.prototype);
+    const caps = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false };
+    const highError = await worker.selectModelAndEffort(page, "gpt-5.6-sol", "high", caps, undefined, false, "6")
+      .catch((error: Error) => error);
+    expect(highError.code).toBe("chatgpt_effort_locked");
+    const selected = await worker.selectModelAndEffort(page, "gpt-5.6-sol", "low", caps, undefined, false, "6");
+    expect(selected.selection.label).toBe("6 Instant");
+    await worker.assertSelectedEffort(page, selected);
+  } finally { await browser.close(); }
+}, 15_000);

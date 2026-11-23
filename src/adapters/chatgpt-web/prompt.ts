@@ -742,7 +742,7 @@ export function compileChatGptWebPrompt(
         const budgets = multipart.parts.map((payload, index) => {
           const final = index === multipart.parts.length - 1;
           const effort = final ? mode.effort : stagingEffort;
-          const limits = resolveChatGptWebTransportLimits(backendModel, effort, capabilities);
+          const limits = resolveChatGptWebTransportLimits(backendModel, effort, capabilities, parsed._chatgptModelFamily);
           const tokenLimit = final
             ? resolveChatGptWebMessageTokenBudget(backendModel, effort, capabilities,
               imageTokens + skillFileTokens(skillFiles, parsed.modelId))

@@ -74,6 +74,7 @@ import {
   CHATGPT_EFFORT_CONTROL_SELECTOR,
   CHATGPT_EFFORT_ITEM_SELECTOR,
   chatGptLockedEffortMessage,
+  chatGptModelOption,
   disabledRowTooltip,
   chatGptLockedEffortPanel,
   waitForChatGptEffortRange,
@@ -553,7 +554,7 @@ export class ChatGptSubmissionRejectionObserver {
 }
 
 type SelectedChatGptWebModelMode = ChatGptWebModelMode & {
-  modelFamily?: "5.6" | "6";
+  modelFamily?: "5.6" | "6" | "6.2";
   selection?: { url: string; label: string };
   lockedInstant?: true;
   usageModel?: ChatGptUsageModel;
@@ -842,7 +843,7 @@ export interface BrowserTurn {
   traceId: string;
   modelId: string;
   reasoning?: string;
-  modelFamily?: "5.6" | "6";
+  modelFamily?: "5.6" | "6" | "6.2";
   capabilities: ChatGptWebCapabilities;
   prepare: (transactionId?: string) => Promise<CompiledChatGptWebPrompt & { release: () => void }>;
   prepareResume?: (transactionId?: string) => Promise<CompiledChatGptWebPrompt & { release: () => void }>;
@@ -2137,7 +2138,7 @@ export class ChatGptBrowserWorker {
     capabilities: ChatGptWebCapabilities,
     captureDiagnostic?: (checkpoint: string) => Promise<void>,
     trackUsage = false,
-    modelFamily?: "5.6" | "6",
+    modelFamily?: "5.6" | "6" | "6.2",
   ): Promise<SelectedChatGptWebModelMode> {
     const mode = resolveChatGptWebModelMode(modelId, reasoning, capabilities);
     const composer = await this.activeComposer(page);
@@ -2205,19 +2206,20 @@ export class ChatGptBrowserWorker {
         await throwIfChatGptRateLimitDialog(page);
         await throwIfChatGptSessionFailureAlert(page);
         const panel = chatGptLockedEffortPanel(activation.menu);
-        if (modelFamily !== "6" || mode.effort !== "low") {
+        if ((modelFamily !== "6" && modelFamily !== "6.2") || mode.effort !== "low") {
           throw new ChatGptWebAdapterError(await chatGptLockedEffortMessage(panel, mode.displayLabel), {
             status: 400, errorType: "invalid_request_error", code: "chatgpt_effort_locked", retryable: false,
           });
         }
         const url = page.url();
-        if (!await hasConfirmedLockedInstant(activation)) {
-          await panel.getByRole("menuitemradio", { name: "6", exact: true, checked: true }).click({ timeout: 5_000 });
+        if (!await hasConfirmedLockedInstant(activation, modelFamily)) {
+          const lockedOption = await chatGptModelOption(panel, { version: modelFamily, name: "sol" });
+          await lockedOption.click({ timeout: 5_000 });
         }
         if (await currentEffort.getAttribute("aria-expanded") === "true") await page.keyboard.press("Escape");
         await settleChatGptUi();
         const label = (await currentEffort.innerText()).trim();
-        if (!chatGptModelFamilyMatches([label], "6", "low")) {
+        if (!chatGptModelFamilyMatches([label], modelFamily, "low")) {
           throw unconfirmedLockedInstantError();
         }
         const selected: SelectedChatGptWebModelMode = {
@@ -2341,7 +2343,8 @@ export class ChatGptBrowserWorker {
       const menu = await activateChatGptEffortMenu(page, control);
       try {
         if (mode.lockedInstant) {
-          if (!await hasConfirmedLockedInstant(menu)) {
+          if ((mode.modelFamily !== "6" && mode.modelFamily !== "6.2")
+            || !await hasConfirmedLockedInstant(menu, mode.modelFamily)) {
             throw unconfirmedLockedInstantError();
           }
         } else {

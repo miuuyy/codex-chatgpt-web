@@ -47,6 +47,7 @@ describe("fixed ChatGPT Web model routes", () => {
       ["chatgpt-web/pro", "ultra", "max"],
     ]);
     expect(CHATGPT_WEB_MODEL_ROUTES.map(route => route.displayName)).toEqual([
+      "GPT-6.2 Sol Instant (Web)", "GPT-6.2 Sol (Web)",
       "GPT-6 Sol Instant (Web)", "GPT-6 Sol (Web)",
       "GPT-5.6 Sol Instant (Web)", "GPT-5.6 Sol (Web)", "GPT-5.6 Pro (Web)", "GPT-6 Pro (Web)",
     ]);
@@ -55,6 +56,8 @@ describe("fixed ChatGPT Web model routes", () => {
 
   test("exposes only Plus-eligible routes without the Pro account capability", () => {
     expect(availableChatGptWebModelRoutes(plus).map(route => route.slug)).toEqual([
+      "chatgpt-web/gpt-6.2-sol-instant",
+      "chatgpt-web/gpt-6.2-sol",
       "chatgpt-web/gpt-6-sol-instant",
       "chatgpt-web/gpt-6-sol",
       "chatgpt-web/gpt-5.6-sol-instant",
@@ -71,7 +74,11 @@ describe("fixed ChatGPT Web model routes", () => {
   test("Extra High stays routable without granting Pro or Pro-sized context", () => {
     const config = { ...defaultConfig("full"), extraHighAvailable: true, proAvailable: false };
     expect(availableChatGptWebModelRoutes(config).map(route => route.slug))
-      .toEqual(["chatgpt-web/gpt-6-sol-instant", "chatgpt-web/gpt-6-sol", "chatgpt-web/gpt-5.6-sol-instant", "chatgpt-web/gpt-5.6-sol"]);
+      .toEqual([
+        "chatgpt-web/gpt-6.2-sol-instant", "chatgpt-web/gpt-6.2-sol",
+        "chatgpt-web/gpt-6-sol-instant", "chatgpt-web/gpt-6-sol",
+        "chatgpt-web/gpt-5.6-sol-instant", "chatgpt-web/gpt-5.6-sol",
+      ]);
     const request = parsed("chatgpt-web/extra-high", "low");
     expect(routeChatGptWebRequest(request, config).adapterEffort).toBe("xhigh");
     expect(request.options.reasoning).toBe("xhigh");
@@ -194,6 +201,10 @@ describe("fixed ChatGPT Web model routes", () => {
     expect(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, "low", pro)).toEqual({
       browserMessageTokenLimit: 103_000,
       browserComposerCharLimit: 545_000,
+    });
+    expect(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, "low", pro, "6.2")).toEqual({
+      browserMessageTokenLimit: 103_000,
+      browserComposerCharLimit: 500_000,
     });
     for (const effort of ["medium", "high", "xhigh"] as const) {
       expect(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, effort, pro)).toEqual({

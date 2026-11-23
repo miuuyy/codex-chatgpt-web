@@ -26,7 +26,7 @@ interface RunMessage {
     traceId: string;
     modelId: string;
     reasoning?: string;
-    modelFamily?: "5.6" | "6";
+    modelFamily?: "5.6" | "6" | "6.2";
     capabilities: ChatGptWebCapabilities;
     nativeConnector?: boolean;
     resumeAvailable?: boolean;

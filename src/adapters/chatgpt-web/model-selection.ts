@@ -77,10 +77,14 @@ export function chatGptModelFamilyMatches(
 }
 
 /** #993: the selected family is active; its fixed Instant announcement lives in the inert slider view. */
-export async function hasConfirmedLockedInstant(menu: EffortMenu): Promise<boolean> {
+export async function hasConfirmedLockedInstant(
+  menu: EffortMenu,
+  family: "6" | "6.2" = "6",
+): Promise<boolean> {
   const panel = chatGptLockedEffortPanel(menu.menu);
   if (await panel.count() !== 1) return false;
-  if (await panel.getByRole("menuitemradio", { name: "6", exact: true, checked: true }).count() !== 1) return false;
+  const option = await chatGptModelOption(panel, { version: family, name: "sol" });
+  if (await option.count() !== 1 || await option.getAttribute("aria-checked") !== "true") return false;
   const fixed = panel.locator('..').locator(
     ':scope > [inert][data-active="false"][aria-hidden="true"] [role="menuitem"][aria-disabled="true"][data-reasoning-slider]'
     + ':has([data-model-picker-power-slider] [aria-disabled="true"][data-orientation="horizontal"]'
@@ -95,7 +99,7 @@ export async function hasConfirmedLockedInstant(menu: EffortMenu): Promise<boole
       .filter(node => node?.getAttribute("role") === "status" && layer?.contains(node))
       .map(node => node!.textContent ?? "");
   });
-  return descriptions.length === 1 && chatGptModelFamilyMatches(descriptions, "6", "low");
+  return descriptions.length === 1 && chatGptModelFamilyMatches(descriptions, family, "low");
 }
 
 export async function assertChatGptModelFamily(

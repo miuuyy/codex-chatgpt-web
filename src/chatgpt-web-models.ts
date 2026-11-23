@@ -22,7 +22,7 @@ export type ChatGptWebZeroRiskBackendModel =
 
 export type ChatGptWebCodexEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 export type ChatGptWebAdapterEffort = "low" | "medium" | "high" | "xhigh" | "max";
-export type ChatGptWebModelFamily = "5.6" | "6";
+export type ChatGptWebModelFamily = "5.6" | "6" | "6.2";
 
 /**
  * Measured Plus browser transport windows, including the fixed hidden ChatGPT platform reserve.
@@ -96,8 +96,11 @@ export const CHATGPT_WEB_LUNA_BIGGER_AUTO_COMPACT_TOKEN_LIMIT =
   (CHATGPT_LUNA_BROWSER_INPUT_TOKEN_BUDGET - CHATGPT_WEB_PLATFORM_RESERVE_TOKENS)
   * CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER;
 // Rechecked 2026-10-08 on Pro: GPT-6 Medium/High/Extra High retained all 12
-// markers at 253k input tokens but lost the oldest markers at 283k. Keep room
-// below the passing boundary and compact before reaching this context ceiling.
+// markers at 253k input tokens but lost the oldest markers at 283k.
+// Rechecked 2026-11-23 on Pro: GPT-6.2 Sol Medium matched the same boundary
+// (12/12 random codes at 253k; 8/12 with part 1 lost at 283k; 6.2 Instant
+// recalled 4/4 at 103k single-message but dropped part 1 at 160k two-part).
+// Keep room below the passing boundary and compact before reaching this ceiling.
 export const CHATGPT_WEB_GPT6_SOL_BIGGER_CONTEXT_WINDOW = 240_000;
 export const CHATGPT_WEB_GPT6_SOL_BIGGER_AUTO_COMPACT_TOKEN_LIMIT = 220_000;
 // Rechecked 2026-10-10 on Plus: Medium and High recovered all 12 distributed
@@ -125,7 +128,7 @@ export function supportsChatGptWebBiggerContext(
 ): boolean {
   if (backendModel === CHATGPT_WEB_LUNA_BACKEND_MODEL) return effort === "low" || effort === "medium";
   return backendModel === CHATGPT_WEB_BACKEND_MODEL && (
-    modelFamily !== "6" || effort !== "low"
+    (modelFamily !== "6" && modelFamily !== "6.2") || effort !== "low"
   );
 }
 
@@ -204,7 +207,7 @@ export function resolveChatGptWebContextLimits(
   }
   if (!capabilities.experimentalBiggerContext
     || !supportsChatGptWebBiggerContext(backendModel, effort, modelFamily)) return limits;
-  if (modelFamily === "6" && effort !== "max") {
+  if ((modelFamily === "6" || modelFamily === "6.2") && effort !== "max") {
     return contextLimits(
       capabilities.proAvailable ? CHATGPT_WEB_GPT6_SOL_BIGGER_CONTEXT_WINDOW : CHATGPT_WEB_GPT6_PLUS_BIGGER_CONTEXT_WINDOW,
       capabilities.proAvailable ? CHATGPT_WEB_GPT6_SOL_BIGGER_AUTO_COMPACT_TOKEN_LIMIT : CHATGPT_WEB_GPT6_PLUS_BIGGER_AUTO_COMPACT_TOKEN_LIMIT,
@@ -221,6 +224,7 @@ export function resolveChatGptWebTransportLimits(
   backendModel: ChatGptWebBackendModel,
   effort: ChatGptWebAdapterEffort,
   capabilities: ChatGptWebAccountCapabilities,
+  modelFamily?: ChatGptWebModelFamily,
 ): ChatGptWebTransportLimits {
   if (isChatGptWebZeroRiskBackendModel(backendModel)) return {};
   if (backendModel === CHATGPT_WEB_LUNA_BACKEND_MODEL) {
@@ -238,7 +242,11 @@ export function resolveChatGptWebTransportLimits(
   if (effort === "low") {
     return {
       browserMessageTokenLimit: CHATGPT_WEB_PRO_STANDARD_MESSAGE_TOKEN_LIMIT,
-      browserComposerCharLimit: CHATGPT_WEB_PRO_INSTANT_COMPOSER_CHAR_LIMIT,
+      // Rechecked 2026-11-23 on Pro: 6.2 Instant accepted 500,000 chars and rejected 545,000
+      // with message_length_exceeds_limit.
+      browserComposerCharLimit: modelFamily === "6.2"
+        ? CHATGPT_WEB_PRO_REASONING_COMPOSER_CHAR_LIMIT
+        : CHATGPT_WEB_PRO_INSTANT_COMPOSER_CHAR_LIMIT,
     };
   }
   if (effort === "max") {
@@ -473,6 +481,30 @@ export const CHATGPT_WEB_LEGACY_MODEL_ROUTES: readonly ChatGptWebAutomaticModelR
 
 /** Group only efforts with identical context and compaction budgets. */
 export const CHATGPT_WEB_MODEL_ROUTES: readonly ChatGptWebAutomaticModelRoute[] = [
+  {
+    slug: "chatgpt-web/gpt-6.2-sol-instant",
+    displayName: "GPT-6.2 Sol Instant (Web)",
+    description: "GPT-6.2 Sol Instant through ChatGPT. Uses standard context even when Bigger Context is enabled.",
+    interactionMode: "automatic",
+    backendModel: CHATGPT_WEB_BACKEND_MODEL,
+    modelFamily: "6.2",
+    codexEffort: "low",
+    adapterEffort: "low",
+    supportedCodexEfforts: ["low"],
+    requiresPro: false,
+  },
+  {
+    slug: "chatgpt-web/gpt-6.2-sol",
+    displayName: "GPT-6.2 Sol (Web)",
+    description: "GPT-6.2 Sol with Medium, High, or account-supported Extra High. Experimental Bigger Context is available on Plus and Pro, with a context window sized for the account.",
+    interactionMode: "automatic",
+    backendModel: CHATGPT_WEB_BACKEND_MODEL,
+    modelFamily: "6.2",
+    codexEffort: "high",
+    adapterEffort: "high",
+    supportedCodexEfforts: ["medium", "high", "xhigh"],
+    requiresPro: false,
+  },
   {
     slug: "chatgpt-web/gpt-6-sol-instant",
     displayName: "GPT-6 Sol Instant (Web)",

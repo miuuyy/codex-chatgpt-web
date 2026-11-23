@@ -34,22 +34,42 @@ export const CHATGPT_EFFORT_SLIDER_MAX_OPTIONS = 6;
 
 // 2026-10-28 (#921): separate named rows beside GPT-6.1 and Default.
 const NAMED_GPT6_ROWS = { sol: /^GPT[-\s]?6\s+Sol$/i, astra: /^GPT[-\s]?6\s+Astra$/i };
-// 2026-10-08 (388fca5), localized in 6.1.13: one row controls the whole family.
+// 2026-11-23: Chat tab exposes "Latest" (6.2 Sol + 6 Pro) alongside an explicit "6" row.
+// Prefer explicit version rows before falling back to Latest so Latest and 6 never collide.
+const EXPLICIT_GPT6_ROW = /^(?:GPT[-\s]?)?6(?:\s+Astra)?(?:\s+Pro)?$/i;
+const EXPLICIT_GPT62_ROW = /^(?:GPT[-\s]?)?6\.2(?:\s+Sol)?$/i;
+// 2026-10-08 (388fca5), localized in 6.1.13: one row controls the latest family.
 // A match here is only a UI target. The caller still verifies version/name/effort.
-const SHARED_GPT6_ROW = /^(?:Latest|最新|최신|(?:GPT[-\s]?)?6(?:\s+Astra)?(?:\s+Pro)?)$/i;
+const LATEST_ROW = /^(?:Latest|最新|최신)$/i;
 const GPT56_ROW = /^GPT[-\s]?5\.6\s+Sol(?:\s+Pro)?$/i;
 
 export async function chatGptModelOption(menu: Locator, requested: {
-  version: "5.6" | "6"; name: "sol" | "astra";
+  version: "5.6" | "6" | "6.2"; name: "sol" | "astra";
 }): Promise<Locator> {
+  if (requested.version === "6.2") {
+    const explicit = menu.getByRole("menuitemradio", {
+      name: EXPLICIT_GPT62_ROW, exact: true, includeHidden: true,
+    });
+    if (await explicit.count() > 0) return explicit;
+    return menu.getByRole("menuitemradio", {
+      name: LATEST_ROW, exact: true, includeHidden: true,
+    });
+  }
   if (requested.version === "6") {
     const named = menu.getByRole("menuitemradio", {
       name: NAMED_GPT6_ROWS[requested.name], exact: true, includeHidden: true,
     });
     if (await named.count() > 0) return named;
+    const explicit = menu.getByRole("menuitemradio", {
+      name: EXPLICIT_GPT6_ROW, exact: true, includeHidden: true,
+    });
+    if (await explicit.count() > 0) return explicit;
+    return menu.getByRole("menuitemradio", {
+      name: LATEST_ROW, exact: true, includeHidden: true,
+    });
   }
   return menu.getByRole("menuitemradio", {
-    name: requested.version === "5.6" ? GPT56_ROW : SHARED_GPT6_ROW,
+    name: GPT56_ROW,
     exact: true, includeHidden: true,
   });
 }
@@ -81,10 +101,10 @@ export async function openChatGptModelRows(menu: Locator): Promise<void> {
 export function parseChatGptModelAnnouncement(text: string): {
   version: string; name?: string; mode: string;
 } | undefined {
-  // #875, shipped 2026-10-21 (6f43747): the active header can concatenate labels:
-  // "5.6 Sol" + "5.6 Pro". Only collapse an identical repeated version.
+  // #875, shipped 2026-10-21 (6f43747); 2026-11-23 live capture ("6" + "6 Pro" / "6 High"):
+  // the active header can concatenate model and effort labels. Collapse only an identical repeated version.
   const normalized = text.normalize("NFKC").replace(/\p{Cf}/gu, "").replace(/\s+/g, " ").trim()
-    .replace(/^((?:GPT[-\s]?)?(\d+(?:\.\d+)?)\s+(?:Sol|Astra))\s+(?:GPT[-\s]?)?\2\s+/i, "$1 ");
+    .replace(/^((?:GPT[-\s]?)?(\d+(?:\.\d+)?)(?:\s+(?:Sol|Astra))?)\s+(?:GPT[-\s]?)?\2\s+/i, "$1 ");
   const match = /^(?:GPT[-\s]?)?(\d+(?:\.\d+)?)(?:\s+(Sol|Astra))?\s+([^\p{P}]+)(?:\p{P}|$)/iu.exec(normalized);
   if (!match) return undefined;
   const mode = match[3]!.trim();
@@ -144,8 +164,9 @@ export interface ChatGptEffortActivation {
   slider: Locator;
 }
 
-// #993, November 15. The active list contains the two model families and two
-// disabled effort rows. A locked upsell or an unmounted slider alone proves nothing.
+// #993, November 15; extended November 23 for the three-family picker (Latest, 6, GPT-5.6 Sol).
+// The active list contains the model families and exactly two disabled effort rows.
+// A locked upsell or an unmounted slider alone proves nothing.
 const radio = '[role="menuitemradio"]';
 const enabledFamily = radio + ':not([data-disabled]):not([aria-disabled="true"])';
 const disabledEffort = radio + '[aria-disabled="true"][data-disabled][aria-checked="false"][data-state]';
@@ -153,7 +174,8 @@ const lockedPanel = '[data-active="true"][aria-hidden="false"]:not([inert]):not(
   + `:has(> ${enabledFamily}[aria-checked="true"][data-model-selected])`
   + `:has(> ${enabledFamily} [data-menu-row-content] > :text-is("6"))`
   + `:has(> ${enabledFamily} [data-menu-row-content] > :text-is("GPT-5.6 Sol"))`
-  + `:has(> ${disabledEffort} ~ ${disabledEffort}):not(:has(> :nth-child(5 of ${radio})))`
+  + `:has(> ${disabledEffort} ~ ${disabledEffort}):not(:has(> ${disabledEffort} ~ ${disabledEffort} ~ ${disabledEffort}))`
+  + `:not(:has(> :nth-child(6 of ${radio})))`
   + ':not(:has([role="slider"]))';
 
 export function chatGptLockedEffortPanel(menu: Locator): Locator {

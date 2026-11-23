@@ -135,3 +135,97 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("localized position punctuati
     expect(await selectGpt6Pro(picker)).toEqual({ ok: true, label: "Pro", usageModel: "gpt-6-pro", draft: "Draft" });
   }
 }, 60_000);
+
+// Reconstructed from live November 23 DEV capture: Latest (6.2 Sol + 6 Pro), explicit 6 (with "6 6 <effort>" header), GPT-5.6 Sol.
+const nov23Picker = (oldLatest = false) => `<form><div id="prompt-textarea" contenteditable="true">Draft</div>
+  <button type="button" data-composer-navigation-target="reasoning" data-selected-reasoning-effort="medium" aria-haspopup="menu" aria-controls="picker" aria-expanded="false">${oldLatest ? "6 Medium" : "6.2 Medium"}</button></form>
+  <div id="picker" role="menu" hidden><div data-model-picker-view="simple">
+    <div id="simple" data-active="true" aria-hidden="false">
+      <div role="menuitem" data-model-picker-view-toggle="true" tabindex="0"><div data-menu-row-content><span id="model"></span><span id="effort"></span></div></div>
+      <span role="status" id="status"></span><span id="hint">Use Left and Right arrow keys to adjust power</span>
+      <div role="menuitem" aria-describedby="status hint" tabindex="-1"><div data-model-picker-power-slider style="height:30px;width:250px"></div></div>
+    </div>
+    <div id="advanced" aria-hidden="true" inert>
+      <div role="menuitemradio" aria-checked="true" data-model-selected="true"><div data-menu-row-content><span>Latest</span></div></div>
+      <div role="menuitemradio" aria-checked="false"><div data-menu-row-content><span>6</span></div></div>
+      <div role="menuitemradio" aria-checked="false"><div data-menu-row-content><span>GPT-5.6 Sol</span></div></div>
+    </div>
+  </div></div><script>(() => {
+    const oldLatest = ${JSON.stringify(oldLatest)};
+    const button=document.querySelector('button'), menu=document.querySelector('#picker');
+    const simple=document.querySelector('#simple'), advanced=document.querySelector('#advanced');
+    const efforts=['Instant','Medium','High','Extra High','Pro'];
+    let selected='Latest', value=1;
+    function render() {
+      const e=efforts[value];
+      let modelText='', effortText='', statusText='';
+      if (selected==='Latest') {
+        if (value===4) { modelText='6'; effortText='6 Pro'; statusText='6 Pro, 5 of 5.'; }
+        else { modelText=oldLatest?'6':'6.2'; effortText=e; statusText=(oldLatest?'6 ':'6.2 ')+e+', '+(value+1)+' of 5.'; }
+      } else if (selected==='6') {
+        modelText='6'; effortText='6 '+e; statusText='6 '+e+', '+(value+1)+' of 5.';
+      } else {
+        modelText='5.6 Sol'; effortText='5.6 '+e; statusText='5.6 '+e+', '+(value+1)+' of 5.';
+      }
+      document.querySelector('#model').textContent=modelText;
+      document.querySelector('#effort').textContent=effortText;
+      document.querySelector('#status').textContent=statusText;
+      document.querySelector('[data-model-picker-power-slider]').innerHTML='<span data-orientation="horizontal" aria-disabled="false">'+efforts.map((_,i)=>'<span data-selected="'+(i<=value)+'"></span>').join('')+'<span role="slider" aria-hidden="true" aria-valuemin="0" aria-valuemax="4" aria-valuenow="'+value+'"></span></span>';
+    }
+    function view(adv) {
+      document.querySelector('[data-model-picker-view]').setAttribute('data-model-picker-view',adv?'advanced':'simple');
+      simple.inert=adv; simple.setAttribute('aria-hidden',String(adv)); simple.style.display=adv?'none':'';
+      advanced.inert=!adv; advanced.setAttribute('aria-hidden',String(!adv)); advanced.style.display=adv?'':'none';
+    }
+    button.onclick=()=>{menu.hidden=false;button.setAttribute('aria-expanded','true');view(false);render();};
+    document.querySelector('[data-model-picker-view-toggle]').onclick=()=>view(true);
+    for(const row of advanced.children) row.onclick=()=>{selected=row.textContent.trim();for(const other of advanced.children)other.setAttribute('aria-checked',String(other===row));view(false);render();};
+    document.addEventListener('keydown',event=>{
+      if(event.key==='Escape'){menu.hidden=true;button.setAttribute('aria-expanded','false');button.textContent=/^[0-9]/.test(document.querySelector('#effort').textContent)?document.querySelector('#effort').textContent:document.querySelector('#model').textContent+' '+document.querySelector('#effort').textContent;}
+      else if(event.key==='ArrowLeft'||event.key==='ArrowRight'){value=Math.max(0,Math.min(4,value+(event.key==='ArrowRight'?1:-1)));render();event.preventDefault();}
+    });
+    render();view(false);
+  })();</script>`;
+
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("November 23 three-family picker selects GPT-6.2 Sol, GPT-6 (with repeated header) and GPT-5.6 without collision", async () => {
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  try {
+    const caps = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true };
+    const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+    const page = await browser.newPage();
+    for (const [family, effort, expectedLabel, expectedUsage] of [
+      ["6.2", "low", "6.2 Instant", "other"],
+      ["6.2", "high", "6.2 High", "other"],
+      ["6.2", "xhigh", "6.2 Extra High", "other"],
+      ["6", "low", "6 Instant", "other"],
+      ["6", "high", "6 High", "other"],
+      ["6", "max", "6 Pro", "gpt-6-pro"],
+      ["5.6", "high", "5.6 High", "other"],
+      ["5.6", "max", "5.6 Pro", "gpt-5.6-pro"],
+    ] as const) {
+      await page.goto("about:blank");
+      await page.setContent(nov23Picker(false));
+      const mode = await worker.selectModelAndEffort(page, CHATGPT_WEB_MODEL_ID, effort, caps, undefined, true, family);
+      expect(mode.selection.label).toBe(expectedLabel);
+      expect(mode.usageModel).toBe(expectedUsage);
+      await worker.assertSelectedEffort(page, mode);
+      expect(await page.locator("#prompt-textarea").innerText()).toBe("Draft");
+    }
+  } finally { await browser.close(); }
+}, 60_000);
+
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("November 23 picker fails closed when 6.2 is requested on an older account whose Latest still serves GPT-6", async () => {
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  try {
+    const caps = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true };
+    const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+    const page = await browser.newPage();
+    await page.setContent(nov23Picker(true));
+    let failure: unknown;
+    try {
+      await worker.selectModelAndEffort(page, CHATGPT_WEB_MODEL_ID, "high", caps, undefined, false, "6.2");
+    } catch (error) { failure = error; }
+    expect(String(failure)).toContain("ChatGPT model 6.2 could not be selected and verified");
+    expect(await page.locator("#prompt-textarea").innerText()).toBe("Draft");
+  } finally { await browser.close(); }
+}, 30_000);
