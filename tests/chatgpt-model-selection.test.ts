@@ -1,6 +1,38 @@
 import { expect, test } from "bun:test";
 import { chatGptModelFamilyMatches, selectChatGptModelFamily } from "../src/adapters/chatgpt-web/model-selection";
 import { chatGptUsageModelFromAnnouncements } from "../src/adapters/chatgpt-web/limits";
+import { chatGptModelOption } from "../src/chatgpt-ui/model-picker";
+
+test("GPT-6 lookup prefers a visible explicit row over a hidden named duplicate", async () => {
+  const rows = [
+    { label: "GPT-6 Sol", visible: false, checked: false },
+    { label: "GPT-6", visible: true, checked: true },
+  ];
+  const locatorFor = (hits: typeof rows) => ({
+    filter: ({ visible }: { visible?: boolean }) =>
+      locatorFor(visible === true ? hits.filter(row => row.visible) : hits),
+    count: async () => hits.length,
+    getAttribute: async (name: string) => {
+      if (hits.length !== 1) return null;
+      if (name === "aria-checked") return String(hits[0]!.checked);
+      if (name === "data-label") return hits[0]!.label;
+      return null;
+    },
+  });
+  const menu = {
+    getByRole: (_role: string, options: { name: RegExp; includeHidden?: boolean }) => {
+      const hits = rows.filter(row =>
+        options.name.test(row.label) && (options.includeHidden === true || row.visible)
+      );
+      return locatorFor(hits);
+    },
+  } as unknown as Parameters<typeof chatGptModelOption>[0];
+
+  const option = await chatGptModelOption(menu, { version: "6", name: "sol" });
+  expect(await option.count()).toBe(1);
+  expect(await option.getAttribute("data-label")).toBe("GPT-6");
+  expect(await option.getAttribute("aria-checked")).toBe("true");
+});
 
 test("model selection recognizes Latest in the launcher languages without accepting other model names", async () => {
   for (const [label, accepted] of [

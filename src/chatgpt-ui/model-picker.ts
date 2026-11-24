@@ -56,10 +56,21 @@ export async function chatGptModelOption(menu: Locator, requested: {
     });
   }
   if (requested.version === "6") {
+    const visibleNamed = menu.getByRole("menuitemradio", {
+      name: NAMED_GPT6_ROWS[requested.name], exact: true,
+    }).filter({ visible: true });
+    if (await visibleNamed.count() > 0) return visibleNamed;
+
+    const visibleExplicit = menu.getByRole("menuitemradio", {
+      name: EXPLICIT_GPT6_ROW, exact: true,
+    }).filter({ visible: true });
+    if (await visibleExplicit.count() > 0) return visibleExplicit;
+
     const named = menu.getByRole("menuitemradio", {
       name: NAMED_GPT6_ROWS[requested.name], exact: true, includeHidden: true,
     });
     if (await named.count() > 0) return named;
+
     const explicit = menu.getByRole("menuitemradio", {
       name: EXPLICIT_GPT6_ROW, exact: true, includeHidden: true,
     });
