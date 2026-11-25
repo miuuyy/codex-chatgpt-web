@@ -137,7 +137,7 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("localized position punctuati
 }, 60_000);
 
 // Reconstructed from live November 23 DEV capture: Latest (6.2 Sol + 6 Pro), explicit 6 (with "6 6 <effort>" header), GPT-5.6 Sol.
-const nov23Picker = (oldLatest = false) => `<form><div id="prompt-textarea" contenteditable="true">Draft</div>
+const nov23Picker = (oldLatest = false, retirementNotice: "" | "inline" | "block" = "") => `<form><div id="prompt-textarea" contenteditable="true">Draft</div>
   <button type="button" data-composer-navigation-target="reasoning" data-selected-reasoning-effort="medium" aria-haspopup="menu" aria-controls="picker" aria-expanded="false">${oldLatest ? "6 Medium" : "6.2 Medium"}</button></form>
   <div id="picker" role="menu" hidden><div data-model-picker-view="simple">
     <div id="simple" data-active="true" aria-hidden="false">
@@ -148,7 +148,7 @@ const nov23Picker = (oldLatest = false) => `<form><div id="prompt-textarea" cont
     <div id="advanced" aria-hidden="true" inert>
       <div role="menuitemradio" aria-checked="true" data-model-selected="true"><div data-menu-row-content><span>Latest</span></div></div>
       <div role="menuitemradio" aria-checked="false"><div data-menu-row-content><span>6</span></div></div>
-      <div role="menuitemradio" aria-checked="false"><div data-menu-row-content><span>GPT-5.6 Sol</span></div></div>
+      <div role="menuitemradio" aria-checked="false"><div data-menu-row-content><span>GPT-5.6 Sol</span>${retirementNotice === "inline" ? "<span>Leaving on December 23</span>" : retirementNotice === "block" ? "<div>Leaving on December 23</div>" : ""}</div></div>
     </div>
   </div></div><script>(() => {
     const oldLatest = ${JSON.stringify(oldLatest)};
@@ -179,7 +179,7 @@ const nov23Picker = (oldLatest = false) => `<form><div id="prompt-textarea" cont
     }
     button.onclick=()=>{menu.hidden=false;button.setAttribute('aria-expanded','true');view(false);render();};
     document.querySelector('[data-model-picker-view-toggle]').onclick=()=>view(true);
-    for(const row of advanced.children) row.onclick=()=>{selected=row.textContent.trim();for(const other of advanced.children)other.setAttribute('aria-checked',String(other===row));view(false);render();};
+    for(const row of advanced.children) row.onclick=()=>{selected=row.querySelector('[data-menu-row-content] > :first-child').textContent.trim();for(const other of advanced.children)other.setAttribute('aria-checked',String(other===row));view(false);render();};
     document.addEventListener('keydown',event=>{
       if(event.key==='Escape'){menu.hidden=true;button.setAttribute('aria-expanded','false');button.textContent=/^[0-9]/.test(document.querySelector('#effort').textContent)?document.querySelector('#effort').textContent:document.querySelector('#model').textContent+' '+document.querySelector('#effort').textContent;}
       else if(event.key==='ArrowLeft'||event.key==='ArrowRight'){value=Math.max(0,Math.min(4,value+(event.key==='ArrowRight'?1:-1)));render();event.preventDefault();}
@@ -229,3 +229,20 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("November 23 picker fails clo
     expect(await page.locator("#prompt-textarea").innerText()).toBe("Draft");
   } finally { await browser.close(); }
 }, 30_000);
+
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("GPT-5.6 retirement subtitle preserves exact family and effort verification (#1013)", async () => {
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  try {
+    const caps = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true };
+    const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+    const page = await browser.newPage();
+    for (const notice of ["inline", "block"] as const) {
+      await page.goto("about:blank");
+      await page.setContent(nov23Picker(false, notice));
+      const mode = await worker.selectModelAndEffort(page, CHATGPT_WEB_MODEL_ID, "high", caps, undefined, false, "5.6");
+      expect(mode.selection.label).toBe("5.6 High");
+      await worker.assertSelectedEffort(page, mode);
+      expect(await page.locator("#prompt-textarea").innerText()).toBe("Draft");
+    }
+  } finally { await browser.close(); }
+}, 60_000);
