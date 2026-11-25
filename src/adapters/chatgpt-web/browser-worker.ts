@@ -947,6 +947,7 @@ export interface ResolvedBrowserConfig {
   headed: boolean;
   autoApproveToolCalls: boolean;
   useTemporaryChats: boolean;
+  chatgptProjectUrl?: string;
 }
 
 export function chatGptTurnIsComplete(state: {
@@ -1730,6 +1731,9 @@ export function resolveBrowserConfig(provider: CodexProviderConfig): ResolvedBro
     headed: configured.headed !== false,
     autoApproveToolCalls: configured.autoApproveToolCalls === true,
     useTemporaryChats: configured.useTemporaryChats !== false,
+    ...(configured.chatgptProjectUrl !== undefined
+      ? { chatgptProjectUrl: chatGptNewChatUrl(configured.useTemporaryChats !== false, configured.chatgptProjectUrl) }
+      : {}),
   };
 }
 
@@ -2400,7 +2404,7 @@ export class ChatGptBrowserWorker {
     // connector is present in the catalog. Navigating again here destroys that freshly hydrated
     // document and made the first verification race a second SPA bootstrap. A leased turn starts on
     // about:blank and therefore still performs exactly one navigation through this same method.
-    const targetUrl = chatGptNewChatUrl(this.config.useTemporaryChats);
+    const targetUrl = chatGptNewChatUrl(this.config.useTemporaryChats, this.config.chatgptProjectUrl);
     if (page.url() !== targetUrl) {
       await withBrowserTurnAbort(page.goto(targetUrl, {
         waitUntil: "domcontentloaded",
@@ -2415,7 +2419,7 @@ export class ChatGptBrowserWorker {
     await captureDiagnostic?.("composer-ready");
     await throwIfChatGptSessionFailureAlert(page);
     await assertAuthenticatedChatGptPage(page);
-    await assertNewChatPage(page, this.config.useTemporaryChats);
+    await assertNewChatPage(page, this.config.useTemporaryChats, this.config.chatgptProjectUrl);
     await captureDiagnostic?.("session-verified");
     return composer;
   }
@@ -3894,13 +3898,30 @@ export class ChatGptBrowserWorker {
     try {
       await withBrowserTurnAbort(input.setInputFiles(files), abortSignal);
       let visiblePreviews = 0;
+      let previewFailure: unknown;
       try {
         const previews = files.map(async file => {
           await chatGptAttachmentPreview(composerForm, file)
             .waitFor({ state: "visible", timeout: 60_000, signal: previewWait.signal });
           visiblePreviews++;
-        });
-        await withBrowserTurnAbort(Promise.all([uploads.wait(abortSignal), ...previews]), abortSignal);
+        }).map(preview => preview.catch(error => {
+          // A missing tile is tolerated below; a closed page or other failure is not.
+          if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) return;
+          previewFailure ??= error;
+        }));
+        // ChatGPT's network-confirmed upload is authoritative; the preview tile is a secondary
+        // DOM check whose markup changes between composer variants (e.g. inside Projects). Once
+        // every upload is confirmed, give previews a short grace and then rely on the send button.
+        await withBrowserTurnAbort(uploads.wait(abortSignal), abortSignal);
+        await withBrowserTurnAbort(Promise.race([
+          Promise.all(previews),
+          new Promise<void>(resolveGrace => setTimeout(resolveGrace, 10_000)),
+        ]), abortSignal);
+        if (previewFailure !== undefined) throw previewFailure;
+        if (visiblePreviews < files.length) {
+          console.warn(`[chatgpt-web] attachment previews not recognized (${visiblePreviews}/${files.length}) after confirmed uploads; continuing`);
+          previewWait.abort();
+        }
       } catch (error) {
         uploads.throwIfFailed();
         if (abortSignal?.aborted || !(error instanceof Error) || error.name !== "TimeoutError") throw error;

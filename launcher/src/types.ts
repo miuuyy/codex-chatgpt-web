@@ -23,6 +23,7 @@ export interface LauncherState {
   experimentalSkillAttachments: boolean;
   experimentalFreshConversationPerTurn: boolean;
   useTemporaryChats: boolean;
+  chatgptProjectUrl?: string;
   zeroRiskProEnabled: boolean;
   sidebarOpen: boolean;
   sidebarWidth: number;
@@ -184,6 +185,7 @@ export interface LauncherApi {
   setAutoApproveToolCalls(enabled: boolean): Promise<LauncherState>;
   setFreshConversationPerTurn(enabled: boolean): Promise<LauncherState>;
   setTemporaryChats(enabled: boolean): Promise<LauncherState>;
+  setChatGptProjectUrl(projectUrl: string): Promise<LauncherState>;
   setZeroRiskPro(enabled: boolean): Promise<LauncherState>;
   setBrowserInteractionMode(mode: BrowserInteractionMode): Promise<{
     state: LauncherState;

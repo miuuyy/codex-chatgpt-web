@@ -7,6 +7,7 @@ import {
   CHATGPT_WEB_ZERO_RISK_BACKEND_MODEL,
   CHATGPT_WEB_ZERO_RISK_PRO_BACKEND_MODEL,
 } from "./chatgpt-web-models";
+import { normalizeChatGptProjectUrl } from "./chatgpt-project-url";
 import type { CodexProviderConfig } from "./types";
 import { VERSION } from "./version";
 
@@ -122,6 +123,8 @@ export interface AppConfig {
   experimentalSkillAttachments: boolean;
   experimentalFreshConversationPerTurn: boolean;
   useTemporaryChats: boolean;
+  /** Optional canonical ChatGPT Project page URL for new saved chats; requires useTemporaryChats=false. */
+  chatgptProjectUrl?: string;
   /** Explicitly install the additional Pro-sized model row while Zero Risk is active. */
   zeroRiskProEnabled: boolean;
   /** Optional adapter-silence budget for the Responses watchdog. */
@@ -554,6 +557,17 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (parsed.useTemporaryChats !== undefined && typeof parsed.useTemporaryChats !== "boolean") {
     throw new Error(`Invalid useTemporaryChats in ${path}`);
   }
+  let chatgptProjectUrl: string | undefined;
+  if (parsed.chatgptProjectUrl !== undefined) {
+    try {
+      chatgptProjectUrl = normalizeChatGptProjectUrl(parsed.chatgptProjectUrl);
+    } catch (error) {
+      throw new Error(`Invalid chatgptProjectUrl in ${path}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (parsed.useTemporaryChats !== false) {
+      throw new Error(`chatgptProjectUrl in ${path} requires Temporary Chat to be off (setup --ordinary-chats)`);
+    }
+  }
   const experimentalSkillAttachments = parsed.experimentalSkillAttachments === true;
   if (parsed.composerPredictionsEnabled !== undefined && typeof parsed.composerPredictionsEnabled !== "boolean") {
     throw new Error(`Invalid composerPredictionsEnabled in ${path}`);
@@ -592,6 +606,7 @@ function parseConfig(value: unknown, path: string): AppConfig {
     experimentalSkillAttachments,
     experimentalFreshConversationPerTurn,
     useTemporaryChats: parsed.useTemporaryChats !== false,
+    ...(chatgptProjectUrl ? { chatgptProjectUrl } : {}),
     zeroRiskProEnabled,
   } as AppConfig;
 }
@@ -650,6 +665,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       experimentalSkillAttachments: manual ? false : config.experimentalSkillAttachments,
       experimentalFreshConversationPerTurn: !manual && config.experimentalFreshConversationPerTurn === true,
       useTemporaryChats: config.useTemporaryChats,
+      ...(config.chatgptProjectUrl ? { chatgptProjectUrl: config.chatgptProjectUrl } : {}),
       ...(config.stallTimeoutSec !== undefined ? { stallTimeoutSec: config.stallTimeoutSec } : {}),
       autoApproveToolCalls: manual ? false : config.autoApproveToolCalls,
     },

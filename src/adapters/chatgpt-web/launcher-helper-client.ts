@@ -280,6 +280,7 @@ export class LauncherBrowserHelperClient {
             turnTimeoutMs: this.config.turnTimeoutMs,
             autoApproveToolCalls: this.config.autoApproveToolCalls,
             useTemporaryChats: this.config.useTemporaryChats,
+            ...(this.config.chatgptProjectUrl !== undefined ? { chatgptProjectUrl: this.config.chatgptProjectUrl } : {}),
           },
           turn: {
             traceId: turn.traceId,

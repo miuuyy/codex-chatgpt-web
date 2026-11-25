@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { existsSync } from "node:fs";
 import { stdin, stdout } from "node:process";
+import { normalizeChatGptProjectUrl } from "../chatgpt-project-url";
 import { DEV_CHATGPT_CONNECTOR_NAME, loadConfig } from "../config";
 import {
   inspectLauncherBrowserHost,
@@ -360,6 +361,10 @@ export async function runDevCommand(args: string[]): Promise<void> {
     const temporaryChats = takeFlag(args, "--temporary-chats");
     const ordinaryChats = takeFlag(args, "--ordinary-chats");
     if (temporaryChats && ordinaryChats) throw new Error("Choose --temporary-chats or --ordinary-chats");
+    const projectUrl = takeOption(args, "--project-url");
+    const clearProjectUrl = takeFlag(args, "--clear-project-url");
+    if (projectUrl !== undefined && clearProjectUrl) throw new Error("Choose --project-url or --clear-project-url");
+    const chatgptProjectUrl = projectUrl !== undefined ? normalizeChatGptProjectUrl(projectUrl) : undefined;
     const freshConversation = takeFlag(args, "--fresh-conversation");
     const retainedConversation = takeFlag(args, "--retained-conversation");
     if (freshConversation && retainedConversation) {
@@ -384,6 +389,7 @@ export async function runDevCommand(args: string[]): Promise<void> {
       ...(predictions || noPredictions ? { composerPredictionsEnabled: predictions } : {}),
       ...(skillAttachments || inlineSkills ? { experimentalSkillAttachments: skillAttachments } : {}),
       ...(temporaryChats || ordinaryChats ? { useTemporaryChats: temporaryChats } : {}),
+      ...(chatgptProjectUrl !== undefined ? { chatgptProjectUrl } : clearProjectUrl ? { chatgptProjectUrl: null } : {}),
       ...(freshConversation || retainedConversation ? { experimentalFreshConversationPerTurn: freshConversation } : {}),
       ...(tunnelId ? { tunnelId } : {}),
       ...(runtimeKeyFile ? { runtimeKeyFile } : {}),

@@ -2496,15 +2496,10 @@ test.each(["visible", "missing", "page closed"])("image attachment readiness che
     images: [{ ref: "codex-input-image-1", imageUrl }],
   });
   if (outcome === "missing") {
-    const error = await attach.catch((failure: Error) => failure);
-    expect(error).toBeInstanceOf(ChatGptWebAdapterError);
-    if (!(error instanceof ChatGptWebAdapterError)) throw new Error("Expected an attachment verification error");
-    expect(error.code).toBe("chatgpt_attachment_unconfirmed");
-    expect(error.retryable).toBe(false);
-    expect(error.message).toContain("0/1 attachment previews");
-    expect(error.message).toContain("confirmed 1/1 uploads");
-    expect(error.message).not.toContain("private file");
-    expect(calls.some(([action]) => action === "sendEnabled")).toBe(false);
+    // Network-confirmed uploads are authoritative: an unrecognized preview tile (composer markup
+    // varies, e.g. inside Projects) must not stall the turn before Send.
+    await attach;
+    expect(calls.some(([action]) => action === "sendEnabled")).toBe(true);
     return;
   }
   if (outcome === "page closed") {

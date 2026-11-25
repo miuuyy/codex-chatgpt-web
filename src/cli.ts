@@ -29,6 +29,7 @@ import { existingFullSetupCredentials, preflightSetup, setup, type SetupOptions 
 import { installRuntimeKeyBytes, managedRuntimeKeyPath, stopTunnel, tunnelStatus, waitForTunnelReady } from "./tunnel";
 import { getTunnelServiceStatus, restartTunnelService, startTunnelService, stopTunnelService, uninstallTunnelService } from "./tunnel-service";
 import { VERSION } from "./version";
+import { normalizeChatGptProjectUrl } from "./chatgpt-project-url";
 import { runDevCommand } from "./dev-chat/cli";
 
 const HELP = `codex-chatgpt-web ${VERSION}
@@ -80,6 +81,8 @@ Setup options:
   --bigger-context             Enable experimental adaptive 1/2/6-message context
   --fresh-conversation         Start each automatic turn in a fresh browser chat
   --retained-conversation      Reuse the browser chat between turns (default)
+  --project-url <url>          Start new saved chats in this ChatGPT Project (https://chatgpt.com/g/g-p-<id>/project); needs --ordinary-chats
+  --clear-project-url          Stop routing new chats into a ChatGPT Project
   --temporary-chats            Use Temporary Chat for new task conversations (default)
   --ordinary-chats             Keep new task conversations in ChatGPT history
   --composer-predictions       Enable next-message suggestions using GPT-6 Sol Medium (default)
@@ -321,6 +324,11 @@ async function setupCommand(args: string[]): Promise<void> {
   const ordinaryChats = takeFlag(args, "--ordinary-chats");
   if (temporaryChats && ordinaryChats) throw new Error("Choose --temporary-chats or --ordinary-chats");
   if (temporaryChats || ordinaryChats) options.useTemporaryChats = temporaryChats;
+  const projectUrl = takeOption(args, "--project-url");
+  const clearProjectUrl = takeFlag(args, "--clear-project-url");
+  if (projectUrl !== undefined && clearProjectUrl) throw new Error("Choose --project-url or --clear-project-url");
+  if (projectUrl !== undefined) options.chatgptProjectUrl = normalizeChatGptProjectUrl(projectUrl);
+  if (clearProjectUrl) options.chatgptProjectUrl = null;
   const freshConversation = takeFlag(args, "--fresh-conversation");
   const retainedConversation = takeFlag(args, "--retained-conversation");
   if (freshConversation && retainedConversation) {

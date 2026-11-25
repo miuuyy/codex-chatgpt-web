@@ -127,6 +127,8 @@ Settings can also cancel a retained browser turn or remove the Codex integration
 history. Turn it off to use ordinary saved chats or if your connector is unavailable in that mode.
 ChatGPT memory and custom instructions may apply in either mode. **New browser chat for each turn**
 separately controls conversation reuse. An explicit choice to disable Temporary Chat is preserved when updating.
+**Settings → ChatGPT Project** (optional, needs Temporary Chat off) sends new saved chats to a project
+you paste as `https://chatgpt.com/g/g-p-<id>/project`; leave it empty for the default behaviour.
 Set `CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1` only when every browser checkpoint needs a screenshot.
 
 New installs use **Compatibility V1** for cross-backend subagents. **Native** preserves Codex's own

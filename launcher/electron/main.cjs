@@ -528,12 +528,13 @@ function syncBrowserPreferences(stateStore, config) {
   const biggerContextEnabled = config?.experimentalBiggerContext === true;
   const composerPredictionsEnabled = config?.composerPredictionsEnabled !== false;
   const useTemporaryChats = config?.useTemporaryChats !== false;
+  const chatgptProjectUrl = typeof config?.chatgptProjectUrl === "string" ? config.chatgptProjectUrl : "";
   const enabled = config?.experimentalFreshConversationPerTurn === true;
   const autoApproveToolCalls = config?.autoApproveToolCalls === true;
   const current = stateStore.read();
   if (runtimeHost?.currentOperation()) return current;
   const retentionChanged = current.useTemporaryChats !== useTemporaryChats || current.experimentalFreshConversationPerTurn !== enabled
-    || current.experimentalBiggerContext !== biggerContextEnabled;
+    || current.experimentalBiggerContext !== biggerContextEnabled || (current.chatgptProjectUrl ?? "") !== chatgptProjectUrl;
   if (!retentionChanged && current.composerPredictionsEnabled === composerPredictionsEnabled
     && current.autoApproveToolCalls === autoApproveToolCalls
     && current.biggerContextAvailable === biggerContextAvailable) return current;
@@ -541,10 +542,11 @@ function syncBrowserPreferences(stateStore, config) {
   // persistence policy changes, including changes made by the CLI.
   const retainedKeys = new Set((retentionChanged ? [...browserHost.turnTabs.values()] : [])
     .filter(tab => tab.status === "ready" && tab.conversationKey
-      && (current.useTemporaryChats !== useTemporaryChats || tab.interactionMode === "automatic"))
+      && (current.useTemporaryChats !== useTemporaryChats || (current.chatgptProjectUrl ?? "") !== chatgptProjectUrl
+        || tab.interactionMode === "automatic"))
     .map(tab => tab.conversationKey));
   for (const key of retainedKeys) releaseRetainedConversation(browserHost, key);
-  const state = stateStore.update({ composerPredictionsEnabled, useTemporaryChats, experimentalFreshConversationPerTurn: enabled, autoApproveToolCalls, biggerContextAvailable,
+  const state = stateStore.update({ composerPredictionsEnabled, useTemporaryChats, chatgptProjectUrl, experimentalFreshConversationPerTurn: enabled, autoApproveToolCalls, biggerContextAvailable,
     experimentalBiggerContext: biggerContextEnabled });
   send("launcher:state-changed", state);
   return state;
@@ -988,6 +990,13 @@ function registerIpc({ logger, stateStore }) {
     await runtimeHost.setTemporaryChats(enabled);
     return syncBrowserPreferences(stateStore, runtimeHost.runtimeConfigSnapshot().config);
   });
+  handle("launcher:chatgpt-project-url", async (_event, projectUrl) => {
+    if (browserHost.activeTraceId || browserHost.currentOperation()) {
+      throw new Error("Finish or cancel active ChatGPT turns before changing the ChatGPT Project");
+    }
+    await runtimeHost.setChatGptProjectUrl(projectUrl);
+    return syncBrowserPreferences(stateStore, runtimeHost.runtimeConfigSnapshot().config);
+  });
   handle("launcher:auto-approve-tool-calls", async (_event, enabled) => {
     if (browserHost.activeTraceId || browserHost.currentOperation()) {
       throw new Error("Finish or cancel active ChatGPT turns before changing tool approvals");
@@ -1271,6 +1280,7 @@ async function start() {
     publishState: (state) => send("launcher:browser-state", state),
     showWindow: showMainWindow,
     getUseTemporaryChats: () => stateStore.read().useTemporaryChats,
+    getChatGptProjectUrl: () => stateStore.read().chatgptProjectUrl || "",
     getBrowserInteractionMode: () => stateStore.read().browserInteractionMode,
   });
   await browserHost.ready();

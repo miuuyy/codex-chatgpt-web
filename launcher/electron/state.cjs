@@ -21,6 +21,7 @@ const DEFAULT_STATE = Object.freeze({
   experimentalSkillAttachments: false,
   experimentalFreshConversationPerTurn: false,
   useTemporaryChats: true,
+  chatgptProjectUrl: "",
   zeroRiskProEnabled: false,
   browserSmokePassed: false,
   browserSmokeVersion: null,
@@ -70,6 +71,9 @@ function readState(filePath) {
     if (state.coreSetupComplete !== true) {
       if (state.onboardingComplete !== true) state.browserInteractionMode = "automatic";
       state.zeroRiskProEnabled = false;
+    }
+    if (typeof state.chatgptProjectUrl !== "string" || state.chatgptProjectUrl.length > 300) {
+      state.chatgptProjectUrl = DEFAULT_STATE.chatgptProjectUrl;
     }
     if (state.browserSmokeVersion !== null
       && (typeof state.browserSmokeVersion !== "string" || state.browserSmokeVersion.length > 128)) {

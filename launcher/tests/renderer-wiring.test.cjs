@@ -613,7 +613,7 @@ test("browser preference IPC commits only after setup succeeds and refuses activ
   for (const [property, method, channel, nextChannel] of [
     ["composerPredictionsEnabled", "setComposerPredictions", "launcher:composer-predictions", "launcher:skill-attachments"],
     ["experimentalFreshConversationPerTurn", "setFreshConversationPerTurn", "launcher:fresh-conversation-per-turn", "launcher:temporary-chats"],
-    ["useTemporaryChats", "setTemporaryChats", "launcher:temporary-chats", "launcher:auto-approve-tool-calls"],
+    ["useTemporaryChats", "setTemporaryChats", "launcher:temporary-chats", "launcher:chatgpt-project-url"],
     ["autoApproveToolCalls", "setAutoApproveToolCalls", "launcher:auto-approve-tool-calls", "launcher:zero-risk-pro"],
   ]) {
     const source = electronMain.slice(

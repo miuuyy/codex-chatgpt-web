@@ -81,6 +81,7 @@ test("launcher state persists onboarding, language, and autostart atomically", (
       experimentalSkillAttachments: false,
       experimentalFreshConversationPerTurn: false,
       useTemporaryChats: true,
+      chatgptProjectUrl: "",
       zeroRiskProEnabled: false,
       browserSmokePassed: false,
       browserSmokeVersion: null,
@@ -112,6 +113,7 @@ test("launcher state persists onboarding, language, and autostart atomically", (
       experimentalSkillAttachments: false,
       experimentalFreshConversationPerTurn: false,
       useTemporaryChats: true,
+      chatgptProjectUrl: "",
       zeroRiskProEnabled: false,
       browserSmokePassed: true,
       browserSmokeVersion: "0.2.0",
@@ -194,6 +196,7 @@ test("persisted sidebar corruption is repaired without changing the rest of laun
       experimentalSkillAttachments: false,
       experimentalFreshConversationPerTurn: false,
       useTemporaryChats: true,
+      chatgptProjectUrl: "",
       zeroRiskProEnabled: false,
       browserSmokePassed: false,
       browserSmokeVersion: null,
@@ -246,4 +249,17 @@ test("session refresh reminders are deferred by exactly 48 hours", () => {
   assert.equal(SESSION_REFRESH_REMINDER_INTERVAL_MS, 48 * 60 * 60 * 1000);
   assert.equal(nextSessionRefreshReminderAt(now), "2026-08-07T12:00:00.000Z");
   assert.throws(() => nextSessionRefreshReminderAt(Number.NaN), /must be finite/);
+});
+
+test("ChatGPT Project URL defaults to empty and invalid stored values are reset", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-project-state-"));
+  const file = path.join(root, "state.json");
+  try {
+    const store = createStateStore(file);
+    assert.equal(store.read().chatgptProjectUrl, "");
+    store.update({ chatgptProjectUrl: "https://chatgpt.com/g/g-p-a/project" });
+    assert.equal(createStateStore(file).read().chatgptProjectUrl, "https://chatgpt.com/g/g-p-a/project");
+    fs.writeFileSync(file, JSON.stringify({ ...store.read(), chatgptProjectUrl: 5 }));
+    assert.equal(createStateStore(file).read().chatgptProjectUrl, "");
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

@@ -313,5 +313,7 @@ export interface CodexProviderConfig {
     experimentalFreshConversationPerTurn?: boolean;
     /** Explicit opt-in; ordinary chats remain the default. */
     useTemporaryChats?: boolean;
+    /** Optional validated ChatGPT Project page; new saved chats start there. Never with Temporary Chat. */
+    chatgptProjectUrl?: string;
   };
 }
