@@ -41,7 +41,10 @@ const EXPLICIT_GPT62_ROW = /^(?:GPT[-\s]?)?6\.2(?:\s+Sol)?$/i;
 // 2026-10-08 (388fca5), localized in 6.1.13: one row controls the latest family.
 // A match here is only a UI target. The caller still verifies version/name/effort.
 const LATEST_ROW = /^(?:Latest|最新|최신)$/i;
-const GPT56_ROW = /^GPT[-\s]?5\.6\s+Sol(?:\s+Pro)?$/i;
+// #1013: the retirement notice can be part of the radio's accessible name.
+// Inline text nodes may concatenate without a space. Accept only the observed
+// suffix, not arbitrary trailing text; the caller still verifies model and effort.
+const GPT56_ROW = /^GPT[-\s]?5\.6\s+Sol(?:\s+Pro)?(?:\s*Leaving on December 23)?$/i;
 
 export async function chatGptModelOption(menu: Locator, requested: {
   version: "5.6" | "6" | "6.2"; name: "sol" | "astra";

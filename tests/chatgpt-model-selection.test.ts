@@ -131,3 +131,29 @@ test("coexisting Latest and 6 rows resolve 6 to explicit 6 and 6.2 to Latest wit
     expect(matched).toEqual([expectedRow]);
   }
 });
+
+test("GPT-5.6 row accepts the observed retirement notice without weakening exact identity (#1013)", async () => {
+  for (const [labels, accepted] of [
+    [["GPT-5.6 Sol"], true],
+    [["GPT-5.6 Sol Leaving on December 23"], true],
+    [["GPT-5.6 SolLeaving on December 23"], true],
+    [["GPT-5.6 Sol Pro"], true],
+    [["GPT-6 Sol Leaving on December 23"], false],
+    [["GPT-5.6 Sol Preview"], false],
+    [["GPT-5.6 Sol Upgrade to Pro"], false],
+    [["GPT-5.6 Sol Leaving on December 23 (Preview)"], false],
+    [["GPT-5.6 Sol", "GPT-5.6 Sol Leaving on December 23"], false],
+  ] as const) {
+    const menu = { menu: {
+      getByRole: (_role: string, options: { name: RegExp }) => ({
+        count: async () => labels.filter(label => options.name.test(label)).length,
+        getAttribute: async () => "true",
+        waitFor: async () => { throw new Error("Requested family is absent"); },
+      }),
+      locator: () => ({ count: async () => 1, getAttribute: async () => "true" }),
+    } } as unknown as Parameters<typeof selectChatGptModelFamily>[0];
+    const selection = selectChatGptModelFamily(menu, "5.6", async () => menu, "high");
+    if (accepted) expect(await selection).toBe(menu);
+    else await expect(selection).rejects.toThrow("could not be selected and verified");
+  }
+});
