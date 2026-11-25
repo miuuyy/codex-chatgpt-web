@@ -3,7 +3,18 @@ import {chromium,type Browser} from "playwright-core";
 import {observeChatGptAttachmentUploads} from "../src/adapters/chatgpt-web/attachment-upload";
 import {ChatGptBrowserWorker} from "../src/adapters/chatgpt-web/browser-worker";
 import {ChatGptWebAdapterError} from "../src/adapters/chatgpt-web/adapter-error";
-import { chatGptAttachmentPreview } from "../src/chatgpt-ui/composer";
+import { chatGptAttachmentNamePattern, chatGptAttachmentPreview } from "../src/chatgpt-ui/composer";
+
+test("chatGptAttachmentNamePattern matches exact and ChatGPT-deduplicated names without colliding (#1000)", () => {
+  const pattern = chatGptAttachmentNamePattern("codex-input-image-1.png");
+  expect(pattern.test("codex-input-image-1.png")).toBe(true);
+  expect(pattern.test("codex-input-image-1(20261124-215438).png")).toBe(true);
+  expect(pattern.test("codex-input-image-1 (1).png")).toBe(true);
+  expect(pattern.test("codex-input-image-10.png")).toBe(false);
+  expect(pattern.test("codex-input-image-1(copy).png")).toBe(false);
+  expect(pattern.test("Remove codex-input-image-1(20261124-215438).png")).toBe(false);
+  expect(pattern.test("codex-input-image-1.jpg")).toBe(false);
+});
 
 const executable=process.env.CHATGPT_DOM_TEST_BROWSER;
 const html=`<form><div id="prompt-textarea" contenteditable="true">original message</div><input data-testid="upload-photos-input" type="file" multiple><button data-testid="send-button" type="button" onclick="window.sends++">Send</button></form>
@@ -41,6 +52,35 @@ test.skipIf(!executable)("the composer can verify a named image thumbnail withou
     }, thumbnail);
     expect(await preview.count()).toBe(1);
     expect(await chatGptAttachmentPreview(page.locator("form"), { name: fileName, mimeType: "text/plain" }).count()).toBe(0);
+    const worker = Object.create(ChatGptBrowserWorker.prototype);
+    await worker.attachFiles(page, prompt, AbortSignal.timeout(5_000));
+  }, () => new Response('{"event":"file.processing.completed"}\n', {
+    headers: { "content-type": "application/x-ndjson" },
+  }), document);
+}, 15_000);
+
+test.skipIf(!executable)("the composer verifies an image preview renamed with a ChatGPT timestamp suffix (#1000)", async () => {
+  const renamed = "codex-input-image-1(20261124-215438).png";
+  const tile = `<div class="composer-attachment-surface" role="button" aria-label="${renamed}" tabindex="0" type="button" aria-haspopup="dialog" aria-expanded="false" data-state="closed"><span class="composer-attachment-surface"><img alt="${renamed}" width="20" height="20"></span><button type="button" aria-label="Remove ${renamed}">x</button></div>`;
+  const otherTile = tile.replaceAll(renamed, "codex-input-image-10.png");
+  const document = `<form><div id="prompt-textarea" contenteditable="true">Prompt</div>
+    <input type="file" multiple><button type="submit">Send</button>
+    <div data-composer-attachments data-visible-attachments>${otherTile}</div>
+    <div data-composer-attachments inert>${tile}</div></form>`;
+  await fixture(async (browser, base) => {
+    const page = await browser.newPage();
+    await page.goto(base);
+    const preview = chatGptAttachmentPreview(page.locator("form"), { name: "codex-input-image-1.png", mimeType: "image/png" });
+    expect(await preview.count()).toBe(0);
+    await page.locator("input").evaluate((input, fileName) => {
+      input.addEventListener("change", () => void fetch("/backend-api/files/process_upload_stream", {
+        method: "POST", body: JSON.stringify({ file_name: fileName }),
+      }));
+    }, renamed);
+    await page.locator("form [data-composer-attachments]:not([inert])").evaluate((row, markup) => {
+      row.insertAdjacentHTML("beforeend", markup);
+    }, tile);
+    expect(await preview.count()).toBe(1);
     const worker = Object.create(ChatGptBrowserWorker.prototype);
     await worker.attachFiles(page, prompt, AbortSignal.timeout(5_000));
   }, () => new Response('{"event":"file.processing.completed"}\n', {

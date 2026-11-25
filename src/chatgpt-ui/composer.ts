@@ -12,16 +12,33 @@ export const CHATGPT_COMPOSER_SELECTOR = Object.values(CHATGPT_COMPOSER_VARIANTS
 /** Resolve only inside the verified composer's form; multiple submitters are an error. */
 export const CHATGPT_SEND_BUTTON_SELECTOR = '[data-testid="send-button"], button[type="submit"]';
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * 2026-11-24 (#1000): ChatGPT can append a parenthesized numeric/timestamp suffix before the
+ * extension (e.g. `codex-input-image-1(20261124-215438).png`). Match the exact filename or that
+ * deduplicated variant without colliding with adjacent numbered attachments.
+ */
+export function chatGptAttachmentNamePattern(fileName: string): RegExp {
+  const dot = fileName.lastIndexOf(".");
+  const stem = dot > 0 ? fileName.slice(0, dot) : fileName;
+  const ext = dot > 0 ? fileName.slice(dot) : "";
+  return new RegExp(`^${escapeRegExp(stem)}(?:\\s*\\(\\d[\\d-]*\\))?${escapeRegExp(ext)}$`);
+}
+
 export function chatGptAttachmentPreview(form: Locator, file: { name: string; mimeType: string }): Locator {
-  const name = JSON.stringify(file.name);
-  let preview = form.getByRole("group", { name: file.name, exact: true })
-    .or(form.locator(`.composer-attachment-surface:is(button, [role="button"])[aria-label=${name}]`));
+  const namePattern = chatGptAttachmentNamePattern(file.name);
+  let preview = form.getByRole("group", { name: namePattern }).and(form.locator(":not([inert]):not([inert] *)"))
+    .or(form.locator('.composer-attachment-surface:is(button, [role="button"]):not([inert]):not([inert] *)')
+      .and(form.getByRole("button", { name: namePattern })));
   if (file.mimeType.startsWith("image/")) {
     // 2026-11-18 (#996): when preview interaction is off, the composer renders the
     // filename as the thumbnail's alt text. Its outer tile has no button role or label.
     preview = preview.or(form.locator(
-      `[data-composer-attachments]:not([inert]) div.composer-attachment-surface:not([role]) > span.composer-attachment-surface > img[alt=${name}]`,
-    ));
+      "[data-composer-attachments]:not([inert]) div.composer-attachment-surface:not([role]) > span.composer-attachment-surface > img",
+    ).and(form.getByAltText(namePattern)));
   }
   return preview.filter({ visible: true });
 }
