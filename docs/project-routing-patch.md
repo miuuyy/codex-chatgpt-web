@@ -52,4 +52,4 @@ native Codex and is passed through, so it never touches the browser and proves n
 - MCP tool call (`n8n-native/search_workflows`): started and completed.
 - Compaction (`-c model_auto_compact_token_limit=20000`): handoff accepted in the old chat, continuation opened a fresh
   chat from the project page (3 -> 4) and the following turn retained context in it.
-- Not exercised live: clearing the URL, invalid URL in the launcher UI (both covered by offline tests).
+- Clearing the URL and entering an invalid URL in the launcher UI were tested live by the owner and behaved as expected (also covered by offline tests).
