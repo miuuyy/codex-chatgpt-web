@@ -62,6 +62,20 @@ test("Simplified Chinese effort announcements preserve exact model and effort ve
   }
 });
 
+test("Brazilian Portuguese effort announcements preserve exact model and effort verification", () => {
+  // Live pt-BR capture 2026-11-25: slider "6.2 Alta, 3 de 3." and header "5.6 Sol 5.6 Alta".
+  for (const [label, effort] of [["Instantânea", "low"], ["Média", "medium"], ["Alta", "high"]] as const) {
+    expect(chatGptModelFamilyMatches([`6.2 ${label}, 3 de 3.`, `6.2 ${label}`], "6.2", effort)).toBeTrue();
+    expect(chatGptModelFamilyMatches([`5.6 ${label}, 3 de 3.`, `5.6 Sol 5.6 ${label}`], "5.6", effort)).toBeTrue();
+    expect(chatGptModelFamilyMatches([`5.6 ${label}`], "6", effort)).toBeFalse();
+  }
+  for (const effort of ["low", "medium", "xhigh", "max"] as const) {
+    expect(chatGptModelFamilyMatches(["6 Alta"], "6", effort)).toBeFalse();
+  }
+  for (const label of ["Extra alta", "Alta 6.1", "Altíssima"]) {
+    expect(chatGptModelFamilyMatches([`6 ${label}`], "6", "high")).toBeFalse();
+  }
+});
 
 test("model verification accepts Unicode announcement punctuation without weakening identity", () => {
   for (const separator of ["、", "，", "،", "؛", "：", "—", "。", ",", ";"]) {
