@@ -42,3 +42,14 @@ timing-sensitive compaction "send" stage tests.
 ## Live validation (needs a signed-in browser; not run by the build)
 In a throwaway ChatGPT Project: new conversation lands in the project; retained second turn reuses it; an MCP tool call
 completes; forced compaction opens a fresh chat inside the project and continues; clearing the URL returns to root chats.
+
+### Recorded live run (Windows, v6.2.0 + patch, 2026-11-24)
+Drive turns with a routed model slug, e.g. `codex exec -m chatgpt-web/gpt-6.2-sol ...`. The plain `gpt-6.2-sol` slug is
+native Codex and is passed through, so it never touches the browser and proves nothing. Evidence is the redacted
+`diagnostics/browser-turns/*/` traces (`location.pathSegments`: 3 = project page, 4 = project conversation).
+- New chat: project page (3) -> conversation (4). Temporary Chat off.
+- Retained turn: no navigation, stays at 4, recalled earlier content.
+- MCP tool call (`n8n-native/search_workflows`): started and completed.
+- Compaction (`-c model_auto_compact_token_limit=20000`): handoff accepted in the old chat, continuation opened a fresh
+  chat from the project page (3 -> 4) and the following turn retained context in it.
+- Not exercised live: clearing the URL, invalid URL in the launcher UI (both covered by offline tests).
