@@ -339,6 +339,7 @@ class BrowserHost {
     clipboardApi = clipboard,
     getBrowserInteractionMode = () => "automatic",
     getUseTemporaryChats = () => true,
+    getChatGptProjectUrl = () => "",
   }) {
     if (typeof getConnectorName !== "function") {
       throw new Error("Browser host connector-name resolver is unavailable");
@@ -369,6 +370,7 @@ class BrowserHost {
     this.clipboard = clipboardApi;
     this.getBrowserInteractionMode = getBrowserInteractionMode;
     this.getUseTemporaryChats = getUseTemporaryChats;
+    this.getChatGptProjectUrl = getChatGptProjectUrl;
     this.runBrowserHelperOperation = runBrowserHelperOperation;
     this.verifyConnectorWithBrowserHelper = verifyConnectorWithBrowserHelper;
     this.surfaceId = randomBytes(24).toString("base64url");
@@ -699,7 +701,7 @@ class BrowserHost {
       ordinal,
       label: `ChatGPT ${ordinal}`,
       pageTitle: "ChatGPT",
-      url: this.getUseTemporaryChats() ? `${NEW_CHAT_URL}?temporary-chat=true` : NEW_CHAT_URL,
+      url: this.getUseTemporaryChats() ? `${NEW_CHAT_URL}?temporary-chat=true` : (this.getChatGptProjectUrl() || NEW_CHAT_URL),
       loading: true,
       message: "Paste the copied prompt, add any images yourself because Zero Risk cannot transfer them, choose a model and effort, then press Sent",
       interactionMode: "manual",

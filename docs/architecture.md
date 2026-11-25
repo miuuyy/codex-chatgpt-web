@@ -167,6 +167,16 @@ reuse. Saved history does not authorize reopening an arbitrary ChatGPT conversat
 still starts the next context epoch in a new chat. ChatGPT memory and custom instructions may apply
 in either mode.
 
+An optional **ChatGPT Project** (`setup --project-url <url>`; `--clear-project-url` removes it) routes
+new saved chats, including fresh compaction chats, into one project. The value must be exactly
+`https://chatgpt.com/g/g-p-<id>/project` (no credentials, port, query or fragment) and requires
+ordinary chats: config load, setup and the launcher all fail closed on an invalid URL or a Temporary
+Chat conflict, and enabling Temporary Chat while a project is set is refused until it is cleared.
+The new-chat surface becomes the project page instead of the ChatGPT root, and its readiness check
+accepts only that page; retained-conversation tracking, connector attachment, model selection and
+compaction are unchanged. Sign-in and account probes still use the root URL. Unset, behaviour is
+identical to before.
+
 Automatic mode also offers an explicit **New browser chat for each turn** setting, disabled by
 default (`setup --fresh-conversation`; `--retained-conversation` restores reuse). Each native turn
 gets a new browser chat, the complete canonical Codex context and a fresh connector attachment.

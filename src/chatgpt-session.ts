@@ -10,9 +10,14 @@ import {
 } from "./chatgpt-ui/model-picker";
 import type { Locator, Page } from "playwright-core";
 import type { ChatGptWebAccountCapabilities } from "./chatgpt-web-models";
+import { normalizeChatGptProjectUrl } from "./chatgpt-project-url";
 
 export const CHATGPT_NEW_CHAT_URL = "https://chatgpt.com/";
-export function chatGptNewChatUrl(useTemporaryChats = false): string {
+export function chatGptNewChatUrl(useTemporaryChats = false, projectUrl?: string): string {
+  if (projectUrl !== undefined) {
+    if (useTemporaryChats) throw new Error("A ChatGPT Project URL cannot be combined with Temporary Chat");
+    return normalizeChatGptProjectUrl(projectUrl);
+  }
   return useTemporaryChats ? `${CHATGPT_NEW_CHAT_URL}?temporary-chat=true` : CHATGPT_NEW_CHAT_URL;
 }
 
@@ -33,9 +38,9 @@ export async function assertAuthenticatedChatGptPage(page: Page): Promise<void> 
   }
 }
 
-export async function assertNewChatPage(page: Page, useTemporaryChats = false): Promise<void> {
+export async function assertNewChatPage(page: Page, useTemporaryChats = false, projectUrl?: string): Promise<void> {
   const url = new URL(page.url());
-  const expected = new URL(CHATGPT_NEW_CHAT_URL);
+  const expected = new URL(chatGptNewChatUrl(useTemporaryChats, projectUrl));
   if (url.origin !== expected.origin || url.pathname !== expected.pathname
     || (url.searchParams.get("temporary-chat") === "true") !== useTemporaryChats) {
     throw new Error(`ChatGPT left the requested new chat surface (${page.url()})`);

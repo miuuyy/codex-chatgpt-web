@@ -1301,6 +1301,36 @@ class RuntimeHost {
     return { ...result, enabled };
   }
 
+  async setChatGptProjectUrl(projectUrl) {
+    if (typeof projectUrl !== "string") throw new Error("ChatGPT Project URL must be a string");
+    const value = projectUrl.trim();
+    const current = this.runtimeConfigSnapshot();
+    if (!current.configured) throw new Error("Initialize the runtime before changing the ChatGPT Project");
+    if (value && current.config?.useTemporaryChats !== false) {
+      throw new Error("Turn Temporary Chat off before choosing a ChatGPT Project");
+    }
+    const development = this.launcherProfile === "development";
+    const args = [
+      ...(development ? ["dev", "setup"] : ["setup"]),
+      current.mode === "full" ? "--full" : "--browser-only",
+      "--browser-host-descriptor", this.browserDescriptorPath,
+      ...this.browserInteractionArgs(),
+      "--acknowledge-unofficial",
+      ...(development ? [] : ["--replace-codex-route", "--restart-service"]),
+      ...(value ? ["--project-url", value] : ["--clear-project-url"]),
+    ];
+    if (!development && current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
+    const options = {
+      message: value ? "Routing new chats to the ChatGPT Project" : "Clearing the ChatGPT Project",
+      successMessage: value ? "ChatGPT Project routing enabled" : "ChatGPT Project routing cleared",
+      timeoutMs: CORE_SETUP_TIMEOUT_MS,
+    };
+    const result = development
+      ? await this.runDevSetup("chatgpt-project", args, options)
+      : await this.runSetup("chatgpt-project", args, options);
+    return { ...result, projectUrl: value };
+  }
+
   async setZeroRiskPro(enabled) {
     const current = this.runtimeConfigSnapshot();
     if (!current.configured) {

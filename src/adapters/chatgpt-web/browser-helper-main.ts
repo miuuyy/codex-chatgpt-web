@@ -18,6 +18,7 @@ interface RunMessage {
     appName: string;
     browserHostDescriptorPath: string;
     useTemporaryChats?: boolean;
+    chatgptProjectUrl?: string;
     browserDiagnosticsPath?: string;
     turnTimeoutMs: number;
     autoApproveToolCalls: boolean;
@@ -46,6 +47,7 @@ interface VerifyMessage {
     appName: string;
     browserHostDescriptorPath: string;
     useTemporaryChats?: boolean;
+    chatgptProjectUrl?: string;
   };
 }
 
@@ -198,6 +200,7 @@ async function run(message: RunMessage): Promise<void> {
       turnTimeoutMs: message.config.turnTimeoutMs,
       autoApproveToolCalls: message.config.autoApproveToolCalls,
       useTemporaryChats: message.config.useTemporaryChats !== false,
+      ...(message.config.chatgptProjectUrl !== undefined ? { chatgptProjectUrl: message.config.chatgptProjectUrl } : {}),
     },
   };
   const abortController = new AbortController();
@@ -364,13 +367,15 @@ function maintenanceWorker(message: MaintenanceMessage): ChatGptBrowserWorker {
   const appName = message.config.appName?.trim();
   const browserHostDescriptorPath = message.config.browserHostDescriptorPath?.trim();
   if (!appName || appName.length > 80 || !browserHostDescriptorPath
-    || (message.config.useTemporaryChats !== undefined && typeof message.config.useTemporaryChats !== "boolean")) {
+    || (message.config.useTemporaryChats !== undefined && typeof message.config.useTemporaryChats !== "boolean")
+    || (message.config.chatgptProjectUrl !== undefined && typeof message.config.chatgptProjectUrl !== "string")) {
     throw new Error("Browser helper maintenance config is invalid");
   }
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: "https://chatgpt.com",
-    chatgptWeb: { appName, browserHost: "launcher", browserHostDescriptorPath, useTemporaryChats: message.config.useTemporaryChats !== false },
+    chatgptWeb: { appName, browserHost: "launcher", browserHostDescriptorPath, useTemporaryChats: message.config.useTemporaryChats !== false,
+      ...(message.config.chatgptProjectUrl !== undefined ? { chatgptProjectUrl: message.config.chatgptProjectUrl } : {}) },
   };
   return ChatGptBrowserWorker.forProvider(provider);
 }

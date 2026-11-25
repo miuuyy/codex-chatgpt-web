@@ -1696,6 +1696,10 @@ function SettingsSurface({
   const currentPluginName = snapshot.connectorNames[snapshot.state.browserInteractionMode];
   const [nameSuffix, setNameSuffix] = useState(currentPluginName.slice(6));
   const [confirmNameChange, setConfirmNameChange] = useState(false);
+  const [projectUrlDraft, setProjectUrlDraft] = useState(snapshot.state.chatgptProjectUrl ?? "");
+  useEffect(() => {
+    setProjectUrlDraft(snapshot.state.chatgptProjectUrl ?? "");
+  }, [snapshot.state.chatgptProjectUrl]);
   const proposedName = `Codex ${nameSuffix.trim()}`;
   useEffect(() => {
     setNameSuffix(currentPluginName.slice(6));
@@ -1804,6 +1808,17 @@ function SettingsSurface({
     setError(null);
     try {
       updateState(await api!.setTemporaryChats(enabled));
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const saveProjectUrl = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      updateState(await api!.setChatGptProjectUrl(projectUrlDraft.trim()));
     } catch (cause) {
       setError(messageOf(cause));
     } finally {
@@ -1968,6 +1983,23 @@ function SettingsSurface({
             disabled={busy || snapshot.state.coreSetupComplete !== true}
             onChange={(checked) => void setTemporaryChats(checked)}
           />
+        </SettingRow>
+        <SettingRow body={copy.chatgptProjectBody} label={copy.chatgptProject}>
+          <div className="plugin-name-input">
+            <input
+              aria-label={copy.chatgptProject}
+              disabled={busy || snapshot.state.coreSetupComplete !== true || snapshot.state.useTemporaryChats}
+              maxLength={300}
+              onChange={event => setProjectUrlDraft(event.target.value)}
+              placeholder="https://chatgpt.com/g/g-p-…/project"
+              value={projectUrlDraft}
+            />
+            <SecondaryButton
+              disabled={busy || snapshot.state.coreSetupComplete !== true || snapshot.state.useTemporaryChats
+                || projectUrlDraft.trim() === (snapshot.state.chatgptProjectUrl ?? "")}
+              onClick={() => void saveProjectUrl()}
+            >{copy.chatgptProjectSave}</SecondaryButton>
+          </div>
         </SettingRow>
         <SettingRow
           body={confirmBrowserReset ? copy.embeddedBrowserResetConfirm

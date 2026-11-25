@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { normalizeChatGptProjectUrl } from "./chatgpt-project-url";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { join } from "node:path";
@@ -58,6 +59,8 @@ export interface SetupOptions {
   experimentalSkillAttachments?: boolean;
   experimentalFreshConversationPerTurn?: boolean;
   useTemporaryChats?: boolean;
+  /** Canonical ChatGPT Project URL for new saved chats; null clears it. */
+  chatgptProjectUrl?: string | null;
   zeroRiskProEnabled?: boolean;
   replaceCodexRoute?: boolean;
   preserveDisconnectedRoute?: boolean;
@@ -306,6 +309,16 @@ function baseConfig(
     config.experimentalSkillAttachments = options.experimentalSkillAttachments;
   }
   if (options.useTemporaryChats !== undefined) config.useTemporaryChats = options.useTemporaryChats;
+  if (options.chatgptProjectUrl === null) delete config.chatgptProjectUrl;
+  else if (options.chatgptProjectUrl !== undefined) {
+    config.chatgptProjectUrl = normalizeChatGptProjectUrl(options.chatgptProjectUrl);
+    if (options.useTemporaryChats === undefined && config.useTemporaryChats) {
+      throw new Error("A ChatGPT Project URL requires Temporary Chat to be off; rerun with --ordinary-chats");
+    }
+  }
+  if (config.chatgptProjectUrl && config.useTemporaryChats) {
+    throw new Error("Temporary Chat cannot be combined with a ChatGPT Project URL; clear it first with --clear-project-url");
+  }
   if (options.experimentalFreshConversationPerTurn !== undefined) {
     config.experimentalFreshConversationPerTurn = options.experimentalFreshConversationPerTurn;
   }

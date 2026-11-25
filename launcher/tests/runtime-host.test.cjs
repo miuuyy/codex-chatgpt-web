@@ -1572,3 +1572,28 @@ test("explicit removal cancels pending recovery even when the route is already i
   assert.equal(result.active, false);
   assert.equal(fixture.calls.at(-1), "route status");
 });
+
+test("ChatGPT Project routing uses transactional setup in both profiles and requires ordinary chats", async () => {
+  const project = "https://chatgpt.com/g/g-p-abc123-test/project";
+  for (const makeHost of [hostFor, devHostFor]) {
+    const fixture = makeHost({ mode: "browser-only", browserInteractionMode: "automatic", useTemporaryChats: false, autoApproveToolCalls: true });
+    assert.equal((await fixture.host.setChatGptProjectUrl(` ${project} `)).projectUrl, project);
+    let { name, args } = fixture.invocation();
+    assert.equal(name, "chatgpt-project");
+    assert.deepEqual(args.slice(0, makeHost === devHostFor ? 2 : 1), makeHost === devHostFor ? ["dev", "setup"] : ["setup"]);
+    assert.equal(args[args.indexOf("--project-url") + 1], project);
+    assert.equal(args.includes("--clear-project-url"), false);
+    assert.equal(args.includes("--restart-service"), makeHost === hostFor);
+    await fixture.host.setChatGptProjectUrl("");
+    ({ args } = fixture.invocation());
+    assert.equal(args.includes("--clear-project-url"), true);
+    assert.equal(args.includes("--project-url"), false);
+    const temporary = makeHost({ mode: "browser-only", useTemporaryChats: true });
+    await assert.rejects(() => temporary.host.setChatGptProjectUrl(project), /Temporary Chat/);
+    assert.equal(temporary.invocation(), undefined);
+    await assert.rejects(() => makeHost(null).host.setChatGptProjectUrl(project), /Initialize/);
+    const valid = makeHost({ mode: "browser-only", useTemporaryChats: false });
+    await assert.rejects(() => valid.host.setChatGptProjectUrl(7), /string/);
+    assert.equal(valid.invocation(), undefined);
+  }
+});
