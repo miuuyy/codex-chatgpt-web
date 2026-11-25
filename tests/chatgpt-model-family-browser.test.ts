@@ -229,3 +229,25 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("November 23 picker fails clo
     expect(await page.locator("#prompt-textarea").innerText()).toBe("Draft");
   } finally { await browser.close(); }
 }, 30_000);
+
+// #1013, live capture 2026-11-25: the GPT-5.6 Sol row adds a localized retirement subtitle.
+const RETIRING_SUBTITLE_PICKER = readFileSync(new URL("./fixtures/chatgpt-model-picker-retiring-subtitle-2026-11-25.html", import.meta.url), "utf8");
+
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("GPT-5.6 Sol row with a retirement subtitle resolves to exactly that row (#1013)", async () => {
+  const { chatGptModelOption } = await import("../src/chatgpt-ui/model-picker");
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  try {
+    const page = await browser.newPage(); await page.setContent(RETIRING_SUBTITLE_PICKER);
+    const menu = page.locator("#picker");
+    const option = await chatGptModelOption(menu, { version: "5.6", name: "sol" });
+    expect(await option.count()).toBe(1);
+    expect(await option.getAttribute("id")).toBe("gpt56");
+    // Other families keep their exact rows and never match the 5.6 row.
+    const six = await chatGptModelOption(menu, { version: "6", name: "sol" });
+    expect(await six.count()).toBe(1);
+    expect(await six.getAttribute("aria-checked")).toBe("true");
+    // A subtitle alone, or a different version, must not satisfy the 5.6 lookup.
+    await page.evaluate(() => { document.querySelector("#gpt56 span")!.textContent = "GPT-5.5 Sol"; });
+    expect(await (await chatGptModelOption(menu, { version: "5.6", name: "sol" })).count()).toBe(0);
+  } finally { await browser.close(); }
+}, 30_000);

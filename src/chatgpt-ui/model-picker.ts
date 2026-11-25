@@ -68,9 +68,16 @@ export async function chatGptModelOption(menu: Locator, requested: {
       name: LATEST_ROW, exact: true, includeHidden: true,
     });
   }
-  return menu.getByRole("menuitemradio", {
+  const exact = menu.getByRole("menuitemradio", {
     name: GPT56_ROW,
     exact: true, includeHidden: true,
+  });
+  if (await exact.count() > 0) return exact;
+  // 2026-11-25 (#1013): the row adds a localized retirement subtitle under its name
+  // ("Leaving on December 23"), so the accessible name no longer equals the label.
+  // Match the row's own primary label; the caller still verifies version/name/effort.
+  return menu.getByRole("menuitemradio", { includeHidden: true }).filter({
+    has: menu.page().locator("[data-menu-row-content] span").filter({ hasText: GPT56_ROW }),
   });
 }
 
@@ -110,7 +117,12 @@ export function parseChatGptModelAnnouncement(text: string): {
   const mode = match[3]!.trim();
   // 2026-10-25 (#911, 6140f0b): observed zh-CN labels. Translate only complete labels;
   // unknown labels still fail the exact model/effort check.
-  const canonicalMode = mode === "即时" ? "instant" : mode === "中" ? "medium" : mode === "高" ? "high" : mode;
+  // 2026-11-25: observed pt-BR labels ("Instantânea", "Média", "Alta").
+  const LOCALIZED_MODES: Record<string, string> = {
+    "即时": "instant", "中": "medium", "高": "high",
+    "instantânea": "instant", "média": "medium", "alta": "high",
+  };
+  const canonicalMode = LOCALIZED_MODES[mode.toLowerCase()] ?? mode;
   return { version: match[1]!, ...(match[2] ? { name: match[2].toLowerCase() } : {}), mode: canonicalMode };
 }
 
