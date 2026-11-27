@@ -197,6 +197,14 @@ function isNativeOpenPageContext(item: Record<string, unknown> | undefined): boo
   return Array.isArray(kinds) && kinds.length === 1 && kinds[0] === "additional_content.codex_apps_open_page";
 }
 
+/** Desktop also emits companion page context as agent outputs without a tool call. */
+function isNativeCompanionPageOutput(item: Record<string, unknown> | undefined): boolean {
+  return item?.type === "function_call_output" && item.namespace === "agent" && item.call_id === undefined
+    && typeof item.id === "string" && /^fco_.+/.test(item.id) && Boolean(itemTurnId(item)?.trim())
+    && typeof item.output === "string" && typeof item.name === "string"
+    && (item.name === "codex_apps_open_page" || /^codex_apps_selected_page_part_[1-9]\d*_of_[1-9]\d*$/.test(item.name));
+}
+
 function compactionSummaryMessage(value: Record<string, unknown>): boolean {
   if (value.type !== "message" || value.role !== "user") return false;
   const text = rawMessageText(value).trim();
@@ -405,6 +413,8 @@ export interface ChatGptEnvironmentClaim {
   calendarDelta?: ChatGptCalendarEnvironmentDelta;
   /** The exact rendered element, comparable only with Codex's own current world state. */
   filesystemXml?: string;
+  /** A companion page item can separate the envelope from the user message, but cannot authenticate it. */
+  requiresNativeRollout?: boolean;
 }
 
 function environmentClaim(parsed: CodexParsedRequest, text: string): ChatGptEnvironmentClaim {
@@ -608,9 +618,10 @@ function environmentBeforeUser(input: unknown[], userIndex: number, expectedTurn
 
   let candidateIndex = userIndex - 1;
   let candidate = record(input[candidateIndex]);
-  while (candidate?.type === "message" && (candidate.role === "developer" || isNativeOpenPageContext(candidate))) {
-    const developerTurnId = itemTurnId(candidate);
-    if (developerTurnId !== userTurnId) return undefined;
+  // Only cross companion outputs for the current turn, which requires native rollout proof.
+  while ((expectedTurnId !== undefined && isNativeCompanionPageOutput(candidate))
+    || (candidate?.type === "message" && (candidate.role === "developer" || isNativeOpenPageContext(candidate)))) {
+    if (itemTurnId(candidate) !== userTurnId) return undefined;
     candidateIndex -= 1;
     candidate = record(input[candidateIndex]);
   }
@@ -1002,8 +1013,9 @@ function matchesPath(root: string, path: string): boolean {
 }
 
 export function extractChatGptTurnEnvironment(parsed: CodexParsedRequest): ChatGptTurnEnvironment {
-  const environment = extractChatGptTurnEnvironmentClaim(parsed).environment;
+  const { environment, requiresNativeRollout } = extractChatGptTurnEnvironmentClaim(parsed);
   if (environment.cwd === undefined) throw new MissingTrustedCodexEnvironmentError("cwd");
+  if (requiresNativeRollout) throw new MissingTrustedCodexEnvironmentError("current native task ownership");
   if (!environment.roots.some(root => matchesPath(root, environment.cwd!))) {
     throw new MissingTrustedCodexEnvironmentError("current native worktree authority");
   }
@@ -1011,7 +1023,13 @@ export function extractChatGptTurnEnvironment(parsed: CodexParsedRequest): ChatG
 }
 
 export function extractChatGptTurnEnvironmentClaim(parsed: CodexParsedRequest): ChatGptEnvironmentClaim {
-  return environmentClaim(parsed, trustedEnvironmentText(parsed));
+  const claim = environmentClaim(parsed, trustedEnvironmentText(parsed));
+  const input = record(parsed._rawBody)?.input;
+  const turnId = extractChatGptTurnIdentity(parsed).turnId;
+  if (turnId && Array.isArray(input) && input.some(value => (
+    itemTurnId(value) === turnId && isNativeCompanionPageOutput(record(value))
+  ))) claim.requiresNativeRollout = true;
+  return claim;
 }
 
 function environmentPaths(text: string, preferredRoots: string[]): { cwd?: string; roots: string[] } {
