@@ -185,7 +185,7 @@ export class ChatGptThreadEnvironmentStore {
       const environment = claim.environment;
       const outsideProjectRoots = environment.cwd !== undefined
         && !environment.roots.some(root => contains(root, environment.cwd!));
-      if (environment.cwd === undefined || outsideProjectRoots || this.codexHomes.length > 1
+      if (environment.cwd === undefined || outsideProjectRoots || this.codexHomes.length > 1 || claim.requiresNativeRollout
         || (environment.sandboxPolicy.type !== "dangerFullAccess" && !claim.statesNetworkAccess)) {
         // A shared bridge must prove the current native owner even for complete envelopes.
         // Modern envelopes state filesystem access only. Resolve the current native policy on
@@ -197,7 +197,7 @@ export class ChatGptThreadEnvironmentStore {
         throw new MissingTrustedCodexEnvironmentError(
           environment.cwd === undefined ? "cwd"
             : outsideProjectRoots ? "current native worktree authority"
-            : this.codexHomes.length > 1 ? "current native task ownership" : "network access",
+            : this.codexHomes.length > 1 || claim.requiresNativeRollout ? "current native task ownership" : "network access",
         );
       }
       const completeEnvironment = { ...environment, cwd: environment.cwd };

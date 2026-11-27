@@ -1474,6 +1474,57 @@ describe("trusted Codex task environment continuity", () => {
     });
   });
 
+  test("Desktop follow-up resolves cwd across same-turn companion page outputs", () => {
+    const { codexHome, request, body, rolloutPath, visualization, filesystem, envelope, worldState, environment, writeRollout } = currentRootsFixture();
+    const followUp = filesystem([visualization]);
+    environment.content[0]!.text = envelope(followUp);
+    const page = {
+      type: "function_call_output", id: "fco_open_page", namespace: "agent", name: "codex_apps_open_page",
+      output: '{"page_id":null}', internal_chat_message_metadata_passthrough: { turn_id: rolloutTurnId },
+    };
+    body.input.splice(1, 0, {
+      type: "message", role: "developer", id: "msg_deferred_namespaces",
+      content: [{ type: "input_text", text: "<tools></tools>" }],
+      internal_chat_message_metadata_passthrough: { turn_id: rolloutTurnId },
+    }, page, {
+      ...page, id: "fco_selected_page", name: "codex_apps_selected_page_part_1_of_1",
+      output: 'Companion Page snapshot part 1 of 1:\n{"page_id":null,"document_view":null}',
+    });
+    writeRollout([worldState(true, filesystem([root])), worldState(false, followUp)]);
+    const store = new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome);
+    expect(store.resolve(request)).toMatchObject({ cwd: root, roots: [root, visualization] });
+
+    for (const mutation of [
+      { id: undefined },
+      { namespace: "other" },
+      { name: "unrecognized_page_output" },
+      { call_id: "call_tool" },
+      { internal_chat_message_metadata_passthrough: { turn_id: rolloutParentId } },
+    ]) {
+      body.input[2] = { ...page, ...mutation };
+      expect(() => store.resolve(request)).toThrow("missing cwd");
+    }
+    body.input[2] = page;
+
+    // Neither the page outputs nor a previously verified turn can supply filesystem authority.
+    writeRollout([worldState(false, filesystem([root]))]);
+    expect(() => store.resolve(request)).toThrow("fields: workspace_roots, writable_roots");
+    rmSync(rolloutPath);
+    expect(() => store.resolve(request)).toThrow("missing cwd");
+    environment.content[0]!.text = envelope(filesystem([root]), root);
+    expect(() => store.resolve(request)).toThrow("current native task ownership");
+
+    const previous = body.input.map(item => ({
+      ...item, internal_chat_message_metadata_passthrough: { turn_id: rolloutParentId },
+    }));
+    const resumed = parseRequest({
+      model: "chatgpt-web/pro", client_metadata: body.client_metadata,
+      input: [...previous, { type: "message", role: "assistant", content: "Previous reply" }, body.input.at(-1)],
+    });
+    expect(() => extractChatGptTurnEnvironment(resumed)).toThrow("missing cwd");
+    expect(() => extractChatGptTurnEnvironment({ ...resumed, _replayPrefixLen: previous.length })).toThrow("missing cwd");
+  });
+
   test("Codex's current roots may keep the native cwd yet omit another start root", () => {
     const auxiliary = resolve(root, "..", "second-project");
     const { codexHome, request, visualization, filesystem, envelope, worldState, environment, writeRollout } = currentRootsFixture([root, auxiliary]);
